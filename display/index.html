@@ -2,607 +2,513 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>AHRS PFD</title>
 <style>
+  :root {
+    --sat: env(safe-area-inset-top,    0px);
+    --sar: env(safe-area-inset-right,  0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left,   0px);
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body {
-    width: 100%; height: 100%;
-    background: #000;
-    overflow: hidden;
-    -webkit-tap-highlight-color: transparent;
-  }
-  canvas {
-    display: block;
-    position: absolute; top: 0; left: 0;
-  }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden;
+               -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; position: absolute; top: 0; left: 0; }
   #link-status {
     position: absolute; top: 6px; right: 8px;
-    font: bold 11px/1 monospace;
-    padding: 3px 6px;
-    border-radius: 3px;
-    pointer-events: none;
-    z-index: 10;
+    font: bold 11px/1 monospace; padding: 3px 7px; border-radius: 3px;
+    pointer-events: none; z-index: 10; letter-spacing: .04em;
   }
-  .link-ok   { background: rgba(0,180,0,.7);   color: #fff; }
-  .link-warn { background: rgba(220,140,0,.7); color: #fff; }
-  .link-dead { background: rgba(200,0,0,.7);   color: #fff; }
+  .link-ok   { background: rgba(0,170,0,.75);   color: #fff; }
+  .link-warn { background: rgba(210,130,0,.75); color: #fff; }
+  .link-dead { background: rgba(190,0,0,.75);   color: #fff; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="link-status" class="link-dead">NO LINK</div>
-
 <script>
 'use strict';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// State  (updated by SSE; rendered each animation frame)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── State ──────────────────────────────────────────────────────────────────
 const TARGET = { roll:0, pitch:0, yaw:0, lat:0, lon:0, alt:0,
                  speed:0, track:0, vspeed:0, fix:0, sats:0 };
-// Smoothed display values (lerped toward TARGET each frame)
 const D = Object.assign({}, TARGET);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SSE connection
-// ─────────────────────────────────────────────────────────────────────────────
+// ── SSE ────────────────────────────────────────────────────────────────────
 const linkEl = document.getElementById('link-status');
-let   lastMsgMs = 0;
-let   es = null;
+let lastMsgMs = 0, es = null;
 
 function connectSSE() {
   if (es) { try { es.close(); } catch(e){} }
   es = new EventSource('/events');
-
   es.onmessage = (e) => {
-    try {
-      const d = JSON.parse(e.data);
-      Object.assign(TARGET, d);
-      lastMsgMs = performance.now();
-    } catch(ex) {}
-  };
-
-  es.onerror = () => {
-    // EventSource reconnects automatically; just update UI
+    try { Object.assign(TARGET, JSON.parse(e.data)); lastMsgMs = performance.now(); }
+    catch(ex) {}
   };
 }
-
 connectSSE();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Canvas setup
-// ─────────────────────────────────────────────────────────────────────────────
+function updateLinkStatus() {
+  const age = performance.now() - lastMsgMs;
+  if (!lastMsgMs)      { linkEl.textContent = 'CONNECTING'; linkEl.className = 'link-warn'; }
+  else if (age < 3000) { linkEl.textContent = 'LINK OK';    linkEl.className = 'link-ok';   }
+  else if (age < 8000) { linkEl.textContent = 'LINK WARN';  linkEl.className = 'link-warn'; }
+  else                 { linkEl.textContent = 'NO LINK';    linkEl.className = 'link-dead'; }
+}
+
+// ── Canvas & layout ────────────────────────────────────────────────────────
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
-
 let W = 0, H = 0;
+const L = {};   // layout — recomputed on resize
+
+function computeLayout() {
+  const cs = getComputedStyle(document.documentElement);
+  const sv = n => parseFloat(cs.getPropertyValue(n)) || 0;
+  L.safeT = sv('--sat'); L.safeR = sv('--sar');
+  L.safeB = sv('--sab'); L.safeL = sv('--sal');
+
+  L.cx = W / 2;  L.cy = H / 2;
+
+  // Heading tape (bottom)
+  L.hdgH = Math.max(38, H * 0.10);
+  L.hdgY = H - L.hdgH - L.safeB;
+
+  // Vertical side tapes: span from below top-bar to above heading tape
+  L.tapeTopY = L.safeT + 26;
+  L.tapeBotY = L.hdgY;
+  L.tapeH    = L.tapeBotY - L.tapeTopY;
+  L.tapeMidY = (L.tapeTopY + L.tapeBotY) / 2;
+
+  // Speed tape (left)
+  L.spdW = 68;
+  L.spdX = L.safeL;
+
+  // Altitude tape (right)
+  L.altW = 78;
+  L.altX = W - L.safeR - L.altW;
+
+  // Roll arc: radius capped so it fits neatly in upper screen area
+  L.rollR  = Math.min(H * 0.36, 155);
+  // Roll arc circle centre: top of arc sits ~12px below the screen top (+ safe area)
+  L.rollCY = L.rollR + Math.max(12, L.safeT + 6);
+}
+
 function resize() {
   W = canvas.width  = window.innerWidth;
   H = canvas.height = window.innerHeight;
+  computeLayout();
 }
 resize();
 window.addEventListener('resize', resize);
-window.addEventListener('orientationchange', () => setTimeout(resize, 150));
+window.addEventListener('orientationchange', () => setTimeout(resize, 200));
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Maths helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Maths ──────────────────────────────────────────────────────────────────
 const DEG = Math.PI / 180;
-
-function lerp(a, b, t) { return a + (b - a) * t; }
-
-function lerpAngle(a, b, t) {
-  // Shortest-path lerp across the 0/360 boundary
-  let d = ((b - a + 540) % 360) - 180;
-  return (a + d * t + 360) % 360;
+function lerp(a, b, t)      { return a + (b - a) * t; }
+function lerpAngle(a, b, t) { let d = ((b-a+540)%360)-180; return (a+d*t+360)%360; }
+function smooth(alpha) {
+  D.roll   = lerp(D.roll,   TARGET.roll,   alpha);
+  D.pitch  = lerp(D.pitch,  TARGET.pitch,  alpha);
+  D.yaw    = lerpAngle(D.yaw, TARGET.yaw,  alpha);
+  D.alt    = lerp(D.alt,    TARGET.alt,    alpha);
+  D.speed  = lerp(D.speed,  TARGET.speed,  alpha);
+  D.vspeed = lerp(D.vspeed, TARGET.vspeed, alpha);
+  D.track  = lerpAngle(D.track, TARGET.track, alpha);
+  D.fix = TARGET.fix;  D.sats = TARGET.sats;
 }
 
-function smoothAll(t) {
-  D.roll   = lerp(D.roll,   TARGET.roll,   t);
-  D.pitch  = lerp(D.pitch,  TARGET.pitch,  t);
-  D.yaw    = lerpAngle(D.yaw, TARGET.yaw,  t);
-  D.alt    = lerp(D.alt,    TARGET.alt,    t);
-  D.speed  = lerp(D.speed,  TARGET.speed,  t);
-  D.vspeed = lerp(D.vspeed, TARGET.vspeed, t);
-  D.track  = lerpAngle(D.track, TARGET.track, t);
-  D.fix    = TARGET.fix;
-  D.sats   = TARGET.sats;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Drawing helpers
-// ─────────────────────────────────────────────────────────────────────────────
-function roundRect(ctx, x, y, w, h, r) {
+// ── Helpers ────────────────────────────────────────────────────────────────
+function pillRect(x, y, w, h) {
+  const r = h / 2;
   ctx.beginPath();
   ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y);
   ctx.closePath();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Synthetic vision / attitude indicator
-// ─────────────────────────────────────────────────────────────────────────────
-function drawAI(cx, cy) {
-  const pxPerDeg = H / 55;           // degrees of pitch visible across full height
-  const pitchOff = D.pitch * pxPerDeg; // +pitch → horizon moves down (nose up)
+// ── Synthetic vision ───────────────────────────────────────────────────────
+function drawAI() {
+  const { cx, tapeMidY } = L;
+  const pxPerDeg = H / 55;
+  const pitchOff = D.pitch * pxPerDeg;
   const rollRad  = -D.roll * DEG;
 
   ctx.save();
-
-  // Clip to full canvas so rotated fills don't leak
-  ctx.beginPath();
-  ctx.rect(0, 0, W, H);
-  ctx.clip();
-
-  ctx.translate(cx, cy);
+  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+  ctx.translate(cx, tapeMidY);
   ctx.rotate(rollRad);
 
-  // ── Sky ──
-  const skyH = H * 2;
-  const sg = ctx.createLinearGradient(0, -skyH, 0, pitchOff);
-  sg.addColorStop(0,   '#0b1a2e');
-  sg.addColorStop(0.6, '#1a5fa8');
-  sg.addColorStop(1,   '#4a9fe0');
+  // Sky
+  const sg = ctx.createLinearGradient(0, -H*2, 0, pitchOff);
+  sg.addColorStop(0, '#0b1a2e'); sg.addColorStop(0.6, '#1a5fa8'); sg.addColorStop(1, '#4a9fe0');
   ctx.fillStyle = sg;
-  ctx.fillRect(-W * 2, -skyH, W * 4, skyH + pitchOff);
+  ctx.fillRect(-W*2, -H*2, W*4, H*2 + pitchOff);
 
-  // ── Ground ──
-  const gg = ctx.createLinearGradient(0, pitchOff, 0, H * 2);
-  gg.addColorStop(0,   '#8b6810');
-  gg.addColorStop(0.4, '#5a3e0a');
-  gg.addColorStop(1,   '#2a1a03');
+  // Ground
+  const gg = ctx.createLinearGradient(0, pitchOff, 0, H*2);
+  gg.addColorStop(0, '#8b6810'); gg.addColorStop(0.4, '#5a3e0a'); gg.addColorStop(1, '#2a1a03');
   ctx.fillStyle = gg;
-  ctx.fillRect(-W * 2, pitchOff, W * 4, H * 2);
+  ctx.fillRect(-W*2, pitchOff, W*4, H*2);
 
-  // ── Horizon line ──
-  ctx.strokeStyle = '#fff';
-  ctx.lineWidth   = 2.5;
-  ctx.shadowColor = 'rgba(0,0,0,0.8)';
-  ctx.shadowBlur  = 4;
-  ctx.beginPath();
-  ctx.moveTo(-W * 2, pitchOff);
-  ctx.lineTo( W * 2, pitchOff);
-  ctx.stroke();
+  // Horizon
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
+  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 4;
+  ctx.beginPath(); ctx.moveTo(-W*2, pitchOff); ctx.lineTo(W*2, pitchOff); ctx.stroke();
   ctx.shadowBlur = 0;
 
-  // ── Pitch ladder ──
-  drawPitchLadder(pxPerDeg, pitchOff);
-
-  ctx.restore();
-}
-
-function drawPitchLadder(pxPerDeg, pitchOff) {
-  const shortLen = W * 0.10;
-  const longLen  = W * 0.18;
-
-  ctx.textAlign    = 'right';
-  ctx.textBaseline = 'middle';
-  ctx.font         = `${Math.max(11, H * 0.025)}px monospace`;
-
+  // Pitch ladder
+  const shortL = W * 0.10, longL = W * 0.18;
+  ctx.font = `${Math.max(11, H * 0.025)}px monospace`;
   for (let deg = -30; deg <= 30; deg += 5) {
     if (deg === 0) continue;
-    const y      = pitchOff - deg * pxPerDeg;
-    const half   = (deg % 10 === 0) ? longLen : shortLen;
-    const isUp   = deg > 0;
-
+    const y    = pitchOff - deg * pxPerDeg;
+    const half = deg % 10 === 0 ? longL : shortL;
+    const td   = deg > 0 ? 1 : -1;
     ctx.strokeStyle = '#fff';
     ctx.lineWidth   = deg % 10 === 0 ? 1.8 : 1.2;
-    ctx.shadowColor = 'rgba(0,0,0,0.7)';
-    ctx.shadowBlur  = 3;
-
-    // Horizontal bar
-    ctx.beginPath();
-    ctx.moveTo(-half, y);
-    ctx.lineTo( half, y);
-    ctx.stroke();
-
-    // Serif ticks at ends (pointing toward horizon = toward 0)
-    const tickDir = isUp ? 1 : -1;   // up bars tick down, down bars tick up
-    const tickLen = 8;
+    ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 3;
+    ctx.beginPath(); ctx.moveTo(-half, y); ctx.lineTo(half, y); ctx.stroke();
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(-half, y);
-    ctx.lineTo(-half, y + tickDir * tickLen);
-    ctx.moveTo( half, y);
-    ctx.lineTo( half, y + tickDir * tickLen);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // Labels (only at 10° intervals)
+    ctx.moveTo(-half, y); ctx.lineTo(-half, y + td*8);
+    ctx.moveTo( half, y); ctx.lineTo( half, y + td*8);
+    ctx.stroke(); ctx.shadowBlur = 0;
     if (deg % 10 === 0) {
       ctx.fillStyle = '#fff';
-      ctx.shadowColor = 'rgba(0,0,0,0.8)';
-      ctx.shadowBlur  = 3;
-      const label = Math.abs(deg).toString();
-      ctx.fillText(label, -half - 8, y);
-      ctx.textAlign = 'left';
-      ctx.fillText(label,  half + 8, y);
-      ctx.textAlign = 'right';
+      ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 3;
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(Math.abs(deg), -half-8, y);
+      ctx.textAlign = 'left';  ctx.fillText(Math.abs(deg), half+8, y);
       ctx.shadowBlur = 0;
     }
   }
   ctx.textBaseline = 'alphabetic';
+  ctx.restore();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Roll arc & indicator
-// ─────────────────────────────────────────────────────────────────────────────
-function drawRollIndicator(cx, cy) {
-  const radius = Math.min(W, H) * 0.38;
-  const arcY   = cy - radius * 0.5; // arc origin above centre
-  const marks  = [0, 10, 20, 30, 45, 60];
+// ── Roll arc ───────────────────────────────────────────────────────────────
+function drawRollIndicator() {
+  const { cx, rollR, rollCY } = L;
+  const marks = [0, 10, 20, 30, 45, 60];
 
   ctx.save();
-  ctx.translate(cx, arcY);
+  ctx.translate(cx, rollCY);
 
-  // Draw the arc
-  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-  ctx.lineWidth   = 1.5;
-  ctx.beginPath();
-  ctx.arc(0, 0, radius, (-120) * DEG, (-60) * DEG);
-  ctx.stroke();
+  // Arc spans ±60° from top (-150° to -30°)
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(0, 0, rollR, -150*DEG, -30*DEG); ctx.stroke();
 
-  // Graduation marks
+  // Graduation ticks
   marks.forEach(deg => {
     [-deg, deg].forEach(a => {
-      const angle   = (-90 + a) * DEG;
-      const inner   = deg === 0 ? radius - 18 : (deg % 30 === 0 ? radius - 14 : radius - 10);
-      const cos_a   = Math.cos(angle);
-      const sin_a   = Math.sin(angle);
-      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      const angle = (-90 + a) * DEG;
+      const len   = deg === 0 ? 18 : (deg % 30 === 0 ? 14 : 10);
+      ctx.strokeStyle = 'rgba(255,255,255,.85)';
       ctx.lineWidth   = deg === 0 ? 2 : 1.2;
       ctx.beginPath();
-      ctx.moveTo(cos_a * inner,    sin_a * inner);
-      ctx.lineTo(cos_a * radius,   sin_a * radius);
+      ctx.moveTo(Math.cos(angle)*(rollR-len), Math.sin(angle)*(rollR-len));
+      ctx.lineTo(Math.cos(angle)*rollR,       Math.sin(angle)*rollR);
       ctx.stroke();
     });
   });
 
-  // Roll indicator triangle (rotates)
-  const rollAngle = (-90 - D.roll) * DEG;
-  const tx        = Math.cos(rollAngle) * (radius - 2);
-  const ty        = Math.sin(rollAngle) * (radius - 2);
-
+  // Roll indicator triangle (moves with roll)
+  const ra = (-90 - D.roll) * DEG;
   ctx.save();
-  ctx.translate(tx, ty);
-  ctx.rotate(rollAngle + Math.PI / 2);
-  ctx.fillStyle   = '#fff';
-  ctx.strokeStyle = '#000';
-  ctx.lineWidth   = 0.5;
-  ctx.beginPath();
-  ctx.moveTo(0, -10);
-  ctx.lineTo(-6, 0);
-  ctx.lineTo( 6, 0);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
+  ctx.translate(Math.cos(ra)*(rollR-2), Math.sin(ra)*(rollR-2));
+  ctx.rotate(ra + Math.PI/2);
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = .6;
+  ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(-6,0); ctx.lineTo(6,0);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
   ctx.restore();
-
   ctx.restore();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Aircraft symbol (fixed, centre)
-// ─────────────────────────────────────────────────────────────────────────────
-function drawAircraftSymbol(cx, cy) {
-  ctx.save();
-  ctx.translate(cx, cy);
+// ── Slip/skid ball  (at roll arc centre = top of AI area) ─────────────────
+function drawSlipBall() {
+  const { cx, rollCY } = L;
+  const bw = 54, bh = 16, r = 6;
 
-  ctx.strokeStyle = '#ffd700';
-  ctx.lineWidth   = 3;
-  ctx.lineCap     = 'round';
-  ctx.shadowColor = 'rgba(0,0,0,0.9)';
-  ctx.shadowBlur  = 5;
+  // Pill housing
+  pillRect(cx - bw/2, rollCY - bh/2, bw, bh);
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 1.2; ctx.stroke();
 
-  const wingSpan = Math.min(W * 0.12, 90);
-  const stub     = 10;
-
-  // Left wing
-  ctx.beginPath();
-  ctx.moveTo(-wingSpan, 0);
-  ctx.lineTo(-wingSpan * 0.22, 0);
-  ctx.lineTo(-wingSpan * 0.22, stub);
-  ctx.stroke();
-
-  // Right wing
-  ctx.beginPath();
-  ctx.moveTo( wingSpan, 0);
-  ctx.lineTo( wingSpan * 0.22, 0);
-  ctx.lineTo( wingSpan * 0.22, stub);
-  ctx.stroke();
-
-  // Centre pip
-  ctx.fillStyle = '#ffd700';
-  ctx.beginPath();
-  ctx.arc(0, 0, 4, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.shadowBlur = 0;
-  ctx.restore();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Slip/skid ball  (uses roll – simple visual only, no coordinated-turn sensor)
-// ─────────────────────────────────────────────────────────────────────────────
-function drawSlipBall(cx, cy) {
-  const boxW = 60, boxH = 18, ballR = 7;
-  const x = cx - boxW / 2;
-  const y = cy + Math.min(H * 0.09, 50);
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-  ctx.lineWidth   = 1.2;
-  ctx.beginPath();
-  ctx.rect(x, y, boxW, boxH);
-  ctx.stroke();
-
-  // The ball deflects based on roll (simplified – would need lateral accel for real)
-  const deflect = Math.max(-1, Math.min(1, D.roll / 20)) * (boxW / 2 - ballR - 2);
+  // Ball – simplified: deflects with roll (real build should use WT901 lateral accel)
+  const defl = Math.max(-1, Math.min(1, D.roll / 25)) * (bw/2 - r - 2);
   ctx.fillStyle = '#fff';
-  ctx.beginPath();
-  ctx.arc(cx + deflect, y + boxH / 2, ballR, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(cx + defl, rollCY, r, 0, Math.PI*2); ctx.fill();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Speed box (left)
-// ─────────────────────────────────────────────────────────────────────────────
-function drawSpeedBox(cy) {
-  const bw = Math.min(W * 0.12, 70);
-  const bh = 52;
-  const bx = 8;
-  const by = cy - bh / 2;
+// ── Aircraft symbol ────────────────────────────────────────────────────────
+function drawAircraftSymbol() {
+  const { cx, tapeMidY } = L;
+  const ws = Math.min(W * 0.12, 88);
+  ctx.save(); ctx.translate(cx, tapeMidY);
+  ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 5;
+  ctx.beginPath();
+  ctx.moveTo(-ws,0); ctx.lineTo(-ws*.22,0); ctx.lineTo(-ws*.22,9); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo( ws,0); ctx.lineTo( ws*.22,0); ctx.lineTo( ws*.22,9); ctx.stroke();
+  ctx.fillStyle = '#ffd700';
+  ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI*2); ctx.fill();
+  ctx.shadowBlur = 0; ctx.restore();
+}
 
-  // Box
-  roundRect(ctx, bx, by, bw, bh, 4);
-  ctx.fillStyle = 'rgba(0,10,30,0.78)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-  ctx.lineWidth   = 1;
+// ── Speed tape (left) ──────────────────────────────────────────────────────
+function drawSpeedTape() {
+  const { spdX, spdW, tapeTopY, tapeH, tapeMidY } = L;
+  const pxPerKt = tapeH / 60;   // 60 kt total window (±30)
+  const spd     = D.speed;
+  const boxH    = Math.max(28, H * 0.065);
+  const boxHalf = boxH / 2;
+  const fs      = Math.max(10, H * 0.021);
+
+  // Background panel
+  ctx.fillStyle = 'rgba(0,8,25,.80)';
+  ctx.fillRect(spdX, tapeTopY, spdW, tapeH);
+
+  // Inner-edge border
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(spdX + spdW, tapeTopY);
+  ctx.lineTo(spdX + spdW, tapeTopY + tapeH);
   ctx.stroke();
 
-  // Label
-  ctx.fillStyle    = 'rgba(180,220,255,0.9)';
-  ctx.font         = `${Math.max(9, H * 0.019)}px monospace`;
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'top';
-  ctx.fillText('GS KT', bx + bw / 2, by + 5);
+  // Header label
+  ctx.fillStyle = 'rgba(160,210,255,.85)';
+  ctx.font = `${Math.max(9,H*.018)}px monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText('GS KT', spdX + spdW/2, tapeTopY + 4);
 
-  // Value
-  ctx.fillStyle    = '#fff';
-  ctx.font         = `bold ${Math.max(16, H * 0.038)}px monospace`;
-  ctx.textBaseline = 'middle';
-  ctx.fillText(Math.round(D.speed).toString(), bx + bw / 2, by + bh * 0.65);
+  // Scrolling ticks + numbers (clipped, gap around readout box)
+  ctx.save();
+  ctx.beginPath(); ctx.rect(spdX, tapeTopY, spdW, tapeH); ctx.clip();
 
+  for (let kt = Math.floor(spd/10)*10 - 40; kt <= spd + 40; kt += 10) {
+    if (kt < 0) continue;
+    const y = tapeMidY - (kt - spd) * pxPerKt;
+    if (Math.abs(y - tapeMidY) < boxHalf + 4) continue;  // skip readout zone
+    const isMaj = kt % 20 === 0;
+    const tlen  = isMaj ? 14 : 8;
+    ctx.strokeStyle = isMaj ? 'rgba(255,255,255,.80)' : 'rgba(255,255,255,.45)';
+    ctx.lineWidth   = isMaj ? 1.5 : 1;
+    ctx.beginPath();
+    ctx.moveTo(spdX + spdW, y); ctx.lineTo(spdX + spdW - tlen, y); ctx.stroke();
+    if (isMaj) {
+      ctx.fillStyle = 'rgba(255,255,255,.90)';
+      ctx.font = `${fs}px monospace`;
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(kt.toString(), spdX + spdW - tlen - 3, y);
+    }
+  }
+  ctx.restore();
+
+  // Readout box with pointer notch on right (inner) edge
+  const bx = spdX, by = tapeMidY - boxHalf;
+  const ptr = 9;
+  ctx.beginPath();
+  ctx.moveTo(bx, by);
+  ctx.lineTo(bx + spdW,       by);
+  ctx.lineTo(bx + spdW + ptr, tapeMidY);
+  ctx.lineTo(bx + spdW,       by + boxH);
+  ctx.lineTo(bx,               by + boxH);
+  ctx.closePath();
+  ctx.fillStyle   = '#000c1e'; ctx.fill();
+  ctx.strokeStyle = '#fff';   ctx.lineWidth = 1.8; ctx.stroke();
+
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${Math.max(17,H*.042)}px monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(Math.round(spd).toString(), bx + spdW/2, tapeMidY);
   ctx.textBaseline = 'alphabetic';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Altitude box + VSI (right)
-// ─────────────────────────────────────────────────────────────────────────────
-function drawAltBox(cy) {
-  const bw = Math.min(W * 0.14, 80);
-  const bh = 52;
-  const bx = W - bw - 8;
-  const by = cy - bh / 2;
+// ── Altitude tape (right) ──────────────────────────────────────────────────
+function drawAltTape() {
+  const { altX, altW, tapeTopY, tapeH, tapeMidY } = L;
+  const pxPerFt = tapeH / 600;   // 600 ft total window (±300)
+  const alt     = D.alt;
+  const boxH    = Math.max(28, H * 0.065);
+  const boxHalf = boxH / 2;
+  const fs      = Math.max(10, H * 0.021);
 
-  roundRect(ctx, bx, by, bw, bh, 4);
-  ctx.fillStyle = 'rgba(0,10,30,0.78)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-  ctx.lineWidth   = 1;
-  ctx.stroke();
+  // Background panel
+  ctx.fillStyle = 'rgba(0,8,25,.80)';
+  ctx.fillRect(altX, tapeTopY, altW, tapeH);
 
-  // Label
-  ctx.fillStyle    = 'rgba(180,220,255,0.9)';
-  ctx.font         = `${Math.max(9, H * 0.019)}px monospace`;
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'top';
-  ctx.fillText('ALT FT', bx + bw / 2, by + 5);
+  // Inner-edge border
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(altX, tapeTopY); ctx.lineTo(altX, tapeTopY + tapeH); ctx.stroke();
 
-  // Value
-  ctx.fillStyle    = '#fff';
-  ctx.font         = `bold ${Math.max(14, H * 0.034)}px monospace`;
-  ctx.textBaseline = 'middle';
-  ctx.fillText(Math.round(D.alt).toString(), bx + bw / 2, by + bh * 0.65);
+  // Header label
+  ctx.fillStyle = 'rgba(160,210,255,.85)';
+  ctx.font = `${Math.max(9,H*.018)}px monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText('ALT FT', altX + altW/2, tapeTopY + 4);
 
-  // VSI below the box
-  const vsiY  = by + bh + 6;
+  // Scrolling ticks + numbers
+  ctx.save();
+  ctx.beginPath(); ctx.rect(altX, tapeTopY, altW, tapeH); ctx.clip();
+
+  for (let ft = Math.floor(alt/100)*100 - 350; ft <= alt + 350; ft += 100) {
+    const y = tapeMidY - (ft - alt) * pxPerFt;
+    if (Math.abs(y - tapeMidY) < boxHalf + 4) continue;
+    const isMaj = ft % 500 === 0;
+    const tlen  = isMaj ? 16 : 8;
+    ctx.strokeStyle = isMaj ? 'rgba(255,255,255,.80)' : 'rgba(255,255,255,.45)';
+    ctx.lineWidth   = isMaj ? 1.5 : 1;
+    ctx.beginPath();
+    ctx.moveTo(altX, y); ctx.lineTo(altX + tlen, y); ctx.stroke();
+    if (isMaj || ft % 200 === 0) {
+      ctx.fillStyle = 'rgba(255,255,255,.90)';
+      ctx.font = `${fs}px monospace`;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(ft.toString(), altX + tlen + 3, y);
+    }
+  }
+  ctx.restore();
+
+  // Readout box with pointer notch on left (inner) edge
+  const by = tapeMidY - boxHalf;
+  const ptr = 9;
+  ctx.beginPath();
+  ctx.moveTo(altX + altW,       by);
+  ctx.lineTo(altX,               by);
+  ctx.lineTo(altX - ptr,         tapeMidY);
+  ctx.lineTo(altX,               by + boxH);
+  ctx.lineTo(altX + altW,        by + boxH);
+  ctx.closePath();
+  ctx.fillStyle   = '#000c1e'; ctx.fill();
+  ctx.strokeStyle = '#fff';   ctx.lineWidth = 1.8; ctx.stroke();
+
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${Math.max(15,H*.038)}px monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(Math.round(alt).toString(), altX + altW/2, tapeMidY);
+
+  // VSI below readout box
+  const vsiY  = by + boxH + 5;
   const arrow = D.vspeed > 30 ? '▲' : D.vspeed < -30 ? '▼' : '—';
-  const vsiCol = D.vspeed > 100 ? '#0f0' : D.vspeed < -100 ? '#f80' : '#aaa';
-  ctx.fillStyle    = vsiCol;
-  ctx.font         = `${Math.max(10, H * 0.022)}px monospace`;
-  ctx.textBaseline = 'top';
-  const vsiStr = arrow + ' ' + (Math.abs(Math.round(D.vspeed / 10) * 10)).toString();
-  ctx.fillText(vsiStr, bx + bw / 2, vsiY);
-
-  ctx.fillStyle = 'rgba(150,180,210,0.7)';
-  ctx.font      = `${Math.max(8, H * 0.016)}px monospace`;
-  ctx.fillText('FPM', bx + bw / 2, vsiY + Math.max(12, H * 0.024));
-
+  const vcol  = D.vspeed > 100 ? '#0f0' : D.vspeed < -100 ? '#f80' : '#aaa';
+  ctx.fillStyle = vcol;
+  ctx.font = `${Math.max(10,H*.022)}px monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText(`${arrow}${Math.abs(Math.round(D.vspeed/10)*10)}`, altX+altW/2, vsiY);
+  ctx.fillStyle = 'rgba(140,175,210,.7)';
+  ctx.font = `${Math.max(8,H*.016)}px monospace`;
+  ctx.fillText('fpm', altX+altW/2, vsiY + Math.max(13,H*.026));
   ctx.textBaseline = 'alphabetic';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Heading tape (bottom)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Heading tape (bottom) ──────────────────────────────────────────────────
+const CARDS = {0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
+
 function drawHeadingTape() {
-  const tapeH   = Math.max(38, H * 0.085);
-  const tapeY   = H - tapeH;
-  const pxPerDeg = W / 60;   // 60° visible (30° either side)
-  const range   = 33;        // degrees to show each side
-
-  // Background
-  ctx.fillStyle = 'rgba(0,8,22,0.82)';
-  ctx.fillRect(0, tapeY, W, tapeH);
-  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-  ctx.lineWidth   = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, tapeY);
-  ctx.lineTo(W, tapeY);
-  ctx.stroke();
-
-  // Tick marks and labels
+  const { hdgY, hdgH, cx } = L;
+  const pxPerDeg = W / 60;
   const hdg = D.yaw;
-  const fontSize = Math.max(10, H * 0.022);
-  ctx.font         = `${fontSize}px monospace`;
+
+  ctx.fillStyle = 'rgba(0,8,22,.82)';
+  ctx.fillRect(0, hdgY, W, hdgH);
+  ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0,hdgY); ctx.lineTo(W,hdgY); ctx.stroke();
+
+  ctx.font = `${Math.max(10,H*.022)}px monospace`;
   ctx.textBaseline = 'bottom';
 
-  const CARDS = {0:'N', 45:'NE', 90:'E', 135:'SE', 180:'S', 225:'SW', 270:'W', 315:'NW'};
-
-  for (let i = -range; i <= range; i++) {
-    const deg = ((Math.round(hdg) + i + 3600) % 360);
-    const offset = i - (hdg - Math.round(hdg));   // fractional correction
-    const x  = W / 2 + offset * pxPerDeg;
+  for (let i = -34; i <= 34; i++) {
+    const deg    = ((Math.round(hdg) + i + 3600) % 360);
+    const offset = i - (hdg - Math.round(hdg));
+    const x      = cx + offset * pxPerDeg;
     if (x < 0 || x > W) continue;
-
     if (deg % 5 === 0) {
-      const tickH = deg % 10 === 0 ? tapeH * 0.35 : tapeH * 0.18;
-      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-      ctx.lineWidth   = deg % 10 === 0 ? 1.5 : 1;
-      ctx.beginPath();
-      ctx.moveTo(x, tapeY);
-      ctx.lineTo(x, tapeY + tickH);
-      ctx.stroke();
+      const th = deg % 10 === 0 ? hdgH * .35 : hdgH * .18;
+      ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = deg%10===0?1.5:1;
+      ctx.beginPath(); ctx.moveTo(x,hdgY); ctx.lineTo(x,hdgY+th); ctx.stroke();
     }
-
     if (deg % 10 === 0) {
-      const label = CARDS[deg] || deg.toString().padStart(3, '0');
-      ctx.fillStyle = CARDS[deg] ? '#ffd700' : 'rgba(255,255,255,0.9)';
+      const label = CARDS[deg] || deg.toString().padStart(3,'0');
+      ctx.fillStyle = CARDS[deg] ? '#ffd700' : 'rgba(255,255,255,.9)';
       ctx.textAlign = 'center';
-      ctx.fillText(label, x, tapeY + tapeH - 3);
+      ctx.fillText(label, x, hdgY + hdgH - 3);
     }
   }
 
-  // Current heading readout box
-  const boxW = 56, boxH = 22;
-  const boxX = W / 2 - boxW / 2;
-  const boxY = tapeY - boxH - 2;
-  roundRect(ctx, boxX, boxY, boxW, boxH, 3);
-  ctx.fillStyle = 'rgba(0,0,0,0.85)';
-  ctx.fill();
-  ctx.strokeStyle = '#fff';
-  ctx.lineWidth   = 1.2;
-  ctx.stroke();
+  // Current heading box
+  const bw = 58, bh = 22;
+  roundRect(cx-bw/2, hdgY-bh-2, bw, bh, 3);
+  ctx.fillStyle = 'rgba(0,0,0,.88)'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${Math.max(13,H*.030)}px monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(Math.round(D.yaw).toString().padStart(3,'0'), cx, hdgY-bh/2-2);
 
-  ctx.fillStyle    = '#fff';
-  ctx.font         = `bold ${Math.max(13, H * 0.03)}px monospace`;
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(Math.round(D.yaw).toString().padStart(3, '0'), W / 2, boxY + boxH / 2);
-
-  // Centre pointer triangle
+  // Pointer triangle
   ctx.fillStyle = '#ffd700';
   ctx.beginPath();
-  ctx.moveTo(W / 2,     tapeY - 1);
-  ctx.lineTo(W / 2 - 7, tapeY - 9);
-  ctx.lineTo(W / 2 + 7, tapeY - 9);
-  ctx.closePath();
-  ctx.fill();
-
+  ctx.moveTo(cx, hdgY-1); ctx.lineTo(cx-7, hdgY-9); ctx.lineTo(cx+7, hdgY-9);
+  ctx.closePath(); ctx.fill();
   ctx.textBaseline = 'alphabetic';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GPS status (top-left)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── GPS status (top-left, inside safe area) ────────────────────────────────
 function drawGPSStatus() {
-  const fix   = D.fix;
-  const sats  = D.sats;
-  const label = fix === 0 ? 'NO FIX' : fix === 1 ? 'GPS' : 'DGPS';
-  const col   = fix === 0 ? '#f44' : fix === 1 ? '#fa0' : '#0d0';
-
-  ctx.font         = `bold ${Math.max(10, H * 0.022)}px monospace`;
-  ctx.textAlign    = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillStyle    = col;
-
-  const satStr = `${label} ${sats}sat`;
-  ctx.shadowColor = 'rgba(0,0,0,0.9)';
-  ctx.shadowBlur  = 4;
-  ctx.fillText(satStr, 10, 8);
-  ctx.shadowBlur  = 0;
-  ctx.textBaseline = 'alphabetic';
+  const x = L.safeL + 10, y = L.safeT + 8;
+  const label = D.fix===0?'NO FIX': D.fix===1?'GPS':'DGPS';
+  const col   = D.fix===0?'#f44': D.fix===1?'#fa0':'#0d0';
+  ctx.fillStyle = col;
+  ctx.font = `bold ${Math.max(10,H*.022)}px monospace`;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 4;
+  ctx.fillText(`${label} ${D.sats}sat`, x, y);
+  ctx.shadowBlur = 0; ctx.textBaseline = 'alphabetic';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Link status indicator
-// ─────────────────────────────────────────────────────────────────────────────
-function updateLinkStatus() {
-  const age = performance.now() - lastMsgMs;
-  if (lastMsgMs === 0) {
-    linkEl.textContent = 'CONNECTING';
-    linkEl.className   = 'link-warn';
-  } else if (age < 3000) {
-    linkEl.textContent = 'LINK OK';
-    linkEl.className   = 'link-ok';
-  } else if (age < 8000) {
-    linkEl.textContent = 'LINK WARN';
-    linkEl.className   = 'link-warn';
-  } else {
-    linkEl.textContent = 'NO LINK';
-    linkEl.className   = 'link-dead';
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main render loop
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Render loop ────────────────────────────────────────────────────────────
 let lastTs = null;
-
 function render(ts) {
-  if (lastTs === null) lastTs = ts;
-  const dtMs  = ts - lastTs;
-  lastTs      = ts;
-
-  // Smooth factor: faster when error is large, min ~0.15
-  const alpha = Math.min(1, dtMs / 60);
-  smoothAll(alpha);
+  if (lastTs===null) lastTs = ts;
+  smooth(Math.min(1, (ts-lastTs)/60));
+  lastTs = ts;
 
   updateLinkStatus();
-
-  const cx = W / 2;
-  const cy = H / 2;
-
-  // ── Clear ──
   ctx.clearRect(0, 0, W, H);
 
-  // ── Synthetic vision + pitch ladder (behind everything) ──
-  drawAI(cx, cy);
-
-  // ── Roll arc ──
-  drawRollIndicator(cx, cy);
-
-  // ── Fixed aircraft symbol ──
-  drawAircraftSymbol(cx, cy);
-
-  // ── Slip / skid ball ──
-  drawSlipBall(cx, cy);
-
-  // ── Speed box ──
-  drawSpeedBox(cy);
-
-  // ── Altitude box + VSI ──
-  drawAltBox(cy);
-
-  // ── Heading tape ──
+  drawAI();
+  drawRollIndicator();
+  drawSlipBall();
+  drawAircraftSymbol();
+  drawSpeedTape();
+  drawAltTape();
   drawHeadingTape();
-
-  // ── GPS status ──
   drawGPSStatus();
 
   requestAnimationFrame(render);
 }
-
 requestAnimationFrame(render);
 </script>
 </body>
