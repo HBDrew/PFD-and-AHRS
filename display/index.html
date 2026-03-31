@@ -13,23 +13,74 @@
     --sab: env(safe-area-inset-bottom, 0px);
     --sal: env(safe-area-inset-left,   0px);
   }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; background: #000; overflow: hidden;
-               -webkit-tap-highlight-color: transparent; }
-  canvas { display: block; position: absolute; top: 0; left: 0; }
-  #link-status {
-    position: absolute; top: 6px; right: 8px;
-    font: bold 11px/1 monospace; padding: 3px 7px; border-radius: 3px;
-    pointer-events: none; z-index: 10; letter-spacing: .04em;
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; background:#000; overflow:hidden;
+              -webkit-tap-highlight-color:transparent; }
+  canvas { display:block; position:absolute; top:0; left:0; }
+
+  /* ── Terrain download panel ── */
+  #terrain-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.88);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
   }
-  .link-ok   { background: rgba(0,170,0,.75);   color: #fff; }
-  .link-warn { background: rgba(210,130,0,.75); color: #fff; }
-  .link-dead { background: rgba(190,0,0,.75);   color: #fff; }
+  #terrain-panel p  { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+  .trn-btns         { display:flex; gap:8px; flex-wrap:wrap; }
+  .trn-btn {
+    flex:1; min-width:120px; background:#1a4a80; color:#fff;
+    border:1px solid #4a8adf; border-radius:4px; padding:7px 10px;
+    font:bold 12px monospace; cursor:pointer; text-align:center;
+  }
+  .trn-btn:active   { background:#2a6ab0; }
+  .trn-btn:disabled { opacity:.4; cursor:default; }
+  #trn-progress-wrap { display:none; margin-top:8px; }
+  #trn-progress-bar  {
+    height:6px; background:#1a4a80; border-radius:3px; overflow:hidden;
+  }
+  #trn-progress-fill { height:100%; width:0%; background:#4a9fe0; transition:width .15s; }
+  #trn-progress-txt  { color:rgba(180,210,255,.85); font-size:11px; margin-top:4px; }
+
+  /* ── Status badges ── */
+  #link-status, #terrain-status {
+    position:absolute; font:bold 11px/1 monospace;
+    padding:3px 7px; border-radius:3px;
+    pointer-events:none; z-index:10; letter-spacing:.04em;
+  }
+  #link-status    { top:6px; right:8px; }
+  #terrain-status { top:6px; right:78px; cursor:pointer; pointer-events:auto; }
+
+  .link-ok     { background:rgba(0,170,0,.75);    color:#fff; }
+  .link-warn   { background:rgba(210,130,0,.75);  color:#fff; }
+  .link-dead   { background:rgba(190,0,0,.75);    color:#fff; }
+  .trn-ready   { background:rgba(0,130,60,.75);   color:#fff; }
+  .trn-partial { background:rgba(160,100,0,.75);  color:#fff; }
+  .trn-idle    { background:rgba(60,60,80,.80);   color:#aac; }
+  .trn-loading { background:rgba(30,60,120,.80);  color:#adf; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="link-status" class="link-dead">NO LINK</div>
+<div id="terrain-status" class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
+<div id="link-status"    class="link-dead">NO LINK</div>
+
+<div id="terrain-panel">
+  <p>Download terrain tiles once over WiFi — used offline in flight.<br>
+     <strong>Coarse global</strong> (~10 MB) covers the whole world at low resolution.<br>
+     <strong>Regional detail</strong> (~3 MB) improves your current area (requires GPS fix).</p>
+  <div class="trn-btns">
+    <button class="trn-btn" id="btn-coarse"  onclick="startCoarse()">⬇ Coarse global</button>
+    <button class="trn-btn" id="btn-detail"  onclick="startDetail()">⬇ Regional detail</button>
+    <button class="trn-btn" id="btn-close"   onclick="closePanel()">✕ Close</button>
+  </div>
+  <div id="trn-progress-wrap">
+    <div id="trn-progress-bar"><div id="trn-progress-fill"></div></div>
+    <div id="trn-progress-txt">Downloading…</div>
+  </div>
+</div>
+
+<script src="terrain.js"></script>
 <script>
 'use strict';
 
@@ -39,32 +90,86 @@ const TARGET = { roll:0, pitch:0, yaw:0, lat:0, lon:0, alt:0,
 const D = Object.assign({}, TARGET);
 
 // ── SSE ────────────────────────────────────────────────────────────────────
-const linkEl = document.getElementById('link-status');
-let lastMsgMs = 0, es = null;
+const linkEl    = document.getElementById('link-status');
+const trnEl     = document.getElementById('terrain-status');
+let lastMsgMs   = 0, es = null;
 
 function connectSSE() {
   if (es) { try { es.close(); } catch(e){} }
   es = new EventSource('/events');
-  es.onmessage = (e) => {
+  es.onmessage = e => {
     try { Object.assign(TARGET, JSON.parse(e.data)); lastMsgMs = performance.now(); }
-    catch(ex) {}
+    catch(ex){}
   };
 }
 connectSSE();
 
 function updateLinkStatus() {
   const age = performance.now() - lastMsgMs;
-  if (!lastMsgMs)      { linkEl.textContent = 'CONNECTING'; linkEl.className = 'link-warn'; }
-  else if (age < 3000) { linkEl.textContent = 'LINK OK';    linkEl.className = 'link-ok';   }
-  else if (age < 8000) { linkEl.textContent = 'LINK WARN';  linkEl.className = 'link-warn'; }
-  else                 { linkEl.textContent = 'NO LINK';    linkEl.className = 'link-dead'; }
+  if (!lastMsgMs)      { linkEl.textContent='CONNECTING'; linkEl.className='link-warn'; }
+  else if (age < 3000) { linkEl.textContent='LINK OK';    linkEl.className='link-ok';   }
+  else if (age < 8000) { linkEl.textContent='LINK WARN';  linkEl.className='link-warn'; }
+  else                 { linkEl.textContent='NO LINK';    linkEl.className='link-dead'; }
 }
+
+// ── Terrain UI ─────────────────────────────────────────────────────────────
+const panel    = document.getElementById('terrain-panel');
+const btnC     = document.getElementById('btn-coarse');
+const btnD     = document.getElementById('btn-detail');
+const prgWrap  = document.getElementById('trn-progress-wrap');
+const prgFill  = document.getElementById('trn-progress-fill');
+const prgTxt   = document.getElementById('trn-progress-txt');
+
+trnEl.addEventListener('click', () => {
+  panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+});
+
+function closePanel() { panel.style.display = 'none'; }
+
+function onTerrainStatus(status, count) {
+  const labels = { idle:'NO TERRAIN', loading:'TERRAIN…',
+                   ready:'TERRAIN OK', partial:'TERRAIN ▲', error:'TERRAIN ERR' };
+  const cls    = { idle:'trn-idle', loading:'trn-loading',
+                   ready:'trn-ready', partial:'trn-partial', error:'link-dead' };
+  trnEl.textContent = labels[status] || status.toUpperCase();
+  trnEl.className   = cls[status]    || 'trn-idle';
+}
+
+function setProgress(pct, txt) {
+  prgWrap.style.display = 'block';
+  prgFill.style.width   = (pct * 100).toFixed(1) + '%';
+  prgTxt.textContent    = txt;
+}
+
+async function startCoarse() {
+  btnC.disabled = btnD.disabled = true;
+  await Terrain.downloadCoarse((pct, done, total) => {
+    setProgress(pct, `Coarse global: ${done} / ${total} tiles`);
+  });
+  btnC.disabled = btnD.disabled = false;
+  prgTxt.textContent = `Done — ${Terrain.tileCount} tiles cached`;
+}
+
+async function startDetail() {
+  if (TARGET.fix === 0) {
+    prgWrap.style.display = 'block';
+    prgTxt.textContent = 'Waiting for GPS fix…';
+    return;
+  }
+  btnC.disabled = btnD.disabled = true;
+  await Terrain.downloadRegion(TARGET.lat, TARGET.lon, 100,
+    (pct, done, total) => setProgress(pct, `Regional: ${done} / ${total} tiles`));
+  btnC.disabled = btnD.disabled = false;
+  prgTxt.textContent = `Done — ${Terrain.tileCount} tiles cached`;
+}
+
+Terrain.init(onTerrainStatus);
 
 // ── Canvas & layout ────────────────────────────────────────────────────────
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
 let W = 0, H = 0;
-const L = {};   // layout — recomputed on resize
+const L = {};
 
 function computeLayout() {
   const cs = getComputedStyle(document.documentElement);
@@ -74,28 +179,22 @@ function computeLayout() {
 
   L.cx = W / 2;  L.cy = H / 2;
 
-  // Heading tape (bottom)
-  L.hdgH = Math.max(38, H * 0.10);
-  L.hdgY = H - L.hdgH - L.safeB;
-
-  // Vertical side tapes: span from below top-bar to above heading tape
+  L.hdgH     = Math.max(38, H * 0.10);
+  L.hdgY     = H - L.hdgH - L.safeB;
   L.tapeTopY = L.safeT + 26;
   L.tapeBotY = L.hdgY;
   L.tapeH    = L.tapeBotY - L.tapeTopY;
   L.tapeMidY = (L.tapeTopY + L.tapeBotY) / 2;
 
-  // Speed tape (left)
-  L.spdW = 68;
-  L.spdX = L.safeL;
+  L.spdW = 68;  L.spdX = L.safeL;
+  L.altW = 78;  L.altX = W - L.safeR - L.altW;
 
-  // Altitude tape (right)
-  L.altW = 78;
-  L.altX = W - L.safeR - L.altW;
-
-  // Roll arc: radius capped so it fits neatly in upper screen area
   L.rollR  = Math.min(H * 0.36, 155);
-  // Roll arc circle centre: top of arc sits ~12px below the screen top (+ safe area)
   L.rollCY = L.rollR + Math.max(12, L.safeT + 6);
+
+  // Perspective focal length: 70° horizontal FOV across the AI clip area
+  const clipW = L.altX - (L.spdX + L.spdW);
+  L.focal = clipW > 0 ? (clipW / 2) / Math.tan(35 * Math.PI / 180) : 300;
 }
 
 function resize() {
@@ -109,396 +208,300 @@ window.addEventListener('orientationchange', () => setTimeout(resize, 200));
 
 // ── Maths ──────────────────────────────────────────────────────────────────
 const DEG = Math.PI / 180;
-function lerp(a, b, t)      { return a + (b - a) * t; }
-function lerpAngle(a, b, t) { let d = ((b-a+540)%360)-180; return (a+d*t+360)%360; }
+function lerp(a,b,t)      { return a+(b-a)*t; }
+function lerpAngle(a,b,t) { let d=((b-a+540)%360)-180; return (a+d*t+360)%360; }
 function smooth(alpha) {
-  D.roll   = lerp(D.roll,   TARGET.roll,   alpha);
-  D.pitch  = lerp(D.pitch,  TARGET.pitch,  alpha);
-  D.yaw    = lerpAngle(D.yaw, TARGET.yaw,  alpha);
-  D.alt    = lerp(D.alt,    TARGET.alt,    alpha);
-  D.speed  = lerp(D.speed,  TARGET.speed,  alpha);
-  D.vspeed = lerp(D.vspeed, TARGET.vspeed, alpha);
+  D.roll   = lerp(D.roll,  TARGET.roll,  alpha);
+  D.pitch  = lerp(D.pitch, TARGET.pitch, alpha);
+  D.yaw    = lerpAngle(D.yaw, TARGET.yaw, alpha);
+  D.alt    = lerp(D.alt,   TARGET.alt,   alpha);
+  D.speed  = lerp(D.speed, TARGET.speed, alpha);
+  D.vspeed = lerp(D.vspeed,TARGET.vspeed,alpha);
   D.track  = lerpAngle(D.track, TARGET.track, alpha);
-  D.fix = TARGET.fix;  D.sats = TARGET.sats;
+  D.fix=TARGET.fix; D.sats=TARGET.sats;
+  D.lat=TARGET.lat; D.lon=TARGET.lon;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-function pillRect(x, y, w, h) {
-  const r = h / 2;
+function pillRect(x,y,w,h) {
+  const r=h/2;
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
 }
-function roundRect(x, y, w, h, r) {
+function roundRect(x,y,w,h,r) {
   ctx.beginPath();
   ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
-  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
-  ctx.lineTo(x+w,y+h-r);
-  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
-  ctx.lineTo(x+r,y+h);
-  ctx.quadraticCurveTo(x,y+h,x,y+h-r);
-  ctx.lineTo(x,y+r);
-  ctx.quadraticCurveTo(x,y,x+r,y);
-  ctx.closePath();
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
 }
 
-// ── Synthetic vision ───────────────────────────────────────────────────────
+// ── Synthetic vision (sky/ground + pitch ladder) ───────────────────────────
+// Uses perspective-correct pitch offset so horizon aligns with terrain render.
 function drawAI() {
-  const { cx, tapeMidY } = L;
-  const pxPerDeg = H / 55;
-  const pitchOff = D.pitch * pxPerDeg;
+  const { cx, tapeMidY, focal } = L;
+  // Perspective-correct horizon offset: matches terrain projection exactly
+  const pitchOff = focal * Math.tan(D.pitch * DEG);
   const rollRad  = -D.roll * DEG;
 
   ctx.save();
-  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+  ctx.beginPath(); ctx.rect(0,0,W,H); ctx.clip();
   ctx.translate(cx, tapeMidY);
   ctx.rotate(rollRad);
 
   // Sky
-  const sg = ctx.createLinearGradient(0, -H*2, 0, pitchOff);
-  sg.addColorStop(0, '#0b1a2e'); sg.addColorStop(0.6, '#1a5fa8'); sg.addColorStop(1, '#4a9fe0');
-  ctx.fillStyle = sg;
-  ctx.fillRect(-W*2, -H*2, W*4, H*2 + pitchOff);
+  const sg = ctx.createLinearGradient(0,-H*2,0,pitchOff);
+  sg.addColorStop(0,'#0b1a2e'); sg.addColorStop(0.6,'#1a5fa8'); sg.addColorStop(1,'#4a9fe0');
+  ctx.fillStyle=sg; ctx.fillRect(-W*2,-H*2,W*4,H*2+pitchOff);
 
   // Ground
-  const gg = ctx.createLinearGradient(0, pitchOff, 0, H*2);
-  gg.addColorStop(0, '#8b6810'); gg.addColorStop(0.4, '#5a3e0a'); gg.addColorStop(1, '#2a1a03');
-  ctx.fillStyle = gg;
-  ctx.fillRect(-W*2, pitchOff, W*4, H*2);
+  const gg = ctx.createLinearGradient(0,pitchOff,0,H*2);
+  gg.addColorStop(0,'#8b6810'); gg.addColorStop(0.4,'#5a3e0a'); gg.addColorStop(1,'#2a1a03');
+  ctx.fillStyle=gg; ctx.fillRect(-W*2,pitchOff,W*4,H*2);
 
   // Horizon
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
-  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 4;
-  ctx.beginPath(); ctx.moveTo(-W*2, pitchOff); ctx.lineTo(W*2, pitchOff); ctx.stroke();
-  ctx.shadowBlur = 0;
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2.5;
+  ctx.shadowColor='rgba(0,0,0,.8)'; ctx.shadowBlur=4;
+  ctx.beginPath(); ctx.moveTo(-W*2,pitchOff); ctx.lineTo(W*2,pitchOff); ctx.stroke();
+  ctx.shadowBlur=0;
 
-  // Pitch ladder
-  const shortL = W * 0.10, longL = W * 0.18;
-  ctx.font = `${Math.max(11, H * 0.025)}px monospace`;
-  for (let deg = -30; deg <= 30; deg += 5) {
-    if (deg === 0) continue;
-    const y    = pitchOff - deg * pxPerDeg;
-    const half = deg % 10 === 0 ? longL : shortL;
+  // Pitch ladder – perspective-correct spacing
+  const shortL=W*.10, longL=W*.18;
+  ctx.font=`${Math.max(11,H*.025)}px monospace`;
+  for (let deg=-30; deg<=30; deg+=5) {
+    if (deg===0) continue;
+    // y position uses same perspective formula as pitchOff
+    const y    = pitchOff - focal * Math.tan(deg * DEG);
+    const half = deg%10===0 ? longL : shortL;
     const td   = deg > 0 ? 1 : -1;
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth   = deg % 10 === 0 ? 1.8 : 1.2;
-    ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 3;
-    ctx.beginPath(); ctx.moveTo(-half, y); ctx.lineTo(half, y); ctx.stroke();
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle='#fff'; ctx.lineWidth=deg%10===0?1.8:1.2;
+    ctx.shadowColor='rgba(0,0,0,.7)'; ctx.shadowBlur=3;
+    ctx.beginPath(); ctx.moveTo(-half,y); ctx.lineTo(half,y); ctx.stroke();
+    ctx.lineWidth=1.5;
     ctx.beginPath();
-    ctx.moveTo(-half, y); ctx.lineTo(-half, y + td*8);
-    ctx.moveTo( half, y); ctx.lineTo( half, y + td*8);
-    ctx.stroke(); ctx.shadowBlur = 0;
-    if (deg % 10 === 0) {
-      ctx.fillStyle = '#fff';
-      ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 3;
-      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      ctx.fillText(Math.abs(deg), -half-8, y);
-      ctx.textAlign = 'left';  ctx.fillText(Math.abs(deg), half+8, y);
-      ctx.shadowBlur = 0;
+    ctx.moveTo(-half,y); ctx.lineTo(-half,y+td*8);
+    ctx.moveTo( half,y); ctx.lineTo( half,y+td*8);
+    ctx.stroke(); ctx.shadowBlur=0;
+    if (deg%10===0) {
+      ctx.fillStyle='#fff'; ctx.shadowColor='rgba(0,0,0,.8)'; ctx.shadowBlur=3;
+      ctx.textAlign='right'; ctx.textBaseline='middle';
+      ctx.fillText(Math.abs(deg),-half-8,y);
+      ctx.textAlign='left';  ctx.fillText(Math.abs(deg),half+8,y);
+      ctx.shadowBlur=0;
     }
   }
-  ctx.textBaseline = 'alphabetic';
+  ctx.textBaseline='alphabetic';
   ctx.restore();
 }
 
 // ── Roll arc ───────────────────────────────────────────────────────────────
 function drawRollIndicator() {
   const { cx, rollR, rollCY } = L;
-  const marks = [0, 10, 20, 30, 45, 60];
-
-  ctx.save();
-  ctx.translate(cx, rollCY);
-
-  // Arc spans ±60° from top (-150° to -30°)
-  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(0, 0, rollR, -150*DEG, -30*DEG); ctx.stroke();
-
-  // Graduation ticks
-  marks.forEach(deg => {
-    [-deg, deg].forEach(a => {
-      const angle = (-90 + a) * DEG;
-      const len   = deg === 0 ? 18 : (deg % 30 === 0 ? 14 : 10);
-      ctx.strokeStyle = 'rgba(255,255,255,.85)';
-      ctx.lineWidth   = deg === 0 ? 2 : 1.2;
+  ctx.save(); ctx.translate(cx,rollCY);
+  ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(0,0,rollR,-150*DEG,-30*DEG); ctx.stroke();
+  [0,10,20,30,45,60].forEach(deg => {
+    [-deg,deg].forEach(a => {
+      const angle=(-90+a)*DEG, len=deg===0?18:deg%30===0?14:10;
+      ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=deg===0?2:1.2;
       ctx.beginPath();
-      ctx.moveTo(Math.cos(angle)*(rollR-len), Math.sin(angle)*(rollR-len));
-      ctx.lineTo(Math.cos(angle)*rollR,       Math.sin(angle)*rollR);
+      ctx.moveTo(Math.cos(angle)*(rollR-len),Math.sin(angle)*(rollR-len));
+      ctx.lineTo(Math.cos(angle)*rollR,      Math.sin(angle)*rollR);
       ctx.stroke();
     });
   });
-
-  // Roll indicator triangle (moves with roll)
-  const ra = (-90 - D.roll) * DEG;
+  const ra=(-90-D.roll)*DEG;
   ctx.save();
-  ctx.translate(Math.cos(ra)*(rollR-2), Math.sin(ra)*(rollR-2));
-  ctx.rotate(ra + Math.PI/2);
-  ctx.fillStyle = '#fff'; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = .6;
+  ctx.translate(Math.cos(ra)*(rollR-2),Math.sin(ra)*(rollR-2));
+  ctx.rotate(ra+Math.PI/2);
+  ctx.fillStyle='#fff'; ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=.6;
   ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(-6,0); ctx.lineTo(6,0);
   ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.restore();
-  ctx.restore();
+  ctx.restore(); ctx.restore();
 }
 
-// ── Slip/skid ball  (at roll arc centre = top of AI area) ─────────────────
+// ── Slip/skid ball ─────────────────────────────────────────────────────────
 function drawSlipBall() {
   const { cx, rollCY } = L;
-  const bw = 54, bh = 16, r = 6;
-
-  // Pill housing
-  pillRect(cx - bw/2, rollCY - bh/2, bw, bh);
-  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 1.2; ctx.stroke();
-
-  // Ball – simplified: deflects with roll (real build should use WT901 lateral accel)
-  const defl = Math.max(-1, Math.min(1, D.roll / 25)) * (bw/2 - r - 2);
-  ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.arc(cx + defl, rollCY, r, 0, Math.PI*2); ctx.fill();
+  const bw=54, bh=16, r=6;
+  pillRect(cx-bw/2, rollCY-bh/2, bw, bh);
+  ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=1.2; ctx.stroke();
+  const defl=Math.max(-1,Math.min(1,D.roll/25))*(bw/2-r-2);
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.arc(cx+defl,rollCY,r,0,Math.PI*2); ctx.fill();
 }
 
 // ── Aircraft symbol ────────────────────────────────────────────────────────
 function drawAircraftSymbol() {
   const { cx, tapeMidY } = L;
-  const ws = Math.min(W * 0.12, 88);
-  ctx.save(); ctx.translate(cx, tapeMidY);
-  ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 3; ctx.lineCap = 'round';
-  ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 5;
-  ctx.beginPath();
-  ctx.moveTo(-ws,0); ctx.lineTo(-ws*.22,0); ctx.lineTo(-ws*.22,9); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo( ws,0); ctx.lineTo( ws*.22,0); ctx.lineTo( ws*.22,9); ctx.stroke();
-  ctx.fillStyle = '#ffd700';
-  ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI*2); ctx.fill();
-  ctx.shadowBlur = 0; ctx.restore();
+  const ws=Math.min(W*.12,88);
+  ctx.save(); ctx.translate(cx,tapeMidY);
+  ctx.strokeStyle='#ffd700'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.shadowColor='rgba(0,0,0,.9)'; ctx.shadowBlur=5;
+  ctx.beginPath(); ctx.moveTo(-ws,0); ctx.lineTo(-ws*.22,0); ctx.lineTo(-ws*.22,9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo( ws,0); ctx.lineTo( ws*.22,0); ctx.lineTo( ws*.22,9); ctx.stroke();
+  ctx.fillStyle='#ffd700'; ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0; ctx.restore();
 }
 
-// ── Speed tape (left) ──────────────────────────────────────────────────────
+// ── Speed tape ─────────────────────────────────────────────────────────────
 function drawSpeedTape() {
   const { spdX, spdW, tapeTopY, tapeH, tapeMidY } = L;
-  const pxPerKt = tapeH / 60;   // 60 kt total window (±30)
-  const spd     = D.speed;
-  const boxH    = Math.max(28, H * 0.065);
-  const boxHalf = boxH / 2;
-  const fs      = Math.max(10, H * 0.021);
+  const pxPerKt=tapeH/60, spd=D.speed;
+  const boxH=Math.max(28,H*.065), boxHalf=boxH/2, fs=Math.max(10,H*.021);
 
-  // Background panel
-  ctx.fillStyle = 'rgba(0,8,25,.80)';
-  ctx.fillRect(spdX, tapeTopY, spdW, tapeH);
+  ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(spdX,tapeTopY,spdW,tapeH);
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(spdX+spdW,tapeTopY); ctx.lineTo(spdX+spdW,tapeTopY+tapeH); ctx.stroke();
+  ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('GS KT',spdX+spdW/2,tapeTopY+4);
 
-  // Inner-edge border
-  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(spdX + spdW, tapeTopY);
-  ctx.lineTo(spdX + spdW, tapeTopY + tapeH);
-  ctx.stroke();
-
-  // Header label
-  ctx.fillStyle = 'rgba(160,210,255,.85)';
-  ctx.font = `${Math.max(9,H*.018)}px monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  ctx.fillText('GS KT', spdX + spdW/2, tapeTopY + 4);
-
-  // Scrolling ticks + numbers (clipped, gap around readout box)
   ctx.save();
-  ctx.beginPath(); ctx.rect(spdX, tapeTopY, spdW, tapeH); ctx.clip();
-
-  for (let kt = Math.floor(spd/10)*10 - 40; kt <= spd + 40; kt += 10) {
-    if (kt < 0) continue;
-    const y = tapeMidY - (kt - spd) * pxPerKt;
-    if (Math.abs(y - tapeMidY) < boxHalf + 4) continue;  // skip readout zone
-    const isMaj = kt % 20 === 0;
-    const tlen  = isMaj ? 14 : 8;
-    ctx.strokeStyle = isMaj ? 'rgba(255,255,255,.80)' : 'rgba(255,255,255,.45)';
-    ctx.lineWidth   = isMaj ? 1.5 : 1;
-    ctx.beginPath();
-    ctx.moveTo(spdX + spdW, y); ctx.lineTo(spdX + spdW - tlen, y); ctx.stroke();
+  ctx.beginPath(); ctx.rect(spdX,tapeTopY,spdW,tapeH); ctx.clip();
+  for (let kt=Math.floor(spd/10)*10-40; kt<=spd+40; kt+=10) {
+    if (kt<0) continue;
+    const y=tapeMidY-(kt-spd)*pxPerKt;
+    if (Math.abs(y-tapeMidY)<boxHalf+4) continue;
+    const isMaj=kt%20===0, tlen=isMaj?14:8;
+    ctx.strokeStyle=isMaj?'rgba(255,255,255,.80)':'rgba(255,255,255,.45)';
+    ctx.lineWidth=isMaj?1.5:1;
+    ctx.beginPath(); ctx.moveTo(spdX+spdW,y); ctx.lineTo(spdX+spdW-tlen,y); ctx.stroke();
     if (isMaj) {
-      ctx.fillStyle = 'rgba(255,255,255,.90)';
-      ctx.font = `${fs}px monospace`;
-      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      ctx.fillText(kt.toString(), spdX + spdW - tlen - 3, y);
+      ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
+      ctx.textAlign='right'; ctx.textBaseline='middle';
+      ctx.fillText(kt.toString(),spdX+spdW-tlen-3,y);
     }
   }
   ctx.restore();
 
-  // Readout box with pointer notch on right (inner) edge
-  const bx = spdX, by = tapeMidY - boxHalf;
-  const ptr = 9;
+  const bx=spdX, by=tapeMidY-boxHalf, ptr=9;
   ctx.beginPath();
-  ctx.moveTo(bx, by);
-  ctx.lineTo(bx + spdW,       by);
-  ctx.lineTo(bx + spdW + ptr, tapeMidY);
-  ctx.lineTo(bx + spdW,       by + boxH);
-  ctx.lineTo(bx,               by + boxH);
+  ctx.moveTo(bx,by); ctx.lineTo(bx+spdW,by);
+  ctx.lineTo(bx+spdW+ptr,tapeMidY); ctx.lineTo(bx+spdW,by+boxH); ctx.lineTo(bx,by+boxH);
   ctx.closePath();
-  ctx.fillStyle   = '#000c1e'; ctx.fill();
-  ctx.strokeStyle = '#fff';   ctx.lineWidth = 1.8; ctx.stroke();
-
-  ctx.fillStyle = '#fff';
-  ctx.font = `bold ${Math.max(17,H*.042)}px monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(Math.round(spd).toString(), bx + spdW/2, tapeMidY);
-  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(17,H*.042)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(spd).toString(),bx+spdW/2,tapeMidY);
+  ctx.textBaseline='alphabetic';
 }
 
-// ── Altitude tape (right) ──────────────────────────────────────────────────
+// ── Altitude tape ──────────────────────────────────────────────────────────
 function drawAltTape() {
   const { altX, altW, tapeTopY, tapeH, tapeMidY } = L;
-  const pxPerFt = tapeH / 600;   // 600 ft total window (±300)
-  const alt     = D.alt;
-  const boxH    = Math.max(28, H * 0.065);
-  const boxHalf = boxH / 2;
-  const fs      = Math.max(10, H * 0.021);
+  const pxPerFt=tapeH/600, alt=D.alt;
+  const boxH=Math.max(28,H*.065), boxHalf=boxH/2, fs=Math.max(10,H*.021);
 
-  // Background panel
-  ctx.fillStyle = 'rgba(0,8,25,.80)';
-  ctx.fillRect(altX, tapeTopY, altW, tapeH);
+  ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(altX,tapeTopY,altW,tapeH);
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(altX,tapeTopY); ctx.lineTo(altX,tapeTopY+tapeH); ctx.stroke();
+  ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('ALT FT',altX+altW/2,tapeTopY+4);
 
-  // Inner-edge border
-  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(altX, tapeTopY); ctx.lineTo(altX, tapeTopY + tapeH); ctx.stroke();
-
-  // Header label
-  ctx.fillStyle = 'rgba(160,210,255,.85)';
-  ctx.font = `${Math.max(9,H*.018)}px monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  ctx.fillText('ALT FT', altX + altW/2, tapeTopY + 4);
-
-  // Scrolling ticks + numbers
   ctx.save();
-  ctx.beginPath(); ctx.rect(altX, tapeTopY, altW, tapeH); ctx.clip();
-
-  for (let ft = Math.floor(alt/100)*100 - 350; ft <= alt + 350; ft += 100) {
-    const y = tapeMidY - (ft - alt) * pxPerFt;
-    if (Math.abs(y - tapeMidY) < boxHalf + 4) continue;
-    const isMaj = ft % 500 === 0;
-    const tlen  = isMaj ? 16 : 8;
-    ctx.strokeStyle = isMaj ? 'rgba(255,255,255,.80)' : 'rgba(255,255,255,.45)';
-    ctx.lineWidth   = isMaj ? 1.5 : 1;
-    ctx.beginPath();
-    ctx.moveTo(altX, y); ctx.lineTo(altX + tlen, y); ctx.stroke();
-    if (isMaj || ft % 200 === 0) {
-      ctx.fillStyle = 'rgba(255,255,255,.90)';
-      ctx.font = `${fs}px monospace`;
-      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.fillText(ft.toString(), altX + tlen + 3, y);
+  ctx.beginPath(); ctx.rect(altX,tapeTopY,altW,tapeH); ctx.clip();
+  for (let ft=Math.floor(alt/100)*100-350; ft<=alt+350; ft+=100) {
+    const y=tapeMidY-(ft-alt)*pxPerFt;
+    if (Math.abs(y-tapeMidY)<boxHalf+4) continue;
+    const isMaj=ft%500===0, tlen=isMaj?16:8;
+    ctx.strokeStyle=isMaj?'rgba(255,255,255,.80)':'rgba(255,255,255,.45)';
+    ctx.lineWidth=isMaj?1.5:1;
+    ctx.beginPath(); ctx.moveTo(altX,y); ctx.lineTo(altX+tlen,y); ctx.stroke();
+    if (isMaj||ft%200===0) {
+      ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
+      ctx.textAlign='left'; ctx.textBaseline='middle';
+      ctx.fillText(ft.toString(),altX+tlen+3,y);
     }
   }
   ctx.restore();
 
-  // Readout box with pointer notch on left (inner) edge
-  const by = tapeMidY - boxHalf;
-  const ptr = 9;
+  const by=tapeMidY-boxHalf, ptr=9;
   ctx.beginPath();
-  ctx.moveTo(altX + altW,       by);
-  ctx.lineTo(altX,               by);
-  ctx.lineTo(altX - ptr,         tapeMidY);
-  ctx.lineTo(altX,               by + boxH);
-  ctx.lineTo(altX + altW,        by + boxH);
+  ctx.moveTo(altX+altW,by); ctx.lineTo(altX,by);
+  ctx.lineTo(altX-ptr,tapeMidY); ctx.lineTo(altX,by+boxH); ctx.lineTo(altX+altW,by+boxH);
   ctx.closePath();
-  ctx.fillStyle   = '#000c1e'; ctx.fill();
-  ctx.strokeStyle = '#fff';   ctx.lineWidth = 1.8; ctx.stroke();
+  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(15,H*.038)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(alt).toString(),altX+altW/2,tapeMidY);
 
-  ctx.fillStyle = '#fff';
-  ctx.font = `bold ${Math.max(15,H*.038)}px monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(Math.round(alt).toString(), altX + altW/2, tapeMidY);
-
-  // VSI below readout box
-  const vsiY  = by + boxH + 5;
-  const arrow = D.vspeed > 30 ? '▲' : D.vspeed < -30 ? '▼' : '—';
-  const vcol  = D.vspeed > 100 ? '#0f0' : D.vspeed < -100 ? '#f80' : '#aaa';
-  ctx.fillStyle = vcol;
-  ctx.font = `${Math.max(10,H*.022)}px monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  ctx.fillText(`${arrow}${Math.abs(Math.round(D.vspeed/10)*10)}`, altX+altW/2, vsiY);
-  ctx.fillStyle = 'rgba(140,175,210,.7)';
-  ctx.font = `${Math.max(8,H*.016)}px monospace`;
-  ctx.fillText('fpm', altX+altW/2, vsiY + Math.max(13,H*.026));
-  ctx.textBaseline = 'alphabetic';
+  const vsiY=by+boxH+5, arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
+  const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
+  ctx.fillStyle=vcol; ctx.font=`${Math.max(10,H*.022)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillText(`${arrow}${Math.abs(Math.round(D.vspeed/10)*10)}`,altX+altW/2,vsiY);
+  ctx.fillStyle='rgba(140,175,210,.7)'; ctx.font=`${Math.max(8,H*.016)}px monospace`;
+  ctx.fillText('fpm',altX+altW/2,vsiY+Math.max(13,H*.026));
+  ctx.textBaseline='alphabetic';
 }
 
-// ── Heading tape (bottom) ──────────────────────────────────────────────────
-const CARDS = {0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
-
+// ── Heading tape ───────────────────────────────────────────────────────────
+const CARDS={0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
 function drawHeadingTape() {
   const { hdgY, hdgH, cx } = L;
-  const pxPerDeg = W / 60;
-  const hdg = D.yaw;
-
-  ctx.fillStyle = 'rgba(0,8,22,.82)';
-  ctx.fillRect(0, hdgY, W, hdgH);
-  ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 1;
+  const pxPerDeg=W/60, hdg=D.yaw;
+  ctx.fillStyle='rgba(0,8,22,.82)'; ctx.fillRect(0,hdgY,W,hdgH);
+  ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(0,hdgY); ctx.lineTo(W,hdgY); ctx.stroke();
-
-  ctx.font = `${Math.max(10,H*.022)}px monospace`;
-  ctx.textBaseline = 'bottom';
-
-  for (let i = -34; i <= 34; i++) {
-    const deg    = ((Math.round(hdg) + i + 3600) % 360);
-    const offset = i - (hdg - Math.round(hdg));
-    const x      = cx + offset * pxPerDeg;
-    if (x < 0 || x > W) continue;
-    if (deg % 5 === 0) {
-      const th = deg % 10 === 0 ? hdgH * .35 : hdgH * .18;
-      ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = deg%10===0?1.5:1;
+  ctx.font=`${Math.max(10,H*.022)}px monospace`; ctx.textBaseline='bottom';
+  for (let i=-34; i<=34; i++) {
+    const deg=((Math.round(hdg)+i+3600)%360);
+    const offset=i-(hdg-Math.round(hdg)), x=cx+offset*pxPerDeg;
+    if (x<0||x>W) continue;
+    if (deg%5===0) {
+      const th=deg%10===0?hdgH*.35:hdgH*.18;
+      ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=deg%10===0?1.5:1;
       ctx.beginPath(); ctx.moveTo(x,hdgY); ctx.lineTo(x,hdgY+th); ctx.stroke();
     }
-    if (deg % 10 === 0) {
-      const label = CARDS[deg] || deg.toString().padStart(3,'0');
-      ctx.fillStyle = CARDS[deg] ? '#ffd700' : 'rgba(255,255,255,.9)';
-      ctx.textAlign = 'center';
-      ctx.fillText(label, x, hdgY + hdgH - 3);
+    if (deg%10===0) {
+      const label=CARDS[deg]||deg.toString().padStart(3,'0');
+      ctx.fillStyle=CARDS[deg]?'#ffd700':'rgba(255,255,255,.9)';
+      ctx.textAlign='center'; ctx.fillText(label,x,hdgY+hdgH-3);
     }
   }
-
-  // Current heading box
-  const bw = 58, bh = 22;
-  roundRect(cx-bw/2, hdgY-bh-2, bw, bh, 3);
-  ctx.fillStyle = 'rgba(0,0,0,.88)'; ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
-  ctx.fillStyle = '#fff';
-  ctx.font = `bold ${Math.max(13,H*.030)}px monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(Math.round(D.yaw).toString().padStart(3,'0'), cx, hdgY-bh/2-2);
-
-  // Pointer triangle
-  ctx.fillStyle = '#ffd700';
-  ctx.beginPath();
-  ctx.moveTo(cx, hdgY-1); ctx.lineTo(cx-7, hdgY-9); ctx.lineTo(cx+7, hdgY-9);
-  ctx.closePath(); ctx.fill();
-  ctx.textBaseline = 'alphabetic';
+  const bw=58,bh=22;
+  roundRect(cx-bw/2,hdgY-bh-2,bw,bh,3);
+  ctx.fillStyle='rgba(0,0,0,.88)'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.2; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(13,H*.030)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(D.yaw).toString().padStart(3,'0'),cx,hdgY-bh/2-2);
+  ctx.fillStyle='#ffd700';
+  ctx.beginPath(); ctx.moveTo(cx,hdgY-1); ctx.lineTo(cx-7,hdgY-9); ctx.lineTo(cx+7,hdgY-9);
+  ctx.closePath(); ctx.fill(); ctx.textBaseline='alphabetic';
 }
 
-// ── GPS status (top-left, inside safe area) ────────────────────────────────
+// ── GPS status ─────────────────────────────────────────────────────────────
 function drawGPSStatus() {
-  const x = L.safeL + 10, y = L.safeT + 8;
-  const label = D.fix===0?'NO FIX': D.fix===1?'GPS':'DGPS';
-  const col   = D.fix===0?'#f44': D.fix===1?'#fa0':'#0d0';
-  ctx.fillStyle = col;
-  ctx.font = `bold ${Math.max(10,H*.022)}px monospace`;
-  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 4;
-  ctx.fillText(`${label} ${D.sats}sat`, x, y);
-  ctx.shadowBlur = 0; ctx.textBaseline = 'alphabetic';
+  const x=L.safeL+10, y=L.safeT+8;
+  const label=D.fix===0?'NO FIX':D.fix===1?'GPS':'DGPS';
+  const col  =D.fix===0?'#f44':D.fix===1?'#fa0':'#0d0';
+  ctx.fillStyle=col; ctx.font=`bold ${Math.max(10,H*.022)}px monospace`;
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.shadowColor='rgba(0,0,0,.9)'; ctx.shadowBlur=4;
+  ctx.fillText(`${label} ${D.sats}sat`,x,y);
+  ctx.shadowBlur=0; ctx.textBaseline='alphabetic';
 }
 
 // ── Render loop ────────────────────────────────────────────────────────────
 let lastTs = null;
 function render(ts) {
-  if (lastTs===null) lastTs = ts;
-  smooth(Math.min(1, (ts-lastTs)/60));
-  lastTs = ts;
+  if (lastTs===null) lastTs=ts;
+  smooth(Math.min(1,(ts-lastTs)/60));
+  lastTs=ts;
 
   updateLinkStatus();
-  ctx.clearRect(0, 0, W, H);
+  ctx.clearRect(0,0,W,H);
 
+  // 1. Sky/ground background (full canvas, rotated with roll)
   drawAI();
+
+  // 2. Terrain mesh — drawn on top of sky/ground, clipped to AI area between tapes
+  Terrain.render(ctx, D, L);
+
+  // 3. Fixed instrument overlays (always on top of terrain)
   drawRollIndicator();
   drawSlipBall();
   drawAircraftSymbol();
