@@ -44,7 +44,7 @@ border-radius:3px; pointer-events:none; z-index:10;
 /* ── Tap-to-start overlay ── */
 #tap-overlay {
 position:fixed; inset:0; z-index:100;
-background:rgba(0,0,0,.82);
+background:rgba(0,0,0,.88);
 display:flex; flex-direction:column;
 align-items:center; justify-content:center;
 gap:18px; cursor:pointer;
@@ -79,11 +79,10 @@ border:1.5px solid rgba(100,180,255,.5);
 
 <div id="tap-overlay">
   <div class="pfd-icon">
-    <!-- Simple artificial horizon icon -->
     <svg viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
       <circle cx="22" cy="22" r="20" stroke="rgba(255,255,255,.6)" stroke-width="1.5"/>
       <path d="M2 22 Q22 10 42 22" fill="#1a5fa8" opacity=".9"/>
-      <rect x="2" y="22" width="40" height="20" rx="0" fill="#5a3e0a" opacity=".85"
+      <rect x="2" y="22" width="40" height="20" fill="#5a3e0a" opacity=".85"
             clip-path="url(#cc)"/>
       <clipPath id="cc"><circle cx="22" cy="22" r="20"/></clipPath>
       <line x1="2" y1="22" x2="42" y2="22" stroke="white" stroke-width="1.5"/>
@@ -103,17 +102,322 @@ border:1.5px solid rgba(100,180,255,.5);
 <div id="badge">SIMULATOR</div>
 <div id="scenario">Level flight</div>
 
-<script src="terrain.js"></script>
-
 <script>
 'use strict';
+
+// ════════════════════════════════════════════════════════════════════════════
+// terrain.js — inlined
+// ════════════════════════════════════════════════════════════════════════════
+const Terrain = (() => {
+  'use strict';
+
+  const TILE_SIZE = 256;
+  const COARSE_Z  = 5;
+  const DETAIL_Z  = 8;
+  const DB_NAME   = 'ahrs-pfd-terrain-v1';
+  const MEM_LIMIT = 64;
+  const NM_TO_M   = 1852;
+  const DEG       = Math.PI / 180;
+
+  function tileURL(z, x, y) {
+    return `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+  }
+
+  let _db        = null;
+  let _status    = 'idle';
+  let _tileCount = 0;
+  let _notify    = null;
+
+  const _decoded  = new Map();
+  const _loading  = new Set();
+  const _lruOrder = [];
+
+  function latLonToTile(lat, lon, z) {
+    const n  = 1 << z;
+    const x  = Math.floor((lon + 180) / 360 * n);
+    const lr = Math.log(Math.tan((90 + lat) * DEG / 2));
+    const y  = Math.floor((1 - lr / Math.PI) / 2 * n);
+    return { x: Math.max(0, Math.min(n - 1, x)),
+             y: Math.max(0, Math.min(n - 1, y)) };
+  }
+
+  function pixelToElevation(r, g, b) {
+    return (r * 256 + g + b / 256) - 32768;
+  }
+
+  function openDB() {
+    return new Promise((res, rej) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore('tiles');
+      req.onsuccess = e  => { _db = e.target.result; res(); };
+      req.onerror   = () => rej(req.error);
+    });
+  }
+
+  function dbGet(key) {
+    return new Promise((res, rej) => {
+      const req = _db.transaction('tiles','readonly').objectStore('tiles').get(key);
+      req.onsuccess = () => res(req.result || null);
+      req.onerror   = () => rej(req.error);
+    });
+  }
+
+  function dbPut(key, value) {
+    return new Promise((res, rej) => {
+      const req = _db.transaction('tiles','readwrite').objectStore('tiles').put(value, key);
+      req.onsuccess = () => res();
+      req.onerror   = () => rej(req.error);
+    });
+  }
+
+  function dbCount() {
+    return new Promise((res, rej) => {
+      const req = _db.transaction('tiles','readonly').objectStore('tiles').count();
+      req.onsuccess = () => res(req.result || 0);
+      req.onerror   = () => rej(req.error);
+    });
+  }
+
+  function decodePNG(arrayBuffer) {
+    return new Promise((res, rej) => {
+      const blob = new Blob([arrayBuffer], { type:'image/png' });
+      const url  = URL.createObjectURL(blob);
+      const img  = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const c  = document.createElement('canvas');
+        c.width  = c.height = TILE_SIZE;
+        const cx = c.getContext('2d');
+        cx.drawImage(img, 0, 0, TILE_SIZE, TILE_SIZE);
+        res(new Uint8ClampedArray(cx.getImageData(0, 0, TILE_SIZE, TILE_SIZE).data));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode failed')); };
+      img.src = url;
+    });
+  }
+
+  function cacheStore(key, pixels) {
+    if (_decoded.size >= MEM_LIMIT) {
+      const oldest = _lruOrder.shift();
+      _decoded.delete(oldest);
+    }
+    _decoded.set(key, pixels);
+    _lruOrder.push(key);
+  }
+
+  function triggerDecode(z, x, y) {
+    const key = `${z}/${x}/${y}`;
+    if (_decoded.has(key) || _loading.has(key) || !_db) return;
+    _loading.add(key);
+    dbGet(key)
+      .then(buf => buf ? decodePNG(buf) : null)
+      .then(pixels => { if (pixels) cacheStore(key, pixels); })
+      .catch(() => {})
+      .finally(() => _loading.delete(key));
+  }
+
+  function elevationAt(lat, lon) {
+    for (const z of [DETAIL_Z, COARSE_Z]) {
+      const { x, y } = latLonToTile(lat, lon, z);
+      const key      = `${z}/${x}/${y}`;
+      const pixels   = _decoded.get(key);
+      if (!pixels) { triggerDecode(z, x, y); continue; }
+      const n  = 1 << z;
+      const px = ((lon + 180) / 360 * n - x);
+      const lr = Math.log(Math.tan((90 + lat) * DEG / 2));
+      const py = ((1 - lr / Math.PI) / 2 * n - y);
+      const ix = Math.max(0, Math.min(TILE_SIZE - 1, Math.floor(px * TILE_SIZE)));
+      const iy = Math.max(0, Math.min(TILE_SIZE - 1, Math.floor(py * TILE_SIZE)));
+      const base = (iy * TILE_SIZE + ix) * 4;
+      return pixelToElevation(pixels[base], pixels[base+1], pixels[base+2]);
+    }
+    return 0;
+  }
+
+  async function fetchAndStoreTile(z, x, y) {
+    const key = `${z}/${x}/${y}`;
+    if (_decoded.has(key)) return;
+    const existing = await dbGet(key);
+    if (existing) return;
+    const resp = await fetch(tileURL(z, x, y));
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const buf = await resp.arrayBuffer();
+    await dbPut(key, buf);
+    _tileCount++;
+  }
+
+  function yieldToUI() { return new Promise(r => setTimeout(r, 0)); }
+
+  async function downloadCoarse(onProgress) {
+    const z = COARSE_Z;
+    const n = 1 << z;
+    const yMin = latLonToTile(75,  0, z).y;
+    const yMax = latLonToTile(-60, 0, z).y;
+    const tiles = [];
+    for (let tx = 0; tx < n; tx++)
+      for (let ty = yMin; ty <= yMax; ty++)
+        tiles.push([z, tx, ty]);
+    let done = 0;
+    for (const [z, x, y] of tiles) {
+      try { await fetchAndStoreTile(z, x, y); }
+      catch (e) { console.warn(`coarse tile ${z}/${x}/${y}:`, e.message); }
+      done++;
+      if (onProgress) onProgress(done / tiles.length, done, tiles.length);
+      if (done % 12 === 0) await yieldToUI();
+    }
+    _status = 'ready';
+    if (_notify) _notify(_status, _tileCount);
+  }
+
+  async function downloadRegion(lat, lon, radiusNm, onProgress) {
+    const z    = DETAIL_Z;
+    const n    = 1 << z;
+    const dlat = radiusNm / 60;
+    const dlon = radiusNm / (60 * Math.cos(lat * DEG));
+    const t1   = latLonToTile(lat + dlat, lon - dlon, z);
+    const t2   = latLonToTile(lat - dlat, lon + dlon, z);
+    const tiles = [];
+    for (let tx = t1.x; tx <= t2.x; tx++)
+      for (let ty = t1.y; ty <= t2.y; ty++)
+        if (tx >= 0 && tx < n && ty >= 0 && ty < n)
+          tiles.push([z, tx, ty]);
+    let done = 0;
+    for (const [z, x, y] of tiles) {
+      try { await fetchAndStoreTile(z, x, y); }
+      catch (e) { console.warn(`detail tile ${z}/${x}/${y}:`, e.message); }
+      done++;
+      if (onProgress) onProgress(done / tiles.length, done, tiles.length);
+      if (done % 4 === 0) await yieldToUI();
+    }
+    if (_status !== 'ready') _status = 'partial';
+    if (_notify) _notify(_status, _tileCount);
+  }
+
+  async function init(onStatusChange) {
+    _notify = onStatusChange;
+    _status = 'loading';
+    if (_notify) _notify(_status, 0);
+    try {
+      await openDB();
+      _tileCount = await dbCount();
+      _status    = _tileCount > 0 ? 'ready' : 'idle';
+    } catch (e) {
+      console.error('Terrain init:', e);
+      _status = 'error';
+    }
+    if (_notify) _notify(_status, _tileCount);
+  }
+
+  function terrainColor(elevM, altDiffM) {
+    if (altDiffM > -30)  return 'rgba(200,20,10,0.88)';
+    if (altDiffM > -152) return 'rgba(185,95,10,0.82)';
+    if (altDiffM > -305) return 'rgba(160,150,10,0.75)';
+    if (elevM < 0)    return '#1a3050';
+    if (elevM < 300)  return '#2a4418';
+    if (elevM < 900)  return '#4a3c18';
+    if (elevM < 2000) return '#6a5030';
+    return '#7a6858';
+  }
+
+  function projectENU(north, east, up, yawR, pitchR, rollR) {
+    const cy = Math.cos(yawR),   sy = Math.sin(yawR);
+    const cp = Math.cos(pitchR), sp = Math.sin(pitchR);
+    const cr = Math.cos(rollR),  sr = Math.sin(rollR);
+    const fwd0 =  north * cy + east * sy;
+    const rgt0 = -north * sy + east * cy;
+    const up0  =  up;
+    const fwd1 = fwd0 * cp + up0 * sp;
+    const up1  = up0  * cp - fwd0 * sp;
+    if (fwd1 < 10) return null;
+    const rgt2 = rgt0 * cr + up1 * sr;
+    const up2  = up1  * cr - rgt0 * sr;
+    return { fwd: fwd1, rgt: rgt2, up: up2 };
+  }
+
+  function render(ctx, D, L) {
+    if (_decoded.size === 0) return;
+    const { spdX, spdW, altX, tapeTopY, tapeH, tapeMidY, cx, focal } = L;
+    const clipX = spdX + spdW;
+    const clipW = altX - clipX;
+    if (clipW <= 0 || !focal) return;
+    const yawR   =  D.yaw   * DEG;
+    const pitchR =  D.pitch * DEG;
+    const rollR  =  D.roll  * DEG;
+    const altM   =  D.alt   * 0.3048;
+    const BRG_COUNT  = 21;
+    const DIST_COUNT = 9;
+    const BRG_HALF   = 42;
+    const DISTANCES  = [0.5, 1, 2, 4, 8, 15, 25, 40, 60];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(clipX, tapeTopY, clipW, tapeH);
+    ctx.clip();
+    const grid = [];
+    for (let di = 0; di < DIST_COUNT; di++) {
+      const distM = DISTANCES[di] * NM_TO_M;
+      const row   = [];
+      for (let bi = 0; bi < BRG_COUNT; bi++) {
+        const bearOff = -BRG_HALF + bi * (BRG_HALF * 2 / (BRG_COUNT - 1));
+        const bearRad = yawR + bearOff * DEG;
+        const north   = distM * Math.cos(bearRad);
+        const east    = distM * Math.sin(bearRad);
+        const ptLat   = D.lat + north / 111320;
+        const ptLon   = D.lon + east  / (111320 * Math.cos(D.lat * DEG));
+        const elevM   = elevationAt(ptLat, ptLon);
+        const upM     = elevM - altM;
+        const pt      = projectENU(north, east, upM, yawR, pitchR, rollR);
+        row.push(pt ? {
+          sx:       cx + (pt.rgt / pt.fwd) * focal,
+          sy:       tapeMidY - (pt.up / pt.fwd) * focal,
+          elevM,
+          altDiffM: upM,
+        } : null);
+      }
+      grid.push(row);
+    }
+    ctx.lineWidth = 0.4;
+    for (let di = DIST_COUNT - 2; di >= 0; di--) {
+      for (let bi = 0; bi < BRG_COUNT - 1; bi++) {
+        const p00 = grid[di    ][bi    ];
+        const p01 = grid[di    ][bi + 1];
+        const p10 = grid[di + 1][bi    ];
+        const p11 = grid[di + 1][bi + 1];
+        if (!p00 || !p01 || !p10 || !p11) continue;
+        const avgElev    = (p00.elevM    + p01.elevM    + p10.elevM    + p11.elevM)    / 4;
+        const avgAltDiff = (p00.altDiffM + p01.altDiffM + p10.altDiffM + p11.altDiffM) / 4;
+        ctx.fillStyle   = terrainColor(avgElev, avgAltDiff);
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+        ctx.beginPath();
+        ctx.moveTo(p00.sx, p00.sy);
+        ctx.lineTo(p01.sx, p01.sy);
+        ctx.lineTo(p11.sx, p11.sy);
+        ctx.lineTo(p10.sx, p10.sy);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  return {
+    init, downloadCoarse, downloadRegion, elevationAt, render,
+    get status()    { return _status;    },
+    get tileCount() { return _tileCount; },
+  };
+})();
+
+// ════════════════════════════════════════════════════════════════════════════
+// PFD main
+// ════════════════════════════════════════════════════════════════════════════
 
 // ── Tap-to-start gate ──────────────────────────────────────────────────────
 let started = false;
 let rafId   = null;
+let lastTs  = null;
 
 const overlay = document.getElementById('tap-overlay');
-overlay.addEventListener('click',  startSim, { once:true });
+overlay.addEventListener('click',    startSim, { once:true });
 overlay.addEventListener('touchend', startSim, { once:true, passive:true });
 
 function startSim() {
@@ -126,13 +430,13 @@ function startSim() {
   rafId  = requestAnimationFrame(render);
 }
 
-// ── Visibility: pause/resume when tab hidden ───────────────────────────────
+// ── Visibility: pause/resume ───────────────────────────────────────────────
 document.addEventListener('visibilitychange', () => {
   if (!started) return;
   if (document.hidden) {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   } else {
-    lastTs = null;            // reset dt so we don't get a huge jump
+    lastTs = null;
     rafId  = requestAnimationFrame(render);
   }
 });
@@ -478,7 +782,6 @@ function drawGPSStatus(){
 }
 
 // ── Render loop ────────────────────────────────────────────────────────────
-let lastTs=null;
 function render(ts){
   if(lastTs===null) lastTs=ts;
   const dt=ts-lastTs; lastTs=ts;
@@ -496,7 +799,7 @@ function render(ts){
   drawGPSStatus();
   rafId = requestAnimationFrame(render);
 }
-// NOTE: render loop is started by tap, not on page load
+// Render loop starts on tap — not on page load
 </script>
 
 </body>
