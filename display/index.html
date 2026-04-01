@@ -82,6 +82,13 @@
                      background:rgba(0,100,60,.7); color:#afa; vertical-align:middle; }
   #baro-msg        { color:rgba(255,200,100,.85); font-size:11px;
                      margin-top:5px; min-height:14px; }
+  #cal-alt-row     { display:flex; gap:8px; margin-top:6px; align-items:center; }
+  #cal-alt-input   {
+    flex:1; background:#0a1a30; color:#fff; border:1px solid #3a6aaf;
+    border-radius:4px; padding:6px 8px; font:13px monospace;
+    -webkit-appearance:none; appearance:none;
+  }
+  #cal-alt-input::placeholder { color:rgba(180,200,230,.4); }
 </style>
 </head>
 <body>
@@ -116,8 +123,14 @@
   </div>
   <div class="trn-btns" style="margin-top:6px">
     <button class="trn-btn" onclick="setQNH(1013.25)">STD 1013</button>
-    <button class="trn-btn" id="btn-setalt" onclick="setAltHere()">⊕ Set Alt Here</button>
+    <button class="trn-btn" id="btn-setalt" onclick="setAltHere()">⊕ GPS Alt</button>
     <button class="trn-btn" onclick="closeBaroPanel()">✕ Close</button>
+  </div>
+  <div id="cal-alt-row">
+    <input type="number" id="cal-alt-input" placeholder="Manual alt (ft MSL)"
+           min="-1500" max="60000" step="1"
+           onkeydown="if(event.key==='Enter')setManualAlt()">
+    <button class="trn-btn" style="flex:0 0 auto" onclick="setManualAlt()">Set Alt</button>
   </div>
   <div id="baro-msg"></div>
 </div>
@@ -216,9 +229,15 @@ const baroSrcEl = document.getElementById('baro-src-badge');
 const baroMsgEl = document.getElementById('baro-msg');
 
 baroEl.addEventListener('click', () => {
-  baroPanel.style.display = baroPanel.style.display === 'block' ? 'none' : 'block';
+  const opening = baroPanel.style.display !== 'block';
+  baroPanel.style.display = opening ? 'block' : 'none';
   panel.style.display = 'none';  // close terrain panel if open
-  updateBaroUI();
+  if (opening) {
+    updateBaroUI();
+    // Pre-fill manual alt with GPS altitude if available
+    const inp = document.getElementById('cal-alt-input');
+    if (TARGET.fix > 0) inp.value = Math.round(TARGET.gps_alt);
+  }
 });
 
 function closeBaroPanel() { baroPanel.style.display = 'none'; }
@@ -248,13 +267,28 @@ function setQNH(val) {
 
 function setAltHere() {
   if (TARGET.fix === 0) {
-    baroMsgEl.textContent = 'No GPS fix — cannot calibrate';
+    baroMsgEl.textContent = 'No GPS fix — use manual alt entry below';
     setTimeout(() => { baroMsgEl.textContent = ''; }, 3000);
     return;
   }
-  const ft = Math.round(TARGET.gps_alt);
+  _sendCalFt(Math.round(TARGET.gps_alt));
+}
+
+function setManualAlt() {
+  const input = document.getElementById('cal-alt-input');
+  const ft = parseInt(input.value, 10);
+  if (isNaN(ft) || ft < -1500 || ft > 60000) {
+    baroMsgEl.textContent = 'Enter a valid altitude (−1500 to 60000 ft)';
+    setTimeout(() => { baroMsgEl.textContent = ''; }, 3000);
+    return;
+  }
+  _sendCalFt(ft);
+  input.value = '';
+}
+
+function _sendCalFt(ft) {
   fetch('/baro?cal_ft=' + ft).catch(() => {});
-  baroMsgEl.textContent = 'Calibrating to ' + ft + ' ft…';
+  baroMsgEl.textContent = 'Calibrating to ' + ft + ' ft MSL…';
   setTimeout(() => { baroMsgEl.textContent = ''; }, 3000);
 }
 
