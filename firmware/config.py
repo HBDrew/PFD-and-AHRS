@@ -62,5 +62,13 @@ BME280_QNH_DEFAULT = 1013.25  # hPa – ICAO standard; update via /baro on the d
 # wrong way after installation, flip this to -1 (sensor mounted 180° about yaw).
 WT901_AY_SIGN = 1
 
+# ── AHRS Mounting Trim ────────────────────────────────────────────────────────
+# Additive degree offsets applied to raw WT901 output to compensate for
+# imperfect physical mounting.  Overridden at runtime via /trim endpoint;
+# persisted to trims.json on Pico flash.
+AHRS_PITCH_TRIM = 0.0   # degrees; positive = nose-up correction
+AHRS_ROLL_TRIM  = 0.0   # degrees; positive = right-roll correction
+AHRS_YAW_TRIM   = 0.0   # degrees; positive = clockwise heading correction
+
 # ── Data broadcast rate ──────────────────────────────────────────────────────
 BROADCAST_HZ = 10   # SSE events per second sent to the phone display

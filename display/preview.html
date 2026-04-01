@@ -61,6 +61,8 @@ const SIM = {
   speed:115, track:210, vspeed:0, fix:3, sats:9,
   ay:0,                  // lateral acceleration g (slip ball)
   baro_hpa:1013.25, baro_src:'gps', gps_alt:8000,
+  ahrs_ok:true, gps_ok:true, baro_ok:false,
+  pitch_trim:0, roll_trim:0, yaw_trim:0,
 };
 const D = Object.assign({}, SIM);
 
@@ -193,6 +195,8 @@ function smooth(alpha){
   D.lat=SIM.lat; D.lon=SIM.lon; D.fix=SIM.fix; D.sats=SIM.sats;
   D.gps_alt=SIM.gps_alt;
   D.baro_hpa=SIM.baro_hpa; D.baro_src=SIM.baro_src;
+  D.ahrs_ok=SIM.ahrs_ok; D.gps_ok=SIM.gps_ok; D.baro_ok=SIM.baro_ok;
+  D.pitch_trim=SIM.pitch_trim; D.roll_trim=SIM.roll_trim; D.yaw_trim=SIM.yaw_trim;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -445,6 +449,28 @@ function drawGPSStatus(){
   ctx.shadowBlur=0; ctx.textBaseline='alphabetic';
 }
 
+// ── Failure overlay ────────────────────────────────────────────────────────
+function drawRedX(x,y,w,h,label){
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x,y,w,h); ctx.clip();
+  ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(x,y,w,h);
+  const pad=Math.min(w,h)*.12;
+  ctx.strokeStyle='#cc0000';
+  ctx.lineWidth=Math.max(2,Math.min(w,h)*.06);
+  ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(x+pad,y+pad); ctx.lineTo(x+w-pad,y+h-pad);
+  ctx.moveTo(x+w-pad,y+pad); ctx.lineTo(x+pad,y+h-pad);
+  ctx.stroke();
+  if(label){
+    ctx.fillStyle='#cc0000';
+    ctx.font=`bold ${Math.max(10,Math.min(w*.15,14))}px monospace`;
+    ctx.textAlign='center'; ctx.textBaseline='bottom';
+    ctx.fillText(label,x+w/2,y+h-4);
+  }
+  ctx.restore();
+}
+
 // ── Render loop ────────────────────────────────────────────────────────────
 let lastTs=null;
 function render(ts){
@@ -462,6 +488,12 @@ function render(ts){
   drawAltTape();
   drawHeadingTape();
   drawGPSStatus();
+  if(!D.ahrs_ok){
+    drawRedX(L.spdX+L.spdW,L.tapeTopY,L.altX-(L.spdX+L.spdW),L.tapeH,'AHRS');
+    drawRedX(0,L.hdgY,W,H-L.hdgY,'HDG');
+  }
+  if(!D.gps_ok) drawRedX(L.spdX,L.tapeTopY,L.spdW,L.tapeH,'GPS');
+  if(!D.baro_ok&&!D.gps_ok) drawRedX(L.altX,L.tapeTopY,L.altW,L.tapeH,'ALT');
   requestAnimationFrame(render);
 }
 requestAnimationFrame(render);

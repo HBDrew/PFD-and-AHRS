@@ -139,6 +139,48 @@ async def _handle_sse(writer, state):
             pass
 
 
+async def _handle_trim(writer, params, state):
+    """
+    GET /trim?pitch=X&roll=Y&yaw=Z
+    Any combination; values in degrees.  Ranges enforced: ±10° pitch/roll, ±180° yaw.
+    Sets _save_trims flag so sensor_loop persists values to flash.
+    """
+    changed = False
+    if 'pitch' in params:
+        try:
+            v = float(params['pitch'])
+            if -10.0 <= v <= 10.0:
+                state['pitch_trim'] = round(v, 1)
+                changed = True
+        except ValueError:
+            pass
+    if 'roll' in params:
+        try:
+            v = float(params['roll'])
+            if -10.0 <= v <= 10.0:
+                state['roll_trim'] = round(v, 1)
+                changed = True
+        except ValueError:
+            pass
+    if 'yaw' in params:
+        try:
+            v = float(params['yaw'])
+            if -180.0 <= v <= 180.0:
+                state['yaw_trim'] = round(v, 1)
+                changed = True
+        except ValueError:
+            pass
+    if changed:
+        state['_save_trims'] = True
+    body = b'OK'
+    await _send_headers(writer, '200 OK', 'text/plain',
+                        f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+    writer.write(body)
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def _handle_404(writer):
     body = b'Not Found'
     await _send_headers(writer, '404 Not Found', 'text/plain',
@@ -190,6 +232,8 @@ async def _client_handler(reader, writer, state):
         await _handle_health(writer)
     elif path == '/baro':
         await _handle_baro(writer, params, state)
+    elif path == '/trim':
+        await _handle_trim(writer, params, state)
     else:
         await _handle_404(writer)
 

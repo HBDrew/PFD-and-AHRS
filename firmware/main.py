@@ -19,6 +19,7 @@
 import uasyncio as asyncio
 import network
 import utime
+import ujson
 from machine import Pin
 
 from config import (
@@ -27,11 +28,38 @@ from config import (
     BME280_ENABLE, BME280_I2C_ID, BME280_SDA_PIN, BME280_SCL_PIN,
     BME280_I2C_ADDR, BME280_QNH_DEFAULT,
     WT901_AY_SIGN,
+    AHRS_PITCH_TRIM, AHRS_ROLL_TRIM, AHRS_YAW_TRIM,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
 from wt901      import WT901
 from gps        import GPS
 from web_server import start_server
+
+TRIMS_FILE = 'trims.json'
+
+
+def load_trims():
+    try:
+        with open(TRIMS_FILE, 'r') as f:
+            t = ujson.loads(f.read())
+        return {k: float(t.get(k, d)) for k, d in
+                [('pitch_trim', AHRS_PITCH_TRIM),
+                 ('roll_trim',  AHRS_ROLL_TRIM),
+                 ('yaw_trim',   AHRS_YAW_TRIM)]}
+    except Exception:
+        return {'pitch_trim': AHRS_PITCH_TRIM,
+                'roll_trim':  AHRS_ROLL_TRIM,
+                'yaw_trim':   AHRS_YAW_TRIM}
+
+
+def save_trims(state):
+    try:
+        with open(TRIMS_FILE, 'w') as f:
+            f.write(ujson.dumps({'pitch_trim': state['pitch_trim'],
+                                  'roll_trim':  state['roll_trim'],
+                                  'yaw_trim':   state['yaw_trim']}))
+    except Exception as e:
+        print(f'save_trims failed: {e}')
 
 # ── Onboard LED ─────────────────────────────────────────────────────────────
 led = Pin('LED', Pin.OUT)
@@ -58,6 +86,14 @@ state = {
     'baro_src' : 'gps', # 'bme280' | 'gps'
     # Barometric setting (user-adjustable via /baro endpoint)
     'baro_hpa' : BME280_QNH_DEFAULT,  # QNH in hPa; written by /baro, broadcast via SSE
+    # AHRS trim offsets (degrees; adjustable via /trim, persisted to trims.json)
+    'pitch_trim': 0.0,
+    'roll_trim':  0.0,
+    'yaw_trim':   0.0,
+    # Sensor health flags (set every sensor_loop tick)
+    'ahrs_ok':   False,
+    'gps_ok':    False,
+    'baro_ok':   False,
 }
 
 
@@ -89,13 +125,22 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
     baro: BME280 instance or None (falls back to GPS altitude).
     """
     tick = 0
+    last_ahrs_ms = utime.ticks_ms()   # 5-second window before ahrs_ok goes False
     while True:
         # ── AHRS ──
-        ahrs.update()
-        state['roll']  = ahrs.roll
-        state['pitch'] = ahrs.pitch
-        state['yaw']   = ahrs.yaw
-        state['ay']    = ahrs.ay * WT901_AY_SIGN
+        if ahrs.update():
+            state['roll']  = ahrs.roll  + state['roll_trim']
+            state['pitch'] = ahrs.pitch + state['pitch_trim']
+            state['yaw']   = (ahrs.yaw  + state['yaw_trim']) % 360
+            state['ay']    = ahrs.ay * WT901_AY_SIGN
+            last_ahrs_ms   = utime.ticks_ms()
+        state['ahrs_ok'] = utime.ticks_diff(utime.ticks_ms(), last_ahrs_ms) < 5000
+        state['gps_ok']  = gps.fix > 0
+        state['baro_ok'] = baro is not None
+        # Persist trims to flash if web endpoint set the flag
+        if state.get('_save_trims'):
+            save_trims(state)
+            state['_save_trims'] = False
 
         # ── GPS (always poll for position; altitude used as fallback/reference) ──
         gps.update()
@@ -148,6 +193,9 @@ async def main():
     gps  = GPS(GPS_UART_ID, GPS_TX_PIN, GPS_RX_PIN, GPS_BAUD)
     print(f'WT901  UART{WT901_UART_ID} @ {WT901_BAUD} baud  (GP{WT901_RX_PIN} RX)')
     print(f'NEO-6M UART{GPS_UART_ID}  @ {GPS_BAUD} baud  (GP{GPS_RX_PIN} RX)')
+
+    state.update(load_trims())
+    print(f'Trims loaded: pitch={state["pitch_trim"]}° roll={state["roll_trim"]}° yaw={state["yaw_trim"]}°')
 
     baro = None
     if BME280_ENABLE:
