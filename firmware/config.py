@@ -42,5 +42,25 @@ AP_PASSWORD = "ahrs1234"   # min 8 chars for WPA2; set "" for open AP
 # ── Web server ────────────────────────────────────────────────────────────────
 HTTP_PORT = 80   # Navigate to http://192.168.4.1 on the phone
 
+# ── BME280 Barometer (optional) ──────────────────────────────────────────────
+# Set BME280_ENABLE = False if no barometer is connected; the firmware will
+# fall back to GPS altitude automatically.
+#
+# Wiring (I2C1):
+#   VCC → 3V3(OUT)   GND → GND
+#   SDA → GP2  (pin 4)    SCL → GP3  (pin 5)
+#   SDO → GND  → I2C address 0x76  (pull SDO high for 0x77)
+BME280_ENABLE      = True
+BME280_I2C_ID      = 1
+BME280_SDA_PIN     = 2      # GP2  (I2C1 SDA)
+BME280_SCL_PIN     = 3      # GP3  (I2C1 SCL)
+BME280_I2C_ADDR    = 0x76   # 0x76 (SDO=GND) or 0x77 (SDO=VCC)
+BME280_QNH_DEFAULT = 1013.25  # hPa – ICAO standard; update via /baro on the display
+
+# ── WT901 lateral-acceleration sign ──────────────────────────────────────────
+# The WT901's ay axis drives the slip/skid ball.  If the ball deflects the
+# wrong way after installation, flip this to -1 (sensor mounted 180° about yaw).
+WT901_AY_SIGN = 1
+
 # ── Data broadcast rate ──────────────────────────────────────────────────────
 BROADCAST_HZ = 10   # SSE events per second sent to the phone display

@@ -59,33 +59,40 @@ const SIM = {
   lat:46.55, lon:7.90,   // Lauterbrunnen, Switzerland
   alt:8000,              // ft MSL  (Jungfrau is ~13 600 ft to the south)
   speed:115, track:210, vspeed:0, fix:3, sats:9,
+  ay:0,                  // lateral acceleration g (slip ball)
+  baro_hpa:1013.25, baro_src:'gps', gps_alt:8000,
 };
 const D = Object.assign({}, SIM);
 
+// ay: lateral acceleration g driving the slip ball.
+// Coordinated flight → ay ≈ 0.  Deliberate slip/skid → non-zero ay.
 const scenarios = [
   { label:'Level cruise heading south (Alps ahead)', dur:5000,
     fn(t) { return { roll:0, pitch:0.6, alt:8000+Math.sin(t*Math.PI*2)*30,
-                     speed:115, vspeed:0 }; } },
-  { label:'Standard-rate right turn', dur:5000,
+                     speed:115, vspeed:0, ay:0 }; } },
+  { label:'Standard-rate right turn  (coordinated)', dur:5000,
     fn(t) { const r=19*Math.sin(Math.PI*t);
-            return { roll:r, pitch:0.6+r*.04, alt:8100+r*2, speed:115, vspeed:0 }; } },
+            return { roll:r, pitch:0.6+r*.04, alt:8100+r*2,
+                     speed:115, vspeed:0, ay:0 }; } },
   { label:'Climbing left turn  +800 fpm', dur:5500,
     fn(t) { const r=-22*Math.sin(Math.PI*t), v=800*Math.sin(Math.PI*t);
             return { roll:r, pitch:4+r*.05, alt:8000+v*.06*t*5.5,
-                     speed:112, vspeed:v }; } },
-  { label:'Steep bank  45°', dur:5000,
+                     speed:112, vspeed:v, ay:0 }; } },
+  { label:'Steep bank 45°  (slip demo)', dur:5000,
     fn(t) { const r=45*Math.sin(Math.PI*t);
+            // Deliberate slip: ball deflects into the bank
             return { roll:r, pitch:1.5+Math.abs(r)*.06, alt:8300+r*5,
-                     speed:118, vspeed:r*8 }; } },
+                     speed:118, vspeed:r*8, ay: r * 0.005 }; } },
   { label:'Descent into valley  -700 fpm', dur:6000,
     fn(t) { const v=t<.5?-700*(t/.5):-700*(1-(t-.5)/.5);
             return { roll:0, pitch:-3*Math.sin(Math.PI*t),
-                     alt:8300+v/60*(t*6), speed:120, vspeed:v }; } },
-  { label:'Turbulence', dur:5500,
+                     alt:8300+v/60*(t*6), speed:120, vspeed:v, ay:0 }; } },
+  { label:'Turbulence  (random slip)', dur:5500,
     fn(t) { const n=s=>Math.sin(t*Math.PI*s*7)*.6+Math.sin(t*Math.PI*s*13)*.3
                           +Math.sin(t*Math.PI*s*23)*.1;
             return { roll:n(1)*10, pitch:n(2)*5+.5, alt:7800+n(3)*80,
-                     speed:112+n(4)*8, vspeed:n(5)*350 }; } },
+                     speed:112+n(4)*8, vspeed:n(5)*350,
+                     ay: n(6)*0.12 }; } },
 ];
 
 let scIdx=0, scStart=null;
@@ -100,7 +107,8 @@ function tickSim(ts) {
   const nm_per_frame = SIM.speed / 3600 / 60 * (1/60);  // approx nm at 60fps
   SIM.lat += nm_per_frame * Math.cos(SIM.yaw * Math.PI/180) / 60;
   SIM.lon += nm_per_frame * Math.sin(SIM.yaw * Math.PI/180) / (60 * Math.cos(SIM.lat * Math.PI/180));
-  SIM.track = SIM.yaw;
+  SIM.track   = SIM.yaw;
+  SIM.gps_alt = SIM.alt;
   scEl.textContent=sc.label;
   if (age>=sc.dur){ scIdx=(scIdx+1)%scenarios.length; scStart=ts; }
 }
@@ -158,7 +166,10 @@ function smooth(alpha){
   D.speed  =lerp(D.speed,  SIM.speed, alpha);
   D.vspeed =lerp(D.vspeed, SIM.vspeed,alpha);
   D.track  =lerpAngle(D.track,SIM.track,alpha);
+  D.ay     =lerp(D.ay,     SIM.ay,   alpha);
   D.lat=SIM.lat; D.lon=SIM.lon; D.fix=SIM.fix; D.sats=SIM.sats;
+  D.gps_alt=SIM.gps_alt;
+  D.baro_hpa=SIM.baro_hpa; D.baro_src=SIM.baro_src;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -250,7 +261,8 @@ function drawSlipBall(){
   pillRect(cx-bw/2,rollCY-bh/2,bw,bh);
   ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fill();
   ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=1.2; ctx.stroke();
-  const defl=Math.max(-1,Math.min(1,D.roll/25))*(bw/2-r-2);
+  // 0.2 g = full deflection (simulated ay from scenario data)
+  const defl=Math.max(-1,Math.min(1,D.ay/0.2))*(bw/2-r-2);
   ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(cx+defl,rollCY,r,0,Math.PI*2); ctx.fill();
 }
 
@@ -343,8 +355,16 @@ function drawAltTape(){
   ctx.fillStyle=vcol; ctx.font=`${Math.max(10,H*.022)}px monospace`;
   ctx.textAlign='center'; ctx.textBaseline='top';
   ctx.fillText(`${arrow}${Math.abs(Math.round(D.vspeed/10)*10)}`,altX+altW/2,vsiY);
+  const fpmLblY=vsiY+Math.max(13,H*.026);
   ctx.fillStyle='rgba(140,175,210,.7)'; ctx.font=`${Math.max(8,H*.016)}px monospace`;
-  ctx.fillText('fpm',altX+altW/2,vsiY+Math.max(13,H*.026));
+  ctx.fillText('fpm',altX+altW/2,fpmLblY);
+  // QNH and altitude source
+  const qnhY=fpmLblY+Math.max(11,H*.019)+2;
+  const isBaro=D.baro_src==='bme280';
+  ctx.fillStyle=isBaro?'rgba(80,200,255,.90)':'rgba(140,175,210,.50)';
+  ctx.font=`${Math.max(8,H*.016)}px monospace`;
+  ctx.fillText(D.baro_hpa.toFixed(2),altX+altW/2,qnhY);
+  ctx.fillText(isBaro?'BME':'GPS',altX+altW/2,qnhY+Math.max(10,H*.017));
   ctx.textBaseline='alphabetic';
 }
 

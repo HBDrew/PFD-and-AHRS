@@ -5,8 +5,13 @@
 # 1. Start WiFi access point (SSID / password from config.py)
 # 2. Initialise WT901 AHRS on UART0
 # 3. Initialise GPS on UART1
-# 4. Start async HTTP/SSE server
-# 5. Sensor-read loop runs concurrently, updating shared state dict
+# 4. Optionally initialise BME280 barometer on I2C1 (GP2/GP3)
+# 5. Start async HTTP/SSE server
+# 6. Sensor-read loop runs concurrently, updating shared state dict
+#
+# Altitude source priority: BME280 (if present) → GPS
+# If BME280 is not connected or fails to init, GPS altitude is used and
+# state['baro_src'] = 'gps'.  No restart required.
 #
 # On the phone: connect to the WiFi AP, open http://192.168.4.1
 # ---------------------------------------------------------------------------
@@ -18,11 +23,14 @@ from machine import Pin
 
 from config import (
     WT901_UART_ID, WT901_TX_PIN, WT901_RX_PIN, WT901_BAUD,
-    GPS_UART_ID, GPS_TX_PIN, GPS_RX_PIN, GPS_BAUD,
+    GPS_UART_ID,  GPS_TX_PIN,  GPS_RX_PIN,  GPS_BAUD,
+    BME280_ENABLE, BME280_I2C_ID, BME280_SDA_PIN, BME280_SCL_PIN,
+    BME280_I2C_ADDR, BME280_QNH_DEFAULT,
+    WT901_AY_SIGN,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
-from wt901 import WT901
-from gps   import GPS
+from wt901      import WT901
+from gps        import GPS
 from web_server import start_server
 
 # ── Onboard LED ─────────────────────────────────────────────────────────────
@@ -32,18 +40,24 @@ led = Pin('LED', Pin.OUT)
 state = {
     '_broadcast_hz': BROADCAST_HZ,
     # AHRS
-    'roll'   : 0.0,   # degrees  (+right wing down)
-    'pitch'  : 0.0,   # degrees  (+nose up)
-    'yaw'    : 0.0,   # degrees  magnetic heading [0, 360)
-    # GPS
-    'lat'    : 0.0,   # decimal degrees
-    'lon'    : 0.0,   # decimal degrees
-    'alt'    : 0.0,   # feet MSL
-    'speed'  : 0.0,   # groundspeed knots
-    'track'  : 0.0,   # track over ground degrees true
-    'vspeed' : 0.0,   # vertical speed ft/min
-    'fix'    : 0,     # 0=none 1=GPS 2=DGPS
-    'sats'   : 0,     # satellites in use
+    'roll'     : 0.0,   # degrees  (+right wing down)
+    'pitch'    : 0.0,   # degrees  (+nose up)
+    'yaw'      : 0.0,   # degrees  magnetic heading [0, 360)
+    'ay'       : 0.0,   # lateral acceleration g (+right); drives slip ball
+    # GPS position (always from GPS)
+    'lat'      : 0.0,   # decimal degrees
+    'lon'      : 0.0,   # decimal degrees
+    'speed'    : 0.0,   # groundspeed knots
+    'track'    : 0.0,   # track over ground degrees true
+    'fix'      : 0,     # 0=none 1=GPS 2=DGPS
+    'sats'     : 0,     # satellites in use
+    'gps_alt'  : 0.0,   # GPS MSL altitude ft (always present for calibration ref)
+    # Altitude (BME280 when available, else GPS)
+    'alt'      : 0.0,   # feet MSL – displayed altitude
+    'vspeed'   : 0.0,   # vertical speed ft/min
+    'baro_src' : 'gps', # 'bme280' | 'gps'
+    # Barometric setting (user-adjustable via /baro endpoint)
+    'baro_hpa' : BME280_QNH_DEFAULT,  # QNH in hPa; written by /baro, broadcast via SSE
 }
 
 
@@ -67,10 +81,12 @@ def setup_ap():
 
 
 # ── Sensor loop ──────────────────────────────────────────────────────────────
-async def sensor_loop(ahrs: WT901, gps: GPS):
+async def sensor_loop(ahrs: WT901, gps: GPS, baro):
     """
-    Poll both sensors at ~50 Hz and push values into the shared state dict.
+    Poll all sensors at ~50 Hz and push values into the shared state dict.
     The web server reads state independently at BROADCAST_HZ.
+
+    baro: BME280 instance or None (falls back to GPS altitude).
     """
     tick = 0
     while True:
@@ -79,21 +95,42 @@ async def sensor_loop(ahrs: WT901, gps: GPS):
         state['roll']  = ahrs.roll
         state['pitch'] = ahrs.pitch
         state['yaw']   = ahrs.yaw
+        state['ay']    = ahrs.ay * WT901_AY_SIGN
 
-        # ── GPS ──
+        # ── GPS (always poll for position; altitude used as fallback/reference) ──
         gps.update()
-        state['lat']    = gps.lat
-        state['lon']    = gps.lon
-        state['alt']    = gps.alt_ft
-        state['speed']  = gps.speed_kt
-        state['track']  = gps.track_deg
-        state['vspeed'] = gps.vspeed_fpm
-        state['fix']    = gps.fix
-        state['sats']   = gps.sats
+        state['lat']     = gps.lat
+        state['lon']     = gps.lon
+        state['speed']   = gps.speed_kt
+        state['track']   = gps.track_deg
+        state['fix']     = gps.fix
+        state['sats']    = gps.sats
+        state['gps_alt'] = gps.alt_ft  # always keep GPS alt for calibration ref
 
-        # Heartbeat LED: blink every 2 s
+        # ── Altitude source ──
+        if baro is not None:
+            # Sync QNH from state (user may have adjusted via /baro endpoint)
+            baro.qnh_hpa = state['baro_hpa']
+
+            # Handle "Set Alt Here" calibration request from display
+            cal_ft = state.get('_cal_ft')
+            if cal_ft is not None:
+                baro.calibrate_to_alt_ft(cal_ft)
+                state['baro_hpa'] = baro.qnh_hpa   # broadcast updated QNH back
+                state['_cal_ft']  = None
+
+            baro.update()
+            state['alt']      = baro.altitude_ft()
+            state['vspeed']   = baro.vspeed_fpm
+            state['baro_src'] = 'bme280'
+        else:
+            state['alt']      = gps.alt_ft
+            state['vspeed']   = gps.vspeed_fpm
+            state['baro_src'] = 'gps'
+
+        # Heartbeat LED: blink every 2 s (100 × 20 ms)
         tick += 1
-        if tick % 100 == 0:     # 100 × 20 ms = 2 s
+        if tick % 100 == 0:
             led.toggle()
 
         await asyncio.sleep_ms(20)   # 50 Hz poll
@@ -108,12 +145,32 @@ async def main():
     setup_ap()
 
     ahrs = WT901(WT901_UART_ID, WT901_TX_PIN, WT901_RX_PIN, WT901_BAUD)
-    gps  = GPS(GPS_UART_ID,  GPS_TX_PIN,  GPS_RX_PIN,  GPS_BAUD)
+    gps  = GPS(GPS_UART_ID, GPS_TX_PIN, GPS_RX_PIN, GPS_BAUD)
     print(f'WT901  UART{WT901_UART_ID} @ {WT901_BAUD} baud  (GP{WT901_RX_PIN} RX)')
     print(f'NEO-6M UART{GPS_UART_ID}  @ {GPS_BAUD} baud  (GP{GPS_RX_PIN} RX)')
 
+    baro = None
+    if BME280_ENABLE:
+        try:
+            from bme280 import BME280
+            baro = BME280(
+                i2c_id  = BME280_I2C_ID,
+                sda     = BME280_SDA_PIN,
+                scl     = BME280_SCL_PIN,
+                addr    = BME280_I2C_ADDR,
+                qnh_hpa = BME280_QNH_DEFAULT,
+            )
+            state['baro_src'] = 'bme280'
+            print(f'BME280  I2C{BME280_I2C_ID}'
+                  f' @ 0x{BME280_I2C_ADDR:02x}'
+                  f' (GP{BME280_SDA_PIN} SDA, GP{BME280_SCL_PIN} SCL)'
+                  f'  QNH={BME280_QNH_DEFAULT} hPa')
+        except Exception as e:
+            print(f'BME280 not found ({e})  –  using GPS altitude')
+            baro = None
+
     await asyncio.gather(
-        sensor_loop(ahrs, gps),
+        sensor_loop(ahrs, gps, baro),
         start_server(state, port=HTTP_PORT),
     )
 

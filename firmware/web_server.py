@@ -9,9 +9,11 @@
 #
 # Endpoints
 # ---------
-#   GET /          → serves index.html from the Pico W flash filesystem
-#   GET /events    → SSE stream, pushes JSON state at BROADCAST_HZ
-#   GET /health    → plain-text "OK" (useful for connection check)
+#   GET /              → serves index.html from the Pico W flash filesystem
+#   GET /events        → SSE stream, pushes JSON state at BROADCAST_HZ
+#   GET /health        → plain-text "OK" (useful for connection check)
+#   GET /baro?qnh=X    → set QNH to X hPa  (returns "OK")
+#   GET /baro?cal_ft=X → calibrate baro to X ft MSL using current pressure
 # ---------------------------------------------------------------------------
 
 import uasyncio as asyncio
@@ -35,6 +37,19 @@ def _load_index():
             '</body></html>'
         )
     return _INDEX_CACHE
+
+
+def _parse_qs(qs):
+    """Parse 'key=val&key2=val2' query string → dict.  No URL-decode needed
+    for the simple numeric values we accept on /baro."""
+    params = {}
+    if not qs:
+        return params
+    for pair in qs.split('&'):
+        if '=' in pair:
+            k, v = pair.split('=', 1)
+            params[k.strip()] = v.strip()
+    return params
 
 
 async def _send_headers(writer, status, content_type, extra=''):
@@ -69,6 +84,36 @@ async def _handle_health(writer):
     await writer.wait_closed()
 
 
+async def _handle_baro(writer, params, state):
+    """
+    GET /baro?qnh=1014.2       – set QNH (hPa); value range 800–1100 enforced
+    GET /baro?cal_ft=1500      – request barometer calibration to 1500 ft MSL
+                                  (main.py sensor_loop processes _cal_ft flag)
+    Both parameters may be combined in one request.
+    """
+    if 'qnh' in params:
+        try:
+            qnh = float(params['qnh'])
+            if 800.0 <= qnh <= 1100.0:
+                state['baro_hpa'] = round(qnh, 2)
+        except ValueError:
+            pass
+
+    if 'cal_ft' in params:
+        try:
+            state['_cal_ft'] = float(params['cal_ft'])
+        except ValueError:
+            pass
+
+    body = b'OK'
+    await _send_headers(writer, '200 OK', 'text/plain',
+                        f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+    writer.write(body)
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def _handle_sse(writer, state):
     """Keep the connection open and stream JSON state as SSE events."""
     await _send_headers(
@@ -78,7 +123,7 @@ async def _handle_sse(writer, state):
     interval_ms = 1000 // state.get('_broadcast_hz', 10)
     try:
         while True:
-            # Build a shallow copy without internal keys
+            # Build a shallow copy, skipping internal (_-prefixed) keys
             payload = {k: v for k, v in state.items() if not k.startswith('_')}
             event = 'data: ' + ujson.dumps(payload) + '\n\n'
             writer.write(event.encode())
@@ -121,7 +166,7 @@ async def _client_handler(reader, writer, state):
         pass
 
     try:
-        method, path, *_ = request_line.decode().split()
+        method, full_path, *_ = request_line.decode().split()
     except Exception:
         writer.close()
         return
@@ -130,12 +175,21 @@ async def _client_handler(reader, writer, state):
         await _handle_404(writer)
         return
 
+    # Split path and query string
+    if '?' in full_path:
+        path, qs = full_path.split('?', 1)
+    else:
+        path, qs = full_path, ''
+    params = _parse_qs(qs)
+
     if path in ('/', '/index.html'):
         await _handle_root(writer)
     elif path == '/events':
         await _handle_sse(writer, state)
     elif path == '/health':
         await _handle_health(writer)
+    elif path == '/baro':
+        await _handle_baro(writer, params, state)
     else:
         await _handle_404(writer)
 
