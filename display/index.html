@@ -376,6 +376,9 @@ function computeLayout() {
   L.rollR  = Math.min(H * 0.36, 155);
   L.rollCY = L.rollR + Math.max(12, L.safeT + 6);
 
+  // Slip ball: just above the heading readout box (box top ≈ hdgY-24)
+  L.ballY  = L.hdgY - 36;
+
   // Perspective focal length: 70° horizontal FOV across the AI clip area
   const clipW = L.altX - (L.spdX + L.spdW);
   L.focal = clipW > 0 ? (clipW / 2) / Math.tan(35 * Math.PI / 180) : 300;
@@ -528,16 +531,28 @@ function drawRollIndicator() {
 
 // ── Slip/skid ball ─────────────────────────────────────────────────────────
 function drawSlipBall() {
-  const { cx, rollCY } = L;
+  const { cx, ballY } = L;
   const bw=54, bh=16, r=6;
-  pillRect(cx-bw/2, rollCY-bh/2, bw, bh);
-  ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fill();
-  ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=1.2; ctx.stroke();
-  // Real lateral-g slip ball: 0.2 g = full deflection.
-  // WT901_AY_SIGN in firmware/config.py corrects for sensor mounting orientation.
+
+  // Tube
+  pillRect(cx-bw/2, ballY-bh/2, bw, bh);
+  ctx.fillStyle='rgba(0,0,0,.60)'; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.65)'; ctx.lineWidth=1.2; ctx.stroke();
+
+  // Fixed reference lines — gap between them slightly wider than ball diameter
+  // (r=6 → ball ø=12 px; lines at ±10 px = 20 px gap, like a real inclinometer)
+  const mark = r + 4;
+  ctx.strokeStyle='rgba(255,255,255,.95)'; ctx.lineWidth=1.8;
+  ctx.beginPath();
+  ctx.moveTo(cx - mark, ballY - bh/2 + 2); ctx.lineTo(cx - mark, ballY + bh/2 - 2);
+  ctx.moveTo(cx + mark, ballY - bh/2 + 2); ctx.lineTo(cx + mark, ballY + bh/2 - 2);
+  ctx.stroke();
+
+  // Ball — real lateral-g; 0.2 g = full deflection
+  // Flip WT901_AY_SIGN in firmware/config.py if ball deflects the wrong way
   const defl=Math.max(-1,Math.min(1,D.ay/0.2))*(bw/2-r-2);
   ctx.fillStyle='#fff';
-  ctx.beginPath(); ctx.arc(cx+defl,rollCY,r,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx+defl, ballY, r, 0, Math.PI*2); ctx.fill();
 }
 
 // ── Aircraft symbol ────────────────────────────────────────────────────────
