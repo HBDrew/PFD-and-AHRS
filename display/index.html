@@ -116,15 +116,19 @@
   <p>Barometric altimeter  <span id="baro-src-badge">GPS ALT</span></p>
   <span id="qnh-val">1013.25 hPa</span>
   <div class="trn-btns">
-    <button class="trn-btn" onclick="adjustQNH(-1)">−1 hPa</button>
-    <button class="trn-btn" onclick="adjustQNH(-0.1)">−0.1</button>
-    <button class="trn-btn" onclick="adjustQNH(+0.1)">+0.1</button>
-    <button class="trn-btn" onclick="adjustQNH(+1)">+1 hPa</button>
+    <button class="trn-btn" id="btn-qnh-cl" onclick="adjustQNHCoarse(-1)">−1 hPa</button>
+    <button class="trn-btn" id="btn-qnh-fl" onclick="adjustQNHFine(-1)">−0.1</button>
+    <button class="trn-btn" id="btn-qnh-fr" onclick="adjustQNHFine(+1)">+0.1</button>
+    <button class="trn-btn" id="btn-qnh-cr" onclick="adjustQNHCoarse(+1)">+1 hPa</button>
   </div>
   <div class="trn-btns" style="margin-top:6px">
-    <button class="trn-btn" onclick="setQNH(1013.25)">STD 1013</button>
+    <button class="trn-btn" id="btn-std"    onclick="setQNH(1013.25)">STD 1013</button>
     <button class="trn-btn" id="btn-setalt" onclick="setAltHere()">⊕ GPS Alt</button>
     <button class="trn-btn" onclick="closeBaroPanel()">✕ Close</button>
+  </div>
+  <div class="trn-btns" style="margin-top:6px">
+    <button class="trn-btn" id="btn-spd-unit" onclick="toggleSpeedUnit()">Speed: KT</button>
+    <button class="trn-btn" id="btn-qnh-unit" onclick="toggleQNHUnit()">QNH: hPa</button>
   </div>
   <div id="cal-alt-row">
     <input type="number" id="cal-alt-input" placeholder="Manual alt (ft MSL)"
@@ -242,24 +246,74 @@ baroEl.addEventListener('click', () => {
 
 function closeBaroPanel() { baroPanel.style.display = 'none'; }
 
-function updateBaroUI() {
-  const qnh = TARGET.baro_hpa;
-  baroEl.textContent    = 'QNH ' + qnh.toFixed(0);
-  qnhValEl.textContent  = qnh.toFixed(2) + ' hPa';
-  const isBaro = TARGET.baro_src === 'bme280';
-  baroSrcEl.textContent = isBaro ? 'BME280' : 'GPS ALT';
-  baroSrcEl.style.background = isBaro ? 'rgba(0,100,60,.7)' : 'rgba(80,60,0,.7)';
-  baroSrcEl.style.color      = isBaro ? '#afa' : '#fd8';
+// ── Unit preferences (persist across sessions) ─────────────────────────────
+const HPA_TO_INHG = 0.02953;
+const INHG_TO_HPA = 33.8639;
+let speedUnit = localStorage.getItem('speedUnit') || 'kt';   // 'kt' | 'mph'
+let qnhUnit   = localStorage.getItem('qnhUnit')   || 'hpa'; // 'hpa' | 'inhg'
+
+function toDisplaySpd(kt)  { return speedUnit === 'mph' ? kt * 1.15078 : kt; }
+function toDisplayQNH(hpa) { return qnhUnit  === 'inhg' ? hpa * HPA_TO_INHG : hpa; }
+
+function toggleSpeedUnit() {
+  speedUnit = speedUnit === 'kt' ? 'mph' : 'kt';
+  localStorage.setItem('speedUnit', speedUnit);
+  updateBaroUI();
+}
+function toggleQNHUnit() {
+  qnhUnit = qnhUnit === 'hpa' ? 'inhg' : 'hpa';
+  localStorage.setItem('qnhUnit', qnhUnit);
+  updateBaroUI();
 }
 
-function adjustQNH(delta) {
-  const v = parseFloat((Math.max(800, Math.min(1100, TARGET.baro_hpa + delta))).toFixed(2));
+function updateBaroUI() {
+  const hpa  = TARGET.baro_hpa;
+  const disp = toDisplayQNH(hpa);
+  const isInHg = qnhUnit === 'inhg';
+
+  // Badge: "29.92"" or "QNH 1013"
+  baroEl.textContent = isInHg ? disp.toFixed(2) + '\u2033' : 'QNH ' + Math.round(hpa);
+  // Panel large display
+  qnhValEl.textContent = isInHg ? disp.toFixed(2) + ' inHg' : hpa.toFixed(2) + ' hPa';
+
+  // Adjustment button labels
+  const [cl, fl, fr, cr] = isInHg
+    ? ['−.10\u2033', '−.01\u2033', '+.01\u2033', '+.10\u2033']
+    : ['−1 hPa', '−0.1', '+0.1', '+1 hPa'];
+  document.getElementById('btn-qnh-cl').textContent = cl;
+  document.getElementById('btn-qnh-fl').textContent = fl;
+  document.getElementById('btn-qnh-fr').textContent = fr;
+  document.getElementById('btn-qnh-cr').textContent = cr;
+
+  // STD button
+  document.getElementById('btn-std').textContent = isInHg ? 'STD 29.92' : 'STD 1013';
+
+  // Unit toggle buttons
+  document.getElementById('btn-spd-unit').textContent = 'Speed: ' + speedUnit.toUpperCase();
+  document.getElementById('btn-qnh-unit').textContent = 'QNH: ' + (isInHg ? 'inHg' : 'hPa');
+
+  // Baro source badge
+  const isBaro = TARGET.baro_src === 'bme280';
+  baroSrcEl.textContent          = isBaro ? 'BME280' : 'GPS ALT';
+  baroSrcEl.style.background     = isBaro ? 'rgba(0,100,60,.7)' : 'rgba(80,60,0,.7)';
+  baroSrcEl.style.color          = isBaro ? '#afa' : '#fd8';
+}
+
+function _adjustQNHhpa(deltaHpa) {
+  const v = parseFloat(Math.max(800, Math.min(1100, TARGET.baro_hpa + deltaHpa)).toFixed(2));
   TARGET.baro_hpa = v;
   fetch('/baro?qnh=' + v).catch(() => {});
   updateBaroUI();
 }
+// Coarse/fine step sizes depend on active unit
+function adjustQNHCoarse(sign) {
+  _adjustQNHhpa(sign * (qnhUnit === 'inhg' ? 0.10 * INHG_TO_HPA : 1.0));
+}
+function adjustQNHFine(sign) {
+  _adjustQNHhpa(sign * (qnhUnit === 'inhg' ? 0.01 * INHG_TO_HPA : 0.1));
+}
 
-function setQNH(val) {
+function setQNH(val) {  // val always in hPa
   TARGET.baro_hpa = val;
   fetch('/baro?qnh=' + val).catch(() => {});
   updateBaroUI();
@@ -335,6 +389,23 @@ function resize() {
 resize();
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+
+// Tap the speed tape (anywhere along its width) to toggle kt / mph
+function _handleSpdTap(x, y) {
+  if (x >= L.spdX && x <= L.spdX + L.spdW + 14
+      && y >= L.tapeTopY && y <= L.tapeBotY) {
+    toggleSpeedUnit();
+  }
+}
+canvas.addEventListener('click',    e => {
+  const r=canvas.getBoundingClientRect();
+  _handleSpdTap(e.clientX-r.left, e.clientY-r.top);
+});
+canvas.addEventListener('touchend', e => {
+  const r=canvas.getBoundingClientRect(), t=e.changedTouches[0];
+  _handleSpdTap(t.clientX-r.left, t.clientY-r.top);
+  // Don't preventDefault here — let other touch events (terrain panel) still work
+}, {passive:true});
 
 // ── Maths ──────────────────────────────────────────────────────────────────
 const DEG = Math.PI / 180;
@@ -485,29 +556,33 @@ function drawAircraftSymbol() {
 // ── Speed tape ─────────────────────────────────────────────────────────────
 function drawSpeedTape() {
   const { spdX, spdW, tapeTopY, tapeH, tapeMidY } = L;
-  const pxPerKt=tapeH/60, spd=D.speed;
+  const spd      = toDisplaySpd(D.speed);
+  const spdRange = speedUnit === 'mph' ? 70 : 60;
+  const pxPerSpd = tapeH / spdRange;
   const boxH=Math.max(28,H*.065), boxHalf=boxH/2, fs=Math.max(10,H*.021);
 
   ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(spdX,tapeTopY,spdW,tapeH);
   ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(spdX+spdW,tapeTopY); ctx.lineTo(spdX+spdW,tapeTopY+tapeH); ctx.stroke();
+  // Label shows current unit; ▾ hints it's tappable
+  const spdLabel = speedUnit === 'mph' ? 'GS MPH\u25be' : 'GS KT\u25be';
   ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
-  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('GS KT',spdX+spdW/2,tapeTopY+4);
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText(spdLabel,spdX+spdW/2,tapeTopY+4);
 
   ctx.save();
   ctx.beginPath(); ctx.rect(spdX,tapeTopY,spdW,tapeH); ctx.clip();
-  for (let kt=Math.floor(spd/10)*10-40; kt<=spd+40; kt+=10) {
-    if (kt<0) continue;
-    const y=tapeMidY-(kt-spd)*pxPerKt;
+  for (let v=Math.floor(spd/10)*10-50; v<=spd+50; v+=10) {
+    if (v<0) continue;
+    const y=tapeMidY-(v-spd)*pxPerSpd;
     if (Math.abs(y-tapeMidY)<boxHalf+4) continue;
-    const isMaj=kt%20===0, tlen=isMaj?14:8;
+    const isMaj=v%20===0, tlen=isMaj?14:8;
     ctx.strokeStyle=isMaj?'rgba(255,255,255,.80)':'rgba(255,255,255,.45)';
     ctx.lineWidth=isMaj?1.5:1;
     ctx.beginPath(); ctx.moveTo(spdX+spdW,y); ctx.lineTo(spdX+spdW-tlen,y); ctx.stroke();
     if (isMaj) {
       ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
       ctx.textAlign='right'; ctx.textBaseline='middle';
-      ctx.fillText(kt.toString(),spdX+spdW-tlen-3,y);
+      ctx.fillText(v.toString(),spdX+spdW-tlen-3,y);
     }
   }
   ctx.restore();
@@ -574,10 +649,12 @@ function drawAltTape() {
   // QNH and altitude source
   const qnhY=fpmLblY+Math.max(11,H*.019)+2;
   const isBaro=D.baro_src==='bme280';
+  const isInHg=qnhUnit==='inhg';
+  const qnhDisp=toDisplayQNH(D.baro_hpa);
   ctx.fillStyle=isBaro?'rgba(80,200,255,.90)':'rgba(140,175,210,.50)';
   ctx.font=`${Math.max(8,H*.016)}px monospace`;
-  ctx.fillText(D.baro_hpa.toFixed(2),altX+altW/2,qnhY);
-  ctx.fillText(isBaro?'BME':'GPS',altX+altW/2,qnhY+Math.max(10,H*.017));
+  ctx.fillText(isInHg?qnhDisp.toFixed(2)+'\u2033':qnhDisp.toFixed(2),altX+altW/2,qnhY);
+  ctx.fillText(isInHg?(isBaro?'Hg B':'Hg G'):(isBaro?'hPa B':'hPa G'),altX+altW/2,qnhY+Math.max(10,H*.017));
   ctx.textBaseline='alphabetic';
 }
 
