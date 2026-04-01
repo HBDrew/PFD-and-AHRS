@@ -557,7 +557,7 @@ function drawAircraftSymbol() {
 function drawSpeedTape() {
   const { spdX, spdW, tapeTopY, tapeH, tapeMidY } = L;
   const spd      = toDisplaySpd(D.speed);
-  const spdRange = speedUnit === 'mph' ? 70 : 60;
+  const spdRange = speedUnit === 'mph' ? 175 : 150;  // ~2.5× wider than before
   const pxPerSpd = tapeH / spdRange;
   const boxH=Math.max(28,H*.065), boxHalf=boxH/2, fs=Math.max(10,H*.021);
 
@@ -571,19 +571,17 @@ function drawSpeedTape() {
 
   ctx.save();
   ctx.beginPath(); ctx.rect(spdX,tapeTopY,spdW,tapeH); ctx.clip();
-  for (let v=Math.floor(spd/10)*10-50; v<=spd+50; v+=10) {
+  // Ticks and labels every 20 units — no minor ticks
+  const spdBase = Math.round(spd / 20) * 20;
+  for (let v=spdBase-120; v<=spdBase+120; v+=20) {
     if (v<0) continue;
     const y=tapeMidY-(v-spd)*pxPerSpd;
     if (Math.abs(y-tapeMidY)<boxHalf+4) continue;
-    const isMaj=v%20===0, tlen=isMaj?14:8;
-    ctx.strokeStyle=isMaj?'rgba(255,255,255,.80)':'rgba(255,255,255,.45)';
-    ctx.lineWidth=isMaj?1.5:1;
-    ctx.beginPath(); ctx.moveTo(spdX+spdW,y); ctx.lineTo(spdX+spdW-tlen,y); ctx.stroke();
-    if (isMaj) {
-      ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
-      ctx.textAlign='right'; ctx.textBaseline='middle';
-      ctx.fillText(v.toString(),spdX+spdW-tlen-3,y);
-    }
+    ctx.strokeStyle='rgba(255,255,255,.80)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(spdX+spdW,y); ctx.lineTo(spdX+spdW-14,y); ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
+    ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText(v.toString(),spdX+spdW-17,y);
   }
   ctx.restore();
 
@@ -613,15 +611,19 @@ function drawAltTape() {
 
   ctx.save();
   ctx.beginPath(); ctx.rect(altX,tapeTopY,altW,tapeH); ctx.clip();
-  for (let ft=Math.floor(alt/100)*100-350; ft<=alt+350; ft+=100) {
+  // Start on a multiple of 100 so ft%200 and ft%500 resolve correctly.
+  const baseAlt = Math.round(alt / 100) * 100;
+  for (let ft=baseAlt-300; ft<=baseAlt+300; ft+=100) {
     const y=tapeMidY-(ft-alt)*pxPerFt;
     if (Math.abs(y-tapeMidY)<boxHalf+4) continue;
     const isMaj=ft%500===0, tlen=isMaj?16:8;
-    ctx.strokeStyle=isMaj?'rgba(255,255,255,.80)':'rgba(255,255,255,.45)';
-    ctx.lineWidth=isMaj?1.5:1;
+    ctx.strokeStyle=isMaj?'rgba(255,255,255,.85)':'rgba(255,255,255,.45)';
+    ctx.lineWidth=isMaj?1.8:1;
     ctx.beginPath(); ctx.moveTo(altX,y); ctx.lineTo(altX+tlen,y); ctx.stroke();
-    if (isMaj||ft%200===0) {
-      ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
+    // Label every 200ft mark; major (500ft) marks get a brighter label
+    if (ft%200===0) {
+      ctx.fillStyle=isMaj?'rgba(255,255,255,.95)':'rgba(255,255,255,.80)';
+      ctx.font=`${isMaj?fs+1:fs}px monospace`;
       ctx.textAlign='left'; ctx.textBaseline='middle';
       ctx.fillText(ft.toString(),altX+tlen+3,y);
     }
