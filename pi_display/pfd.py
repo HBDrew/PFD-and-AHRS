@@ -279,6 +279,8 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
         if deg == 0:
             continue
         row_y = ccy + pitch_px - int(deg * px_per_deg)
+        if row_y < ccy - 185:   # don't draw above roll arc area (display y < 44)
+            continue
         if not (10 < row_y < ch - 10):
             continue
         major = (deg % 10 == 0)
@@ -352,9 +354,9 @@ def draw_roll_arc(surf, roll):
     and doghouse roll pointer."""
     cx, cy = CX, ROLL_CY
 
-    # Arc (-60° to +60° of bank, mapped to screen top)
+    # Arc (-60° to +60° of bank, mapped to screen top), rotates with roll
     for a in range(-150, -29):
-        a1, a2 = a * DEG, (a + 1) * DEG
+        a1, a2 = (a + roll) * DEG, (a + 1 + roll) * DEG
         x1 = int(cx + ROLL_R * math.cos(a1))
         y1 = int(cy + ROLL_R * math.sin(a1))
         x2 = int(cx + ROLL_R * math.cos(a2))
@@ -371,7 +373,7 @@ def draw_roll_arc(surf, roll):
     for deg2, length in [(10, 9), (20, 9), (30, 13),
                          (-10, 9), (-20, 9), (-30, 13),
                          (45, 9), (-45, 9), (60, 11), (-60, 11)]:
-        ang = (-90 + deg2) * DEG
+        ang = (-90 + deg2 + roll) * DEG
         x1 = int(cx + (ROLL_R - length) * math.cos(ang))
         y1 = int(cy + (ROLL_R - length) * math.sin(ang))
         x2 = int(cx + ROLL_R * math.cos(ang))
@@ -387,15 +389,14 @@ def draw_roll_arc(surf, roll):
             tri = [(mx - tx2, my - ty2), (mx + tx2, my + ty2), (inner_x, inner_y)]
             pygame.gfxdraw.aapolygon(surf, tri, LTGREY)
 
-    # Fixed zero-bank marker: small downward white triangle above arc at 12 o'clock
-    top_x = int(cx + ROLL_R * math.cos(-math.pi / 2))   # = CX
-    top_y = int(cy + ROLL_R * math.sin(-math.pi / 2))   # = ROLL_CY - ROLL_R ≈ 16
-    tri0 = [(top_x - 8, top_y - 13), (top_x + 8, top_y - 13), (top_x, top_y)]
+    # Moving upper doghouse — OUTSIDE arc, tip at arc, moves with roll arc
+    upper_ang = (-90 + roll) * DEG
+    tri0 = _doghouse_pts(cx, cy, upper_ang, ROLL_R + 2, size=10, inward=True)
     pygame.gfxdraw.filled_polygon(surf, tri0, WHITE)
     pygame.gfxdraw.aapolygon(surf, tri0, WHITE)
 
-    # Moving roll pointer: doghouse INSIDE the arc, tip pointing outward toward arc
-    roll_ang = (-90 + roll) * DEG
+    # Fixed lower doghouse — INSIDE arc, tip at arc-8, fixed at 12 o'clock
+    roll_ang = -math.pi / 2
     rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 8, size=10, inward=False)
     pygame.gfxdraw.filled_polygon(surf, rp_pts, WHITE)
     pygame.gfxdraw.aapolygon(surf, rp_pts, WHITE)
@@ -439,7 +440,7 @@ def draw_aircraft_symbol(surf):
 # ── Slip/skid indicator ───────────────────────────────────────────────────────
 def draw_slip_ball(surf, ay):
     """Slip indicator: thin bar that slides under the fixed zero-bank triangle."""
-    slip_y = ROLL_CY - ROLL_R + 2   # just below the fixed triangle pointer tip
+    slip_y = ROLL_CY - ROLL_R + 24  # below lower doghouse base (y≈40)
     max_d  = 12
     defl   = int(max(-max_d, min(max_d, (ay / 0.2) * max_d)))
     pygame.draw.rect(surf, WHITE, (CX + defl - 8, slip_y, 16, 4))

@@ -166,6 +166,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     for deg in range(-30, 35, 5):
         if deg == 0: continue
         ly   = hy - int(focal * math.tan(deg * DEG))
+        if ly < H*2 - CY + 44:   # don't draw above roll arc area (display y < 44)
+            continue
         major = (deg % 10 == 0)
         half  = major_half if major else minor_half
         lw    = 3 if major else 1
@@ -383,9 +385,9 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     def a(v): return int(round(v * ARC_S))
     acx, acy = a(CX), a(ROLL_CY)
 
-    # Arc from -60° to +60° bank (screen angles -150° to -30°)
+    # Arc from -60° to +60° bank (screen angles -150° to -30°), rotates with roll
     for ang in range(-150, -29):
-        a1, a2 = ang * DEG, (ang + 1) * DEG
+        a1, a2 = (ang + roll) * DEG, (ang + 1 + roll) * DEG
         arc_d.line([
             (acx + int(a(ROLL_R) * math.cos(a1)), acy + int(a(ROLL_R) * math.sin(a1))),
             (acx + int(a(ROLL_R) * math.cos(a2)), acy + int(a(ROLL_R) * math.sin(a2))),
@@ -395,7 +397,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     for deg2, l2 in [(0, 18), (10, 10), (20, 10), (30, 14),
                      (-10, 10), (-20, 10), (-30, 14),
                      (45, 10), (-45, 10), (60, 12), (-60, 12)]:
-        ang2 = (-90 + deg2) * DEG
+        ang2 = (-90 + deg2 + roll) * DEG
         arc_d.line([
             (acx + int((a(ROLL_R) - a(l2)) * math.cos(ang2)),
              acy + int((a(ROLL_R) - a(l2)) * math.sin(ang2))),
@@ -417,12 +419,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             (int(acx + a(br)*ox + a(hw)*px), int(acy + a(br)*oy + a(hw)*py)),
         ]
 
-    # Fixed zero-bank marker: downward white triangle above arc at 12 o'clock
-    top_x = acx + int(a(ROLL_R) * math.cos(-math.pi/2))
-    top_y = acy + int(a(ROLL_R) * math.sin(-math.pi/2))
-    tri0 = [(top_x - a(8), top_y - a(13)),
-            (top_x + a(8), top_y - a(13)),
-            (top_x, top_y)]
+    # Moving upper doghouse — OUTSIDE arc, tip at arc, moves with roll arc
+    tri0 = doghouse_pts_2x((-90 + roll) * DEG, ROLL_R, size=10)
     arc_d.polygon(tri0, fill=WHITE + (255,))
 
     # Moving roll pointer: doghouse INSIDE arc, tip pointing outward
@@ -440,7 +438,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             (int(acx + a(br)*ox + a(hw)*px), int(acy + a(br)*oy + a(hw)*py)),
         ]
 
-    dh1 = doghouse_pts_inside((-90 + roll) * DEG, ROLL_R - 8, size=10)
+    # Fixed lower doghouse — INSIDE arc, tip at arc-8, fixed at 12 o'clock
+    dh1 = doghouse_pts_inside(-math.pi/2, ROLL_R - 8, size=10)
     arc_d.polygon(dh1, fill=WHITE + (255,))
 
     # Scale down with Lanczos (anti-aliasing via supersampling)
@@ -472,7 +471,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     # ── 9. SLIP INDICATOR — thin bar below zero-bank triangle pointer ─────────
     # Slides ±12 px under the fixed doghouse, same width as its base (16 px)
-    slip_y = ROLL_CY - ROLL_R + 2   # just below tip of fixed triangle
+    slip_y = ROLL_CY - ROLL_R + 24  # below lower doghouse base (y≈40)
     max_d  = 12
     defl   = int(max(-max_d, min(max_d, (ay / 0.2) * max_d)))
     draw.rectangle([(CX + defl - 8, slip_y),
