@@ -369,15 +369,20 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                (hb_x+17, HDG_Y), (hb_x+17, HDG_Y+14)]
         draw.polygon(bug, fill=CYAN)
 
-    # Heading box — pentagon with downward point into heading tape (matches speed/alt box style)
+    # Heading box — rectangle with small centered triangle tab on bottom
+    # Tab is 1/3 of box width, starts 1/3 of the way along the bottom edge
     bw2, bh2 = 58, 22
     bx = CX - bw2//2; by2 = HDG_Y - bh2 - 2
-    pd_hdg = bw2 // 2   # 29px → 90° tip pointing down
-    pts_h = [(bx,      by2),
-             (bx+bw2,  by2),
-             (bx+bw2,  by2+bh2),
-             (CX,      by2+bh2+pd_hdg),
-             (bx,      by2+bh2)]
+    th = bw2 // 3          # triangle base width ≈ 19px
+    td = bh2 // 2          # triangle depth = 11px
+    tx = CX - th // 2      # triangle left base x
+    pts_h = [(bx,       by2),
+             (bx+bw2,   by2),
+             (bx+bw2,   by2+bh2),
+             (tx+th,    by2+bh2),
+             (CX,       by2+bh2+td),
+             (tx,       by2+bh2),
+             (bx,       by2+bh2)]
     draw.polygon(pts_h, fill=(0, 0, 0))
     draw.line(pts_h + [pts_h[0]], fill=WHITE, width=2)
     draw.text((CX-22, by2+2), f"{round(hdg)%360:03d}\u00b0",

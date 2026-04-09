@@ -664,14 +664,19 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
             pygame.draw.polygon(surf, (220, 60, 220),
                 [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
-    # Heading box — pentagon with downward point into heading tape (matches speed/alt box style)
+    # Heading box — rectangle with small centered triangle tab on bottom
+    # Tab is 1/3 of box width, starts 1/3 of the way along the bottom edge
     bw, bh = 58, 22
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
-    pd_h = bw // 2   # 29px → 90° tip pointing down into heading tape
-    pts_h = [(bx,     by2),
+    th = bw // 3           # triangle base width ≈ 19px
+    td = bh // 2           # triangle depth = 11px
+    tx = CX - th // 2      # triangle left base x
+    pts_h = [(bx,      by2),
              (bx + bw, by2),
              (bx + bw, by2 + bh),
-             (CX,      by2 + bh + pd_h),
+             (tx + th, by2 + bh),
+             (CX,      by2 + bh + td),
+             (tx,      by2 + bh),
              (bx,      by2 + bh)]
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
     pygame.gfxdraw.aapolygon(surf, pts_h, WHITE)
