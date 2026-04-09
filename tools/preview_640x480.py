@@ -289,11 +289,11 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if major:
             draw.text((SPD_X+tl+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
-    # Speed box — concave notch on AI (right) side
+    # Speed box — concave notch on outer (left/screen-edge) side
     bh = 44; by = TAPE_MID - bh//2
-    pts = [(SPD_X, by), (SPD_X+SPD_W, by),
-           (SPD_X+SPD_W-10, TAPE_MID),          # notch into box
-           (SPD_X+SPD_W, by+bh), (SPD_X, by+bh)]
+    pts = [(SPD_X+SPD_W, by), (SPD_X, by),
+           (SPD_X+10, TAPE_MID),                 # notch on outer edge
+           (SPD_X, by+bh), (SPD_X+SPD_W, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
@@ -314,25 +314,27 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         fy = alt_y(ft)
         if not (TAPE_TOP + 12 < fy < TAPE_BOT - 12): continue
         major = (ft % 500 == 0)
-        tl = 14 if major else 7
+        tl = 12 if major else 7
         draw.line([(ALT_X+ALT_W-tl, fy), (ALT_X+ALT_W, fy)],
                   fill=LTGREY, width=2 if major else 1)
         if ft % 200 == 0:
-            draw.text((ALT_X+4, fy-8), str(ft),
-                      fill=(230,230,230), font=fnt(15, bold=True))
+            f15 = fnt(15, bold=True)
+            tw = int(f15.getlength(str(ft)))
+            draw.text((ALT_X+ALT_W-tl-2-tw, fy-8), str(ft),
+                      fill=(230,230,230), font=f15)
 
-    # Altitude bug
+    # Altitude bug — on outer (right/screen-edge) side
     aby = alt_y(alt_bug)
     if TAPE_TOP < aby < TAPE_BOT:
-        bug = [(ALT_X, aby-10), (ALT_X+20, aby-10),
-               (ALT_X+26, aby), (ALT_X+20, aby+10), (ALT_X, aby+10)]
+        bug = [(ALT_X+ALT_W, aby-10), (ALT_X+ALT_W-20, aby-10),
+               (ALT_X+ALT_W-26, aby), (ALT_X+ALT_W-20, aby+10), (ALT_X+ALT_W, aby+10)]
         draw.polygon(bug, fill=CYAN)
 
-    # Alt box — concave notch on AI (left) side
+    # Alt box — concave notch on outer (right/screen-edge) side
     bh = 44; by = TAPE_MID - bh//2
-    pts = [(ALT_X+ALT_W, by), (ALT_X, by),
-           (ALT_X+10, TAPE_MID),                 # notch into box
-           (ALT_X, by+bh), (ALT_X+ALT_W, by+bh)]
+    pts = [(ALT_X, by), (ALT_X+ALT_W, by),
+           (ALT_X+ALT_W-10, TAPE_MID),           # notch on outer edge
+           (ALT_X+ALT_W, by+bh), (ALT_X, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
     # Rolling drum: 5 digits, no leading zeros

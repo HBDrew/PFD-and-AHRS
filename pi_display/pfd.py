@@ -528,12 +528,12 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
             _text(surf, str(v), 17, (230, 230, 230), bold=True,
                   x=SPD_X + tl + 2, y=vy - 9)
 
-    # Speed readout box — concave notch on AI side (right edge), GI-275 style
+    # Speed readout box — concave notch on outer (left) edge, GI-275 style
     bh = 44
     by = TAPE_MID - bh // 2
-    pts = [(SPD_X, by), (SPD_X + SPD_W, by),
-           (SPD_X + SPD_W - 10, TAPE_MID),          # notch cuts INTO the box
-           (SPD_X + SPD_W, by + bh), (SPD_X, by + bh)]
+    pts = [(SPD_X + SPD_W, by), (SPD_X, by),
+           (SPD_X + 10, TAPE_MID),                   # notch on outer/left edge
+           (SPD_X, by + bh), (SPD_X + SPD_W, by + bh)]
     pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts, WHITE)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
@@ -562,32 +562,35 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
         if not (TAPE_TOP + 12 < fy < TAPE_BOT - 12):
             continue
         major = (ft % 500 == 0)
-        tl = 14 if major else 7
+        tl = 12 if major else 7
         pygame.draw.line(surf, LTGREY,
                          (ALT_X + ALT_W - tl, fy), (ALT_X + ALT_W, fy),
                          2 if major else 1)
         if ft % 200 == 0:
-            _text(surf, str(ft), 15, (230, 230, 230), bold=True,
-                  x=ALT_X + 4, y=fy - 8)
+            lbl = str(ft)
+            lw = _get_font(15, bold=True).size(lbl)[0]
+            _text(surf, lbl, 15, (230, 230, 230), bold=True,
+                  x=ALT_X + ALT_W - tl - 2 - lw, y=fy - 8)
 
     # Altitude bug
     if alt_bug is not None:
         aby = ay2(alt_bug)
         if TAPE_TOP < aby < TAPE_BOT:
-            bug = [(ALT_X, aby - 10), (ALT_X + 20, aby - 10),
-                   (ALT_X + 26, aby), (ALT_X + 20, aby + 10), (ALT_X, aby + 10)]
+            bug = [(ALT_X + ALT_W, aby - 10), (ALT_X + ALT_W - 20, aby - 10),
+                   (ALT_X + ALT_W - 26, aby), (ALT_X + ALT_W - 20, aby + 10),
+                   (ALT_X + ALT_W, aby + 10)]
             pygame.draw.polygon(surf, CYAN, bug)
 
     # ALT bug button — top strip of alt tape
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     _cyan_box(surf, "ALT", alt_str, x=ALT_X, y=2, w=ALT_W, h=18)
 
-    # Altitude readout box — concave notch on AI side (left edge), GI-275 style
+    # Altitude readout box — concave notch on outer (right) edge, GI-275 style
     bh = 44
     by = TAPE_MID - bh // 2
-    pts = [(ALT_X + ALT_W, by), (ALT_X, by),
-           (ALT_X + 10, TAPE_MID),               # notch cuts INTO the box
-           (ALT_X, by + bh), (ALT_X + ALT_W, by + bh)]
+    pts = [(ALT_X, by), (ALT_X + ALT_W, by),
+           (ALT_X + ALT_W - 10, TAPE_MID),       # notch on outer/right edge
+           (ALT_X + ALT_W, by + bh), (ALT_X, by + bh)]
     pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts, WHITE)
     # Rolling drum: 5 digits, 14px/cell, 20pt bold, no leading zeros
