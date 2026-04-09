@@ -53,23 +53,62 @@ def lerp_color(a, b, t):
     return tuple(int(a[i] + (b[i]-a[i])*t) for i in range(3))
 
 
-def load_fonts():
-    sizes = [10, 11, 13, 14, 15, 16, 18, 20, 22, 26]
-    fonts = {}
-    base = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono"
-    for sz in sizes:
-        for bold in (False, True):
-            suffix = "-Bold" if bold else ""
-            try:
-                fonts[(sz, bold)] = ImageFont.truetype(f"{base}{suffix}.ttf", sz)
-            except Exception:
-                fonts[(sz, bold)] = ImageFont.load_default()
-    return fonts
-
-FNT = load_fonts()
+_fnt_cache: dict = {}
 
 def fnt(size, bold=False):
-    return FNT.get((size, bold), FNT.get((size, False), ImageFont.load_default()))
+    key = (size, bold)
+    if key in _fnt_cache:
+        return _fnt_cache[key]
+    base = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono"
+    suffix = "-Bold" if bold else ""
+    try:
+        _fnt_cache[key] = ImageFont.truetype(f"{base}{suffix}.ttf", size)
+    except Exception:
+        _fnt_cache[key] = ImageFont.load_default()
+    return _fnt_cache[key]
+
+
+def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz):
+    """
+    Veeder-Root style rolling-drum digit readout.
+    Only the units digit animates continuously; higher digits snap.
+    value: float — fractional part drives unit-digit roll.
+    """
+    char_w = bw // n_digits
+    f = fnt(font_sz, bold=True)
+    try:
+        ref_bbox = f.getbbox("0")
+        ch = ref_bbox[3] - ref_bbox[1]
+        cw_ch = ref_bbox[2] - ref_bbox[0]
+    except Exception:
+        ch = font_sz; cw_ch = font_sz // 2
+
+    col_rgba = color + (255,)
+
+    for col_i in range(n_digits):
+        power = n_digits - 1 - col_i   # 0 = units, 1 = tens, …
+        if power == 0:
+            d_cont = float(value % 10.0)
+        else:
+            d_cont = float((int(value) // (10 ** power)) % 10)
+        d_lo = int(d_cont)
+        frac  = d_cont - d_lo
+        d_hi  = (d_lo + 1) % 10
+
+        scroll = int(frac * bh)
+        tx     = max(0, (char_w - cw_ch) // 2)
+        ty_lo  = (bh - ch) // 2 - scroll
+        ty_hi  = ty_lo + bh
+
+        # Render into a 2× tall cell, then crop to bh (auto-clips scrolled digits)
+        cell   = Image.new('RGBA', (char_w, bh * 2), (0, 0, 0, 0))
+        cd     = ImageDraw.Draw(cell)
+        cd.text((tx, ty_lo), str(d_lo), fill=col_rgba, font=f)
+        cd.text((tx, ty_hi), str(d_hi), fill=col_rgba, font=f)
+
+        cx_pos  = bx + col_i * char_w
+        cropped = cell.crop((0, 0, char_w, bh))
+        img.paste(cropped, (cx_pos, by), cropped)
 
 
 def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
@@ -153,9 +192,10 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Horizon line
     ai_draw.line([(0, hy), (W*S, hy)], fill=(255,255,255,220), width=2)
 
-    # Pitch ladder — half in display pixels (canvas 1:1 with output)
-    major_half = int(AI_W * 0.22)   # ~108 px
-    minor_half = int(AI_W * 0.13)   # ~64 px
+    # Pitch ladder — half-widths in display pixels
+    # GI-275: major ~14% AI width each side, minor ~8%
+    major_half = int(AI_W * 0.14)   # ~69 px
+    minor_half = int(AI_W * 0.08)   # ~39 px
     fn18 = fnt(18, bold=True)
     for deg in range(-30, 35, 5):
         if deg == 0: continue
@@ -246,8 +286,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    draw.text((SPD_X+3, TAPE_MID-14), f"{round(speed):3d}",
-              fill=spd_col, font=fnt(26, bold=True))
+    # Rolling drum: 3 digits, bw=66px (22px per cell), 26pt bold
+    rolling_drum(img, SPD_X+4, TAPE_MID-14, 66, 28, speed, 3, spd_col, 26)
 
     # Header
     draw.text((SPD_X+3, TAPE_TOP+2), "GS KT", fill=(140,200,255), font=fnt(10))
@@ -286,8 +326,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
            (ALT_X, by+bh), (ALT_X+ALT_W, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
-    draw.text((ALT_X+3, TAPE_MID-14), f"{round(alt):5d}",
-              fill=WHITE, font=fnt(24, bold=True))
+    # Rolling drum: 5 digits, bw=70px (14px per cell), 20pt bold
+    rolling_drum(img, ALT_X+2, TAPE_MID-14, 70, 28, alt, 5, WHITE, 20)
 
     # VSI
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
@@ -341,52 +381,63 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Triangle pointer above heading box
     draw.polygon([(CX-7, HDG_Y-1), (CX+7, HDG_Y-1), (CX, HDG_Y-11)], fill=YELLOW)
 
-    # ── 6. ROLL ARC ──────────────────────────────────────────────────────────
-    cx2, cy2 = CX, ROLL_CY
-    # Arc
-    for a in range(-150, -29):
-        a1, a2 = a*DEG, (a+1)*DEG
-        x1,y1 = int(cx2+ROLL_R*math.cos(a1)), int(cy2+ROLL_R*math.sin(a1))
-        x2,y2 = int(cx2+ROLL_R*math.cos(a2)), int(cy2+ROLL_R*math.sin(a2))
-        draw.line([(x1,y1),(x2,y2)], fill=LTGREY, width=2)
+    # ── 6. ROLL ARC (rendered at 2× for anti-aliasing) ───────────────────────
+    # Drawing at 2× then scaling down via LANCZOS gives smooth arc and shapes.
+    ARC_S = 2
+    arc_img = Image.new('RGBA', (W * ARC_S, H * ARC_S), (0, 0, 0, 0))
+    arc_d   = ImageDraw.Draw(arc_img)
+
+    def a(v): return int(round(v * ARC_S))
+    acx, acy = a(CX), a(ROLL_CY)
+
+    # Arc from -60° to +60° bank (screen angles -150° to -30°)
+    for ang in range(-150, -29):
+        a1, a2 = ang * DEG, (ang + 1) * DEG
+        arc_d.line([
+            (acx + int(a(ROLL_R) * math.cos(a1)), acy + int(a(ROLL_R) * math.sin(a1))),
+            (acx + int(a(ROLL_R) * math.cos(a2)), acy + int(a(ROLL_R) * math.sin(a2))),
+        ], fill=LTGREY + (255,), width=a(2))
 
     # Tick marks
-    for deg2, l2 in [(0,18),(10,10),(20,10),(30,14),(-10,10),(-20,10),(-30,14),
-                      (45,10),(-45,10),(60,12),(-60,12)]:
-        ang = (-90+deg2)*DEG
-        x1=int(cx2+(ROLL_R-l2)*math.cos(ang)); y1=int(cy2+(ROLL_R-l2)*math.sin(ang))
-        x2=int(cx2+ROLL_R*math.cos(ang));      y2=int(cy2+ROLL_R*math.sin(ang))
-        draw.line([(x1,y1),(x2,y2)], fill=LTGREY, width=2 if deg2==0 else 1)
+    for deg2, l2 in [(0, 18), (10, 10), (20, 10), (30, 14),
+                     (-10, 10), (-20, 10), (-30, 14),
+                     (45, 10), (-45, 10), (60, 12), (-60, 12)]:
+        ang2 = (-90 + deg2) * DEG
+        arc_d.line([
+            (acx + int((a(ROLL_R) - a(l2)) * math.cos(ang2)),
+             acy + int((a(ROLL_R) - a(l2)) * math.sin(ang2))),
+            (acx + int( a(ROLL_R)          * math.cos(ang2)),
+             acy + int( a(ROLL_R)          * math.sin(ang2))),
+        ], fill=LTGREY + (255,), width=a(2) if deg2 == 0 else a(1))
 
-    # Doghouse pentagon helper
-    def doghouse_pts(ang_rad, r, size=11):
-        out_x = math.cos(ang_rad); out_y = math.sin(ang_rad)
-        perp_x = -out_y;           perp_y =  out_x
-        base_r = r + size*1.3;  roof_r = r + size*0.6
-        half_w = size*0.7;      roof_hw = size*0.35
+    # Pentagon doghouse helper at 2× scale
+    def doghouse_pts_2x(ang_rad, r, size=11):
+        ox = math.cos(ang_rad); oy = math.sin(ang_rad)
+        px = -oy;               py =  ox
+        br = r + size * 1.3;  rr = r + size * 0.6
+        hw = size * 0.7;      rh = size * 0.35
         return [
-            (int(cx2 + base_r*out_x - half_w*perp_x),
-             int(cy2 + base_r*out_y - half_w*perp_y)),
-            (int(cx2 + roof_r*out_x - roof_hw*perp_x),
-             int(cy2 + roof_r*out_y - roof_hw*perp_y)),
-            (int(cx2 + r*out_x), int(cy2 + r*out_y)),   # tip (points inward)
-            (int(cx2 + roof_r*out_x + roof_hw*perp_x),
-             int(cy2 + roof_r*out_y + roof_hw*perp_y)),
-            (int(cx2 + base_r*out_x + half_w*perp_x),
-             int(cy2 + base_r*out_y + half_w*perp_y)),
+            (int(acx + a(br)*ox - a(hw)*px), int(acy + a(br)*oy - a(hw)*py)),
+            (int(acx + a(rr)*ox - a(rh)*px), int(acy + a(rr)*oy - a(rh)*py)),
+            (int(acx + a(r)*ox),              int(acy + a(r)*oy)),
+            (int(acx + a(rr)*ox + a(rh)*px), int(acy + a(rr)*oy + a(rh)*py)),
+            (int(acx + a(br)*ox + a(hw)*px), int(acy + a(br)*oy + a(hw)*py)),
         ]
 
-    # Fixed zero-bank doghouse (white, at top of arc)
-    zero_ang = -math.pi / 2
-    dh0 = doghouse_pts(zero_ang, ROLL_R, size=11)
-    draw.polygon(dh0, fill=WHITE)
-    draw.line(dh0 + [dh0[0]], fill=(80,80,90), width=1)
+    # Fixed zero-bank doghouse
+    dh0 = doghouse_pts_2x(-math.pi / 2, ROLL_R, size=11)
+    arc_d.polygon(dh0, fill=WHITE + (255,))
+    arc_d.line(dh0 + [dh0[0]], fill=(80, 80, 90, 255), width=a(1))
 
-    # Moving roll pointer doghouse (white)
-    ra = (-90 - roll) * DEG
-    dh1 = doghouse_pts(ra, ROLL_R - 2, size=10)
-    draw.polygon(dh1, fill=WHITE)
-    draw.line(dh1 + [dh1[0]], fill=(40,40,50), width=1)
+    # Moving roll pointer doghouse
+    dh1 = doghouse_pts_2x((-90 - roll) * DEG, ROLL_R - 2, size=10)
+    arc_d.polygon(dh1, fill=WHITE + (255,))
+    arc_d.line(dh1 + [dh1[0]], fill=(40, 40, 50, 255), width=a(1))
+
+    # Scale down with Lanczos (anti-aliasing via supersampling)
+    arc_1x = arc_img.resize((W, H), Image.LANCZOS)
+    img = Image.alpha_composite(img.convert('RGBA'), arc_1x).convert('RGB')
+    draw = ImageDraw.Draw(img)
 
     # ── 7. AIRCRAFT SYMBOL (shaded amber, GI-275 style) ──────────────────────
     AMBER      = (255, 190,  30)

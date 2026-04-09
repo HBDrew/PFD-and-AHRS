@@ -128,6 +128,42 @@ def _text(surf, txt, size, colour, cx=None, cy=None, x=None, y=None, bold=False)
     return img.get_width()
 
 
+def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz):
+    """
+    Veeder-Root style rolling-drum digit readout for pygame.
+    Only the units digit animates continuously; higher digits snap.
+    value: float — fractional part drives the unit-digit roll.
+    """
+    char_w = bw // n_digits
+    f = _get_font(font_sz, bold=True)
+
+    for col_i in range(n_digits):
+        power = n_digits - 1 - col_i   # 0 = units, 1 = tens, …
+        if power == 0:
+            d_cont = float(value % 10.0)
+        else:
+            d_cont = float((int(value) // (10 ** power)) % 10)
+        d_lo = int(d_cont)
+        frac  = d_cont - d_lo
+        d_hi  = (d_lo + 1) % 10
+
+        cx = bx + col_i * char_w
+        # Cell surface — pygame clips blit content to bounds automatically
+        cell = pygame.Surface((char_w, bh), pygame.SRCALPHA)
+
+        img_lo = f.render(str(d_lo), True, color)
+        img_hi = f.render(str(d_hi), True, color)
+
+        scroll  = int(frac * bh)
+        tx_lo   = max(0, (char_w - img_lo.get_width()) // 2)
+        ty_base = max(0, (bh    - img_lo.get_height()) // 2)
+
+        cell.blit(img_lo, (tx_lo, ty_base - scroll))
+        cell.blit(img_hi, (max(0, (char_w - img_hi.get_width()) // 2),
+                            ty_base - scroll + bh))
+        surf.blit(cell, (cx, by))
+
+
 def lerp(a, b, t):
     return a + (b - a) * max(0.0, min(1.0, t))
 
@@ -246,10 +282,10 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
 
     pitch_px = int(pitch * px_per_deg / 10.0)   # 10 px / degree approx
 
-    # Line half-widths based on AI width, NOT canvas width.
-    # GI-275 style: major ~22% AI width each side, minor ~13%.
-    major_half = int(aw * 0.22)   # ~108 px for AI_W=492
-    minor_half = int(aw * 0.13)   # ~64 px
+    # Line half-widths based on AI width.
+    # GI-275 style: major ~14% each side, minor ~8%.
+    major_half = int(aw * 0.14)   # ~69 px
+    minor_half = int(aw * 0.08)   # ~39 px
 
     for deg in range(-30, 35, 5):
         if deg == 0:
@@ -259,15 +295,15 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
             continue
         major = (deg % 10 == 0)
         half  = major_half if major else minor_half
-        lw    = 2 if major else 1
         col   = (255, 255, 255, 220)
-        pygame.draw.line(canvas, col, (ccx - half, row_y), (ccx + half, row_y), lw)
+        if major:
+            pygame.draw.line(canvas, col, (ccx - half, row_y), (ccx + half, row_y), 2)
+        else:
+            pygame.draw.aaline(canvas, col, (ccx - half, row_y), (ccx + half, row_y))
         # End tick marks (inward — up for positive pitch, down for negative)
         tick_dir = 8 if deg > 0 else -8
-        pygame.draw.line(canvas, col, (ccx - half, row_y),
-                         (ccx - half, row_y + tick_dir), lw)
-        pygame.draw.line(canvas, col, (ccx + half, row_y),
-                         (ccx + half, row_y + tick_dir), lw)
+        pygame.draw.aaline(canvas, col, (ccx - half, row_y), (ccx - half, row_y + tick_dir))
+        pygame.draw.aaline(canvas, col, (ccx + half, row_y), (ccx + half, row_y + tick_dir))
         # Degree labels at major lines
         if major:
             lbl = str(abs(deg))
@@ -494,8 +530,8 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
     pygame.draw.polygon(surf, (0, 10, 30), pts)
     pygame.draw.polygon(surf, WHITE, pts, 2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    _text(surf, f"{round(speed):3d}", 26, spd_col, bold=True,
-          cx=SPD_X + SPD_W // 2 - 2, cy=TAPE_MID)
+    # Rolling drum: 3 digits, 22px/cell, 26pt bold
+    _rolling_drum(surf, SPD_X + 4, TAPE_MID - 14, 66, 28, speed, 3, spd_col, 26)
 
     # Header label
     _text(surf, "GS KT", 10, (140, 200, 255), x=SPD_X + 3, y=TAPE_TOP + 2)
@@ -549,8 +585,8 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
            (ALT_X, by + bh), (ALT_X + ALT_W, by + bh)]
     pygame.draw.polygon(surf, (0, 10, 30), pts)
     pygame.draw.polygon(surf, WHITE, pts, 2)
-    _text(surf, f"{round(alt):5d}", 24, WHITE, bold=True,
-          cx=ALT_X + ALT_W // 2 + 2, cy=TAPE_MID)
+    # Rolling drum: 5 digits, 14px/cell, 20pt bold
+    _rolling_drum(surf, ALT_X + 2, TAPE_MID - 14, 70, 28, alt, 5, WHITE, 20)
 
     # VSI (vertical speed)
     arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")
