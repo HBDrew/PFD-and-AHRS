@@ -455,7 +455,7 @@ def spd_y(v, speed): return int(TAPE_MID - (v - speed) * PX_PER_KT)
 def alt_y(ft, alt):  return int(TAPE_MID - (ft - alt)  * PX_PER_FT)
 
 
-def draw_speed_tape(surf, speed, hdg_bug_spd=None):
+def draw_speed_tape(surf, speed, gs_bug=None):
     """Left airspeed tape with GI-275-style V-speed colour bands."""
     # Background (full height including top strip, matching alt tape)
     tape_surf = pygame.Surface((SPD_W, TAPE_BOT), pygame.SRCALPHA)
@@ -516,8 +516,17 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
     # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
     _rolling_drum(surf, SPD_X + pd + 2, TAPE_MID - 17, SPD_W - pd - 4, 34, speed, 3, spd_col, 20)
 
-    # IAS bug button — top strip of speed tape
-    _cyan_box(surf, "IAS", "---", x=SPD_X, y=2, w=SPD_W, h=18)
+    # GS bug arrow — outer (left) edge, V-notch receives box tip
+    if gs_bug is not None:
+        gby = spd_y(gs_bug)
+        if TAPE_TOP < gby < TAPE_BOT:
+            gb = [(SPD_X, gby - 10), (SPD_X + 20, gby - 10),
+                  (SPD_X + 26, gby), (SPD_X + 20, gby + 10), (SPD_X, gby + 10)]
+            pygame.draw.polygon(surf, CYAN, gb)
+
+    # GS bug button — top strip of speed tape
+    gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
+    _cyan_box(surf, "GS", gs_str, x=SPD_X, y=2, w=SPD_W, h=18)
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
@@ -636,12 +645,12 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
         off = ((hdg_bug - hdg + 180) % 360) - 180
         hbx = int(CX + off * PX_PER_DEG)
         if 0 < hbx < DISPLAY_W:
-            bug = [(hbx - 8, HDG_Y), (hbx + 8, HDG_Y),
-                   (hbx + 8, HDG_Y + 10),
-                   (hbx + 4, HDG_Y + 18),
-                   (hbx - 4, HDG_Y + 18),
-                   (hbx - 8, HDG_Y + 10)]
-            pygame.draw.polygon(surf, CYAN, bug)
+            # Wide, short bug with V-notch at top matching speed/alt bug style
+            bug = [(hbx - 14, HDG_Y + 14), (hbx - 14, HDG_Y),
+                   (hbx - 5,  HDG_Y), (hbx, HDG_Y + 7), (hbx + 5, HDG_Y),
+                   (hbx + 14, HDG_Y), (hbx + 14, HDG_Y + 14)]
+            pygame.gfxdraw.filled_polygon(surf, bug, CYAN)
+            pygame.gfxdraw.aapolygon(surf, bug, CYAN)
 
     # GPS track pointer (magenta, when GPS OK)
     if gps_ok and track is not None:
@@ -887,7 +896,7 @@ def render(surf, demo_mode, connected):
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
 
     # 3. Speed tape
-    draw_speed_tape(surf, speed)
+    draw_speed_tape(surf, speed, gs_bug=disp.get("spd_bug"))
 
     # 4. Alt tape
     draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug)
