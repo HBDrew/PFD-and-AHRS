@@ -166,7 +166,9 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     for deg in range(-30, 35, 5):
         if deg == 0: continue
         ly   = hy - int(focal * math.tan(deg * DEG))
-        if ly < H*2 - CY + 44:   # don't draw above roll arc area (display y < 44)
+        if ly < H*2 - CY + 44:    # don't draw above roll arc area (display y < 44)
+            continue
+        if ly > H*2 - CY + HDG_Y - 22:  # don't draw below heading tape (display y > 414)
             continue
         major = (deg % 10 == 0)
         half  = major_half if major else minor_half
@@ -253,14 +255,6 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if major:
             draw.text((SPD_X+tl+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
-    # GS bug — on outer (left) edge, V-notch receives box point
-    if gs_bug is not None:
-        gby = spd_y(gs_bug)
-        if TAPE_TOP < gby < TAPE_BOT:
-            gb = [(SPD_X, gby-10), (SPD_X+20, gby-10),
-                  (SPD_X+26, gby), (SPD_X+20, gby+10), (SPD_X, gby+10)]
-            draw.polygon(gb, fill=CYAN)
-
     # Speed box — convex point on outer (left/screen-edge) side, 90° tip
     bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
     pts = [(SPD_X+SPD_W, by), (SPD_X+pd, by),
@@ -271,6 +265,15 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
     # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
     rolling_drum(img, SPD_X+pd+2, TAPE_MID-17, SPD_W-pd-4, 34, speed, 3, spd_col, 20)
+
+    # GS bug — 7-point with concave notch matching heading bug style (28px tall, 21px wide)
+    if gs_bug is not None:
+        gby = spd_y(gs_bug)
+        if TAPE_TOP < gby < TAPE_BOT:
+            gb = [(SPD_X, gby-14),
+                  (SPD_X+21, gby-14), (SPD_X+21, gby-5), (SPD_X+14, gby),
+                  (SPD_X+21, gby+5),  (SPD_X+21, gby+14), (SPD_X, gby+14)]
+            draw.polygon(gb, fill=CYAN)
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -306,13 +309,6 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                 tw = int(f_s.getlength(s))
                 draw.text((ALT_X+ALT_W-tl-2-tw, fy-8), s, fill=(230,230,230), font=f_s)
 
-    # Altitude bug — on outer (right/screen-edge) side
-    aby = alt_y(alt_bug)
-    if TAPE_TOP < aby < TAPE_BOT:
-        bug = [(ALT_X+ALT_W, aby-10), (ALT_X+ALT_W-20, aby-10),
-               (ALT_X+ALT_W-26, aby), (ALT_X+ALT_W-20, aby+10), (ALT_X+ALT_W, aby+10)]
-        draw.polygon(bug, fill=CYAN)
-
     # Alt box — convex point on outer (right/screen-edge) side, 90° tip
     bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
     pts = [(ALT_X, by), (ALT_X+ALT_W-pd, by),
@@ -323,6 +319,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Rolling drum: 4 digits, fits in flat part of box, same font_sz as speed
     rolling_drum(img, ALT_X+2, TAPE_MID-17, ALT_W-pd-4, 34, alt, 4, WHITE, 20,
                  suppress_leading=True)
+
+    # Altitude bug — 7-point with concave notch matching heading bug style (28px tall, 21px wide)
+    aby = alt_y(alt_bug)
+    if TAPE_TOP < aby < TAPE_BOT:
+        bug = [(ALT_X+ALT_W, aby-14),
+               (ALT_X+ALT_W-21, aby-14), (ALT_X+ALT_W-21, aby-5), (ALT_X+ALT_W-14, aby),
+               (ALT_X+ALT_W-21, aby+5),  (ALT_X+ALT_W-21, aby+14), (ALT_X+ALT_W, aby+14)]
+        draw.polygon(bug, fill=CYAN)
 
     # VSI
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
@@ -497,9 +501,9 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     # ── 11. SCENARIO LABEL ────────────────────────────────────────────────────
     lw = len(label)*6 + 16
-    draw.rectangle([(CX-lw//2, HDG_Y-22),(CX+lw//2, HDG_Y-4)],
+    draw.rectangle([(CX-lw//2, HDG_Y-50),(CX+lw//2, HDG_Y-32)],
                    fill=(0,0,0))
-    draw.text((CX-lw//2+8, HDG_Y-20), label, fill=(255,210,60), font=fnt(10))
+    draw.text((CX-lw//2+8, HDG_Y-48), label, fill=(255,210,60), font=fnt(10))
 
     img.save(filename)
     print(f"Saved {filename}")

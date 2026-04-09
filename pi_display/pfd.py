@@ -281,6 +281,8 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
         row_y = ccy + pitch_px - int(deg * px_per_deg)
         if row_y < ccy - 185:   # don't draw above roll arc area (display y < 44)
             continue
+        if row_y > ccy + 185:   # don't draw below heading tape (display y > 414)
+            continue
         if not (10 < row_y < ch - 10):
             continue
         major = (deg % 10 == 0)
@@ -517,12 +519,13 @@ def draw_speed_tape(surf, speed, gs_bug=None):
     # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
     _rolling_drum(surf, SPD_X + pd + 2, TAPE_MID - 17, SPD_W - pd - 4, 34, speed, 3, spd_col, 20)
 
-    # GS bug arrow — outer (left) edge, V-notch receives box tip
+    # GS bug — 7-point with concave notch matching heading bug style (28px tall, 21px wide)
     if gs_bug is not None:
-        gby = spd_y(gs_bug)
+        gby = spd_y(gs_bug, speed)
         if TAPE_TOP < gby < TAPE_BOT:
-            gb = [(SPD_X, gby - 10), (SPD_X + 20, gby - 10),
-                  (SPD_X + 26, gby), (SPD_X + 20, gby + 10), (SPD_X, gby + 10)]
+            gb = [(SPD_X, gby - 14),
+                  (SPD_X + 21, gby - 14), (SPD_X + 21, gby - 5), (SPD_X + 14, gby),
+                  (SPD_X + 21, gby + 5),  (SPD_X + 21, gby + 14), (SPD_X, gby + 14)]
             pygame.draw.polygon(surf, CYAN, gb)
 
     # GS bug button — top strip of speed tape
@@ -569,15 +572,6 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                 _text(surf, s, 13, (230, 230, 230), bold=True,
                       x=ALT_X + ALT_W - tl - 2 - lw, y=fy - 8)
 
-    # Altitude bug
-    if alt_bug is not None:
-        aby = ay2(alt_bug)
-        if TAPE_TOP < aby < TAPE_BOT:
-            bug = [(ALT_X + ALT_W, aby - 10), (ALT_X + ALT_W - 20, aby - 10),
-                   (ALT_X + ALT_W - 26, aby), (ALT_X + ALT_W - 20, aby + 10),
-                   (ALT_X + ALT_W, aby + 10)]
-            pygame.draw.polygon(surf, CYAN, bug)
-
     # ALT bug button — top strip of alt tape
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     _cyan_box(surf, "ALT", alt_str, x=ALT_X, y=2, w=ALT_W, h=18)
@@ -594,6 +588,15 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     # Rolling drum: 4 digits, fits in flat part of box, same font_sz as speed
     _rolling_drum(surf, ALT_X + 2, TAPE_MID - 17, ALT_W - pd - 4, 34, alt, 4, WHITE, 20,
                   suppress_leading=True)
+
+    # Altitude bug — 7-point with concave notch matching heading bug style (28px tall, 21px wide)
+    if alt_bug is not None:
+        aby = ay2(alt_bug)
+        if TAPE_TOP < aby < TAPE_BOT:
+            bug = [(ALT_X + ALT_W, aby - 14),
+                   (ALT_X + ALT_W - 21, aby - 14), (ALT_X + ALT_W - 21, aby - 5), (ALT_X + ALT_W - 14, aby),
+                   (ALT_X + ALT_W - 21, aby + 5),  (ALT_X + ALT_W - 21, aby + 14), (ALT_X + ALT_W, aby + 14)]
+            pygame.draw.polygon(surf, CYAN, bug)
 
     # VSI (vertical speed)
     arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")
