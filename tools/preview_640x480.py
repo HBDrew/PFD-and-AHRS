@@ -266,13 +266,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
     rolling_drum(img, SPD_X+pd+2, TAPE_MID-17, SPD_W-pd-4, 34, speed, 3, spd_col, 20)
 
-    # GS bug — 7-point with concave notch matching heading bug style (28px tall, 21px wide)
+    # GS bug — 7-point, 28px tall × 14px deep matching heading bug rotated 90°
+    # Notch cuts 7px into 14px body from tape-facing (right) side
     if gs_bug is not None:
         gby = spd_y(gs_bug)
         if TAPE_TOP < gby < TAPE_BOT:
-            gb = [(SPD_X, gby-14),
-                  (SPD_X+21, gby-14), (SPD_X+21, gby-5), (SPD_X+14, gby),
-                  (SPD_X+21, gby+5),  (SPD_X+21, gby+14), (SPD_X, gby+14)]
+            gb = [(SPD_X,    gby-14),
+                  (SPD_X+14, gby-14), (SPD_X+14, gby-5), (SPD_X+7, gby),
+                  (SPD_X+14, gby+5),  (SPD_X+14, gby+14), (SPD_X, gby+14)]
             draw.polygon(gb, fill=CYAN)
 
     # GS bug button — top strip of speed tape
@@ -320,12 +321,12 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     rolling_drum(img, ALT_X+2, TAPE_MID-17, ALT_W-pd-4, 34, alt, 4, WHITE, 20,
                  suppress_leading=True)
 
-    # Altitude bug — 7-point with concave notch matching heading bug style (28px tall, 21px wide)
+    # Altitude bug — 7-point, 28px tall × 14px deep matching heading bug rotated 90°
     aby = alt_y(alt_bug)
     if TAPE_TOP < aby < TAPE_BOT:
-        bug = [(ALT_X+ALT_W, aby-14),
-               (ALT_X+ALT_W-21, aby-14), (ALT_X+ALT_W-21, aby-5), (ALT_X+ALT_W-14, aby),
-               (ALT_X+ALT_W-21, aby+5),  (ALT_X+ALT_W-21, aby+14), (ALT_X+ALT_W, aby+14)]
+        bug = [(ALT_X+ALT_W,    aby-14),
+               (ALT_X+ALT_W-14, aby-14), (ALT_X+ALT_W-14, aby-5), (ALT_X+ALT_W-7, aby),
+               (ALT_X+ALT_W-14, aby+5),  (ALT_X+ALT_W-14, aby+14), (ALT_X+ALT_W, aby+14)]
         draw.polygon(bug, fill=CYAN)
 
     # VSI
