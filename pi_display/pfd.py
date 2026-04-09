@@ -128,17 +128,22 @@ def _text(surf, txt, size, colour, cx=None, cy=None, x=None, y=None, bold=False)
     return img.get_width()
 
 
-def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz):
+def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz,
+                  suppress_leading=False):
     """
     Veeder-Root style rolling-drum digit readout for pygame.
     Only the units digit animates continuously; higher digits snap.
-    value: float — fractional part drives the unit-digit roll.
+    suppress_leading: skip leading-zero digit cells (e.g. for altitude).
     """
-    char_w = bw // n_digits
-    f = _get_font(font_sz, bold=True)
+    char_w  = bw // n_digits
+    f       = _get_font(font_sz, bold=True)
+    val_int = int(abs(value))
 
     for col_i in range(n_digits):
         power = n_digits - 1 - col_i   # 0 = units, 1 = tens, …
+        # Suppress leading zeros: skip cell if all higher digits are zero
+        if suppress_leading and power > 0 and val_int < 10 ** power:
+            continue
         if power == 0:
             d_cont = float(value % 10.0)
         else:
@@ -328,35 +333,34 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
 
 
 # ── Roll arc ──────────────────────────────────────────────────────────────────
-def _doghouse_pts(cx, cy, ang_rad, r, size=11):
+def _doghouse_pts(cx, cy, ang_rad, r, size=11, inward=True):
     """
-    Pentagon "doghouse" pointer centred on the arc at angle ang_rad.
-    Points inward (toward cx,cy). Returns list of (x,y) points.
+    Pentagon 'doghouse' pointer at radius r.
+    inward=True : tip at r points toward centre (used outside the arc).
+    inward=False: tip at r points away from centre (used inside the arc).
     """
-    # Tip of doghouse is at radius r, pointing inward
-    tip_x = int(cx + r * math.cos(ang_rad))
-    tip_y = int(cy + r * math.sin(ang_rad))
-    # Outward direction (away from centre)
-    out_x = math.cos(ang_rad)
-    out_y = math.sin(ang_rad)
-    # Perpendicular
-    perp_x = -out_y
-    perp_y =  out_x
-    # Pentagon: tip (inner), two base corners, two roof corners
-    base_r  = r + size * 1.3
-    roof_r  = r + size * 0.6
+    out_x  = math.cos(ang_rad);  out_y  = math.sin(ang_rad)
+    perp_x = -out_y;             perp_y =  out_x
+    if inward:
+        tip_r  = r
+        base_r = r + size * 1.3
+        roof_r = r + size * 0.6
+    else:
+        tip_r  = r
+        base_r = r - size * 1.3
+        roof_r = r - size * 0.6
     half_w  = size * 0.7
     roof_hw = size * 0.35
     return [
-        (int(cx + base_r * out_x - half_w * perp_x),
-         int(cy + base_r * out_y - half_w * perp_y)),
+        (int(cx + base_r * out_x - half_w  * perp_x),
+         int(cy + base_r * out_y - half_w  * perp_y)),
         (int(cx + roof_r * out_x - roof_hw * perp_x),
          int(cy + roof_r * out_y - roof_hw * perp_y)),
-        (tip_x, tip_y),
+        (int(cx + tip_r  * out_x), int(cy + tip_r  * out_y)),
         (int(cx + roof_r * out_x + roof_hw * perp_x),
          int(cy + roof_r * out_y + roof_hw * perp_y)),
-        (int(cx + base_r * out_x + half_w * perp_x),
-         int(cy + base_r * out_y + half_w * perp_y)),
+        (int(cx + base_r * out_x + half_w  * perp_x),
+         int(cy + base_r * out_y + half_w  * perp_y)),
     ]
 
 
@@ -400,19 +404,18 @@ def draw_roll_arc(surf, roll):
             tri = [(mx - tx2, my - ty2), (mx + tx2, my + ty2), (inner_x, inner_y)]
             pygame.gfxdraw.aapolygon(surf, tri, LTGREY)
 
-    # Fixed zero-bank doghouse (white, points inward at top centre)
-    zero_ang = -math.pi / 2
-    dh_pts = _doghouse_pts(cx, cy, zero_ang, ROLL_R, size=11)
-    pygame.gfxdraw.filled_polygon(surf, dh_pts, WHITE)
-    pygame.gfxdraw.aapolygon(surf, dh_pts, WHITE)
-    pygame.gfxdraw.aapolygon(surf, dh_pts, (80, 80, 90))
+    # Fixed zero-bank marker: small downward white triangle above arc at 12 o'clock
+    top_x = int(cx + ROLL_R * math.cos(-math.pi / 2))   # = CX
+    top_y = int(cy + ROLL_R * math.sin(-math.pi / 2))   # = ROLL_CY - ROLL_R ≈ 16
+    tri0 = [(top_x - 8, top_y - 13), (top_x + 8, top_y - 13), (top_x, top_y)]
+    pygame.gfxdraw.filled_polygon(surf, tri0, WHITE)
+    pygame.gfxdraw.aapolygon(surf, tri0, WHITE)
 
-    # Moving roll pointer doghouse (white, tracks bank angle)
+    # Moving roll pointer: doghouse INSIDE the arc, tip pointing outward toward arc
     roll_ang = (-90 - roll) * DEG
-    rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 2, size=10)
+    rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 16, size=10, inward=False)
     pygame.gfxdraw.filled_polygon(surf, rp_pts, WHITE)
     pygame.gfxdraw.aapolygon(surf, rp_pts, WHITE)
-    pygame.gfxdraw.aapolygon(surf, rp_pts, (40, 40, 50))
 
 
 # ── Aircraft symbol ───────────────────────────────────────────────────────────
@@ -420,59 +423,44 @@ AMBER      = (255, 190,  30)   # slightly warmer than YELLOW for symbol fill
 AMBER_DARK = (180, 120,   0)   # shadow/outline
 
 def draw_aircraft_symbol(surf):
-    """GI-275 style amber aircraft symbol with shading."""
-    ws = 72   # half wing span
-    hw = int(ws * 0.22)   # fuselage half-width cutout
+    """GI-275 style amber aircraft reference: outward triangles + centre ring."""
+    ws  = 62   # half wingspan (outer tip)
+    gap = 10   # distance from centre to inner base of each triangle
+    h   = 5    # half-height at the triangle base
 
-    # Wing polygons (thick, filled amber with dark underline for depth)
-    # Left wing — dark shadow then bright highlight, both AA'd
-    lwing = [(CX - ws, CY - 1), (CX - hw, CY - 1),
-             (CX - hw, CY + 6), (CX - ws, CY + 4)]
-    pygame.gfxdraw.filled_polygon(surf, lwing, AMBER_DARK)
-    lwing_hi = [(CX - ws, CY - 3), (CX - hw, CY - 3),
-                (CX - hw, CY + 4), (CX - ws, CY + 2)]
-    pygame.gfxdraw.filled_polygon(surf, lwing_hi, AMBER)
-    pygame.gfxdraw.aapolygon(surf, lwing_hi, AMBER)
+    # Left wing: solid amber triangle pointing left
+    ltri = [(CX - gap, CY - h), (CX - gap, CY + h), (CX - ws, CY)]
+    pygame.gfxdraw.filled_polygon(surf, ltri, AMBER)
+    pygame.gfxdraw.aapolygon(surf, ltri, AMBER)
 
-    # Right wing
-    rwing = [(CX + hw, CY - 1), (CX + ws, CY - 1),
-             (CX + ws, CY + 4), (CX + hw, CY + 6)]
-    pygame.gfxdraw.filled_polygon(surf, rwing, AMBER_DARK)
-    rwing_hi = [(CX + hw, CY - 3), (CX + ws, CY - 3),
-                (CX + ws, CY + 2), (CX + hw, CY + 4)]
-    pygame.gfxdraw.filled_polygon(surf, rwing_hi, AMBER)
-    pygame.gfxdraw.aapolygon(surf, rwing_hi, AMBER)
+    # Right wing: mirror
+    rtri = [(CX + gap, CY - h), (CX + gap, CY + h), (CX + ws, CY)]
+    pygame.gfxdraw.filled_polygon(surf, rtri, AMBER)
+    pygame.gfxdraw.aapolygon(surf, rtri, AMBER)
 
-    # Wing-tip down-ticks
-    pygame.draw.line(surf, AMBER_DARK, (CX - hw, CY + 4), (CX - hw, CY + 12), 4)
-    pygame.draw.line(surf, AMBER,      (CX - hw, CY + 2), (CX - hw, CY + 10), 3)
-    pygame.draw.line(surf, AMBER_DARK, (CX + hw, CY + 4), (CX + hw, CY + 12), 4)
-    pygame.draw.line(surf, AMBER,      (CX + hw, CY + 2), (CX + hw, CY + 10), 3)
-
-    # Centre fuselage dot
-    pygame.gfxdraw.filled_circle(surf, CX, CY, 7, AMBER_DARK)
-    pygame.gfxdraw.aacircle(surf,     CX, CY, 7, AMBER_DARK)
-    pygame.gfxdraw.filled_circle(surf, CX, CY, 5, AMBER)
-    pygame.gfxdraw.aacircle(surf,     CX, CY, 5, AMBER)
-    pygame.gfxdraw.filled_circle(surf, CX, CY, 2, WHITE)
-    pygame.gfxdraw.aacircle(surf,     CX, CY, 2, WHITE)
+    # Centre reference circle (open ring)
+    pygame.gfxdraw.filled_circle(surf, CX, CY, 6, AMBER)
+    pygame.gfxdraw.aacircle(surf,     CX, CY, 6, AMBER)
+    pygame.gfxdraw.filled_circle(surf, CX, CY, 3, (0, 0, 0, 0))  # hollow centre
+    pygame.gfxdraw.aacircle(surf,     CX, CY, 3, AMBER)
 
 
 # ── Slip/skid indicator ───────────────────────────────────────────────────────
 def draw_slip_ball(surf, ay):
-    bw, bh, br = 52, 16, 8
+    """GI-275 style rectangular slip/skid indicator (replaces traditional ball)."""
+    bw, bh = 54, 10
     bx, by2 = CX - bw // 2, BALL_Y - bh // 2
-    # Tube outline
-    pygame.draw.rect(surf, (10, 10, 20), (bx, by2, bw, bh), border_radius=bh // 2)
-    pygame.draw.rect(surf, DIMGREY, (bx, by2, bw, bh), 1, border_radius=bh // 2)
-    # Centre tick marks
-    mk = br + 4
-    pygame.draw.line(surf, WHITE, (CX - mk, by2 + 2), (CX - mk, by2 + bh - 2), 2)
-    pygame.draw.line(surf, WHITE, (CX + mk, by2 + 2), (CX + mk, by2 + bh - 2), 2)
-    # Ball
-    max_defl = bw // 2 - br - 2
+    # Outer tube
+    pygame.draw.rect(surf, (15, 15, 25), (bx, by2, bw, bh))
+    pygame.draw.rect(surf, DIMGREY,      (bx, by2, bw, bh), 1)
+    # Centre reference line
+    pygame.draw.line(surf, LTGREY, (CX, by2 + 2), (CX, by2 + bh - 2), 1)
+    # Moving indicator block
+    pw = 10
+    max_defl = bw // 2 - pw // 2 - 2
     defl = int(max(-max_defl, min(max_defl, (ay / 0.2) * max_defl)))
-    pygame.draw.circle(surf, WHITE, (CX + defl, BALL_Y), br)
+    pygame.draw.rect(surf, WHITE,
+                     (CX + defl - pw // 2, by2 + 1, pw, bh - 2))
 
 
 # ── Speed tape ────────────────────────────────────────────────────────────────
@@ -533,17 +521,17 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
             _text(surf, str(v), 17, (230, 230, 230), bold=True,
                   x=SPD_X + 2, y=vy - 9)
 
-    # Speed readout box (pentagon pointing right)
-    bh = 36
+    # Speed readout box — concave notch on AI side (right edge), GI-275 style
+    bh = 44
     by = TAPE_MID - bh // 2
     pts = [(SPD_X, by), (SPD_X + SPD_W, by),
-           (SPD_X + SPD_W + 12, TAPE_MID),
+           (SPD_X + SPD_W - 10, TAPE_MID),          # notch cuts INTO the box
            (SPD_X + SPD_W, by + bh), (SPD_X, by + bh)]
     pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts, WHITE)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
     # Rolling drum: 3 digits, 22px/cell, 26pt bold
-    _rolling_drum(surf, SPD_X + 4, TAPE_MID - 14, 66, 28, speed, 3, spd_col, 26)
+    _rolling_drum(surf, SPD_X + 3, TAPE_MID - 17, 64, 34, speed, 3, spd_col, 26)
 
     # Header label
     _text(surf, "GS KT", 10, (140, 200, 255), x=SPD_X + 3, y=TAPE_TOP + 2)
@@ -589,16 +577,17 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
         _text(surf, f"{round(alt_bug):5d}", 16, CYAN, bold=True,
               cx=ALT_X + ALT_W // 2, cy=11)
 
-    # Altitude readout box (pentagon pointing left)
-    bh = 36
+    # Altitude readout box — concave notch on AI side (left edge), GI-275 style
+    bh = 44
     by = TAPE_MID - bh // 2
     pts = [(ALT_X + ALT_W, by), (ALT_X, by),
-           (ALT_X - 12, TAPE_MID),
+           (ALT_X + 10, TAPE_MID),               # notch cuts INTO the box
            (ALT_X, by + bh), (ALT_X + ALT_W, by + bh)]
     pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts, WHITE)
-    # Rolling drum: 5 digits, 14px/cell, 20pt bold
-    _rolling_drum(surf, ALT_X + 2, TAPE_MID - 14, 70, 28, alt, 5, WHITE, 20)
+    # Rolling drum: 5 digits, 14px/cell, 20pt bold, no leading zeros
+    _rolling_drum(surf, ALT_X + 2, TAPE_MID - 17, 70, 34, alt, 5, WHITE, 20,
+                  suppress_leading=True)
 
     # VSI (vertical speed)
     arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")

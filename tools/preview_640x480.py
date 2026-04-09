@@ -68,14 +68,16 @@ def fnt(size, bold=False):
     return _fnt_cache[key]
 
 
-def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz):
+def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
+                 suppress_leading=False):
     """
     Veeder-Root style rolling-drum digit readout.
     Only the units digit animates continuously; higher digits snap.
-    value: float — fractional part drives unit-digit roll.
+    suppress_leading: skip leading-zero digit cells (e.g. altitude).
     """
-    char_w = bw // n_digits
-    f = fnt(font_sz, bold=True)
+    char_w  = bw // n_digits
+    f       = fnt(font_sz, bold=True)
+    val_int = int(abs(value))
     try:
         ref_bbox = f.getbbox("0")
         ch = ref_bbox[3] - ref_bbox[1]
@@ -87,6 +89,8 @@ def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz):
 
     for col_i in range(n_digits):
         power = n_digits - 1 - col_i   # 0 = units, 1 = tens, …
+        if suppress_leading and power > 0 and val_int < 10 ** power:
+            continue
         if power == 0:
             d_cont = float(value % 10.0)
         else:
@@ -278,16 +282,15 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if major:
             draw.text((SPD_X+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
-    # Speed box (pentagon pointing right)
-    bh = 36; by = TAPE_MID - bh//2
+    # Speed box — concave notch on AI (right) side
+    bh = 44; by = TAPE_MID - bh//2
     pts = [(SPD_X, by), (SPD_X+SPD_W, by),
-           (SPD_X+SPD_W+12, TAPE_MID),
+           (SPD_X+SPD_W-10, TAPE_MID),          # notch into box
            (SPD_X+SPD_W, by+bh), (SPD_X, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    # Rolling drum: 3 digits, bw=66px (22px per cell), 26pt bold
-    rolling_drum(img, SPD_X+4, TAPE_MID-14, 66, 28, speed, 3, spd_col, 26)
+    rolling_drum(img, SPD_X+3, TAPE_MID-17, 64, 34, speed, 3, spd_col, 26)
 
     # Header
     draw.text((SPD_X+3, TAPE_TOP+2), "GS KT", fill=(140,200,255), font=fnt(10))
@@ -319,15 +322,16 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                (ALT_X+26, aby), (ALT_X+20, aby+10), (ALT_X, aby+10)]
         draw.polygon(bug, fill=CYAN)
 
-    # Alt box (pentagon pointing left)
-    bh = 36; by = TAPE_MID - bh//2
+    # Alt box — concave notch on AI (left) side
+    bh = 44; by = TAPE_MID - bh//2
     pts = [(ALT_X+ALT_W, by), (ALT_X, by),
-           (ALT_X-12, TAPE_MID),
+           (ALT_X+10, TAPE_MID),                 # notch into box
            (ALT_X, by+bh), (ALT_X+ALT_W, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
-    # Rolling drum: 5 digits, bw=70px (14px per cell), 20pt bold
-    rolling_drum(img, ALT_X+2, TAPE_MID-14, 70, 28, alt, 5, WHITE, 20)
+    # Rolling drum: 5 digits, no leading zeros
+    rolling_drum(img, ALT_X+2, TAPE_MID-17, 70, 34, alt, 5, WHITE, 20,
+                 suppress_leading=True)
 
     # VSI
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
@@ -424,44 +428,46 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             (int(acx + a(br)*ox + a(hw)*px), int(acy + a(br)*oy + a(hw)*py)),
         ]
 
-    # Fixed zero-bank doghouse
-    dh0 = doghouse_pts_2x(-math.pi / 2, ROLL_R, size=11)
-    arc_d.polygon(dh0, fill=WHITE + (255,))
-    arc_d.line(dh0 + [dh0[0]], fill=(80, 80, 90, 255), width=a(1))
+    # Fixed zero-bank marker: downward white triangle above arc at 12 o'clock
+    top_x = acx + int(a(ROLL_R) * math.cos(-math.pi/2))
+    top_y = acy + int(a(ROLL_R) * math.sin(-math.pi/2))
+    tri0 = [(top_x - a(8), top_y - a(13)),
+            (top_x + a(8), top_y - a(13)),
+            (top_x, top_y)]
+    arc_d.polygon(tri0, fill=WHITE + (255,))
 
-    # Moving roll pointer doghouse
-    dh1 = doghouse_pts_2x((-90 - roll) * DEG, ROLL_R - 2, size=10)
+    # Moving roll pointer: doghouse INSIDE arc, tip pointing outward
+    def doghouse_pts_inside(ang_rad, r, size=10):
+        ox = math.cos(ang_rad); oy = math.sin(ang_rad)
+        px = -oy;               py =  ox
+        # inward=False: tip at r (outer), base at r - size*1.3 (inner)
+        tr = r;           br = r - size * 1.3;  rr = r - size * 0.6
+        hw = size * 0.7;  rh = size * 0.35
+        return [
+            (int(acx + a(br)*ox - a(hw)*px), int(acy + a(br)*oy - a(hw)*py)),
+            (int(acx + a(rr)*ox - a(rh)*px), int(acy + a(rr)*oy - a(rh)*py)),
+            (int(acx + a(tr)*ox),             int(acy + a(tr)*oy)),
+            (int(acx + a(rr)*ox + a(rh)*px), int(acy + a(rr)*oy + a(rh)*py)),
+            (int(acx + a(br)*ox + a(hw)*px), int(acy + a(br)*oy + a(hw)*py)),
+        ]
+
+    dh1 = doghouse_pts_inside((-90 - roll) * DEG, ROLL_R - 16, size=10)
     arc_d.polygon(dh1, fill=WHITE + (255,))
-    arc_d.line(dh1 + [dh1[0]], fill=(40, 40, 50, 255), width=a(1))
 
     # Scale down with Lanczos (anti-aliasing via supersampling)
     arc_1x = arc_img.resize((W, H), Image.LANCZOS)
     img = Image.alpha_composite(img.convert('RGBA'), arc_1x).convert('RGB')
     draw = ImageDraw.Draw(img)
 
-    # ── 7. AIRCRAFT SYMBOL (shaded amber, GI-275 style) ──────────────────────
-    AMBER      = (255, 190,  30)
-    AMBER_DARK = (180, 120,   0)
-    ws = 72; hw = int(ws * 0.22)
-    # Left wing — dark layer then bright highlight
-    lwing_d = [(CX-ws, CY-1),(CX-hw,CY-1),(CX-hw,CY+6),(CX-ws,CY+4)]
-    lwing_h = [(CX-ws, CY-3),(CX-hw,CY-3),(CX-hw,CY+4),(CX-ws,CY+2)]
-    draw.polygon(lwing_d, fill=AMBER_DARK)
-    draw.polygon(lwing_h, fill=AMBER)
-    # Right wing
-    rwing_d = [(CX+hw,CY-1),(CX+ws,CY-1),(CX+ws,CY+4),(CX+hw,CY+6)]
-    rwing_h = [(CX+hw,CY-3),(CX+ws,CY-3),(CX+ws,CY+2),(CX+hw,CY+4)]
-    draw.polygon(rwing_d, fill=AMBER_DARK)
-    draw.polygon(rwing_h, fill=AMBER)
-    # Wing-tip down-ticks
-    draw.line([(CX-ws, CY+4),(CX-ws, CY+12)], fill=AMBER_DARK, width=4)
-    draw.line([(CX-ws, CY+2),(CX-ws, CY+10)], fill=AMBER,      width=2)
-    draw.line([(CX+ws, CY+4),(CX+ws, CY+12)], fill=AMBER_DARK, width=4)
-    draw.line([(CX+ws, CY+2),(CX+ws, CY+10)], fill=AMBER,      width=2)
-    # Centre hub
-    draw.ellipse([(CX-7, CY-7),(CX+7, CY+7)], fill=AMBER_DARK)
-    draw.ellipse([(CX-5, CY-5),(CX+5, CY+5)], fill=AMBER)
-    draw.ellipse([(CX-2, CY-2),(CX+2, CY+2)], fill=WHITE)
+    # ── 7. AIRCRAFT SYMBOL — GI-275 style outward triangles + centre ring ────
+    AMBER = (255, 190, 30)
+    ws = 62; gap = 10; h = 5
+    # Left wing triangle: base near centre, tip at left
+    draw.polygon([(CX-gap, CY-h), (CX-gap, CY+h), (CX-ws, CY)], fill=AMBER)
+    # Right wing triangle: mirror
+    draw.polygon([(CX+gap, CY-h), (CX+gap, CY+h), (CX+ws, CY)], fill=AMBER)
+    # Centre ring
+    draw.ellipse([(CX-6, CY-6),(CX+6, CY+6)], outline=AMBER, width=2)
 
     # ── 8. CYAN TAP-BUTTONS (HDG / QNH / ALT bug) ───────────────────────────
     def cyan_box(label, value_str, bx, by, bw=84, bh=20):
@@ -476,17 +482,16 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     cyan_box("QNH", "GPS ALT",                      CX-50,      btn_y, bw=100)
     cyan_box("ALT", f"{round(alt_bug):5d}",         ALT_X-10,   btn_y, bw=ALT_W+10)
 
-    # ── 9. SLIP BALL ─────────────────────────────────────────────────────────
-    bw3=52; bh3=16; br=8
+    # ── 9. SLIP INDICATOR (rectangular, GI-275 style) ────────────────────────
+    bw3=54; bh3=10
     bx3=CX-bw3//2; by3=BALL_Y-bh3//2
-    draw.rounded_rectangle([(bx3, by3), (bx3+bw3, by3+bh3)],
-                            radius=bh3//2, fill=(0,0,0), outline=(100,100,110))
-    mk = br+4
-    draw.line([(CX-mk, by3+2),(CX-mk, by3+bh3-2)], fill=WHITE, width=2)
-    draw.line([(CX+mk, by3+2),(CX+mk, by3+bh3-2)], fill=WHITE, width=2)
-    max_d = bw3//2 - br - 2
-    defl  = int(max(-max_d, min(max_d, (ay/0.2)*max_d)))
-    draw.ellipse([(CX+defl-br, BALL_Y-br),(CX+defl+br, BALL_Y+br)], fill=WHITE)
+    draw.rectangle([(bx3, by3), (bx3+bw3, by3+bh3)],
+                   fill=(15,15,25), outline=(100,100,110))
+    draw.line([(CX, by3+2),(CX, by3+bh3-2)], fill=(160,160,170), width=1)
+    pw = 10; max_d = bw3//2 - pw//2 - 2
+    defl = int(max(-max_d, min(max_d, (ay/0.2)*max_d)))
+    draw.rectangle([(CX+defl-pw//2, by3+1),(CX+defl+pw//2, by3+bh3-1)],
+                   fill=WHITE)
 
     # ── 10. STATUS BADGES (top-right, AHRS / BARO / GPS / LINK) ──────────────
     bx_r = W - 4
