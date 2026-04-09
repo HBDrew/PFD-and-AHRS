@@ -117,7 +117,7 @@ def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
 
 def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                hdg_bug, alt_bug, label, filename,
-               ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8):
+               gs_bug=None, ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8):
 
     img  = Image.new('RGB', (W, H), (0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -130,7 +130,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     focal    = 520.0
     pitch_px = focal * math.tan(pitch * DEG)
-    hy = H*2 + int(-pitch_px)   # horizon row in enlarged canvas (centred at H*2)
+    hy = H*2 + int(pitch_px)    # horizon row in enlarged canvas (centred at H*2)
 
     # Sky gradient
     for y in range(max(0, hy)):
@@ -154,44 +154,6 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         else:
             col = lerp_color(ROCK_MID, ROCK_LIGHT, min(1.0, (depth - 0.65) / 0.35))
         ai_draw.line([(0, y), (W*S, y)], fill=col + (255,))
-
-    # Sedona canyon / juniper texture
-    random.seed(42)
-    for _ in range(280):
-        tx = random.randint(0, W*S)
-        ty = random.randint(hy + 20, H*S - 10)
-        tw = random.randint(6, 60)
-        th = random.randint(3, 18)
-        kind = random.random()
-        c = (JUNIPER + (180,) if kind < 0.25
-             else ROCK_DARK + (140,) if kind < 0.55
-             else ROCK_LIGHT + (100,))
-        ai_draw.ellipse([(tx, ty), (tx+tw, ty+th)], fill=c)
-
-    # Distant ridgeline silhouette
-    rpts = []
-    ridge_y = hy + 28
-    for x in range(0, W*S, 6):
-        ny = ridge_y + int(18*math.sin(x*0.007) + 12*math.sin(x*0.019) +
-                            8*math.sin(x*0.041))
-        rpts.append((x, ny))
-    for i in range(len(rpts) - 1):
-        ai_draw.line([rpts[i], rpts[i+1]], fill=ROCK_DARK+(220,), width=3)
-
-    # Mesa / butte silhouettes (Sedona flat-tops)
-    MESA      = (160,  60,  22, 240)
-    MESA_DARK = (110,  36,  12, 240)
-    for mx, mw, mh in [(W*0.18, W*0.20, 32), (W*0.55, W*0.25, 44),
-                        (W*0.82, W*0.17, 26)]:
-        base = hy + 8
-        top  = base - mh
-        mesa_pts = [(int(mx - mw/2), base), (int(mx + mw/2), base),
-                    (int(mx + mw/2 - 8), top), (int(mx - mw/2 + 8), top)]
-        ai_draw.polygon(mesa_pts, fill=MESA_DARK)
-        # Lit top edge
-        ai_draw.line([(int(mx - mw/2 + 10), top),
-                      (int(mx + mw/2 - 10), top)],
-                     fill=MESA, width=4)
 
     # Horizon line
     ai_draw.line([(0, hy), (W*S, hy)], fill=(255,255,255,220), width=2)
@@ -289,6 +251,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if major:
             draw.text((SPD_X+tl+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
+    # GS bug — on outer (left) edge, V-notch receives box point
+    if gs_bug is not None:
+        gby = spd_y(gs_bug)
+        if TAPE_TOP < gby < TAPE_BOT:
+            gb = [(SPD_X, gby-10), (SPD_X+20, gby-10),
+                  (SPD_X+26, gby), (SPD_X+20, gby+10), (SPD_X, gby+10)]
+            draw.polygon(gb, fill=CYAN)
+
     # Speed box — convex point on outer (left/screen-edge) side, 90° tip
     bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
     pts = [(SPD_X+SPD_W, by), (SPD_X+pd, by),
@@ -300,8 +270,9 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
     rolling_drum(img, SPD_X+pd+2, TAPE_MID-17, SPD_W-pd-4, 34, speed, 3, spd_col, 20)
 
-    # IAS bug button — top strip of speed tape
-    cyan_box("IAS", "---", SPD_X, 2, bw=SPD_W, bh=18)
+    # GS bug button — top strip of speed tape
+    gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
+    cyan_box("GS", gs_str, SPD_X, 2, bw=SPD_W, bh=18)
 
     # ── 4. ALT TAPE CONTENT ───────────────────────────────────────────────────
     def alt_y(ft): return int(TAPE_MID - (ft - alt) * PX_PER_FT)
@@ -383,12 +354,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             col = YELLOW if deg in CARDS else (230,230,230)
             draw.text((x-7, HDG_Y+HDG_H-15), lbl, fill=col, font=fnt(13))
 
-    # Heading bug
+    # Heading bug — wide, short, V-notch at top matching speed/alt bug style
     hb_off = ((hdg_bug - hdg + 180) % 360) - 180
     hb_x   = int(CX + hb_off * PX_PER_DEG)
     if 0 < hb_x < W:
-        bug = [(hb_x-8, HDG_Y), (hb_x+8, HDG_Y), (hb_x+8, HDG_Y+10),
-               (hb_x+4, HDG_Y+18), (hb_x-4, HDG_Y+18), (hb_x-8, HDG_Y+10)]
+        bug = [(hb_x-14, HDG_Y+14), (hb_x-14, HDG_Y),
+               (hb_x-5,  HDG_Y), (hb_x, HDG_Y+7), (hb_x+5, HDG_Y),
+               (hb_x+14, HDG_Y), (hb_x+14, HDG_Y+14)]
         draw.polygon(bug, fill=CYAN)
 
     # Heading box
@@ -468,7 +440,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             (int(acx + a(br)*ox + a(hw)*px), int(acy + a(br)*oy + a(hw)*py)),
         ]
 
-    dh1 = doghouse_pts_inside((-90 - roll) * DEG, ROLL_R - 8, size=10)
+    dh1 = doghouse_pts_inside((-90 + roll) * DEG, ROLL_R - 8, size=10)
     arc_d.polygon(dh1, fill=WHITE + (255,))
 
     # Scale down with Lanczos (anti-aliasing via supersampling)
@@ -498,16 +470,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     cyan_box("HDG", f"{round(hdg_bug):03d}\u00b0", SPD_X,    btn_y, bw=SPD_W+10)   # left
     cyan_box("QNH", "GPS ALT",                      ALT_X-10, btn_y, bw=ALT_W+10)  # right
 
-    # ── 9. SLIP INDICATOR (rectangular, GI-275 style) ────────────────────────
-    bw3=54; bh3=10
-    bx3=CX-bw3//2; by3=BALL_Y-bh3//2
-    draw.rectangle([(bx3, by3), (bx3+bw3, by3+bh3)],
-                   fill=(15,15,25), outline=(100,100,110))
-    draw.line([(CX, by3+2),(CX, by3+bh3-2)], fill=(160,160,170), width=1)
-    pw = 10; max_d = bw3//2 - pw//2 - 2
-    defl = int(max(-max_d, min(max_d, (ay/0.2)*max_d)))
-    draw.rectangle([(CX+defl-pw//2, by3+1),(CX+defl+pw//2, by3+bh3-1)],
-                   fill=WHITE)
+    # ── 9. SLIP INDICATOR — thin bar below zero-bank triangle pointer ─────────
+    # Slides ±12 px under the fixed doghouse, same width as its base (16 px)
+    slip_y = ROLL_CY - ROLL_R + 2   # just below tip of fixed triangle
+    max_d  = 12
+    defl   = int(max(-max_d, min(max_d, (ay / 0.2) * max_d)))
+    draw.rectangle([(CX + defl - 8, slip_y),
+                    (CX + defl + 8, slip_y + 4)], fill=WHITE)
 
     # ── 10. STATUS BADGES (top-right, AHRS / BARO / GPS / LINK) ──────────────
     bx_r = W - 4
@@ -543,6 +512,7 @@ OUT = os.path.dirname(os.path.abspath(__file__))
 draw_scene(
     roll=0, pitch=2, hdg=133, alt=8500, speed=115,
     vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
+    gs_bug=115,
     label="Sedona Valley — Level cruise SE at 8,500 ft",
     filename=os.path.join(OUT, "preview_sedona_level.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
@@ -551,6 +521,7 @@ draw_scene(
 draw_scene(
     roll=-18, pitch=4, hdg=218, alt=7200, speed=108,
     vspeed=650, ay=-0.08, hdg_bug=250, alt_bug=9500,
+    gs_bug=115,
     label="Sedona — Climbing left turn, departing NW",
     filename=os.path.join(OUT, "preview_sedona_climb_turn.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
@@ -559,6 +530,7 @@ draw_scene(
 draw_scene(
     roll=0, pitch=-3, hdg=19, alt=6200, speed=90,
     vspeed=-500, ay=0.0, hdg_bug=19, alt_bug=4900,
+    gs_bug=90,
     label="Sedona (KSEZ) — Descending final Rwy 03",
     filename=os.path.join(OUT, "preview_sedona_approach.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,

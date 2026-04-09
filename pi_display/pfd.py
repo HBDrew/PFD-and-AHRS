@@ -239,22 +239,6 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
             col = GND_NEAR
         pygame.draw.line(canvas, col, (0, row), (cw, row))
 
-    # ── Mesa/butte silhouettes near horizon (Sedona-style) ───────────────────
-    MESA      = (160,  60,  22)
-    MESA_DARK = (110,  36,  12)
-    # Draw 3 flat-topped mesas at the horizon band
-    for mx, mw, mh in [(cw*0.18, cw*0.18, 28), (cw*0.55, cw*0.22, 38),
-                        (cw*0.82, cw*0.15, 22)]:
-        base = hy + 4
-        top  = base - mh
-        # Mesa body
-        pts = [(int(mx - mw/2), base), (int(mx + mw/2), base),
-               (int(mx + mw/2 - 6), top), (int(mx - mw/2 + 6), top)]
-        pygame.draw.polygon(canvas, MESA_DARK, pts)
-        # Lit top face
-        pygame.draw.line(canvas, MESA,
-                         (int(mx - mw/2 + 8), top), (int(mx + mw/2 - 8), top), 3)
-
     # ── Horizon line ──────────────────────────────────────────────────────────
     if 0 < hy < ch:
         pygame.draw.line(canvas, WHITE, (0, hy), (cw, hy), 2)
@@ -411,7 +395,7 @@ def draw_roll_arc(surf, roll):
     pygame.gfxdraw.aapolygon(surf, tri0, WHITE)
 
     # Moving roll pointer: doghouse INSIDE the arc, tip pointing outward toward arc
-    roll_ang = (-90 - roll) * DEG
+    roll_ang = (-90 + roll) * DEG
     rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 8, size=10, inward=False)
     pygame.gfxdraw.filled_polygon(surf, rp_pts, WHITE)
     pygame.gfxdraw.aapolygon(surf, rp_pts, WHITE)
@@ -454,20 +438,11 @@ def draw_aircraft_symbol(surf):
 
 # ── Slip/skid indicator ───────────────────────────────────────────────────────
 def draw_slip_ball(surf, ay):
-    """GI-275 style rectangular slip/skid indicator (replaces traditional ball)."""
-    bw, bh = 54, 10
-    bx, by2 = CX - bw // 2, BALL_Y - bh // 2
-    # Outer tube
-    pygame.draw.rect(surf, (15, 15, 25), (bx, by2, bw, bh))
-    pygame.draw.rect(surf, DIMGREY,      (bx, by2, bw, bh), 1)
-    # Centre reference line
-    pygame.draw.line(surf, LTGREY, (CX, by2 + 2), (CX, by2 + bh - 2), 1)
-    # Moving indicator block
-    pw = 10
-    max_defl = bw // 2 - pw // 2 - 2
-    defl = int(max(-max_defl, min(max_defl, (ay / 0.2) * max_defl)))
-    pygame.draw.rect(surf, WHITE,
-                     (CX + defl - pw // 2, by2 + 1, pw, bh - 2))
+    """Slip indicator: thin bar that slides under the fixed zero-bank triangle."""
+    slip_y = ROLL_CY - ROLL_R + 2   # just below the fixed triangle pointer tip
+    max_d  = 12
+    defl   = int(max(-max_d, min(max_d, (ay / 0.2) * max_d)))
+    pygame.draw.rect(surf, WHITE, (CX + defl - 8, slip_y, 16, 4))
 
 
 # ── Speed tape ────────────────────────────────────────────────────────────────
