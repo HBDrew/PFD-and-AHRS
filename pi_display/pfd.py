@@ -214,7 +214,7 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     cw, ch = aw + pad * 2, ah + pad * 2
     canvas = pygame.Surface((cw, ch))
 
-    px_per_deg = ch / 38.0
+    px_per_deg = 10.0
     hy = ch // 2 + int(pitch * px_per_deg)  # horizon y in canvas
 
     # ── Sky gradient ──────────────────────────────────────────────────────────
@@ -276,8 +276,7 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     ax, ay, aw, ah = ai_rect
     cx, cy = ax + aw // 2, ay + ah // 2
 
-    focal      = 260.0
-    px_per_deg = focal   # pixels per degree at center
+    px_per_deg = 10.0   # 10 display pixels per degree of pitch
 
     # Render on a transparent canvas, then rotate
     pad = int(max(aw, ah) * 0.75)
@@ -285,17 +284,17 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     canvas = pygame.Surface((cw, ch), pygame.SRCALPHA)
     ccx, ccy = cw // 2, ch // 2
 
-    pitch_px = int(pitch * px_per_deg / 10.0)   # 10 px / degree approx
+    pitch_px = int(pitch * px_per_deg)
 
     # Line half-widths based on AI width.
-    # GI-275 style: major ~14% each side, minor ~8%.
-    major_half = int(aw * 0.14)   # ~69 px
-    minor_half = int(aw * 0.08)   # ~39 px
+    # GI-275 style: major ~7% each side, minor ~4%.
+    major_half = int(aw * 0.07)   # ~34 px
+    minor_half = int(aw * 0.04)   # ~19 px
 
     for deg in range(-30, 35, 5):
         if deg == 0:
             continue
-        row_y = ccy - pitch_px - int(deg * px_per_deg / 10.0)
+        row_y = ccy + pitch_px - int(deg * px_per_deg)
         if not (10 < row_y < ch - 10):
             continue
         major = (deg % 10 == 0)
@@ -318,7 +317,7 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
             canvas.blit(img, (ccx + half + 4, row_y - 9))
 
     # Horizon line (0°) — same width as major pitch lines
-    hy = ccy - pitch_px
+    hy = ccy + pitch_px
     if 0 < hy < ch:
         pygame.draw.line(canvas, (255, 255, 255, 200),
                          (ccx - major_half, hy), (ccx + major_half, hy), 2)
@@ -428,15 +427,23 @@ def draw_aircraft_symbol(surf):
     gap = 10   # distance from centre to inner base of each triangle
     h   = 5    # half-height at the triangle base
 
-    # Left wing: base at wingtip, tip pointing inward toward centre
-    ltri = [(CX - ws, CY - h), (CX - ws, CY + h), (CX - gap, CY)]
-    pygame.gfxdraw.filled_polygon(surf, ltri, AMBER)
-    pygame.gfxdraw.aapolygon(surf, ltri, AMBER)
+    droop = int((ws - gap) * math.tan(10 * DEG))   # ~9 px dihedral droop at tip
 
-    # Right wing: mirror
-    rtri = [(CX + ws, CY - h), (CX + ws, CY + h), (CX + gap, CY)]
-    pygame.gfxdraw.filled_polygon(surf, rtri, AMBER)
-    pygame.gfxdraw.aapolygon(surf, rtri, AMBER)
+    # Left wing — upper half AMBER, lower half darker, full outline AA
+    l_top  = [(CX - ws, CY - h + droop), (CX - ws, CY + droop),     (CX - gap, CY)]
+    l_bot  = [(CX - ws, CY + droop),     (CX - ws, CY + h + droop), (CX - gap, CY)]
+    l_full = [(CX - ws, CY - h + droop), (CX - ws, CY + h + droop), (CX - gap, CY)]
+    pygame.gfxdraw.filled_polygon(surf, l_top, AMBER)
+    pygame.gfxdraw.filled_polygon(surf, l_bot, AMBER_DARK)
+    pygame.gfxdraw.aapolygon(surf, l_full, AMBER)
+
+    # Right wing — mirror
+    r_top  = [(CX + ws, CY - h + droop), (CX + ws, CY + droop),     (CX + gap, CY)]
+    r_bot  = [(CX + ws, CY + droop),     (CX + ws, CY + h + droop), (CX + gap, CY)]
+    r_full = [(CX + ws, CY - h + droop), (CX + ws, CY + h + droop), (CX + gap, CY)]
+    pygame.gfxdraw.filled_polygon(surf, r_top, AMBER)
+    pygame.gfxdraw.filled_polygon(surf, r_bot, AMBER_DARK)
+    pygame.gfxdraw.aapolygon(surf, r_full, AMBER)
 
     # Centre reference circle (open ring)
     pygame.gfxdraw.filled_circle(surf, CX, CY, 6, AMBER)
@@ -515,11 +522,11 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
         major = (v % 20 == 0)
         tl = 12 if major else 7
         pygame.draw.line(surf, LTGREY,
-                         (SPD_X + SPD_W - tl, vy), (SPD_X + SPD_W, vy),
+                         (SPD_X, vy), (SPD_X + tl, vy),
                          2 if major else 1)
         if major:
             _text(surf, str(v), 17, (230, 230, 230), bold=True,
-                  x=SPD_X + 2, y=vy - 9)
+                  x=SPD_X + tl + 2, y=vy - 9)
 
     # Speed readout box — concave notch on AI side (right edge), GI-275 style
     bh = 44
@@ -557,11 +564,11 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
         major = (ft % 500 == 0)
         tl = 14 if major else 7
         pygame.draw.line(surf, LTGREY,
-                         (ALT_X, fy), (ALT_X + tl, fy),
+                         (ALT_X + ALT_W - tl, fy), (ALT_X + ALT_W, fy),
                          2 if major else 1)
         if ft % 200 == 0:
             _text(surf, str(ft), 15, (230, 230, 230), bold=True,
-                  x=ALT_X + tl + 2, y=fy - 8)
+                  x=ALT_X + 4, y=fy - 8)
 
     # Altitude bug
     if alt_bug is not None:

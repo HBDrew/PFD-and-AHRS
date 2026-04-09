@@ -128,7 +128,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     ai_img  = Image.new('RGBA', (W*S, H*S), (0, 0, 0, 0))
     ai_draw = ImageDraw.Draw(ai_img)
 
-    focal    = 260.0
+    focal    = 520.0
     pitch_px = focal * math.tan(pitch * DEG)
     hy = H*2 + int(-pitch_px)   # horizon row in enlarged canvas (centred at H*2)
 
@@ -198,8 +198,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     # Pitch ladder — half-widths in display pixels
     # GI-275: major ~14% AI width each side, minor ~8%
-    major_half = int(AI_W * 0.14)   # ~69 px
-    minor_half = int(AI_W * 0.08)   # ~39 px
+    major_half = int(AI_W * 0.07)   # ~34 px
+    minor_half = int(AI_W * 0.04)   # ~20 px
     fn18 = fnt(18, bold=True)
     for deg in range(-30, 35, 5):
         if deg == 0: continue
@@ -277,10 +277,10 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if not (TAPE_TOP + 15 < vy < TAPE_BOT - 15): continue
         major = (v % 20 == 0)
         tl = 12 if major else 7
-        draw.line([(SPD_X+SPD_W-tl, vy), (SPD_X+SPD_W, vy)],
+        draw.line([(SPD_X, vy), (SPD_X+tl, vy)],
                   fill=LTGREY, width=2 if major else 1)
         if major:
-            draw.text((SPD_X+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
+            draw.text((SPD_X+tl+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
     # Speed box — concave notch on AI (right) side
     bh = 44; by = TAPE_MID - bh//2
@@ -309,10 +309,10 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if not (TAPE_TOP + 12 < fy < TAPE_BOT - 12): continue
         major = (ft % 500 == 0)
         tl = 14 if major else 7
-        draw.line([(ALT_X, fy), (ALT_X+tl, fy)],
+        draw.line([(ALT_X+ALT_W-tl, fy), (ALT_X+ALT_W, fy)],
                   fill=LTGREY, width=2 if major else 1)
         if ft % 200 == 0:
-            draw.text((ALT_X+tl+2, fy-8), str(ft),
+            draw.text((ALT_X+4, fy-8), str(ft),
                       fill=(230,230,230), font=fnt(15, bold=True))
 
     # Altitude bug
@@ -461,11 +461,15 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     # ── 7. AIRCRAFT SYMBOL — GI-275 style outward triangles + centre ring ────
     AMBER = (255, 190, 30)
+    AMBER_DARK = (180, 120, 0)
     ws = 62; gap = 10; h = 5
-    # Left wing triangle: base at wingtip, tip pointing inward toward centre
-    draw.polygon([(CX-ws, CY-h), (CX-ws, CY+h), (CX-gap, CY)], fill=AMBER)
-    # Right wing triangle: mirror
-    draw.polygon([(CX+ws, CY-h), (CX+ws, CY+h), (CX+gap, CY)], fill=AMBER)
+    droop = int((ws - gap) * math.tan(10 * DEG))   # ~9 px dihedral droop at tip
+    # Left wing — upper half lighter, lower half darker (depth shading)
+    draw.polygon([(CX-ws, CY-h+droop), (CX-ws, CY+droop),    (CX-gap, CY)], fill=AMBER)
+    draw.polygon([(CX-ws, CY+droop),   (CX-ws, CY+h+droop),  (CX-gap, CY)], fill=AMBER_DARK)
+    # Right wing — mirror
+    draw.polygon([(CX+ws, CY-h+droop), (CX+ws, CY+droop),    (CX+gap, CY)], fill=AMBER)
+    draw.polygon([(CX+ws, CY+droop),   (CX+ws, CY+h+droop),  (CX+gap, CY)], fill=AMBER_DARK)
     # Centre ring
     draw.ellipse([(CX-6, CY-6),(CX+6, CY+6)], outline=AMBER, width=2)
 
