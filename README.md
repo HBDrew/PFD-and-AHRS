@@ -1,169 +1,293 @@
-# AHRS PFD — Raspberry Pi Pico W
+# AHRS PFD — Raspberry Pi Pico W + Pi Zero 2W Display
 
-A miniature Attitude & Heading Reference System that streams a forward-looking
-Primary Flight Display with synthetic vision to a phone browser over local WiFi.
-**No cell data or internet required.**
+A two-board avionic display system:
+
+| Board | Role |
+|-------|------|
+| **Pico W** | Reads WT901 AHRS, GPS, BME280 baro. Serves data via Wi-Fi SSE |
+| **Pi Zero 2W** | Renders GI-275 inspired PFD with synthetic vision on a 640×480 DSI touchscreen |
 
 ---
 
 ## Hardware
 
+### Pico W sensor board
 | Part | Notes |
 |------|-------|
-| Raspberry Pi Pico W | RP2040 + CYW43439 WiFi |
-| WITMOTION WT901 | 9-axis AHRS (accel + gyro + mag + Kalman fusion), outputs Euler angles |
-| GY-NEO6MV2 | u-blox NEO-6M GPS, NMEA UART, 1–5 Hz update |
+| Raspberry Pi Pico W | Any revision |
+| WitMotion WT901 AHRS | UART, 9-DOF IMU |
+| u-blox NEO-6M GPS module | UART |
+| BME280 baro (optional) | I2C, improves altitude accuracy |
+| MAX3232 breakout | For future TruTrak autopilot RS-232 |
 
-### Why these parts?
-
-- **WT901** does all the sensor-fusion on-chip (Kalman filter). The Pico W simply reads finished roll/pitch/yaw — no quaternion math needed on the microcontroller.
-- **Pico W** is more than powerful enough: the RP2040 runs at 133 MHz, and *all rendering happens on the phone browser*. The Pico only reads UART, parses bytes, and streams tiny JSON packets at 10 Hz.
-- **GY-NEO6MV2** is widely available and gives reliable position, groundspeed, track, and altitude. The 1 Hz GPS update rate is adequate for a moving map / altitude readout.
-
-> **Future upgrade path:** swap the NEO-6M for a u-blox M8N/M9N for 10 Hz updates and better sensitivity.
-
----
-
-## Wiring
-
-```
-WT901 AHRS          Pico W
-──────────          ──────
-VCC    ──────────►  3V3(OUT)  pin 36
-GND    ──────────►  GND       pin 38
-TXD    ──────────►  GP1       pin 2   (UART0 RX)
-RXD    ──────────►  GP0       pin 1   (UART0 TX – optional, for config)
-
-GY-NEO6MV2 GPS     Pico W
-──────────────     ──────
-VCC    ──────────►  VSYS      pin 39  (or 3V3 – check your module)
-GND    ──────────►  GND       pin 38
-TXD    ──────────►  GP5       pin 7   (UART1 RX)
-RXD    ──────────►  GP4       pin 6   (UART1 TX – optional, for UBX config)
-```
-
-> **Note:** UART0 (GP0/GP1) is shared with USB-serial.  
-> If you need USB debug output *while flying*, move the WT901 to GP12 (TX) / GP13 (RX) and update `WT901_TX_PIN` / `WT901_RX_PIN` in `firmware/config.py`.
+### Pi Zero 2W display
+| Part | Notes |
+|------|-------|
+| Raspberry Pi Zero 2W | 512 MB RAM |
+| KLAYERS 3.5" DSI 640×480 touchscreen | IPS, capacitive touch |
+| 64 GB microSD (Class 10 / A1) | Raspberry Pi OS Lite 64-bit |
+| USB-C power (5V 2A+) | For Pi Zero 2W |
 
 ---
 
-## Project structure
+## Pi Zero 2W — First-Time Setup
 
+### 1. Flash SD card
+
+Download **Raspberry Pi OS Lite (64-bit)** from raspberrypi.com.
+
+Using **Raspberry Pi Imager**:
+1. Choose OS → Raspberry Pi OS (other) → Raspberry Pi OS Lite (64-bit)
+2. Click ⚙ **Advanced options** before writing:
+   - Enable SSH (use password auth)
+   - Set hostname: `pfd`
+   - Set username/password (e.g. `pi` / `pfd1234`)
+   - **Configure wireless LAN** → enter your home WiFi SSID + password
+   - Set locale/timezone
+3. Write to SD card.
+
+### 2. Boot and find the Pi
+
+Insert SD, attach the DSI display cable, power on.
+
+Find the IP address on your home network:
+
+```bash
+# From a Mac/Linux machine on the same WiFi:
+ping pfd.local
+
+# Or check your router's DHCP lease list
 ```
-pfd-and-ahrs/
-├── firmware/           ← copy all .py files to Pico W root
-│   ├── config.py       pin assignments, WiFi credentials, baud rates
-│   ├── wt901.py        WT901 UART binary packet driver
-│   ├── gps.py          NMEA parser (GPRMC + GPGGA)
-│   ├── web_server.py   async HTTP + Server-Sent Events server
-│   └── main.py         entry point – ties everything together
-└── display/
-    └── index.html      ← also copy to Pico W root as "index.html"
+
+### 3. SSH in
+
+```bash
+ssh pi@pfd.local
+# password: pfd1234 (or whatever you set)
 ```
+
+### 4. Clone the repo
+
+```bash
+cd ~
+git clone https://github.com/HBDrew/PFD-and-AHRS.git
+cd PFD-and-AHRS
+```
+
+### 5. Run the install script
+
+```bash
+sudo bash setup.sh
+```
+
+This will:
+- Install Python/pygame/numpy
+- Configure the DSI display framebuffer (640×480)
+- Create `pi_display/data/srtm/` directory
+- Install `pfd.service` to auto-start on boot
+- Add `pi_display/download_terrain.py` helper
+
+### 6. Download Sedona terrain tiles (while on home WiFi)
+
+```bash
+bash fetch_sedona_tiles.sh
+```
+
+This downloads 4 SRTM elevation tiles (~11 MB) covering Sedona AZ for demo mode. For full US terrain coverage (~5 GB):
+
+```bash
+python3 pi_display/download_terrain.py
+```
+
+### 7. Test demo mode (no Pico W needed)
+
+```bash
+python3 pi_display/pfd.py --demo
+```
+
+You should see the GI-275 style PFD animating through Sedona flight scenarios on the DSI display.
+
+### 8. Reboot — PFD starts automatically
+
+```bash
+sudo reboot
+```
+
+The `pfd.service` systemd unit will start `pfd.py` automatically on boot, connecting to the Pico W AP.
 
 ---
 
-## Installation
+## Pico W — Setup
 
-### 1. Flash MicroPython
+### Copy firmware files
 
-Download the latest **Raspberry Pi Pico W** build from  
-https://micropython.org/download/RPI_PICO_W/
-
-Hold **BOOTSEL**, plug in USB, drag the `.uf2` file onto the `RPI-RP2` drive.
-
-### 2. Copy files to the Pico W
-
-Using **Thonny** (or `mpremote`, `rshell`, `ampy`):
+Connect Pico W via USB. Copy the `firmware/` folder contents to the Pico root (using Thonny, rshell, or mpremote):
 
 ```
-firmware/config.py      → /config.py
-firmware/wt901.py       → /wt901.py
-firmware/gps.py         → /gps.py
-firmware/web_server.py  → /web_server.py
-firmware/main.py        → /main.py
-display/index.html      → /index.html
+firmware/
+├── main.py
+├── config.py          ← edit WiFi credentials and pin assignments here
+├── web_server.py
+├── wt901.py
+├── gps.py
+└── bme280.py          ← only needed if BME280 is connected
 ```
 
-`main.py` runs automatically on boot.
-
-### 3. Configure (optional)
-
-Edit `config.py` before copying:
+### Edit config.py
 
 ```python
-AP_SSID     = "AHRS-PFD"   # WiFi network name
-AP_PASSWORD = "ahrs1234"   # min 8 chars; "" for open network
-WT901_BAUD  = 9600         # increase to 115200 after configuring the WT901
+AP_SSID     = "PFD_AP"      # must match wifi_switch.sh PICO_SSID
+AP_PASSWORD = "picoahrs1"   # must match wifi_switch.sh PICO_PSK
 ```
 
-### 4. Connect your phone
+### Wiring
 
-1. Power the Pico W.  
-2. Wait ~5 s for the WiFi AP to start (onboard LED blinks at 0.5 Hz).  
-3. On your phone: connect to WiFi network **AHRS-PFD** (password: `ahrs1234`).  
-4. Open a browser and navigate to **http://192.168.4.1**
+#### WT901 AHRS → Pico W
+| WT901 | Pico W | Notes |
+|-------|--------|-------|
+| VCC (5V) | VBUS (pin 40) | 5V from USB |
+| GND | GND (pin 38) | |
+| TX | GP1 (pin 2) | UART0 RX |
+| RX | GP0 (pin 1) | UART0 TX |
 
-The PFD loads immediately and starts receiving live data.
+#### NEO-6M GPS → Pico W
+| NEO-6M | Pico W | Notes |
+|--------|--------|-------|
+| VCC | 3V3 (pin 36) | |
+| GND | GND | |
+| TX | GP5 (pin 7) | UART1 RX |
+| RX | GP4 (pin 6) | UART1 TX |
+
+#### BME280 (optional) → Pico W
+| BME280 | Pico W | Notes |
+|--------|--------|-------|
+| VCC | 3V3 | |
+| GND | GND | |
+| SDA | GP2 (pin 4) | I2C1 |
+| SCL | GP3 (pin 5) | I2C1 |
 
 ---
 
-## Display features
+## Flight Mode Workflow
 
-| Element | Description |
-|---------|-------------|
-| Synthetic horizon | Sky (gradient blue) / Ground (gradient brown), rolls and pitches with the aircraft |
-| Pitch ladder | ±30° with degree labels every 10°, serif ticks pointing toward horizon |
-| Roll arc | Fixed arc at top; white triangle indicator rotates with roll |
-| Aircraft symbol | Fixed gold wings at screen centre |
-| Slip/skid ball | Simplified lateral deviation indicator |
-| Speed box (left) | GPS groundspeed in knots |
-| Altitude box (right) | GPS altitude in feet MSL |
-| VSI (below alt) | Vertical speed in ft/min with up/down arrow |
-| Heading tape (bottom) | Scrolling tape, cardinal points highlighted, current heading readout box |
-| GPS status (top-left) | Fix quality and satellite count |
-| Link status (top-right) | Green / amber / red based on SSE data freshness |
+### Switch Pi to Pico W AP
+```bash
+sudo bash wifi_switch.sh flight
+```
+
+### Switch Pi to home WiFi (for updates/terrain)
+```bash
+sudo bash wifi_switch.sh home
+```
+
+### Check current WiFi
+```bash
+bash wifi_switch.sh status
+```
 
 ---
 
-## Architecture
+## Touchscreen Controls
 
-```
-Pico W                              Phone browser
-──────────────────────────────      ─────────────────────────────
-WiFi AP (192.168.4.1)  ◄────────── STA (192.168.4.x)
-  │
-  ├─ GET /              ──────────► index.html (served once)
-  │
-  └─ GET /events        ──────────► EventSource SSE stream
-       │                              │
-       │  data: {"roll":...}\n\n      ▼
-       │  10 Hz                   requestAnimationFrame render
-       │                          Canvas 2D  synthetic vision
-       ▼
-  sensor_loop (50 Hz)
-    ├─ WT901.update()   ◄── UART0 binary packets
-    └─ GPS.update()     ◄── UART1 NMEA sentences
-```
-
-**Why SSE instead of WebSocket?**  
-Standard Pico W MicroPython firmware may not include SHA-1 (required for the
-WebSocket handshake). SSE is plain HTTP chunked transfer — no crypto needed,
-same libraries that are already available, and the browser reconnects
-automatically if the connection drops.
+| Action | Effect |
+|--------|--------|
+| Tap altitude tape | Set altitude bug to tapped position |
+| Tap heading tape | Set heading bug to tapped position |
+| (keyboard) ↑ / ↓ | Altitude bug ±100 ft |
+| (keyboard) ← / → | Heading bug ±10° |
+| (keyboard) + / − | Baro setting ±0.01 hPa |
+| (keyboard) D | Toggle demo mode |
+| (keyboard) Esc | Quit |
 
 ---
 
-## Limitations & known issues
+## AHRS Trim Calibration
 
-- **GPS vertical speed** is derived from successive altitude readings (1 Hz) and
-  will be noisy at low climb/descent rates. It is useful for trend only.
-- **Slip/skid ball** uses roll angle as a proxy. A true coordinated-turn
-  indicator requires lateral accelerometer data; this can be added by reading
-  the WT901's 0x51 acceleration packet (code already parses `ax`).
-- **No airspeed.** The NEO-6M provides *groundspeed* only. Connecting a pitot
-  tube + differential pressure sensor to an ADC pin would provide IAS.
-- The display is optimised for **landscape orientation** on a phone. Portrait
-  works but is less comfortable as a forward-looking display.
-- The Pico W serves **one SSE client at a time** efficiently; a second tab or
-  device will work but both streams share the same 10 Hz server loop.
+If the horizon is not level on the ground, adjust the trim offsets.
+
+1. On a phone/tablet connected to `PFD_AP`, open `http://192.168.4.1`
+2. Tap **TRIM** badge → adjust Pitch / Roll / Yaw
+3. Tap **Save** — values persist to `trims.json` on the Pico flash
+
+---
+
+## V-Speed Configuration
+
+Edit `pi_display/config.py` to match your aircraft:
+
+```python
+VS0  =  48   # Stall speed, flaps full
+VS1  =  55   # Stall speed, clean
+VFE  =  85   # Max flap extension
+VNO  = 129   # Max structural cruising
+VNE  = 163   # Never exceed
+```
+
+Defaults are Cessna 172S values. Changes take effect on next `pfd.py` restart.
+
+---
+
+## Baro Setting
+
+The baro setting is adjusted from the Pico W web interface (`http://192.168.4.1`). If the BME280 is installed it drives the altimeter; otherwise GPS altitude is used.
+
+---
+
+## Troubleshooting
+
+### PFD screen blank on boot
+```bash
+sudo systemctl status pfd.service
+sudo journalctl -u pfd.service -n 50
+```
+
+### Display wrong orientation / resolution
+Check `/boot/firmware/config.txt` — `setup.sh` should have added:
+```
+framebuffer_width=640
+framebuffer_height=480
+```
+
+### "NO LINK" badge on PFD — can't connect to Pico W
+1. Check Pi is on Pico W AP: `bash wifi_switch.sh status`
+2. Check Pico W is powered and booted: LED should be blinking
+3. Verify `config.py` AP_SSID matches `wifi_switch.sh` PICO_SSID
+4. Try: `curl http://192.168.4.1/state` from the Pi
+
+### "AHRS FAIL" on display
+- WT901 UART wiring (check TX→RX cross)
+- WT901 baud rate (default 9600 in `config.py`)
+- Allow 5 seconds after Pico boot for sensor to initialise
+
+### No GPS fix
+- GPS needs open-sky view; initial fix can take 2–5 minutes cold-start
+- Check NEO-6M LED: 1 Hz blink = fix acquired, fast blink = searching
+
+### Terrain not showing in demo
+```bash
+bash fetch_sedona_tiles.sh
+```
+After downloading, restart PFD: `sudo systemctl restart pfd.service`
+
+---
+
+## Updating
+
+```bash
+sudo bash wifi_switch.sh home   # get on internet
+cd ~/PFD-and-AHRS
+git pull
+sudo systemctl restart pfd.service
+```
+
+---
+
+## Roadmap
+
+| Phase | Feature |
+|-------|---------|
+| ✅ V1 | AHRS PFD — Pico W + phone browser display |
+| ✅ V2 | Pi Zero 2W dedicated display with SVT terrain |
+| V3 | 100 Hz WT901 + magnetic deviation calibration |
+| V4 | TruTrak Vizion RS-232 autopilot interface |
+| V5 | Aviation database, moving map, synthetic runway |

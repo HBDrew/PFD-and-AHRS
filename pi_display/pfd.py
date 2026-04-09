@@ -87,12 +87,18 @@ _fonts = {}
 def _get_font(size: int, bold: bool = False):
     key = (size, bold)
     if key not in _fonts:
-        paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-        ]
+        if bold:
+            paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            ]
+        else:
+            paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+            ]
         fnt = None
         for p in paths:
             try:
@@ -189,8 +195,11 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     # Rotate for roll
     rotated = pygame.transform.rotate(canvas, roll)
     rw, rh = rotated.get_size()
-    ox, oy = (rw - aw) // 2, (rh - ah) // 2
-    crop = rotated.subsurface(pygame.Rect(ox, oy, aw, ah))
+    ox = max(0, (rw - aw) // 2)
+    oy = max(0, (rh - ah) // 2)
+    blit_w = min(aw, rw - ox)
+    blit_h = min(ah, rh - oy)
+    crop = rotated.subsurface(pygame.Rect(ox, oy, blit_w, blit_h))
     surf.blit(crop, (ax, ay))
 
 
@@ -620,7 +629,7 @@ class DemoState:
         self.label   = sc[0]
         self._target = dict(zip(
             ("roll", "pitch", "yaw", "alt", "speed", "vspeed", "ay",
-             "yaw_bug", "alt_bug", "_dur"),
+             "hdg_bug", "alt_bug", "_dur"),
             sc[1:]))
         self._target["lat"] = DEMO_LAT
         self._target["lon"] = DEMO_LON
@@ -638,7 +647,7 @@ class DemoState:
             self._idx += 1
             self._t0   = time.monotonic()
             self._apply(self._idx)
-        # Apply to shared state
+        # Apply sensor values to shared state
         with _state_lock:
             for k in ("roll", "pitch", "yaw", "alt", "speed", "vspeed",
                       "ay", "lat", "lon", "fix", "sats",
@@ -647,6 +656,9 @@ class DemoState:
                     state[k] = self._target[k]
             state["gps_alt"] = state["alt"]
             state["track"]   = state["yaw"]
+        # Apply bug positions directly to disp (they're not in state)
+        disp["hdg_bug"] = self._target.get("hdg_bug", disp["hdg_bug"])
+        disp["alt_bug"] = self._target.get("alt_bug", disp["alt_bug"])
 
 
 # ── Touch handler ─────────────────────────────────────────────────────────────
@@ -719,14 +731,7 @@ def render(surf, demo_mode, connected):
     ai_rect = (AI_X, AI_Y, AI_W, AI_H)
 
     # 1. SVT / AI background
-    import os
-    has_terrain = any(
-        f.endswith(".hgt")
-        for f in os.listdir(SRTM_DIR)
-        if os.path.isfile(os.path.join(SRTM_DIR, f))
-    ) if os.path.isdir(SRTM_DIR) else False
-
-    if has_terrain:
+    if _has_terrain:
         draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon)
     else:
         draw_simple_ai_background(surf, ai_rect, pitch, roll)
@@ -761,6 +766,15 @@ def render(surf, demo_mode, connected):
     # 11. Demo watermark
     if demo_mode:
         _text(surf, "DEMO", 14, (255, 60, 60, 200), cx=CX, cy=CY - 20)
+
+
+# ── Terrain availability (computed once at import time) ───────────────────────
+def _check_terrain():
+    if not os.path.isdir(SRTM_DIR):
+        return False
+    return any(f.endswith(".hgt") for f in os.listdir(SRTM_DIR))
+
+_has_terrain = _check_terrain()
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
