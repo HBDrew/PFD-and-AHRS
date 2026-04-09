@@ -538,8 +538,8 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
     pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts, WHITE)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    # Rolling drum: 3 digits, 22px/cell, 26pt bold
-    _rolling_drum(surf, SPD_X + 3, TAPE_MID - 17, 64, 34, speed, 3, spd_col, 26)
+    # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
+    _rolling_drum(surf, SPD_X + pd + 2, TAPE_MID - 17, SPD_W - pd - 4, 34, speed, 3, spd_col, 20)
 
     # IAS bug button — top strip of speed tape
     _cyan_box(surf, "IAS", "---", x=SPD_X, y=2, w=SPD_W, h=18)
@@ -556,22 +556,33 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
 
     def ay2(ft): return alt_y(ft, alt)
 
-    # Tick marks and numbers
-    base = int(round(alt / 100)) * 100
-    for ft in range(base - 400, base + 400, 100):
+    # Tick marks and numbers — every 50ft minor, every 100ft major with label
+    base = int(round(alt / 50)) * 50
+    for ft in range(base - 450, base + 450, 50):
         fy = ay2(ft)
-        if not (TAPE_TOP + 12 < fy < TAPE_BOT - 12):
+        if not (TAPE_TOP + 8 < fy < TAPE_BOT - 8):
             continue
-        major = (ft % 500 == 0)
+        major = (ft % 100 == 0)
         tl = 12 if major else 7
         pygame.draw.line(surf, LTGREY,
                          (ALT_X + ALT_W - tl, fy), (ALT_X + ALT_W, fy),
                          2 if major else 1)
-        if ft % 200 == 0:
-            lbl = str(ft)
-            lw = _get_font(15, bold=True).size(lbl)[0]
-            _text(surf, lbl, 15, (230, 230, 230), bold=True,
-                  x=ALT_X + ALT_W - tl - 2 - lw, y=fy - 8)
+        if major:
+            s = str(ft)
+            if ft >= 1000:
+                # Thousands digit slightly larger than hundreds+
+                f_l = _get_font(16, bold=True)
+                f_s = _get_font(13, bold=True)
+                thou, rest = s[:1], s[1:]
+                tw_l = f_l.size(thou)[0]
+                tw_s = f_s.size(rest)[0]
+                x0 = ALT_X + ALT_W - tl - 2 - tw_l - tw_s
+                _text(surf, thou, 16, (230, 230, 230), bold=True, x=x0,        y=fy - 10)
+                _text(surf, rest, 13, (230, 230, 230), bold=True, x=x0 + tw_l, y=fy -  8)
+            else:
+                lw = _get_font(13, bold=True).size(s)[0]
+                _text(surf, s, 13, (230, 230, 230), bold=True,
+                      x=ALT_X + ALT_W - tl - 2 - lw, y=fy - 8)
 
     # Altitude bug
     if alt_bug is not None:
@@ -595,8 +606,8 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
            (ALT_X + ALT_W - pd, by + bh), (ALT_X, by + bh)]
     pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts, WHITE)
-    # Rolling drum: 5 digits, 14px/cell, 20pt bold, no leading zeros
-    _rolling_drum(surf, ALT_X + 2, TAPE_MID - 17, 70, 34, alt, 5, WHITE, 20,
+    # Rolling drum: 4 digits, fits in flat part of box, same font_sz as speed
+    _rolling_drum(surf, ALT_X + 2, TAPE_MID - 17, ALT_W - pd - 4, 34, alt, 4, WHITE, 20,
                   suppress_leading=True)
 
     # VSI (vertical speed)

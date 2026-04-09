@@ -297,7 +297,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    rolling_drum(img, SPD_X+3, TAPE_MID-17, 64, 34, speed, 3, spd_col, 26)
+    # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
+    rolling_drum(img, SPD_X+pd+2, TAPE_MID-17, SPD_W-pd-4, 34, speed, 3, spd_col, 20)
 
     # IAS bug button — top strip of speed tape
     cyan_box("IAS", "---", SPD_X, 2, bw=SPD_W, bh=18)
@@ -308,20 +309,29 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # ALT bug button — top strip of alt tape
     cyan_box("ALT", f"{round(alt_bug):5d}", ALT_X, 2, bw=ALT_W, bh=18)
 
-    # Tick marks + labels
-    base_a = round(alt / 100) * 100
-    for ft in range(base_a - 400, base_a + 400, 100):
+    # Tick marks + labels — every 50ft minor, every 100ft major with label
+    base_a = round(alt / 50) * 50
+    for ft in range(base_a - 450, base_a + 450, 50):
         fy = alt_y(ft)
-        if not (TAPE_TOP + 12 < fy < TAPE_BOT - 12): continue
-        major = (ft % 500 == 0)
+        if not (TAPE_TOP + 8 < fy < TAPE_BOT - 8): continue
+        major = (ft % 100 == 0)
         tl = 12 if major else 7
         draw.line([(ALT_X+ALT_W-tl, fy), (ALT_X+ALT_W, fy)],
                   fill=LTGREY, width=2 if major else 1)
-        if ft % 200 == 0:
-            f15 = fnt(15, bold=True)
-            tw = int(f15.getlength(str(ft)))
-            draw.text((ALT_X+ALT_W-tl-2-tw, fy-8), str(ft),
-                      fill=(230,230,230), font=f15)
+        if major:
+            s = str(ft)
+            if ft >= 1000:
+                # Thousands digit slightly larger than hundreds
+                f_l = fnt(16, bold=True);  f_s = fnt(13, bold=True)
+                thou = s[:1];  rest = s[1:]
+                tw_l = int(f_l.getlength(thou));  tw_s = int(f_s.getlength(rest))
+                x0 = ALT_X + ALT_W - tl - 2 - tw_l - tw_s
+                draw.text((x0,        fy - 10), thou, fill=(230, 230, 230), font=f_l)
+                draw.text((x0+tw_l,   fy -  8), rest, fill=(230, 230, 230), font=f_s)
+            else:
+                f_s = fnt(13, bold=True)
+                tw = int(f_s.getlength(s))
+                draw.text((ALT_X+ALT_W-tl-2-tw, fy-8), s, fill=(230,230,230), font=f_s)
 
     # Altitude bug — on outer (right/screen-edge) side
     aby = alt_y(alt_bug)
@@ -337,8 +347,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
            (ALT_X+ALT_W-pd, by+bh), (ALT_X, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
-    # Rolling drum: 5 digits, no leading zeros
-    rolling_drum(img, ALT_X+2, TAPE_MID-17, 70, 34, alt, 5, WHITE, 20,
+    # Rolling drum: 4 digits, fits in flat part of box, same font_sz as speed
+    rolling_drum(img, ALT_X+2, TAPE_MID-17, ALT_W-pd-4, 34, alt, 4, WHITE, 20,
                  suppress_leading=True)
 
     # VSI
