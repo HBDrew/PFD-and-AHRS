@@ -413,7 +413,7 @@ def draw_roll_arc(surf, roll):
 
     # Moving roll pointer: doghouse INSIDE the arc, tip pointing outward toward arc
     roll_ang = (-90 - roll) * DEG
-    rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 16, size=10, inward=False)
+    rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 8, size=10, inward=False)
     pygame.gfxdraw.filled_polygon(surf, rp_pts, WHITE)
     pygame.gfxdraw.aapolygon(surf, rp_pts, WHITE)
 
@@ -428,13 +428,13 @@ def draw_aircraft_symbol(surf):
     gap = 10   # distance from centre to inner base of each triangle
     h   = 5    # half-height at the triangle base
 
-    # Left wing: solid amber triangle pointing left
-    ltri = [(CX - gap, CY - h), (CX - gap, CY + h), (CX - ws, CY)]
+    # Left wing: base at wingtip, tip pointing inward toward centre
+    ltri = [(CX - ws, CY - h), (CX - ws, CY + h), (CX - gap, CY)]
     pygame.gfxdraw.filled_polygon(surf, ltri, AMBER)
     pygame.gfxdraw.aapolygon(surf, ltri, AMBER)
 
     # Right wing: mirror
-    rtri = [(CX + gap, CY - h), (CX + gap, CY + h), (CX + ws, CY)]
+    rtri = [(CX + ws, CY - h), (CX + ws, CY + h), (CX + gap, CY)]
     pygame.gfxdraw.filled_polygon(surf, rtri, AMBER)
     pygame.gfxdraw.aapolygon(surf, rtri, AMBER)
 

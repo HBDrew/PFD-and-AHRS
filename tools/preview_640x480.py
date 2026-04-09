@@ -451,7 +451,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             (int(acx + a(br)*ox + a(hw)*px), int(acy + a(br)*oy + a(hw)*py)),
         ]
 
-    dh1 = doghouse_pts_inside((-90 - roll) * DEG, ROLL_R - 16, size=10)
+    dh1 = doghouse_pts_inside((-90 - roll) * DEG, ROLL_R - 8, size=10)
     arc_d.polygon(dh1, fill=WHITE + (255,))
 
     # Scale down with Lanczos (anti-aliasing via supersampling)
@@ -462,10 +462,10 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # ── 7. AIRCRAFT SYMBOL — GI-275 style outward triangles + centre ring ────
     AMBER = (255, 190, 30)
     ws = 62; gap = 10; h = 5
-    # Left wing triangle: base near centre, tip at left
-    draw.polygon([(CX-gap, CY-h), (CX-gap, CY+h), (CX-ws, CY)], fill=AMBER)
+    # Left wing triangle: base at wingtip, tip pointing inward toward centre
+    draw.polygon([(CX-ws, CY-h), (CX-ws, CY+h), (CX-gap, CY)], fill=AMBER)
     # Right wing triangle: mirror
-    draw.polygon([(CX+gap, CY-h), (CX+gap, CY+h), (CX+ws, CY)], fill=AMBER)
+    draw.polygon([(CX+ws, CY-h), (CX+ws, CY+h), (CX+gap, CY)], fill=AMBER)
     # Centre ring
     draw.ellipse([(CX-6, CY-6),(CX+6, CY+6)], outline=AMBER, width=2)
 
