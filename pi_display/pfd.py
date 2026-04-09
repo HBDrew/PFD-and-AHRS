@@ -528,12 +528,13 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
             _text(surf, str(v), 17, (230, 230, 230), bold=True,
                   x=SPD_X + tl + 2, y=vy - 9)
 
-    # Speed readout box — concave notch on outer (left) edge, GI-275 style
+    # Speed readout box — convex point on outer (left) edge, 90° tip
     bh = 44
     by = TAPE_MID - bh // 2
-    pts = [(SPD_X + SPD_W, by), (SPD_X, by),
-           (SPD_X + 10, TAPE_MID),                   # notch on outer/left edge
-           (SPD_X, by + bh), (SPD_X + SPD_W, by + bh)]
+    pd = bh // 2  # 22px → 135° corners, 90° tip
+    pts = [(SPD_X + SPD_W, by), (SPD_X + pd, by),
+           (SPD_X, TAPE_MID),                        # point at outer/left edge
+           (SPD_X + pd, by + bh), (SPD_X + SPD_W, by + bh)]
     pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts, WHITE)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
@@ -585,12 +586,13 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     _cyan_box(surf, "ALT", alt_str, x=ALT_X, y=2, w=ALT_W, h=18)
 
-    # Altitude readout box — concave notch on outer (right) edge, GI-275 style
+    # Altitude readout box — convex point on outer (right) edge, 90° tip
     bh = 44
     by = TAPE_MID - bh // 2
-    pts = [(ALT_X, by), (ALT_X + ALT_W, by),
-           (ALT_X + ALT_W - 10, TAPE_MID),       # notch on outer/right edge
-           (ALT_X + ALT_W, by + bh), (ALT_X, by + bh)]
+    pd = bh // 2  # 22px → 135° corners, 90° tip
+    pts = [(ALT_X, by), (ALT_X + ALT_W - pd, by),
+           (ALT_X + ALT_W, TAPE_MID),            # point at outer/right edge
+           (ALT_X + ALT_W - pd, by + bh), (ALT_X, by + bh)]
     pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts, WHITE)
     # Rolling drum: 5 digits, 14px/cell, 20pt bold, no leading zeros

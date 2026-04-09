@@ -289,11 +289,11 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if major:
             draw.text((SPD_X+tl+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
-    # Speed box — concave notch on outer (left/screen-edge) side
-    bh = 44; by = TAPE_MID - bh//2
-    pts = [(SPD_X+SPD_W, by), (SPD_X, by),
-           (SPD_X+10, TAPE_MID),                 # notch on outer edge
-           (SPD_X, by+bh), (SPD_X+SPD_W, by+bh)]
+    # Speed box — convex point on outer (left/screen-edge) side, 90° tip
+    bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
+    pts = [(SPD_X+SPD_W, by), (SPD_X+pd, by),
+           (SPD_X, TAPE_MID),                    # point at outer edge
+           (SPD_X+pd, by+bh), (SPD_X+SPD_W, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
@@ -330,11 +330,11 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                (ALT_X+ALT_W-26, aby), (ALT_X+ALT_W-20, aby+10), (ALT_X+ALT_W, aby+10)]
         draw.polygon(bug, fill=CYAN)
 
-    # Alt box — concave notch on outer (right/screen-edge) side
-    bh = 44; by = TAPE_MID - bh//2
-    pts = [(ALT_X, by), (ALT_X+ALT_W, by),
-           (ALT_X+ALT_W-10, TAPE_MID),           # notch on outer edge
-           (ALT_X+ALT_W, by+bh), (ALT_X, by+bh)]
+    # Alt box — convex point on outer (right/screen-edge) side, 90° tip
+    bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
+    pts = [(ALT_X, by), (ALT_X+ALT_W-pd, by),
+           (ALT_X+ALT_W, TAPE_MID),              # point at outer edge
+           (ALT_X+ALT_W-pd, by+bh), (ALT_X, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
     # Rolling drum: 5 digits, no leading zeros
