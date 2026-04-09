@@ -234,8 +234,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     TAPE_FILL = (0, 8, 22, 185)
 
-    # Speed tape bg
-    od.rectangle([(SPD_X, TAPE_TOP), (SPD_X+SPD_W, TAPE_BOT)], fill=TAPE_FILL)
+    # Speed tape bg (extends to y=0 for top button strip)
+    od.rectangle([(SPD_X, 0), (SPD_X+SPD_W, TAPE_BOT)], fill=TAPE_FILL)
     od.line([(SPD_X+SPD_W, TAPE_TOP), (SPD_X+SPD_W, TAPE_BOT)],
             fill=(255,255,255,50), width=1)
 
@@ -250,6 +250,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     img = Image.alpha_composite(img.convert('RGBA'), ov).convert('RGB')
     draw = ImageDraw.Draw(img)
+
+    def cyan_box(label, value_str, bx, by, bw=84, bh=20):
+        draw.rectangle([(bx, by), (bx+bw, by+bh)], fill=(0, 20, 35))
+        draw.rectangle([(bx, by), (bx+bw, by+bh)], outline=CYAN, width=1)
+        txt = f"{label} {value_str}"
+        draw.text((bx + bw//2 - len(txt)*4, by + 4), txt,
+                  fill=CYAN, font=fnt(13, bold=True))
 
     # ── 3. SPEED TAPE CONTENT ─────────────────────────────────────────────────
     def spd_y(v): return int(TAPE_MID - (v - speed) * PX_PER_KT)
@@ -292,15 +299,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
     rolling_drum(img, SPD_X+3, TAPE_MID-17, 64, 34, speed, 3, spd_col, 26)
 
-    # Header
-    draw.text((SPD_X+3, TAPE_TOP+2), "GS KT", fill=(140,200,255), font=fnt(10))
+    # IAS bug button — top strip of speed tape
+    cyan_box("IAS", "---", SPD_X, 2, bw=SPD_W, bh=18)
 
     # ── 4. ALT TAPE CONTENT ───────────────────────────────────────────────────
     def alt_y(ft): return int(TAPE_MID - (ft - alt) * PX_PER_FT)
 
-    # Selected altitude (cyan, top strip)
-    draw.text((ALT_X + ALT_W//2 - 22, 5),
-              f"{round(alt_bug):5d}", fill=CYAN, font=fnt(16, bold=True))
+    # ALT bug button — top strip of alt tape
+    cyan_box("ALT", f"{round(alt_bug):5d}", ALT_X, 2, bw=ALT_W, bh=18)
 
     # Tick marks + labels
     base_a = round(alt / 100) * 100
@@ -347,8 +353,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     if baro_ok:
         draw.text((ALT_X+14, TAPE_MID+65), "hPa", fill=(100,160,200), font=fnt(10))
 
-    # Header
-    draw.text((ALT_X+6, TAPE_TOP+2), "ALT FT", fill=(140,200,255), font=fnt(10))
+    # (ALT FT label replaced by ALT bug button at top)
 
     # ── 5. HEADING TAPE CONTENT ───────────────────────────────────────────────
     CARDS = {0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'}
@@ -463,7 +468,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     AMBER = (255, 190, 30)
     AMBER_DARK = (180, 120, 0)
     ws = 62; gap = 10; h = 5
-    droop = int((ws - gap) * math.tan(10 * DEG))   # ~9 px dihedral droop at tip
+    droop = int((ws - gap) * math.tan(20 * DEG))   # ~19 px dihedral droop at tip
     # Left wing — upper half lighter, lower half darker (depth shading)
     draw.polygon([(CX-ws, CY-h+droop), (CX-ws, CY+droop),    (CX-gap, CY)], fill=AMBER)
     draw.polygon([(CX-ws, CY+droop),   (CX-ws, CY+h+droop),  (CX-gap, CY)], fill=AMBER_DARK)
@@ -473,18 +478,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Centre ring
     draw.ellipse([(CX-6, CY-6),(CX+6, CY+6)], outline=AMBER, width=2)
 
-    # ── 8. CYAN TAP-BUTTONS (HDG / QNH / ALT bug) ───────────────────────────
-    def cyan_box(label, value_str, bx, by, bw=84, bh=20):
-        draw.rectangle([(bx, by), (bx+bw, by+bh)], fill=(0, 20, 35))
-        draw.rectangle([(bx, by), (bx+bw, by+bh)], outline=CYAN, width=1)
-        txt = f"{label} {value_str}"
-        draw.text((bx + bw//2 - len(txt)*4, by + 4), txt,
-                  fill=CYAN, font=fnt(13, bold=True))
-
-    btn_y = HDG_Y + 2   # sit inside the heading stripe
-    cyan_box("HDG", f"{round(hdg_bug):03d}\u00b0", SPD_X,      btn_y, bw=SPD_W+10)
-    cyan_box("QNH", "GPS ALT",                      CX-50,      btn_y, bw=100)
-    cyan_box("ALT", f"{round(alt_bug):5d}",         ALT_X-10,   btn_y, bw=ALT_W+10)
+    # ── 8. CYAN TAP-BUTTONS ──────────────────────────────────────────────────
+    # IAS and ALT bug buttons sit at the TOP of their respective tapes (drawn
+    # above in sections 3 and 4).  HDG and QNH sit at the BASE of the heading
+    # strip, left and right — keeping the centre clear for the heading readout.
+    btn_y = HDG_Y + 2
+    cyan_box("HDG", f"{round(hdg_bug):03d}\u00b0", SPD_X,    btn_y, bw=SPD_W+10)   # left
+    cyan_box("QNH", "GPS ALT",                      ALT_X-10, btn_y, bw=ALT_W+10)  # right
 
     # ── 9. SLIP INDICATOR (rectangular, GI-275 style) ────────────────────────
     bw3=54; bh3=10

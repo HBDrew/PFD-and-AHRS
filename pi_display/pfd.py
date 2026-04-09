@@ -427,7 +427,7 @@ def draw_aircraft_symbol(surf):
     gap = 10   # distance from centre to inner base of each triangle
     h   = 5    # half-height at the triangle base
 
-    droop = int((ws - gap) * math.tan(10 * DEG))   # ~9 px dihedral droop at tip
+    droop = int((ws - gap) * math.tan(20 * DEG))   # ~19 px dihedral droop at tip
 
     # Left wing — upper half AMBER, lower half darker, full outline AA
     l_top  = [(CX - ws, CY - h + droop), (CX - ws, CY + droop),     (CX - gap, CY)]
@@ -540,8 +540,8 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
     # Rolling drum: 3 digits, 22px/cell, 26pt bold
     _rolling_drum(surf, SPD_X + 3, TAPE_MID - 17, 64, 34, speed, 3, spd_col, 26)
 
-    # Header label
-    _text(surf, "GS KT", 10, (140, 200, 255), x=SPD_X + 3, y=TAPE_TOP + 2)
+    # IAS bug button — top strip of speed tape
+    _cyan_box(surf, "IAS", "---", x=SPD_X, y=2, w=SPD_W, h=18)
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
@@ -578,11 +578,9 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                    (ALT_X + 26, aby), (ALT_X + 20, aby + 10), (ALT_X, aby + 10)]
             pygame.draw.polygon(surf, CYAN, bug)
 
-    # Selected altitude display at top (cyan strip)
-    pygame.draw.rect(surf, (0, 30, 50), (ALT_X, 0, ALT_W, TAPE_TOP))
-    if alt_bug is not None:
-        _text(surf, f"{round(alt_bug):5d}", 16, CYAN, bold=True,
-              cx=ALT_X + ALT_W // 2, cy=11)
+    # ALT bug button — top strip of alt tape
+    alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
+    _cyan_box(surf, "ALT", alt_str, x=ALT_X, y=2, w=ALT_W, h=18)
 
     # Altitude readout box — concave notch on AI side (left edge), GI-275 style
     bh = 44
@@ -610,8 +608,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     if baro_src == "bme280":
         _text(surf, "hPa", 10, (100, 160, 200), x=ALT_X + 18, y=TAPE_MID + 65)
 
-    # Header label
-    _text(surf, "ALT FT", 10, (140, 200, 255), x=ALT_X + 6, y=TAPE_TOP + 2)
+    # (ALT FT label replaced by ALT bug button at top)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
@@ -846,31 +843,21 @@ def _cyan_box(surf, label, value_str, x, y, w=80, h=22):
 
 def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
     """
-    Three cyan-labelled tap zones:
-      • Bottom-left  : HDG bug  (touch → set bug to current heading region)
-      • Bottom-centre: BARO setting (touch → adjust QNH)
-      • Bottom-right : ALT bug  (touch → set bug to tapped altitude)
-    They sit just below the heading tape, spanning the full bottom strip.
+    Cyan tap zones in the heading strip — left and right only so the centre
+    heading readout remains unobstructed:
+      • Left  (under speed tape) : HDG bug
+      • Right (under alt tape)   : QNH / BARO
+    IAS and ALT bug buttons are drawn at the tops of their own tapes.
     """
-    y = HDG_Y + HDG_H + 2   # just below heading tape
-    if y + 22 > DISPLAY_H:
-        # Not enough room below tape — overlay on top edge of heading tape
-        y = HDG_Y + 2
+    y = HDG_Y + 2
 
-    # HDG bug box (bottom-left, under speed tape)
+    # HDG bug — left side of heading strip, under speed tape
     _cyan_box(surf, "HDG", f"{round(hdg_bug):03d}\u00b0",
               x=SPD_X, y=y, w=SPD_W + 10, h=20)
 
-    # BARO box (bottom-centre)
-    if baro_src == "bme280":
-        baro_lbl = f"{baro_hpa:.2f}hP"
-    else:
-        baro_lbl = "GPS ALT"
+    # QNH / BARO — right side of heading strip, under alt tape
+    baro_lbl = f"{baro_hpa:.2f}hP" if baro_src == "bme280" else "GPS ALT"
     _cyan_box(surf, "QNH", baro_lbl,
-              x=CX - 50, y=y, w=100, h=20)
-
-    # ALT bug box (bottom-right, under alt tape)
-    _cyan_box(surf, "ALT", f"{round(alt_bug):5d}",
               x=ALT_X - 10, y=y, w=ALT_W + 10, h=20)
 
 
