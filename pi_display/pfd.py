@@ -163,36 +163,62 @@ def draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon):
 
 def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     """
-    Fallback: simple sky/ground gradient (no SRTM data).
-    Used in demo mode when no terrain tiles are loaded.
+    Fallback SVT background (no SRTM tiles loaded).
+    Renders sky gradient + perspective terrain with foreshortening
+    and Sedona-style mesa silhouettes.
     """
     ax, ay, aw, ah = ai_rect
 
-    # Work on an oversized canvas to allow rotation
-    pad = int(max(aw, ah) * 0.8)
+    pad = int(max(aw, ah) * 0.85)
     cw, ch = aw + pad * 2, ah + pad * 2
     canvas = pygame.Surface((cw, ch))
 
-    px_per_deg = ch / 40.0
-    hy = ch // 2 + int(pitch * px_per_deg)
+    px_per_deg = ch / 38.0
+    hy = ch // 2 + int(pitch * px_per_deg)  # horizon y in canvas
 
-    # Sky
-    for row in range(min(ch, hy + 1)):
+    # ── Sky gradient ──────────────────────────────────────────────────────────
+    for row in range(max(0, min(ch, hy + 1))):
         t = max(0.0, min(1.0, 1.0 - (hy - row) / max(1, hy)))
         col = lerp_col(SKY_TOP, SKY_HOR, t)
         pygame.draw.line(canvas, col, (0, row), (cw, row))
 
-    # Ground
+    # ── Ground with perspective foreshortening ────────────────────────────────
+    # Near terrain (bottom) is lighter/more saturated; far (near horizon) darker.
+    GND_NEAR = ( 80, 110,  40)  # greener close terrain
+    GND_MID  = (120,  85,  38)  # midrange brownish
+    GND_FAR  = ( 70,  50,  25)  # dark near horizon
     for row in range(max(0, hy), ch):
-        t = max(0.0, min(1.0, (row - hy) / max(1, ch - hy)))
-        col = lerp_col(GND_HOR, GND_BOT, t)
+        t = (row - hy) / max(1, ch - hy)          # 0=horizon, 1=bottom
+        # foreshorten: most variation in the top quarter (distant terrain)
+        if t < 0.15:
+            col = lerp_col(GND_FAR, GND_MID, t / 0.15)
+        elif t < 0.5:
+            col = lerp_col(GND_MID, GND_NEAR, (t - 0.15) / 0.35)
+        else:
+            col = GND_NEAR
         pygame.draw.line(canvas, col, (0, row), (cw, row))
 
-    # White horizon line
+    # ── Mesa/butte silhouettes near horizon (Sedona-style) ───────────────────
+    MESA      = (160,  60,  22)
+    MESA_DARK = (110,  36,  12)
+    # Draw 3 flat-topped mesas at the horizon band
+    for mx, mw, mh in [(cw*0.18, cw*0.18, 28), (cw*0.55, cw*0.22, 38),
+                        (cw*0.82, cw*0.15, 22)]:
+        base = hy + 4
+        top  = base - mh
+        # Mesa body
+        pts = [(int(mx - mw/2), base), (int(mx + mw/2), base),
+               (int(mx + mw/2 - 6), top), (int(mx - mw/2 + 6), top)]
+        pygame.draw.polygon(canvas, MESA_DARK, pts)
+        # Lit top face
+        pygame.draw.line(canvas, MESA,
+                         (int(mx - mw/2 + 8), top), (int(mx + mw/2 - 8), top), 3)
+
+    # ── Horizon line ──────────────────────────────────────────────────────────
     if 0 < hy < ch:
         pygame.draw.line(canvas, WHITE, (0, hy), (cw, hy), 2)
 
-    # Rotate for roll
+    # ── Rotate for roll ───────────────────────────────────────────────────────
     rotated = pygame.transform.rotate(canvas, roll)
     rw, rh = rotated.get_size()
     ox = max(0, (rw - aw) // 2)
@@ -220,6 +246,11 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
 
     pitch_px = int(pitch * px_per_deg / 10.0)   # 10 px / degree approx
 
+    # Line half-widths based on AI width, NOT canvas width.
+    # GI-275 style: major ~22% AI width each side, minor ~13%.
+    major_half = int(aw * 0.22)   # ~108 px for AI_W=492
+    minor_half = int(aw * 0.13)   # ~64 px
+
     for deg in range(-30, 35, 5):
         if deg == 0:
             continue
@@ -227,11 +258,11 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
         if not (10 < row_y < ch - 10):
             continue
         major = (deg % 10 == 0)
-        half  = int(cw * (0.17 if major else 0.09))
+        half  = major_half if major else minor_half
         lw    = 2 if major else 1
         col   = (255, 255, 255, 220)
         pygame.draw.line(canvas, col, (ccx - half, row_y), (ccx + half, row_y), lw)
-        # End tick marks
+        # End tick marks (inward — up for positive pitch, down for negative)
         tick_dir = 8 if deg > 0 else -8
         pygame.draw.line(canvas, col, (ccx - half, row_y),
                          (ccx - half, row_y + tick_dir), lw)
@@ -245,10 +276,11 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
             canvas.blit(img, (ccx - half - img.get_width() - 4, row_y - 9))
             canvas.blit(img, (ccx + half + 4, row_y - 9))
 
-    # Horizon line (0°)
+    # Horizon line (0°) — same width as major pitch lines
     hy = ccy - pitch_px
     if 0 < hy < ch:
-        pygame.draw.line(canvas, (255, 255, 255, 200), (0, hy), (cw, hy), 2)
+        pygame.draw.line(canvas, (255, 255, 255, 200),
+                         (ccx - major_half, hy), (ccx + major_half, hy), 2)
 
     # Rotate with roll
     rotated = pygame.transform.rotate(canvas, roll)
@@ -260,14 +292,46 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
 
 
 # ── Roll arc ──────────────────────────────────────────────────────────────────
+def _doghouse_pts(cx, cy, ang_rad, r, size=11):
+    """
+    Pentagon "doghouse" pointer centred on the arc at angle ang_rad.
+    Points inward (toward cx,cy). Returns list of (x,y) points.
+    """
+    # Tip of doghouse is at radius r, pointing inward
+    tip_x = int(cx + r * math.cos(ang_rad))
+    tip_y = int(cy + r * math.sin(ang_rad))
+    # Outward direction (away from centre)
+    out_x = math.cos(ang_rad)
+    out_y = math.sin(ang_rad)
+    # Perpendicular
+    perp_x = -out_y
+    perp_y =  out_x
+    # Pentagon: tip (inner), two base corners, two roof corners
+    base_r  = r + size * 1.3
+    roof_r  = r + size * 0.6
+    half_w  = size * 0.7
+    roof_hw = size * 0.35
+    return [
+        (int(cx + base_r * out_x - half_w * perp_x),
+         int(cy + base_r * out_y - half_w * perp_y)),
+        (int(cx + roof_r * out_x - roof_hw * perp_x),
+         int(cy + roof_r * out_y - roof_hw * perp_y)),
+        (tip_x, tip_y),
+        (int(cx + roof_r * out_x + roof_hw * perp_x),
+         int(cy + roof_r * out_y + roof_hw * perp_y)),
+        (int(cx + base_r * out_x + half_w * perp_x),
+         int(cy + base_r * out_y + half_w * perp_y)),
+    ]
+
+
 def draw_roll_arc(surf, roll):
-    """Draw roll scale arc and pointer at top of AI."""
+    """Draw GI-275 style roll scale: arc, tick marks, doghouse zero marker,
+    and doghouse roll pointer."""
     cx, cy = CX, ROLL_CY
 
-    # Arc from -60 to +60 degrees (mapped to screen angles)
+    # Arc (-60° to +60° of bank, mapped to screen top)
     for a in range(-150, -29):
-        a1 = (a) * DEG
-        a2 = (a + 1) * DEG
+        a1, a2 = a * DEG, (a + 1) * DEG
         x1 = int(cx + ROLL_R * math.cos(a1))
         y1 = int(cy + ROLL_R * math.sin(a1))
         x2 = int(cx + ROLL_R * math.cos(a2))
@@ -275,60 +339,75 @@ def draw_roll_arc(surf, roll):
         pygame.draw.line(surf, LTGREY, (x1, y1), (x2, y2), 2)
 
     # Tick marks
-    for deg2, length in [(0, 18), (10, 10), (20, 10), (30, 14),
-                         (-10, 10), (-20, 10), (-30, 14),
-                         (45, 10), (-45, 10), (60, 12), (-60, 12)]:
+    for deg2, length in [(10, 9), (20, 9), (30, 13),
+                         (-10, 9), (-20, 9), (-30, 13),
+                         (45, 9), (-45, 9), (60, 11), (-60, 11)]:
         ang = (-90 + deg2) * DEG
         x1 = int(cx + (ROLL_R - length) * math.cos(ang))
         y1 = int(cy + (ROLL_R - length) * math.sin(ang))
         x2 = int(cx + ROLL_R * math.cos(ang))
         y2 = int(cy + ROLL_R * math.sin(ang))
-        pygame.draw.line(surf, LTGREY, (x1, y1), (x2, y2),
-                         2 if deg2 == 0 else 1)
+        pygame.draw.line(surf, LTGREY, (x1, y1), (x2, y2), 1)
         # Hollow triangles at ±45
         if abs(deg2) == 45:
-            mx = (x1 + x2) // 2
-            my = (y1 + y2) // 2
-            perp = (ang + math.pi / 2)
-            tx, ty = int(6 * math.cos(perp)), int(6 * math.sin(perp))
+            perp = ang + math.pi / 2
+            tx2, ty2 = int(5 * math.cos(perp)), int(5 * math.sin(perp))
+            mx, my = (x1 + x2) // 2, (y1 + y2) // 2
+            inner_x = int(cx + (ROLL_R - 16) * math.cos(ang))
+            inner_y = int(cy + (ROLL_R - 16) * math.sin(ang))
             pygame.draw.polygon(surf, LTGREY,
-                [(mx - tx, my - ty), (mx + tx, my + ty),
-                 (int(cx + (ROLL_R - 20) * math.cos(ang)),
-                  int(cy + (ROLL_R - 20) * math.sin(ang)))], 1)
+                [(mx - tx2, my - ty2), (mx + tx2, my + ty2),
+                 (inner_x, inner_y)], 1)
 
-    # Fixed sky pointer (upward-pointing triangle at top center)
-    pygame.draw.polygon(surf, WHITE,
-        [(CX - 7, ROLL_CY - ROLL_R + 2),
-         (CX + 7, ROLL_CY - ROLL_R + 2),
-         (CX,     ROLL_CY - ROLL_R + 14)])
+    # Fixed zero-bank doghouse (white, points inward at top centre)
+    zero_ang = -math.pi / 2   # straight up
+    dh_pts = _doghouse_pts(cx, cy, zero_ang, ROLL_R, size=11)
+    pygame.draw.polygon(surf, WHITE, dh_pts)
+    pygame.draw.polygon(surf, (80, 80, 90), dh_pts, 1)
 
-    # Roll pointer (moves with roll)
-    ra = (-90 - roll) * DEG
-    rpx = int(cx + (ROLL_R - 3) * math.cos(ra))
-    rpy = int(cy + (ROLL_R - 3) * math.sin(ra))
-    perp = ra + math.pi / 2
-    tx = int(9 * math.cos(perp))
-    ty = int(9 * math.sin(perp))
-    fx = int(6 * math.cos(ra))
-    fy = int(6 * math.sin(ra))
-    pygame.draw.polygon(surf, WHITE,
-        [(rpx, rpy),
-         (rpx - tx - fx, rpy - ty - fy),
-         (rpx + tx - fx, rpy + ty - fy)])
+    # Moving roll pointer doghouse (white, tracks bank angle)
+    roll_ang = (-90 - roll) * DEG
+    rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 2, size=10)
+    pygame.draw.polygon(surf, WHITE, rp_pts)
+    pygame.draw.polygon(surf, (40, 40, 50), rp_pts, 1)
 
 
 # ── Aircraft symbol ───────────────────────────────────────────────────────────
+AMBER      = (255, 190,  30)   # slightly warmer than YELLOW for symbol fill
+AMBER_DARK = (180, 120,   0)   # shadow/outline
+
 def draw_aircraft_symbol(surf):
-    ws = 78
-    hw = int(ws * 0.22)
-    # Wings
-    pygame.draw.line(surf, YELLOW, (CX - ws, CY), (CX - hw, CY), 4)
-    pygame.draw.line(surf, YELLOW, (CX + hw, CY), (CX + ws, CY), 4)
-    # Wing tips (downward ticks)
-    pygame.draw.line(surf, YELLOW, (CX - hw, CY), (CX - hw, CY + 10), 4)
-    pygame.draw.line(surf, YELLOW, (CX + hw, CY), (CX + hw, CY + 10), 4)
-    # Centre dot
-    pygame.draw.circle(surf, YELLOW, (CX, CY), 5)
+    """GI-275 style amber aircraft symbol with shading."""
+    ws = 72   # half wing span
+    hw = int(ws * 0.22)   # fuselage half-width cutout
+
+    # Wing polygons (thick, filled amber with dark underline for depth)
+    # Left wing
+    lwing = [(CX - ws, CY - 1), (CX - hw, CY - 1),
+             (CX - hw, CY + 6), (CX - ws, CY + 4)]
+    pygame.draw.polygon(surf, AMBER_DARK, lwing)
+    lwing_hi = [(CX - ws, CY - 3), (CX - hw, CY - 3),
+                (CX - hw, CY + 4), (CX - ws, CY + 2)]
+    pygame.draw.polygon(surf, AMBER, lwing_hi)
+
+    # Right wing
+    rwing = [(CX + hw, CY - 1), (CX + ws, CY - 1),
+             (CX + ws, CY + 4), (CX + hw, CY + 6)]
+    pygame.draw.polygon(surf, AMBER_DARK, rwing)
+    rwing_hi = [(CX + hw, CY - 3), (CX + ws, CY - 3),
+                (CX + ws, CY + 2), (CX + hw, CY + 4)]
+    pygame.draw.polygon(surf, AMBER, rwing_hi)
+
+    # Wing-tip down-ticks
+    pygame.draw.line(surf, AMBER_DARK, (CX - hw, CY + 4), (CX - hw, CY + 12), 4)
+    pygame.draw.line(surf, AMBER,      (CX - hw, CY + 2), (CX - hw, CY + 10), 3)
+    pygame.draw.line(surf, AMBER_DARK, (CX + hw, CY + 4), (CX + hw, CY + 12), 4)
+    pygame.draw.line(surf, AMBER,      (CX + hw, CY + 2), (CX + hw, CY + 10), 3)
+
+    # Centre fuselage dot (bright with dark ring for depth)
+    pygame.draw.circle(surf, AMBER_DARK, (CX, CY), 7)
+    pygame.draw.circle(surf, AMBER,      (CX, CY), 5)
+    pygame.draw.circle(surf, WHITE,      (CX, CY), 2)
 
 
 # ── Slip/skid indicator ───────────────────────────────────────────────────────
@@ -360,11 +439,11 @@ def alt_y(ft, alt):  return int(TAPE_MID - (ft - alt)  * PX_PER_FT)
 
 def draw_speed_tape(surf, speed, hdg_bug_spd=None):
     """Left airspeed tape with GI-275-style V-speed colour bands."""
-    # Background
-    tape_surf = pygame.Surface((SPD_W, TAPE_H), pygame.SRCALPHA)
+    # Background (full height including top strip, matching alt tape)
+    tape_surf = pygame.Surface((SPD_W, TAPE_BOT), pygame.SRCALPHA)
     tape_surf.fill(TAPE_BG)
-    surf.blit(tape_surf, (SPD_X, TAPE_TOP))
-    pygame.draw.line(surf, (255, 255, 255, 60), (SPD_X + SPD_W, TAPE_TOP),
+    surf.blit(tape_surf, (SPD_X, 0))
+    pygame.draw.line(surf, (255, 255, 255, 60), (SPD_X + SPD_W, 0),
                      (SPD_X + SPD_W, TAPE_BOT), 1)
 
     def sy(v): return spd_y(v, speed)
@@ -403,19 +482,20 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
                          (SPD_X + SPD_W - tl, vy), (SPD_X + SPD_W, vy),
                          2 if major else 1)
         if major:
-            _text(surf, str(v), 15, (230, 230, 230),
-                  x=SPD_X + 2, y=vy - 8)
+            _text(surf, str(v), 17, (230, 230, 230), bold=True,
+                  x=SPD_X + 2, y=vy - 9)
 
     # Speed readout box (pentagon pointing right)
-    bh = 32
+    bh = 36
     by = TAPE_MID - bh // 2
     pts = [(SPD_X, by), (SPD_X + SPD_W, by),
-           (SPD_X + SPD_W + 10, TAPE_MID),
+           (SPD_X + SPD_W + 12, TAPE_MID),
            (SPD_X + SPD_W, by + bh), (SPD_X, by + bh)]
     pygame.draw.polygon(surf, (0, 10, 30), pts)
     pygame.draw.polygon(surf, WHITE, pts, 2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    _text(surf, f"{round(speed):3d}", 22, spd_col, cx=SPD_X + SPD_W // 2 - 2, cy=TAPE_MID)
+    _text(surf, f"{round(speed):3d}", 26, spd_col, bold=True,
+          cx=SPD_X + SPD_W // 2 - 2, cy=TAPE_MID)
 
     # Header label
     _text(surf, "GS KT", 10, (140, 200, 255), x=SPD_X + 3, y=TAPE_TOP + 2)
@@ -444,7 +524,8 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                          (ALT_X, fy), (ALT_X + tl, fy),
                          2 if major else 1)
         if ft % 200 == 0:
-            _text(surf, str(ft), 13, (230, 230, 230), x=ALT_X + tl + 2, y=fy - 7)
+            _text(surf, str(ft), 15, (230, 230, 230), bold=True,
+                  x=ALT_X + tl + 2, y=fy - 8)
 
     # Altitude bug
     if alt_bug is not None:
@@ -454,20 +535,22 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                    (ALT_X + 26, aby), (ALT_X + 20, aby + 10), (ALT_X, aby + 10)]
             pygame.draw.polygon(surf, CYAN, bug)
 
-    # Selected altitude display at top
+    # Selected altitude display at top (cyan strip)
+    pygame.draw.rect(surf, (0, 30, 50), (ALT_X, 0, ALT_W, TAPE_TOP))
     if alt_bug is not None:
-        pygame.draw.rect(surf, (0, 40, 60), (ALT_X, 0, ALT_W, TAPE_TOP))
-        _text(surf, f"{round(alt_bug):5d}", 14, CYAN, cx=ALT_X + ALT_W // 2, cy=11)
+        _text(surf, f"{round(alt_bug):5d}", 16, CYAN, bold=True,
+              cx=ALT_X + ALT_W // 2, cy=11)
 
     # Altitude readout box (pentagon pointing left)
-    bh = 32
+    bh = 36
     by = TAPE_MID - bh // 2
     pts = [(ALT_X + ALT_W, by), (ALT_X, by),
-           (ALT_X - 10, TAPE_MID),
+           (ALT_X - 12, TAPE_MID),
            (ALT_X, by + bh), (ALT_X + ALT_W, by + bh)]
     pygame.draw.polygon(surf, (0, 10, 30), pts)
     pygame.draw.polygon(surf, WHITE, pts, 2)
-    _text(surf, f"{round(alt):5d}", 20, WHITE, cx=ALT_X + ALT_W // 2 + 2, cy=TAPE_MID)
+    _text(surf, f"{round(alt):5d}", 24, WHITE, bold=True,
+          cx=ALT_X + ALT_W // 2 + 2, cy=TAPE_MID)
 
     # VSI (vertical speed)
     arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")
@@ -541,7 +624,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
     pygame.draw.rect(surf, (0, 0, 0), (bx, by2, bw, bh))
     pygame.draw.rect(surf, WHITE, (bx, by2, bw, bh), 1)
-    _text(surf, f"{round(hdg) % 360:03d}°", 18, WHITE, cx=CX, cy=by2 + bh // 2)
+    _text(surf, f"{round(hdg) % 360:03d}\u00b0", 20, WHITE, bold=True, cx=CX, cy=by2 + bh // 2)
 
     # Fixed triangle pointer above heading box
     pygame.draw.polygon(surf, YELLOW,
@@ -705,6 +788,48 @@ def handle_event(event, demo_mode):
     return True
 
 
+# ── Cyan tap-buttons (HDG bug, BARO, ALT bug) ────────────────────────────────
+# These sit just below the heading tape and below each tape's bottom edge,
+# styled as cyan-bordered dark boxes matching the GI-275 blue label style.
+
+def _cyan_box(surf, label, value_str, x, y, w=80, h=22):
+    """Draw a dark box with cyan border and label:value text."""
+    pygame.draw.rect(surf, (0, 20, 35), (x, y, w, h))
+    pygame.draw.rect(surf, CYAN, (x, y, w, h), 1)
+    full = f"{label} {value_str}"
+    _text(surf, full, 13, CYAN, cx=x + w // 2, cy=y + h // 2)
+
+
+def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
+    """
+    Three cyan-labelled tap zones:
+      • Bottom-left  : HDG bug  (touch → set bug to current heading region)
+      • Bottom-centre: BARO setting (touch → adjust QNH)
+      • Bottom-right : ALT bug  (touch → set bug to tapped altitude)
+    They sit just below the heading tape, spanning the full bottom strip.
+    """
+    y = HDG_Y + HDG_H + 2   # just below heading tape
+    if y + 22 > DISPLAY_H:
+        # Not enough room below tape — overlay on top edge of heading tape
+        y = HDG_Y + 2
+
+    # HDG bug box (bottom-left, under speed tape)
+    _cyan_box(surf, "HDG", f"{round(hdg_bug):03d}\u00b0",
+              x=SPD_X, y=y, w=SPD_W + 10, h=20)
+
+    # BARO box (bottom-centre)
+    if baro_src == "bme280":
+        baro_lbl = f"{baro_hpa:.2f}hP"
+    else:
+        baro_lbl = "GPS ALT"
+    _cyan_box(surf, "QNH", baro_lbl,
+              x=CX - 50, y=y, w=100, h=20)
+
+    # ALT bug box (bottom-right, under alt tape)
+    _cyan_box(surf, "ALT", f"{round(alt_bug):5d}",
+              x=ALT_X - 10, y=y, w=ALT_W + 10, h=20)
+
+
 # ── Main render function ──────────────────────────────────────────────────────
 def render(surf, demo_mode, connected):
     surf.fill((0, 0, 0))
@@ -763,9 +888,12 @@ def render(surf, demo_mode, connected):
     # 10. Failure overlays
     draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok)
 
-    # 11. Demo watermark
+    # 11. Cyan tap-buttons for heading bug, baro, and alt bug
+    draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug)
+
+    # 12. Demo watermark
     if demo_mode:
-        _text(surf, "DEMO", 14, (255, 60, 60, 200), cx=CX, cy=CY - 20)
+        _text(surf, "DEMO", 14, (255, 60, 60), cx=CX, cy=CY - 20)
 
 
 # ── Terrain availability (computed once at import time) ───────────────────────

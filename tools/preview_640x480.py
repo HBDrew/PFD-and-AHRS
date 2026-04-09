@@ -95,15 +95,21 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         col = lerp_color(SKY_HOR, SKY_TOP, t)
         ai_draw.line([(0, y), (W*S, y)], fill=col + (255,))
 
-    # Ground — Sedona-coloured layers
+    # Ground — perspective foreshortening: dark/muted near horizon, richer close
+    GND_FAR  = ( 70,  50,  25)
+    GND_MID  = (120,  78,  35)
+    GND_NEAR = ( 80, 105,  38)
     for y in range(max(0, hy), H*S):
-        depth = (y - hy) / max(1, H*2)
-        if depth < 0.08:
-            col = lerp_color(VALLEY, ROCK_MID, depth / 0.08)
-        elif depth < 0.35:
-            col = lerp_color(ROCK_MID, ROCK_LIGHT, (depth - 0.08) / 0.27)
+        depth = (y - hy) / max(1, H*2)   # 0=horizon, 1=bottom
+        if depth < 0.12:
+            col = lerp_color(GND_FAR,  GND_MID,  depth / 0.12)
+        elif depth < 0.45:
+            col = lerp_color(GND_MID,  GND_NEAR, (depth - 0.12) / 0.33)
+        elif depth < 0.65:
+            # Sedona red-rock zone at mid-distance
+            col = lerp_color(GND_NEAR, ROCK_MID, (depth - 0.45) / 0.20)
         else:
-            col = lerp_color(ROCK_LIGHT, SAND, min(1.0, (depth - 0.35) / 0.4))
+            col = lerp_color(ROCK_MID, ROCK_LIGHT, min(1.0, (depth - 0.65) / 0.35))
         ai_draw.line([(0, y), (W*S, y)], fill=col + (255,))
 
     # Sedona canyon / juniper texture
@@ -120,25 +126,43 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         ai_draw.ellipse([(tx, ty), (tx+tw, ty+th)], fill=c)
 
     # Distant ridgeline silhouette
-    pts = []
+    rpts = []
     ridge_y = hy + 28
     for x in range(0, W*S, 6):
         ny = ridge_y + int(18*math.sin(x*0.007) + 12*math.sin(x*0.019) +
                             8*math.sin(x*0.041))
-        pts.append((x, ny))
-    for i in range(len(pts) - 1):
-        ai_draw.line([pts[i], pts[i+1]], fill=ROCK_DARK+(220,), width=3)
+        rpts.append((x, ny))
+    for i in range(len(rpts) - 1):
+        ai_draw.line([rpts[i], rpts[i+1]], fill=ROCK_DARK+(220,), width=3)
+
+    # Mesa / butte silhouettes (Sedona flat-tops)
+    MESA      = (160,  60,  22, 240)
+    MESA_DARK = (110,  36,  12, 240)
+    for mx, mw, mh in [(W*0.18, W*0.20, 32), (W*0.55, W*0.25, 44),
+                        (W*0.82, W*0.17, 26)]:
+        base = hy + 8
+        top  = base - mh
+        mesa_pts = [(int(mx - mw/2), base), (int(mx + mw/2), base),
+                    (int(mx + mw/2 - 8), top), (int(mx - mw/2 + 8), top)]
+        ai_draw.polygon(mesa_pts, fill=MESA_DARK)
+        # Lit top edge
+        ai_draw.line([(int(mx - mw/2 + 10), top),
+                      (int(mx + mw/2 - 10), top)],
+                     fill=MESA, width=4)
 
     # Horizon line
     ai_draw.line([(0, hy), (W*S, hy)], fill=(255,255,255,220), width=2)
 
-    # Pitch ladder
-    fn16 = fnt(18)
+    # Pitch ladder — half in display pixels (canvas 1:1 with output)
+    major_half = int(AI_W * 0.22)   # ~108 px
+    minor_half = int(AI_W * 0.13)   # ~64 px
+    fn18 = fnt(18, bold=True)
     for deg in range(-30, 35, 5):
         if deg == 0: continue
         ly   = hy - int(focal * math.tan(deg * DEG))
-        half = int(W*S * (0.17 if deg % 10 == 0 else 0.09))
-        lw   = 2 if deg % 10 == 0 else 1
+        major = (deg % 10 == 0)
+        half  = major_half if major else minor_half
+        lw    = 3 if major else 1
         ai_draw.line([(W*2 - half, ly), (W*2 + half, ly)],
                      fill=(255,255,255,230), width=lw)
         td = 8 if deg > 0 else -8
@@ -146,12 +170,12 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                      fill=(255,255,255,200), width=lw)
         ai_draw.line([(W*2 + half, ly), (W*2 + half, ly + td)],
                      fill=(255,255,255,200), width=lw)
-        if deg % 10 == 0:
+        if major:
             lbl = str(abs(deg))
-            ai_draw.text((W*2 - half - 44, ly - 10),
-                         lbl, fill=(255,255,255,230), font=fn16)
+            ai_draw.text((W*2 - half - 40, ly - 10),
+                         lbl, fill=(255,255,255,230), font=fn18)
             ai_draw.text((W*2 + half + 8,  ly - 10),
-                         lbl, fill=(255,255,255,230), font=fn16)
+                         lbl, fill=(255,255,255,230), font=fn18)
 
     # Rotate and crop to display size
     ai_rot  = ai_img.rotate(-roll, center=(W*2, H*2))
@@ -212,18 +236,18 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         draw.line([(SPD_X+SPD_W-tl, vy), (SPD_X+SPD_W, vy)],
                   fill=LTGREY, width=2 if major else 1)
         if major:
-            draw.text((SPD_X+2, vy-8), str(v), fill=(230,230,230), font=fnt(15))
+            draw.text((SPD_X+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
     # Speed box (pentagon pointing right)
-    bh = 32; by = TAPE_MID - bh//2
+    bh = 36; by = TAPE_MID - bh//2
     pts = [(SPD_X, by), (SPD_X+SPD_W, by),
-           (SPD_X+SPD_W+10, TAPE_MID),
+           (SPD_X+SPD_W+12, TAPE_MID),
            (SPD_X+SPD_W, by+bh), (SPD_X, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    draw.text((SPD_X+4, TAPE_MID-13), f"{round(speed):3d}",
-              fill=spd_col, font=fnt(22))
+    draw.text((SPD_X+3, TAPE_MID-14), f"{round(speed):3d}",
+              fill=spd_col, font=fnt(26, bold=True))
 
     # Header
     draw.text((SPD_X+3, TAPE_TOP+2), "GS KT", fill=(140,200,255), font=fnt(10))
@@ -232,8 +256,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     def alt_y(ft): return int(TAPE_MID - (ft - alt) * PX_PER_FT)
 
     # Selected altitude (cyan, top strip)
-    draw.text((ALT_X + ALT_W//2 - 18, 5),
-              f"{round(alt_bug):5d}", fill=CYAN, font=fnt(14))
+    draw.text((ALT_X + ALT_W//2 - 22, 5),
+              f"{round(alt_bug):5d}", fill=CYAN, font=fnt(16, bold=True))
 
     # Tick marks + labels
     base_a = round(alt / 100) * 100
@@ -245,8 +269,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         draw.line([(ALT_X, fy), (ALT_X+tl, fy)],
                   fill=LTGREY, width=2 if major else 1)
         if ft % 200 == 0:
-            draw.text((ALT_X+tl+2, fy-7), str(ft),
-                      fill=(230,230,230), font=fnt(13))
+            draw.text((ALT_X+tl+2, fy-8), str(ft),
+                      fill=(230,230,230), font=fnt(15, bold=True))
 
     # Altitude bug
     aby = alt_y(alt_bug)
@@ -256,14 +280,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         draw.polygon(bug, fill=CYAN)
 
     # Alt box (pentagon pointing left)
-    bh = 32; by = TAPE_MID - bh//2
+    bh = 36; by = TAPE_MID - bh//2
     pts = [(ALT_X+ALT_W, by), (ALT_X, by),
-           (ALT_X-10, TAPE_MID),
+           (ALT_X-12, TAPE_MID),
            (ALT_X, by+bh), (ALT_X+ALT_W, by+bh)]
     draw.polygon(pts, fill=(0, 10, 30))
     draw.line(pts + [pts[0]], fill=WHITE, width=2)
-    draw.text((ALT_X+3, TAPE_MID-13), f"{round(alt):5d}",
-              fill=WHITE, font=fnt(20))
+    draw.text((ALT_X+3, TAPE_MID-14), f"{round(alt):5d}",
+              fill=WHITE, font=fnt(24, bold=True))
 
     # VSI
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
@@ -334,31 +358,74 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         x2=int(cx2+ROLL_R*math.cos(ang));      y2=int(cy2+ROLL_R*math.sin(ang))
         draw.line([(x1,y1),(x2,y2)], fill=LTGREY, width=2 if deg2==0 else 1)
 
-    # Fixed sky pointer
-    draw.polygon([(CX-7, ROLL_CY-ROLL_R+2),
-                  (CX+7, ROLL_CY-ROLL_R+2),
-                  (CX,   ROLL_CY-ROLL_R+14)], fill=WHITE)
+    # Doghouse pentagon helper
+    def doghouse_pts(ang_rad, r, size=11):
+        out_x = math.cos(ang_rad); out_y = math.sin(ang_rad)
+        perp_x = -out_y;           perp_y =  out_x
+        base_r = r + size*1.3;  roof_r = r + size*0.6
+        half_w = size*0.7;      roof_hw = size*0.35
+        return [
+            (int(cx2 + base_r*out_x - half_w*perp_x),
+             int(cy2 + base_r*out_y - half_w*perp_y)),
+            (int(cx2 + roof_r*out_x - roof_hw*perp_x),
+             int(cy2 + roof_r*out_y - roof_hw*perp_y)),
+            (int(cx2 + r*out_x), int(cy2 + r*out_y)),   # tip (points inward)
+            (int(cx2 + roof_r*out_x + roof_hw*perp_x),
+             int(cy2 + roof_r*out_y + roof_hw*perp_y)),
+            (int(cx2 + base_r*out_x + half_w*perp_x),
+             int(cy2 + base_r*out_y + half_w*perp_y)),
+        ]
 
-    # Roll pointer (moves with roll)
-    ra  = (-90 - roll) * DEG
-    rpx = int(cx2 + (ROLL_R-3) * math.cos(ra))
-    rpy = int(cy2 + (ROLL_R-3) * math.sin(ra))
-    perp = ra + math.pi/2
-    tx2 = int(9*math.cos(perp)); ty2 = int(9*math.sin(perp))
-    fx2 = int(6*math.cos(ra));   fy2 = int(6*math.sin(ra))
-    draw.polygon([(rpx,rpy),
-                  (rpx-tx2-fx2, rpy-ty2-fy2),
-                  (rpx+tx2-fx2, rpy+ty2-fy2)], fill=WHITE)
+    # Fixed zero-bank doghouse (white, at top of arc)
+    zero_ang = -math.pi / 2
+    dh0 = doghouse_pts(zero_ang, ROLL_R, size=11)
+    draw.polygon(dh0, fill=WHITE)
+    draw.line(dh0 + [dh0[0]], fill=(80,80,90), width=1)
 
-    # ── 7. AIRCRAFT SYMBOL ───────────────────────────────────────────────────
-    ws = 78; hw = int(ws*0.22)
-    draw.line([(CX-ws, CY), (CX-hw, CY)], fill=YELLOW, width=4)
-    draw.line([(CX+hw, CY), (CX+ws, CY)], fill=YELLOW, width=4)
-    draw.line([(CX-hw, CY), (CX-hw, CY+10)], fill=YELLOW, width=4)
-    draw.line([(CX+hw, CY), (CX+hw, CY+10)], fill=YELLOW, width=4)
-    draw.ellipse([(CX-5, CY-5), (CX+5, CY+5)], fill=YELLOW)
+    # Moving roll pointer doghouse (white)
+    ra = (-90 - roll) * DEG
+    dh1 = doghouse_pts(ra, ROLL_R - 2, size=10)
+    draw.polygon(dh1, fill=WHITE)
+    draw.line(dh1 + [dh1[0]], fill=(40,40,50), width=1)
 
-    # ── 8. SLIP BALL ─────────────────────────────────────────────────────────
+    # ── 7. AIRCRAFT SYMBOL (shaded amber, GI-275 style) ──────────────────────
+    AMBER      = (255, 190,  30)
+    AMBER_DARK = (180, 120,   0)
+    ws = 72; hw = int(ws * 0.22)
+    # Left wing — dark layer then bright highlight
+    lwing_d = [(CX-ws, CY-1),(CX-hw,CY-1),(CX-hw,CY+6),(CX-ws,CY+4)]
+    lwing_h = [(CX-ws, CY-3),(CX-hw,CY-3),(CX-hw,CY+4),(CX-ws,CY+2)]
+    draw.polygon(lwing_d, fill=AMBER_DARK)
+    draw.polygon(lwing_h, fill=AMBER)
+    # Right wing
+    rwing_d = [(CX+hw,CY-1),(CX+ws,CY-1),(CX+ws,CY+4),(CX+hw,CY+6)]
+    rwing_h = [(CX+hw,CY-3),(CX+ws,CY-3),(CX+ws,CY+2),(CX+hw,CY+4)]
+    draw.polygon(rwing_d, fill=AMBER_DARK)
+    draw.polygon(rwing_h, fill=AMBER)
+    # Wing-tip down-ticks
+    draw.line([(CX-ws, CY+4),(CX-ws, CY+12)], fill=AMBER_DARK, width=4)
+    draw.line([(CX-ws, CY+2),(CX-ws, CY+10)], fill=AMBER,      width=2)
+    draw.line([(CX+ws, CY+4),(CX+ws, CY+12)], fill=AMBER_DARK, width=4)
+    draw.line([(CX+ws, CY+2),(CX+ws, CY+10)], fill=AMBER,      width=2)
+    # Centre hub
+    draw.ellipse([(CX-7, CY-7),(CX+7, CY+7)], fill=AMBER_DARK)
+    draw.ellipse([(CX-5, CY-5),(CX+5, CY+5)], fill=AMBER)
+    draw.ellipse([(CX-2, CY-2),(CX+2, CY+2)], fill=WHITE)
+
+    # ── 8. CYAN TAP-BUTTONS (HDG / QNH / ALT bug) ───────────────────────────
+    def cyan_box(label, value_str, bx, by, bw=84, bh=20):
+        draw.rectangle([(bx, by), (bx+bw, by+bh)], fill=(0, 20, 35))
+        draw.rectangle([(bx, by), (bx+bw, by+bh)], outline=CYAN, width=1)
+        txt = f"{label} {value_str}"
+        draw.text((bx + bw//2 - len(txt)*4, by + 4), txt,
+                  fill=CYAN, font=fnt(13, bold=True))
+
+    btn_y = HDG_Y + 2   # sit inside the heading stripe
+    cyan_box("HDG", f"{round(hdg_bug):03d}\u00b0", SPD_X,      btn_y, bw=SPD_W+10)
+    cyan_box("QNH", "GPS ALT",                      CX-50,      btn_y, bw=100)
+    cyan_box("ALT", f"{round(alt_bug):5d}",         ALT_X-10,   btn_y, bw=ALT_W+10)
+
+    # ── 9. SLIP BALL ─────────────────────────────────────────────────────────
     bw3=52; bh3=16; br=8
     bx3=CX-bw3//2; by3=BALL_Y-bh3//2
     draw.rounded_rectangle([(bx3, by3), (bx3+bw3, by3+bh3)],
@@ -370,7 +437,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     defl  = int(max(-max_d, min(max_d, (ay/0.2)*max_d)))
     draw.ellipse([(CX+defl-br, BALL_Y-br),(CX+defl+br, BALL_Y+br)], fill=WHITE)
 
-    # ── 9. STATUS BADGES (top-right, AHRS / BARO / GPS / LINK) ───────────────
+    # ── 10. STATUS BADGES (top-right, AHRS / BARO / GPS / LINK) ──────────────
     bx_r = W - 4
     def badge(text, bg, fg=WHITE):
         nonlocal bx_r
@@ -388,7 +455,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     badge("AHRS" if ahrs_ok else "AHRS FAIL",
           (0, 100, 80) if ahrs_ok else (150, 0, 0))
 
-    # ── 10. SCENARIO LABEL ────────────────────────────────────────────────────
+    # ── 11. SCENARIO LABEL ────────────────────────────────────────────────────
     lw = len(label)*6 + 16
     draw.rectangle([(CX-lw//2, HDG_Y-22),(CX+lw//2, HDG_Y-4)],
                    fill=(0,0,0))
