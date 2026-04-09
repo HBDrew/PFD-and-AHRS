@@ -372,7 +372,13 @@ def draw_roll_arc(surf, roll):
         y1 = int(cy + ROLL_R * math.sin(a1))
         x2 = int(cx + ROLL_R * math.cos(a2))
         y2 = int(cy + ROLL_R * math.sin(a2))
-        pygame.draw.line(surf, LTGREY, (x1, y1), (x2, y2), 2)
+        # Draw at r and r+1 to approximate 2px AA arc
+        pygame.draw.aaline(surf, LTGREY, (x1, y1), (x2, y2))
+        x1b = int(cx + (ROLL_R + 1) * math.cos(a1))
+        y1b = int(cy + (ROLL_R + 1) * math.sin(a1))
+        x2b = int(cx + (ROLL_R + 1) * math.cos(a2))
+        y2b = int(cy + (ROLL_R + 1) * math.sin(a2))
+        pygame.draw.aaline(surf, LTGREY, (x1b, y1b), (x2b, y2b))
 
     # Tick marks
     for deg2, length in [(10, 9), (20, 9), (30, 13),
@@ -383,7 +389,7 @@ def draw_roll_arc(surf, roll):
         y1 = int(cy + (ROLL_R - length) * math.sin(ang))
         x2 = int(cx + ROLL_R * math.cos(ang))
         y2 = int(cy + ROLL_R * math.sin(ang))
-        pygame.draw.line(surf, LTGREY, (x1, y1), (x2, y2), 1)
+        pygame.draw.aaline(surf, LTGREY, (x1, y1), (x2, y2))
         # Hollow triangles at ±45
         if abs(deg2) == 45:
             perp = ang + math.pi / 2
@@ -391,21 +397,22 @@ def draw_roll_arc(surf, roll):
             mx, my = (x1 + x2) // 2, (y1 + y2) // 2
             inner_x = int(cx + (ROLL_R - 16) * math.cos(ang))
             inner_y = int(cy + (ROLL_R - 16) * math.sin(ang))
-            pygame.draw.polygon(surf, LTGREY,
-                [(mx - tx2, my - ty2), (mx + tx2, my + ty2),
-                 (inner_x, inner_y)], 1)
+            tri = [(mx - tx2, my - ty2), (mx + tx2, my + ty2), (inner_x, inner_y)]
+            pygame.gfxdraw.aapolygon(surf, tri, LTGREY)
 
     # Fixed zero-bank doghouse (white, points inward at top centre)
-    zero_ang = -math.pi / 2   # straight up
+    zero_ang = -math.pi / 2
     dh_pts = _doghouse_pts(cx, cy, zero_ang, ROLL_R, size=11)
-    pygame.draw.polygon(surf, WHITE, dh_pts)
-    pygame.draw.polygon(surf, (80, 80, 90), dh_pts, 1)
+    pygame.gfxdraw.filled_polygon(surf, dh_pts, WHITE)
+    pygame.gfxdraw.aapolygon(surf, dh_pts, WHITE)
+    pygame.gfxdraw.aapolygon(surf, dh_pts, (80, 80, 90))
 
     # Moving roll pointer doghouse (white, tracks bank angle)
     roll_ang = (-90 - roll) * DEG
     rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 2, size=10)
-    pygame.draw.polygon(surf, WHITE, rp_pts)
-    pygame.draw.polygon(surf, (40, 40, 50), rp_pts, 1)
+    pygame.gfxdraw.filled_polygon(surf, rp_pts, WHITE)
+    pygame.gfxdraw.aapolygon(surf, rp_pts, WHITE)
+    pygame.gfxdraw.aapolygon(surf, rp_pts, (40, 40, 50))
 
 
 # ── Aircraft symbol ───────────────────────────────────────────────────────────
@@ -418,21 +425,23 @@ def draw_aircraft_symbol(surf):
     hw = int(ws * 0.22)   # fuselage half-width cutout
 
     # Wing polygons (thick, filled amber with dark underline for depth)
-    # Left wing
+    # Left wing — dark shadow then bright highlight, both AA'd
     lwing = [(CX - ws, CY - 1), (CX - hw, CY - 1),
              (CX - hw, CY + 6), (CX - ws, CY + 4)]
-    pygame.draw.polygon(surf, AMBER_DARK, lwing)
+    pygame.gfxdraw.filled_polygon(surf, lwing, AMBER_DARK)
     lwing_hi = [(CX - ws, CY - 3), (CX - hw, CY - 3),
                 (CX - hw, CY + 4), (CX - ws, CY + 2)]
-    pygame.draw.polygon(surf, AMBER, lwing_hi)
+    pygame.gfxdraw.filled_polygon(surf, lwing_hi, AMBER)
+    pygame.gfxdraw.aapolygon(surf, lwing_hi, AMBER)
 
     # Right wing
     rwing = [(CX + hw, CY - 1), (CX + ws, CY - 1),
              (CX + ws, CY + 4), (CX + hw, CY + 6)]
-    pygame.draw.polygon(surf, AMBER_DARK, rwing)
+    pygame.gfxdraw.filled_polygon(surf, rwing, AMBER_DARK)
     rwing_hi = [(CX + hw, CY - 3), (CX + ws, CY - 3),
                 (CX + ws, CY + 2), (CX + hw, CY + 4)]
-    pygame.draw.polygon(surf, AMBER, rwing_hi)
+    pygame.gfxdraw.filled_polygon(surf, rwing_hi, AMBER)
+    pygame.gfxdraw.aapolygon(surf, rwing_hi, AMBER)
 
     # Wing-tip down-ticks
     pygame.draw.line(surf, AMBER_DARK, (CX - hw, CY + 4), (CX - hw, CY + 12), 4)
@@ -440,10 +449,13 @@ def draw_aircraft_symbol(surf):
     pygame.draw.line(surf, AMBER_DARK, (CX + hw, CY + 4), (CX + hw, CY + 12), 4)
     pygame.draw.line(surf, AMBER,      (CX + hw, CY + 2), (CX + hw, CY + 10), 3)
 
-    # Centre fuselage dot (bright with dark ring for depth)
-    pygame.draw.circle(surf, AMBER_DARK, (CX, CY), 7)
-    pygame.draw.circle(surf, AMBER,      (CX, CY), 5)
-    pygame.draw.circle(surf, WHITE,      (CX, CY), 2)
+    # Centre fuselage dot
+    pygame.gfxdraw.filled_circle(surf, CX, CY, 7, AMBER_DARK)
+    pygame.gfxdraw.aacircle(surf,     CX, CY, 7, AMBER_DARK)
+    pygame.gfxdraw.filled_circle(surf, CX, CY, 5, AMBER)
+    pygame.gfxdraw.aacircle(surf,     CX, CY, 5, AMBER)
+    pygame.gfxdraw.filled_circle(surf, CX, CY, 2, WHITE)
+    pygame.gfxdraw.aacircle(surf,     CX, CY, 2, WHITE)
 
 
 # ── Slip/skid indicator ───────────────────────────────────────────────────────
@@ -527,8 +539,8 @@ def draw_speed_tape(surf, speed, hdg_bug_spd=None):
     pts = [(SPD_X, by), (SPD_X + SPD_W, by),
            (SPD_X + SPD_W + 12, TAPE_MID),
            (SPD_X + SPD_W, by + bh), (SPD_X, by + bh)]
-    pygame.draw.polygon(surf, (0, 10, 30), pts)
-    pygame.draw.polygon(surf, WHITE, pts, 2)
+    pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
+    pygame.gfxdraw.aapolygon(surf, pts, WHITE)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
     # Rolling drum: 3 digits, 22px/cell, 26pt bold
     _rolling_drum(surf, SPD_X + 4, TAPE_MID - 14, 66, 28, speed, 3, spd_col, 26)
@@ -583,8 +595,8 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     pts = [(ALT_X + ALT_W, by), (ALT_X, by),
            (ALT_X - 12, TAPE_MID),
            (ALT_X, by + bh), (ALT_X + ALT_W, by + bh)]
-    pygame.draw.polygon(surf, (0, 10, 30), pts)
-    pygame.draw.polygon(surf, WHITE, pts, 2)
+    pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
+    pygame.gfxdraw.aapolygon(surf, pts, WHITE)
     # Rolling drum: 5 digits, 14px/cell, 20pt bold
     _rolling_drum(surf, ALT_X + 2, TAPE_MID - 14, 70, 28, alt, 5, WHITE, 20)
 
