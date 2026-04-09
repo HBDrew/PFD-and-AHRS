@@ -255,6 +255,15 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if major:
             draw.text((SPD_X+tl+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
+    # GS bug — before speed box so box draws on top (bug goes behind readout)
+    if gs_bug is not None:
+        gby = spd_y(gs_bug)
+        if TAPE_TOP < gby < TAPE_BOT:
+            gb = [(SPD_X,    gby-17),
+                  (SPD_X+14, gby-17), (SPD_X+14, gby-5), (SPD_X+7, gby),
+                  (SPD_X+14, gby+5),  (SPD_X+14, gby+17), (SPD_X, gby+17)]
+            draw.polygon(gb, fill=CYAN)
+
     # Speed box — convex point on outer (left/screen-edge) side, 90° tip
     bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
     pts = [(SPD_X+SPD_W, by), (SPD_X+pd, by),
@@ -265,16 +274,6 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
     # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
     rolling_drum(img, SPD_X+pd+2, TAPE_MID-17, SPD_W-pd-4, 34, speed, 3, spd_col, 20)
-
-    # GS bug — 7-point, 28px tall × 14px deep matching heading bug rotated 90°
-    # Notch cuts 7px into 14px body from tape-facing (right) side
-    if gs_bug is not None:
-        gby = spd_y(gs_bug)
-        if TAPE_TOP < gby < TAPE_BOT:
-            gb = [(SPD_X,    gby-14),
-                  (SPD_X+14, gby-14), (SPD_X+14, gby-5), (SPD_X+7, gby),
-                  (SPD_X+14, gby+5),  (SPD_X+14, gby+14), (SPD_X, gby+14)]
-            draw.polygon(gb, fill=CYAN)
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -310,6 +309,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                 tw = int(f_s.getlength(s))
                 draw.text((ALT_X+ALT_W-tl-2-tw, fy-8), s, fill=(230,230,230), font=f_s)
 
+    # Alt bug — before alt box so box draws on top (bug goes behind readout)
+    aby = alt_y(alt_bug)
+    if TAPE_TOP < aby < TAPE_BOT:
+        bug = [(ALT_X+ALT_W,    aby-17),
+               (ALT_X+ALT_W-14, aby-17), (ALT_X+ALT_W-14, aby-5), (ALT_X+ALT_W-7, aby),
+               (ALT_X+ALT_W-14, aby+5),  (ALT_X+ALT_W-14, aby+17), (ALT_X+ALT_W, aby+17)]
+        draw.polygon(bug, fill=CYAN)
+
     # Alt box — convex point on outer (right/screen-edge) side, 90° tip
     bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
     pts = [(ALT_X, by), (ALT_X+ALT_W-pd, by),
@@ -320,14 +327,6 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Rolling drum: 4 digits, fits in flat part of box, same font_sz as speed
     rolling_drum(img, ALT_X+2, TAPE_MID-17, ALT_W-pd-4, 34, alt, 4, WHITE, 20,
                  suppress_leading=True)
-
-    # Altitude bug — 7-point, 28px tall × 14px deep matching heading bug rotated 90°
-    aby = alt_y(alt_bug)
-    if TAPE_TOP < aby < TAPE_BOT:
-        bug = [(ALT_X+ALT_W,    aby-14),
-               (ALT_X+ALT_W-14, aby-14), (ALT_X+ALT_W-14, aby-5), (ALT_X+ALT_W-7, aby),
-               (ALT_X+ALT_W-14, aby+5),  (ALT_X+ALT_W-14, aby+14), (ALT_X+ALT_W, aby+14)]
-        draw.polygon(bug, fill=CYAN)
 
     # VSI
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
@@ -365,21 +364,24 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     hb_off = ((hdg_bug - hdg + 180) % 360) - 180
     hb_x   = int(CX + hb_off * PX_PER_DEG)
     if 0 < hb_x < W:
-        bug = [(hb_x-14, HDG_Y+14), (hb_x-14, HDG_Y),
+        bug = [(hb_x-17, HDG_Y+14), (hb_x-17, HDG_Y),
                (hb_x-5,  HDG_Y), (hb_x, HDG_Y+7), (hb_x+5, HDG_Y),
-               (hb_x+14, HDG_Y), (hb_x+14, HDG_Y+14)]
+               (hb_x+17, HDG_Y), (hb_x+17, HDG_Y+14)]
         draw.polygon(bug, fill=CYAN)
 
-    # Heading box
+    # Heading box — pentagon with downward point into heading tape (matches speed/alt box style)
     bw2, bh2 = 58, 22
     bx = CX - bw2//2; by2 = HDG_Y - bh2 - 2
-    draw.rectangle([(bx, by2), (bx+bw2, by2+bh2)], fill=(0,0,0))
-    draw.rectangle([(bx, by2), (bx+bw2, by2+bh2)], outline=WHITE, width=1)
+    pd_hdg = bw2 // 2   # 29px → 90° tip pointing down
+    pts_h = [(bx,      by2),
+             (bx+bw2,  by2),
+             (bx+bw2,  by2+bh2),
+             (CX,      by2+bh2+pd_hdg),
+             (bx,      by2+bh2)]
+    draw.polygon(pts_h, fill=(0, 0, 0))
+    draw.line(pts_h + [pts_h[0]], fill=WHITE, width=2)
     draw.text((CX-22, by2+2), f"{round(hdg)%360:03d}\u00b0",
               fill=WHITE, font=fnt(18))
-
-    # Triangle pointer above heading box
-    draw.polygon([(CX-7, HDG_Y-1), (CX+7, HDG_Y-1), (CX, HDG_Y-11)], fill=YELLOW)
 
     # ── 6. ROLL ARC (rendered at 2× for anti-aliasing) ───────────────────────
     # Drawing at 2× then scaling down via LANCZOS gives smooth arc and shapes.

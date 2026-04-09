@@ -506,6 +506,15 @@ def draw_speed_tape(surf, speed, gs_bug=None):
             _text(surf, str(v), 17, (230, 230, 230), bold=True,
                   x=SPD_X + tl + 2, y=vy - 9)
 
+    # GS bug — before speed box so box draws on top (bug goes behind readout)
+    if gs_bug is not None:
+        gby = spd_y(gs_bug, speed)
+        if TAPE_TOP < gby < TAPE_BOT:
+            gb = [(SPD_X,      gby - 17),
+                  (SPD_X + 14, gby - 17), (SPD_X + 14, gby - 5), (SPD_X + 7, gby),
+                  (SPD_X + 14, gby + 5),  (SPD_X + 14, gby + 17), (SPD_X, gby + 17)]
+            pygame.draw.polygon(surf, CYAN, gb)
+
     # Speed readout box — convex point on outer (left) edge, 90° tip
     bh = 44
     by = TAPE_MID - bh // 2
@@ -518,15 +527,6 @@ def draw_speed_tape(surf, speed, gs_bug=None):
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
     # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
     _rolling_drum(surf, SPD_X + pd + 2, TAPE_MID - 17, SPD_W - pd - 4, 34, speed, 3, spd_col, 20)
-
-    # GS bug — 7-point, 28px tall × 14px deep matching heading bug rotated 90°
-    if gs_bug is not None:
-        gby = spd_y(gs_bug, speed)
-        if TAPE_TOP < gby < TAPE_BOT:
-            gb = [(SPD_X,      gby - 14),
-                  (SPD_X + 14, gby - 14), (SPD_X + 14, gby - 5), (SPD_X + 7, gby),
-                  (SPD_X + 14, gby + 5),  (SPD_X + 14, gby + 14), (SPD_X, gby + 14)]
-            pygame.draw.polygon(surf, CYAN, gb)
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -576,6 +576,15 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     _cyan_box(surf, "ALT", alt_str, x=ALT_X, y=2, w=ALT_W, h=18)
 
+    # Altitude bug — before readout box so box draws on top (bug goes behind readout)
+    if alt_bug is not None:
+        aby = ay2(alt_bug)
+        if TAPE_TOP < aby < TAPE_BOT:
+            bug = [(ALT_X + ALT_W,      aby - 17),
+                   (ALT_X + ALT_W - 14, aby - 17), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
+                   (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 17), (ALT_X + ALT_W, aby + 17)]
+            pygame.draw.polygon(surf, CYAN, bug)
+
     # Altitude readout box — convex point on outer (right) edge, 90° tip
     bh = 44
     by = TAPE_MID - bh // 2
@@ -588,15 +597,6 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     # Rolling drum: 4 digits, fits in flat part of box, same font_sz as speed
     _rolling_drum(surf, ALT_X + 2, TAPE_MID - 17, ALT_W - pd - 4, 34, alt, 4, WHITE, 20,
                   suppress_leading=True)
-
-    # Altitude bug — 7-point, 28px tall × 14px deep matching heading bug rotated 90°
-    if alt_bug is not None:
-        aby = ay2(alt_bug)
-        if TAPE_TOP < aby < TAPE_BOT:
-            bug = [(ALT_X + ALT_W,      aby - 14),
-                   (ALT_X + ALT_W - 14, aby - 14), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
-                   (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 14), (ALT_X + ALT_W, aby + 14)]
-            pygame.draw.polygon(surf, CYAN, bug)
 
     # VSI (vertical speed)
     arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")
@@ -650,9 +650,9 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
         hbx = int(CX + off * PX_PER_DEG)
         if 0 < hbx < DISPLAY_W:
             # Wide, short bug with V-notch at top matching speed/alt bug style
-            bug = [(hbx - 14, HDG_Y + 14), (hbx - 14, HDG_Y),
+            bug = [(hbx - 17, HDG_Y + 14), (hbx - 17, HDG_Y),
                    (hbx - 5,  HDG_Y), (hbx, HDG_Y + 7), (hbx + 5, HDG_Y),
-                   (hbx + 14, HDG_Y), (hbx + 14, HDG_Y + 14)]
+                   (hbx + 17, HDG_Y), (hbx + 17, HDG_Y + 14)]
             pygame.gfxdraw.filled_polygon(surf, bug, CYAN)
             pygame.gfxdraw.aapolygon(surf, bug, CYAN)
 
@@ -664,16 +664,18 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
             pygame.draw.polygon(surf, (220, 60, 220),
                 [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
-    # Current heading box
+    # Heading box — pentagon with downward point into heading tape (matches speed/alt box style)
     bw, bh = 58, 22
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
-    pygame.draw.rect(surf, (0, 0, 0), (bx, by2, bw, bh))
-    pygame.draw.rect(surf, WHITE, (bx, by2, bw, bh), 1)
+    pd_h = bw // 2   # 29px → 90° tip pointing down into heading tape
+    pts_h = [(bx,     by2),
+             (bx + bw, by2),
+             (bx + bw, by2 + bh),
+             (CX,      by2 + bh + pd_h),
+             (bx,      by2 + bh)]
+    pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
+    pygame.gfxdraw.aapolygon(surf, pts_h, WHITE)
     _text(surf, f"{round(hdg) % 360:03d}\u00b0", 20, WHITE, bold=True, cx=CX, cy=by2 + bh // 2)
-
-    # Fixed triangle pointer above heading box
-    pygame.draw.polygon(surf, YELLOW,
-        [(CX - 7, HDG_Y - 1), (CX + 7, HDG_Y - 1), (CX, HDG_Y - 11)])
 
 
 # ── Status badges ─────────────────────────────────────────────────────────────
