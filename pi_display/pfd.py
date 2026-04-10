@@ -1021,10 +1021,20 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
 _terrain_alert_level = 0
 
 
-def _update_terrain_alert(lat, lon, alt_ft, gps_ok):
+def _alert_radius_nm(speed_kt: float) -> float:
+    """
+    Compute obstacle alert radius from current airspeed.
+    radius = speed × ALERT_TIME_S, clamped to [MIN, MAX].
+    Gives a constant time-to-obstacle regardless of airspeed.
+    """
+    dyn = speed_kt * ALERT_TIME_S / 3600.0
+    return max(ALERT_RADIUS_MIN_NM, min(ALERT_RADIUS_MAX_NM, dyn))
+
+
+def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok):
     """
     Compute the current terrain/obstacle alert level and store it globally.
-    Called once per render frame with current aircraft position.
+    Called once per render frame with current aircraft position and airspeed.
       0 — no alert
       1 — CAUTION  (clearance < TERRAIN_CAUTION_FT or obstacle < OBSTACLE_CAUTION_FT)
       2 — WARNING  (clearance < TERRAIN_WARNING_FT or obstacle < OBSTACLE_WARNING_FT)
@@ -1036,7 +1046,7 @@ def _update_terrain_alert(lat, lon, alt_ft, gps_ok):
 
     level = 0
 
-    # ── Terrain clearance ────────────────────────────────────────────────────
+    # ── Terrain clearance (sampled at current position) ──────────────────────
     if _has_terrain:
         elev = get_elevation_ft(SRTM_DIR, lat, lon)
         clearance = alt_ft - elev
@@ -1045,10 +1055,11 @@ def _update_terrain_alert(lat, lon, alt_ft, gps_ok):
         elif clearance < TERRAIN_CAUTION_FT:
             level = max(level, 1)
 
-    # ── Obstacle clearance ───────────────────────────────────────────────────
+    # ── Obstacle clearance (time-based lookahead radius) ─────────────────────
     if _obstacles is not None:
+        radius = _alert_radius_nm(speed_kt)
         nearby = obs_mod.query_nearby(_obstacles, lat, lon,
-                                      radius_nm=3.0,    # tighter radius for alerts
+                                      radius_nm=radius,
                                       alt_ft=alt_ft,
                                       window_ft=OBSTACLE_CAUTION_FT)
         for ob in nearby:
@@ -3008,7 +3019,7 @@ def render(surf, demo_mode, connected):
     ai_rect = (AI_X, AI_Y, AI_W, AI_H)
 
     # 0. Compute terrain/obstacle alert level for this frame
-    _update_terrain_alert(lat, lon, alt, gps_ok)
+    _update_terrain_alert(lat, lon, alt, speed, gps_ok)
 
     # 1. SVT / AI background
     if _has_terrain:

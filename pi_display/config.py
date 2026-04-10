@@ -61,10 +61,23 @@ TERRAIN_WARNING_FT = 100    # terrain within 100 ft → red
 
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
 OBSTACLE_DIR        = os.path.join(_HERE, "data", "obstacles")
-OBSTACLE_RADIUS_NM  = 10.0    # query radius around aircraft
+OBSTACLE_RADIUS_NM  = 10.0    # AI symbol render radius
 OBSTACLE_WINDOW_FT  = 2000.0  # only show obstacles within ±2000 ft of alt
 OBSTACLE_CAUTION_FT = 500     # amber below this clearance
 OBSTACLE_WARNING_FT = 100     # red below this clearance
+
+# ── Proximity alert lookahead ─────────────────────────────────────────────────
+# Alert radius is computed dynamically: radius_nm = speed_kt * ALERT_TIME_S / 3600
+# giving a constant time-to-obstacle regardless of airspeed.
+# Result is clamped to [ALERT_RADIUS_MIN_NM, ALERT_RADIUS_MAX_NM].
+#
+# At  60 kt → 1.0 nm  (60 s × 60 kt / 3600)
+# At  90 kt → 1.5 nm
+# At 120 kt → 2.0 nm
+# At 180 kt → 3.0 nm  (capped)
+ALERT_TIME_S         = 60     # lookahead window in seconds
+ALERT_RADIUS_MIN_NM  = 1.0    # floor — always check at least this far ahead
+ALERT_RADIUS_MAX_NM  = 3.0    # ceiling — never exceed this radius
 
 # ── Demo mode ─────────────────────────────────────────────────────────────────
 DEMO_LAT = 34.8697
