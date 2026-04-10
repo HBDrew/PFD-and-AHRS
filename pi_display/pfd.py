@@ -1493,12 +1493,16 @@ def _numpad_key(surf, col, row, label, style, r=8):
     _text(surf, label, 20, tc, bold=True, cx=bx+_NP_PW//2, cy=by+_NP_PH//2)
 
 
-def draw_numpad(surf, title, current_val, entered="", suffix=""):
+def draw_numpad(surf, title, current_val, entered="", suffix="", transparent=False):
     """Full-screen numeric entry pad.
-    suffix: appended to the entered value in the display box (e.g. '00' for alt_bug).
+    suffix:      appended in display box (e.g. '00' for alt_bug).
+    transparent: skip background fill; header is semi-opaque panel over live PFD.
     """
-    surf.fill((0, 8, 22))
-    pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
+    if not transparent:
+        surf.fill((0, 8, 22))
+    hdr = pygame.Surface((DISPLAY_W, 44), pygame.SRCALPHA)
+    hdr.fill((0, 18, 45, 220 if transparent else 255))
+    surf.blit(hdr, (0, 0))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
     _text(surf, title, 18, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
     # Value display — show entered digits then dim suffix (if any)
@@ -1673,10 +1677,13 @@ def _kb_key(surf, bx, by, bw, bh, label, style, r=6):
     _text(surf, label, fs, tc, bold=True, cx=bx+bw//2, cy=by+bh//2)
 
 
-def draw_keyboard(surf, title, current_val, entered=""):
+def draw_keyboard(surf, title, current_val, entered="", transparent=False):
     """Full-screen QWERTY keyboard for text entry."""
-    surf.fill((0,8,22))
-    pygame.draw.rect(surf,(0,18,45),(0,0,DISPLAY_W,44))
+    if not transparent:
+        surf.fill((0,8,22))
+    hdr = pygame.Surface((DISPLAY_W, 44), pygame.SRCALPHA)
+    hdr.fill((0, 18, 45, 220 if transparent else 255))
+    surf.blit(hdr, (0, 0))
     pygame.draw.line(surf,WHITE,(0,43),(DISPLAY_W-1,43),1)
     _text(surf,title,17,WHITE,bold=True,cx=DISPLAY_W//2,cy=22)
     disp_str = (entered if entered else str(current_val)) + "\u2502"
@@ -2470,71 +2477,39 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
               x=ALT_X, y=y, w=ALT_W, h=22, font_sz=baro_fsz)
 
 
+# ── Veil surface for transparent overlay modes (allocated once) ───────────────
+_veil_surf = None
+
+def _draw_veil(surf):
+    """Alpha-blend a dark overlay onto surf for numpad/keyboard transparency."""
+    global _veil_surf
+    if _veil_surf is None:
+        _veil_surf = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+        _veil_surf.fill((0, 5, 15, 180))
+    surf.blit(_veil_surf, (0, 0))
+
+
 # ── Main render function ──────────────────────────────────────────────────────
 def render(surf, demo_mode, connected):
     mode = disp.get("mode", "pfd")
 
+    # ── Full-screen replacement screens (no PFD behind them) ─────────────────
     if mode == "setup":
-        draw_setup_screen(surf)
-        return
-
-    if mode == "numpad":
-        target  = disp.get("numpad_target", "")
-        buf     = disp.get("numpad_buf", "")
-        titles  = {"alt_bug": "SET ALTITUDE BUG  (\u00d7100 ft)",
-                   "hdg_bug": "SET HEADING BUG",
-                   "spd_bug": "SET GS BUG"}
-        curvals = {"alt_bug": int(disp.get("alt_bug", 0)) // 100,   # show hundreds
-                   "hdg_bug": int(disp.get("hdg_bug", 0)),
-                   "spd_bug": int(disp.get("spd_bug", 0))}
-        # Add V-speed fields from flight profile
-        for fkey, flabel, *_ in _FP_FIELDS:
-            if fkey not in titles:
-                titles[fkey]  = f"SET {flabel}"
-                curvals[fkey] = int(disp["fp"].get(fkey, 0))
-        draw_numpad(surf, titles.get(target, "ENTER VALUE"),
-                    curvals.get(target, 0), buf,
-                    suffix="00" if target == "alt_bug" else "")
-        return
-
+        draw_setup_screen(surf); return
     if mode == "flight_profile":
-        draw_flight_profile(surf, disp["fp"])
-        return
-
+        draw_flight_profile(surf, disp["fp"]); return
     if mode == "display_setup":
-        draw_display_setup(surf, disp["ds"])
-        return
-
+        draw_display_setup(surf, disp["ds"]); return
     if mode == "ahrs_setup":
-        draw_ahrs_setup(surf, disp["ss"])
-        return
-
+        draw_ahrs_setup(surf, disp["ss"]); return
     if mode == "connectivity_setup":
-        draw_connectivity_setup(surf, disp["cs"])
-        return
-
+        draw_connectivity_setup(surf, disp["cs"]); return
     if mode == "system_setup":
-        draw_system_setup(surf)
-        return
-
+        draw_system_setup(surf); return
     if mode == "terrain_data":
-        draw_terrain_data(surf, disp["td"])
-        return
+        draw_terrain_data(surf, disp["td"]); return
 
-    if mode == "keyboard":
-        target = disp.get("kbd_target", "")
-        buf    = disp.get("kbd_buf", "")
-        prev   = disp.get("kbd_prev", "flight_profile")
-        if prev == "connectivity_setup":
-            cur   = disp["cs"].get(target, "")
-            _cs_titles = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID"}
-            title = _cs_titles.get(target, "ENTER TEXT")
-        else:
-            cur   = disp["fp"].get(target, "")
-            title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
-        draw_keyboard(surf, f"ENTER {title}", cur, buf)
-        return
-
+    # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
     surf.fill((0, 0, 0))
 
     roll    = disp["roll"]
@@ -2629,6 +2604,40 @@ def render(surf, demo_mode, connected):
     # 12. Demo watermark
     if demo_mode:
         _text(surf, "DEMO", 14, (255, 60, 60), cx=CX, cy=CY - 20)
+
+    # ── Overlay modes: veil + UI drawn on top of live PFD ────────────────────
+    if mode == "numpad":
+        _draw_veil(surf)
+        target  = disp.get("numpad_target", "")
+        buf     = disp.get("numpad_buf", "")
+        titles  = {"alt_bug": "SET ALTITUDE BUG  (\u00d7100 ft)",
+                   "hdg_bug": "SET HEADING BUG",
+                   "spd_bug": "SET GS BUG"}
+        curvals = {"alt_bug": int(disp.get("alt_bug", 0)) // 100,
+                   "hdg_bug": int(disp.get("hdg_bug", 0)),
+                   "spd_bug": int(disp.get("spd_bug", 0))}
+        for fkey, flabel, *_ in _FP_FIELDS:
+            if fkey not in titles:
+                titles[fkey]  = f"SET {flabel}"
+                curvals[fkey] = int(disp["fp"].get(fkey, 0))
+        draw_numpad(surf, titles.get(target, "ENTER VALUE"),
+                    curvals.get(target, 0), buf,
+                    suffix="00" if target == "alt_bug" else "",
+                    transparent=True)
+
+    elif mode == "keyboard":
+        _draw_veil(surf)
+        target = disp.get("kbd_target", "")
+        buf    = disp.get("kbd_buf", "")
+        prev   = disp.get("kbd_prev", "flight_profile")
+        if prev == "connectivity_setup":
+            cur   = disp["cs"].get(target, "")
+            title = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID",
+                     "wifi_pass": "WiFi PASSWORD"}.get(target, "ENTER TEXT")
+        else:
+            cur   = disp["fp"].get(target, "")
+            title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
+        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True)
 
 
 # ── Terrain availability (computed once at import time) ───────────────────────

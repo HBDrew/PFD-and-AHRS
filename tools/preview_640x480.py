@@ -861,15 +861,27 @@ def _numpad_btn(draw, col, row, label, style, r=8):
     draw.text((bx + (_NP_PW-lw)//2, by + (_NP_PH-22)//2), label, fill=tc, font=lf)
 
 
+def _pfd_bg():
+    """Return a live-PFD background image (approach preview), veiled at alpha=180."""
+    bg_path = os.path.join(OUT, "preview_sedona_approach.png")
+    if os.path.exists(bg_path):
+        bg = Image.open(bg_path).convert("RGB")
+    else:
+        bg = Image.new("RGB", (W, H), (0, 8, 22))
+    veil = Image.new("RGB", (W, H), (0, 5, 15))
+    return Image.blend(bg, veil, alpha=180/255)
+
+
 def draw_numpad_screen(title, current_val, filename, entered="", suffix=""):
-    """Render a full-screen numeric-entry pad (alt bug, hdg bug, GS bug, etc.).
-    suffix: appended in dim cyan after the entered digits (e.g. '00' for alt bug).
-    """
-    img  = Image.new('RGB', (W, H), (0, 8, 22))
+    """Render numpad overlaid on a live-PFD background (transparent effect)."""
+    img  = _pfd_bg()
     draw = ImageDraw.Draw(img)
 
-    # Title bar
-    draw.rectangle([(0, 0), (W-1, 43)], fill=(0, 18, 45))
+    # Title bar — semi-opaque panel matching transparent=True in pfd.py
+    hdr = Image.new("RGBA", (W, 44), (0, 18, 45, 220))
+    img.paste(Image.new("RGB", (W, 44), (0, 18, 45)),
+              mask=Image.new("L", (W, 44), 220))
+    draw = ImageDraw.Draw(img)   # re-acquire after paste
     draw.line([(0, 43), (W-1, 43)], fill=WHITE, width=1)
     tf = fnt(18, bold=True)
     draw.text(((W - int(draw.textlength(title, font=tf)))//2, 12),
@@ -1080,12 +1092,11 @@ def _kb_key(draw, bx, by, bw, bh, label, style, r=6):
 
 
 def draw_keyboard_screen(title, current_val, filename, entered=""):
-    """Render a full-screen QWERTY keyboard for text entry."""
-    img  = Image.new('RGB', (W, H), (0, 8, 22))
+    """Render keyboard overlaid on a live-PFD background (transparent effect)."""
+    img  = _pfd_bg()
+    img.paste(Image.new("RGB", (W, 44), (0, 18, 45)),
+              mask=Image.new("L", (W, 44), 220))
     draw = ImageDraw.Draw(img)
-
-    # Title bar
-    draw.rectangle([(0,0),(W-1,43)], fill=(0,18,45))
     draw.line([(0,43),(W-1,43)], fill=WHITE, width=1)
     tf = fnt(17, bold=True)
     draw.text(((W-int(draw.textlength(title,font=tf)))//2, 12),
