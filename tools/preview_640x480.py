@@ -1457,7 +1457,16 @@ def draw_system_screen(filename, display_mode="pfd"):
     draw.text((mx - int(draw.textlength("coming soon",font=sf_m))//2, ry+btn_h_m-17),
               "coming soon", fill=(45,55,70), font=sf_m)
 
-    btn_y = mode_y + _SS_RH + 10; btn_h = 54
+    terrain_y = mode_y + _SS_RH + 8
+    _setting_row_p(draw, 0, "TERRAIN DATA",
+                   "12 tiles on disk  \u00b7  11.8 MB used",
+                   _y_override=terrain_y)
+    # Right-side arrow hint (tappable row → opens terrain download screen)
+    arrow_f = fnt(16)
+    draw.text((bx+bw-28, terrain_y+(_SS_RH-18)//2), "\u25b6",
+              fill=(60,80,110), font=arrow_f)
+
+    btn_y = terrain_y + _SS_RH + 8; btn_h = 54
     half_w = (bw - 10) // 2
     _action_btn_p(draw, bx,           btn_y, half_w, btn_h, "DIAGNOSTICS",   "normal")
     _action_btn_p(draw, bx+half_w+10, btn_y, half_w, btn_h, "RESET DEFAULTS","danger")
