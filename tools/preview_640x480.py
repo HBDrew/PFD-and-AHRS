@@ -459,19 +459,19 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     img = Image.alpha_composite(img.convert('RGBA'), arc_1x).convert('RGB')
     draw = ImageDraw.Draw(img)
 
-    # ── 7. AIRCRAFT SYMBOL — GI-275 style outward triangles + centre ring ────
+    # ── 7. AIRCRAFT SYMBOL — swept delta wings + engine nacelles ─────────────
     AMBER = (255, 190, 30)
     AMBER_DARK = (180, 120, 0)
-    ws = 62; gap = 10; h = 5
-    droop = int((ws - gap) * math.tan(20 * DEG))   # ~19 px dihedral droop at tip
-    # Left wing — upper half lighter, lower half darker (depth shading)
-    draw.polygon([(CX-ws, CY-h+droop), (CX-ws, CY+droop),    (CX-gap, CY)], fill=AMBER)
-    draw.polygon([(CX-ws, CY+droop),   (CX-ws, CY+h+droop),  (CX-gap, CY)], fill=AMBER_DARK)
-    # Right wing — mirror
-    draw.polygon([(CX+ws, CY-h+droop), (CX+ws, CY+droop),    (CX+gap, CY)], fill=AMBER)
-    draw.polygon([(CX+ws, CY+droop),   (CX+ws, CY+h+droop),  (CX+gap, CY)], fill=AMBER_DARK)
-    # Centre ring
-    draw.ellipse([(CX-6, CY-6),(CX+6, CY+6)], outline=AMBER, width=2)
+    # Wing panels — apex at (CX, CY), trailing edge at CY+29
+    draw.polygon([(CX, CY), (CX-54, CY+29), (CX-46, CY+29)], fill=AMBER)       # L inner
+    draw.polygon([(CX, CY), (CX-62, CY+29), (CX-54, CY+29)], fill=AMBER_DARK)  # L outer
+    draw.polygon([(CX, CY), (CX+46, CY+29), (CX+54, CY+29)], fill=AMBER)       # R inner
+    draw.polygon([(CX, CY), (CX+54, CY+29), (CX+62, CY+29)], fill=AMBER_DARK)  # R outer
+    # Engine nacelles — at wing-tip x, centered on CY
+    draw.polygon([(CX-62, CY), (CX-66, CY-4), (CX-92, CY-4), (CX-92, CY)],   fill=AMBER)       # L upper
+    draw.polygon([(CX-62, CY), (CX-92, CY),   (CX-92, CY+4), (CX-66, CY+4)], fill=AMBER_DARK)  # L lower
+    draw.polygon([(CX+62, CY), (CX+66, CY-4), (CX+92, CY-4), (CX+92, CY)],   fill=AMBER)       # R upper
+    draw.polygon([(CX+62, CY), (CX+92, CY),   (CX+92, CY+4), (CX+66, CY+4)], fill=AMBER_DARK)  # R lower
 
     # ── 8. CYAN TAP-BUTTONS ──────────────────────────────────────────────────
     # IAS and ALT bug buttons sit at the TOP of their respective tapes (drawn

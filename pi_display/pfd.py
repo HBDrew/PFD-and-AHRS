@@ -409,34 +409,34 @@ AMBER      = (255, 190,  30)   # slightly warmer than YELLOW for symbol fill
 AMBER_DARK = (180, 120,   0)   # shadow/outline
 
 def draw_aircraft_symbol(surf):
-    """GI-275 style amber aircraft reference: outward triangles + centre ring."""
-    ws  = 62   # half wingspan (outer tip)
-    gap = 10   # distance from centre to inner base of each triangle
-    h   = 5    # half-height at the triangle base
+    """Swept delta wing aircraft reference with engine nacelles."""
+    # Wing panels — apex at (CX, CY), trailing edge at CY+29
+    li = [(CX, CY), (CX - 54, CY + 29), (CX - 46, CY + 29)]
+    lo = [(CX, CY), (CX - 62, CY + 29), (CX - 54, CY + 29)]
+    ri = [(CX, CY), (CX + 46, CY + 29), (CX + 54, CY + 29)]
+    ro = [(CX, CY), (CX + 54, CY + 29), (CX + 62, CY + 29)]
+    pygame.gfxdraw.filled_polygon(surf, li, AMBER)
+    pygame.gfxdraw.aapolygon(surf, li, AMBER)
+    pygame.gfxdraw.filled_polygon(surf, lo, AMBER_DARK)
+    pygame.gfxdraw.aapolygon(surf, lo, AMBER_DARK)
+    pygame.gfxdraw.filled_polygon(surf, ri, AMBER)
+    pygame.gfxdraw.aapolygon(surf, ri, AMBER)
+    pygame.gfxdraw.filled_polygon(surf, ro, AMBER_DARK)
+    pygame.gfxdraw.aapolygon(surf, ro, AMBER_DARK)
 
-    droop = int((ws - gap) * math.tan(20 * DEG))   # ~19 px dihedral droop at tip
-
-    # Left wing — upper half AMBER, lower half darker, full outline AA
-    l_top  = [(CX - ws, CY - h + droop), (CX - ws, CY + droop),     (CX - gap, CY)]
-    l_bot  = [(CX - ws, CY + droop),     (CX - ws, CY + h + droop), (CX - gap, CY)]
-    l_full = [(CX - ws, CY - h + droop), (CX - ws, CY + h + droop), (CX - gap, CY)]
-    pygame.gfxdraw.filled_polygon(surf, l_top, AMBER)
-    pygame.gfxdraw.filled_polygon(surf, l_bot, AMBER_DARK)
-    pygame.gfxdraw.aapolygon(surf, l_full, AMBER)
-
-    # Right wing — mirror
-    r_top  = [(CX + ws, CY - h + droop), (CX + ws, CY + droop),     (CX + gap, CY)]
-    r_bot  = [(CX + ws, CY + droop),     (CX + ws, CY + h + droop), (CX + gap, CY)]
-    r_full = [(CX + ws, CY - h + droop), (CX + ws, CY + h + droop), (CX + gap, CY)]
-    pygame.gfxdraw.filled_polygon(surf, r_top, AMBER)
-    pygame.gfxdraw.filled_polygon(surf, r_bot, AMBER_DARK)
-    pygame.gfxdraw.aapolygon(surf, r_full, AMBER)
-
-    # Centre reference circle (open ring)
-    pygame.gfxdraw.filled_circle(surf, CX, CY, 6, AMBER)
-    pygame.gfxdraw.aacircle(surf,     CX, CY, 6, AMBER)
-    pygame.gfxdraw.filled_circle(surf, CX, CY, 3, (0, 0, 0, 0))  # hollow centre
-    pygame.gfxdraw.aacircle(surf,     CX, CY, 3, AMBER)
+    # Engine nacelles — at wing-tip x, centered on CY
+    lu = [(CX - 62, CY), (CX - 66, CY - 4), (CX - 92, CY - 4), (CX - 92, CY)]
+    ll = [(CX - 62, CY), (CX - 92, CY),     (CX - 92, CY + 4), (CX - 66, CY + 4)]
+    ru = [(CX + 62, CY), (CX + 66, CY - 4), (CX + 92, CY - 4), (CX + 92, CY)]
+    rl = [(CX + 62, CY), (CX + 92, CY),     (CX + 92, CY + 4), (CX + 66, CY + 4)]
+    pygame.gfxdraw.filled_polygon(surf, lu, AMBER)
+    pygame.gfxdraw.aapolygon(surf, lu, AMBER)
+    pygame.gfxdraw.filled_polygon(surf, ll, AMBER_DARK)
+    pygame.gfxdraw.aapolygon(surf, ll, AMBER_DARK)
+    pygame.gfxdraw.filled_polygon(surf, ru, AMBER)
+    pygame.gfxdraw.aapolygon(surf, ru, AMBER)
+    pygame.gfxdraw.filled_polygon(surf, rl, AMBER_DARK)
+    pygame.gfxdraw.aapolygon(surf, rl, AMBER_DARK)
 
 
 # ── Slip/skid indicator ───────────────────────────────────────────────────────
