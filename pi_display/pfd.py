@@ -412,6 +412,7 @@ def draw_aircraft_symbol(surf):
     """Swept delta wing aircraft reference with engine nacelles, 1.5× scale."""
     # Wing panels — apex at (CX, CY), trailing edge at CY+44 (1.5× original 29)
     # Outer strip = leading-edge side (lighter/top); Inner strip = trailing-edge side (darker/bottom)
+    # Fills — inner/outer strips, no outline so colour-split edge stays clean
     li = [(CX, CY), (CX - 81, CY + 44), (CX - 69, CY + 44)]   # L inner (darker)
     lo = [(CX, CY), (CX - 93, CY + 44), (CX - 81, CY + 44)]   # L outer (lighter)
     ri = [(CX, CY), (CX + 69, CY + 44), (CX + 81, CY + 44)]   # R inner (darker)
@@ -425,7 +426,7 @@ def draw_aircraft_symbol(surf):
     pygame.gfxdraw.filled_polygon(surf, ro, AMBER)
     pygame.gfxdraw.aapolygon(surf, ro, AMBER)
 
-    # Engine nacelles — at wing-tip x (±93), centered on CY, ±6 tall
+    # Engine nacelles — fills
     lu = [(CX - 93, CY), (CX - 99, CY - 6), (CX - 138, CY - 6), (CX - 138, CY)]
     ll = [(CX - 93, CY), (CX - 138, CY),    (CX - 138, CY + 6), (CX - 99, CY + 6)]
     ru = [(CX + 93, CY), (CX + 99, CY - 6), (CX + 138, CY - 6), (CX + 138, CY)]
@@ -438,6 +439,17 @@ def draw_aircraft_symbol(surf):
     pygame.gfxdraw.aapolygon(surf, ru, AMBER)
     pygame.gfxdraw.filled_polygon(surf, rl, AMBER_DARK)
     pygame.gfxdraw.aapolygon(surf, rl, AMBER_DARK)
+
+    # Outer perimeter outlines — no line across the inner colour-split edge
+    BLK = (0, 0, 0)
+    lw = [(CX, CY), (CX - 93, CY + 44), (CX - 69, CY + 44)]
+    rw = [(CX, CY), (CX + 69, CY + 44), (CX + 93, CY + 44)]
+    ln = [(CX - 93, CY), (CX - 99, CY - 6), (CX - 138, CY - 6), (CX - 138, CY + 6), (CX - 99, CY + 6)]
+    rn = [(CX + 93, CY), (CX + 99, CY - 6), (CX + 138, CY - 6), (CX + 138, CY + 6), (CX + 99, CY + 6)]
+    pygame.gfxdraw.aapolygon(surf, lw, BLK)
+    pygame.gfxdraw.aapolygon(surf, rw, BLK)
+    pygame.gfxdraw.aapolygon(surf, ln, BLK)
+    pygame.gfxdraw.aapolygon(surf, rn, BLK)
 
 
 # ── Slip/skid indicator ───────────────────────────────────────────────────────

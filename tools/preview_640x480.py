@@ -464,15 +464,22 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     AMBER_DARK = (180, 120, 0)
     # Wing panels — apex at (CX, CY), trailing edge at CY+44 (1.5× original 29)
     # Outer strip = leading-edge side (lighter/top); Inner strip = trailing-edge side (darker/bottom)
+    BLK = (0, 0, 0)
+    # Fills — no outline so the inner colour-split edge stays clean
     draw.polygon([(CX, CY), (CX-81, CY+44), (CX-69, CY+44)], fill=AMBER_DARK)  # L inner
     draw.polygon([(CX, CY), (CX-93, CY+44), (CX-81, CY+44)], fill=AMBER)       # L outer
     draw.polygon([(CX, CY), (CX+69, CY+44), (CX+81, CY+44)], fill=AMBER_DARK)  # R inner
     draw.polygon([(CX, CY), (CX+81, CY+44), (CX+93, CY+44)], fill=AMBER)       # R outer
-    # Engine nacelles — at wing-tip x (±93), centered on CY, ±6 tall
+    # Engine nacelles — fills
     draw.polygon([(CX-93, CY), (CX-99, CY-6), (CX-138, CY-6), (CX-138, CY)],   fill=AMBER)       # L upper
     draw.polygon([(CX-93, CY), (CX-138, CY),  (CX-138, CY+6), (CX-99, CY+6)],  fill=AMBER_DARK)  # L lower
     draw.polygon([(CX+93, CY), (CX+99, CY-6), (CX+138, CY-6), (CX+138, CY)],   fill=AMBER)       # R upper
     draw.polygon([(CX+93, CY), (CX+138, CY),  (CX+138, CY+6), (CX+99, CY+6)],  fill=AMBER_DARK)  # R lower
+    # Outer perimeter outlines only (no line across the inner colour split)
+    draw.polygon([(CX, CY), (CX-93, CY+44), (CX-69, CY+44)], outline=BLK)  # L wing
+    draw.polygon([(CX, CY), (CX+69, CY+44), (CX+93, CY+44)], outline=BLK)  # R wing
+    draw.polygon([(CX-93, CY), (CX-99, CY-6), (CX-138, CY-6), (CX-138, CY+6), (CX-99, CY+6)], outline=BLK)  # L nacelle
+    draw.polygon([(CX+93, CY), (CX+99, CY-6), (CX+138, CY-6), (CX+138, CY+6), (CX+99, CY+6)], outline=BLK)  # R nacelle
 
     # ── 8. CYAN TAP-BUTTONS ──────────────────────────────────────────────────
     # IAS and ALT bug buttons sit at the TOP of their respective tapes (drawn
