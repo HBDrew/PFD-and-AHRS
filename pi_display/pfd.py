@@ -165,7 +165,8 @@ def _chamfer(pts, indices, r=3):
 
 
 def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz,
-                  suppress_leading=False, power_offset=0, show_adjacent=False):
+                  suppress_leading=False, power_offset=0, show_adjacent=False,
+                  adj_slot_h=None):
     """
     Veeder-Root rolling-drum digit readout for pygame.
     show_adjacent=True: adjacent digits are ~50% visible above/below (true drum look).
@@ -174,7 +175,8 @@ def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz,
     char_w  = bw // n_digits
     f       = _get_font(font_sz, bold=True)
     val_int = int(abs(value))
-    slot_h  = bh // 2 if show_adjacent else bh
+    slot_h  = ((adj_slot_h if adj_slot_h is not None else bh // 2)
+               if show_adjacent else bh)
 
     for col_i in range(n_digits):
         power = power_offset + n_digits - 1 - col_i
@@ -229,7 +231,8 @@ def _drum_shade(surf, bx, by, bw, bh):
     surf.blit(shade, (bx, by))
 
 
-def _rolling_drum_alt20(surf, bx, by, bw, bh, alt, color, font_sz, show_adjacent=False):
+def _rolling_drum_alt20(surf, bx, by, bw, bh, alt, color, font_sz, show_adjacent=False,
+                        adj_slot_h=None):
     """
     Altimeter Veeder-Root drum: both digits scroll together in 20-foot steps.
     Labels '00','20','40','60','80' move as a unit.
@@ -240,7 +243,8 @@ def _rolling_drum_alt20(surf, bx, by, bw, bh, alt, color, font_sz, show_adjacent
     drum_pos = (alt % 100) / 20
     d_lo_idx = int(drum_pos) % 5
     frac     = drum_pos - int(drum_pos)
-    slot_h   = bh // 2 if show_adjacent else bh
+    slot_h   = ((adj_slot_h if adj_slot_h is not None else bh // 2)
+                if show_adjacent else bh)
     scroll   = int(frac * slot_h)
 
     img_lo = f.render(_LABELS[d_lo_idx], True, color)
@@ -563,7 +567,7 @@ def draw_slip_ball(surf, ay):
 # ── Speed tape ────────────────────────────────────────────────────────────────
 PX_PER_KT  = TAPE_H / 120.0   # 120 kt visible range
 PX_PER_FT  = TAPE_H / 600.0   # 600 ft visible range
-PX_PER_DEG = DISPLAY_W / 60.0  # 60° visible heading range
+PX_PER_DEG = DISPLAY_W / 120.0  # 120° visible heading range (half spacing)
 
 
 def spd_y(v, speed): return int(TAPE_MID - (v - speed) * PX_PER_KT)
@@ -639,10 +643,11 @@ def draw_speed_tape(surf, speed, gs_bug=None):
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
     # Inner: hundreds + tens at same font as drum, cascade-rolling
-    _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 22, power_offset=1)
+    _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 24, power_offset=1)
     # Drum: units digit, adjacent digits ~50% visible
-    _rolling_drum(surf, SPD_X + 48, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 22, show_adjacent=True)
-    _drum_shade(surf,   SPD_X + 49, TAPE_MID - 27, 15, 54)   # 2px inset from border
+    _rolling_drum(surf, SPD_X + 48, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 24,
+                  show_adjacent=True, adj_slot_h=23)
+    _drum_shade(surf,   SPD_X + 48, TAPE_MID - 28, 17, 56)   # 1px inset from border
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -717,18 +722,21 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
     inner_int  = int(alt_inner)
-    if inner_int >= 100:                    # alt ≥ 10,000 ft — uniform 3-digit
-        _rolling_drum(surf, R - 80, TAPE_MID - 14, 40, 28, alt_inner, 3, WHITE, 13,
-                      suppress_leading=True)
-    elif inner_int < 10:                    # alt < 1,000 ft — hundreds only
-        _rolling_drum(surf, R - 80, TAPE_MID - 14, 40, 28, alt_inner, 1, WHITE, 22)
-    else:                                   # 1,000–9,999 ft — thousands large, hundreds small
-        _rolling_drum(surf, R - 80, TAPE_MID - 14, 22, 28, alt_inner, 1, WHITE, 22,
-                      power_offset=1, suppress_leading=True)
-        _rolling_drum(surf, R - 58, TAPE_MID - 14, 18, 28, alt_inner, 1, WHITE, 12)
+    if inner_int < 10:                      # alt < 1,000 ft — hundreds only
+        _rolling_drum(surf, R - 80, TAPE_MID - 14, 41, 28, alt_inner, 1, WHITE, 24)
+    elif inner_int < 100:                   # 1,000–9,999 ft — thousands (24pt) + hundreds (22pt)
+        # Thousands in right cell of 28px slot (R-66..R-52); ten-thousands slot left empty
+        _rolling_drum(surf, R - 66, TAPE_MID - 14, 14, 28, alt_inner, 1, WHITE, 24,
+                      power_offset=1)
+        _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
+    else:                                   # alt ≥ 10,000 ft — ten-thou+thou (22pt) + hundreds
+        _rolling_drum(surf, R - 80, TAPE_MID - 14, 28, 28, alt_inner, 2, WHITE, 22,
+                      suppress_leading=True, power_offset=1)
+        _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
     # Drum: 20-ft labels scroll together, adjacent labels half-visible
-    _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 16, show_adjacent=True)
-    _drum_shade(surf,   R - 37, TAPE_MID - 27, 20, 54)   # 2px inset from border
+    _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 16,
+                        show_adjacent=True, adj_slot_h=23)
+    _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)   # 1px inset from border
 
     # VSI (vertical speed)
     arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")
@@ -760,7 +768,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
     pygame.draw.line(surf, (255, 255, 255, 80), (0, HDG_Y), (DISPLAY_W, HDG_Y), 1)
 
     # Tick marks
-    for i in range(-35, 36):
+    for i in range(-70, 71):
         deg = int((round(hdg) + i + 3600)) % 360
         off = i - (hdg - round(hdg))
         x = int(CX + off * PX_PER_DEG)
@@ -772,9 +780,9 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
                              (x, HDG_Y), (x, HDG_Y + th),
                              2 if deg % 10 == 0 else 1)
         if deg % 10 == 0:
-            lbl = _CARDINALS.get(deg, f"{deg:03d}")
+            lbl = _CARDINALS.get(deg, str(deg // 10))
             col = YELLOW if deg in _CARDINALS else (230, 230, 230)
-            _text(surf, lbl, 13, col, cx=x, y=HDG_Y + HDG_H - 15)
+            _text(surf, lbl, 17, col, bold=True, cx=x, y=HDG_Y + HDG_H - 18)
 
     # Heading bug
     if hdg_bug is not None:
@@ -812,7 +820,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
                       (bx,      by2 + bh)], {0, 1, 2, 6})
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
     pygame.gfxdraw.aapolygon(surf, pts_h, WHITE)
-    _text(surf, f"{round(hdg) % 360:03d}\u00b0", 20, WHITE, bold=True, cx=CX, cy=by2 + bh // 2)
+    _text(surf, f"{round(hdg) % 360:03d}\u00b0", 17, WHITE, cx=CX, cy=by2 + bh // 2)
 
 
 # ── Status badges ─────────────────────────────────────────────────────────────

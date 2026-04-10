@@ -29,7 +29,7 @@ AI_W     = ALT_X - SPD_W                   # 492
 VS0=48; VS1=55; VFE=85; VNO=129; VNE=163
 PX_PER_KT  = TAPE_H / 120.0
 PX_PER_FT  = TAPE_H / 600.0
-PX_PER_DEG = W / 60.0
+PX_PER_DEG = W / 120.0
 
 # ── Colour palette ─────────────────────────────────────────────────────────────
 SKY_TOP    = ( 10,  42,  80)
@@ -105,7 +105,8 @@ def _chamfer(pts, indices, r=3):
 
 
 def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
-                 suppress_leading=False, power_offset=0, show_adjacent=False):
+                 suppress_leading=False, power_offset=0, show_adjacent=False,
+                 adj_slot_h=None):
     """
     Veeder-Root rolling-drum digit readout.
     show_adjacent=True: adjacent digits are ~50% visible above/below (true drum look).
@@ -123,7 +124,8 @@ def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
         ch = font_sz; cw_ch = font_sz // 2; ch_offset = 0
 
     col_rgba = color + (255,)
-    slot_h   = bh // 2 if show_adjacent else bh
+    slot_h   = ((adj_slot_h if adj_slot_h is not None else bh // 2)
+                if show_adjacent else bh)
 
     for col_i in range(n_digits):
         power = power_offset + n_digits - 1 - col_i
@@ -182,7 +184,8 @@ def _drum_shade(img, bx, by, bw, bh):
     img.paste(shaded.convert('RGB'), (bx, by))
 
 
-def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz, show_adjacent=False):
+def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz, show_adjacent=False,
+                       adj_slot_h=None):
     """
     Altimeter Veeder-Root drum: both digits scroll together in 20-foot steps.
     Labels '00','20','40','60','80' move as a unit so tens AND units roll together.
@@ -202,7 +205,8 @@ def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz, show_adjacent=F
     drum_pos = (alt % 100) / 20
     d_lo_idx = int(drum_pos) % 5
     frac     = drum_pos - int(drum_pos)
-    slot_h   = bh // 2 if show_adjacent else bh
+    slot_h   = ((adj_slot_h if adj_slot_h is not None else bh // 2)
+                if show_adjacent else bh)
     scroll   = int(frac * slot_h)
 
     if show_adjacent:
@@ -391,10 +395,11 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     draw.line(pts_s + [pts_s[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
     # Inner section: hundreds + tens at same font as drum, cascade-rolling
-    rolling_drum(img, SPD_X+16, TAPE_MID-14, 30, 28, speed, 2, spd_col, 22, power_offset=1)
+    rolling_drum(img, SPD_X+16, TAPE_MID-14, 30, 28, speed, 2, spd_col, 24, power_offset=1)
     # Drum section: units digit, adjacent digits ~50% visible
-    rolling_drum(img, SPD_X+48, TAPE_MID-28, 17, 56, speed, 1, spd_col, 22, show_adjacent=True)
-    _drum_shade(img,   SPD_X+49, TAPE_MID-27, 15, 54)   # 2px inset from border
+    rolling_drum(img, SPD_X+48, TAPE_MID-28, 17, 56, speed, 1, spd_col, 24,
+                 show_adjacent=True, adj_slot_h=23)
+    _drum_shade(img,   SPD_X+48, TAPE_MID-28, 17, 56)   # 1px inset from border
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -455,18 +460,21 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
     inner_int  = int(alt_inner)
-    if inner_int >= 100:                    # alt ≥ 10,000 ft — uniform 3-digit
-        rolling_drum(img, R-80, TAPE_MID-14, 40, 28, alt_inner, 3, WHITE, 13,
-                     suppress_leading=True)
-    elif inner_int < 10:                    # alt < 1,000 ft — hundreds only
-        rolling_drum(img, R-80, TAPE_MID-14, 40, 28, alt_inner, 1, WHITE, 22)
-    else:                                   # 1,000–9,999 ft — thousands large, hundreds small
-        rolling_drum(img, R-80, TAPE_MID-14, 22, 28, alt_inner, 1, WHITE, 22,
-                     power_offset=1, suppress_leading=True)
-        rolling_drum(img, R-58, TAPE_MID-14, 18, 28, alt_inner, 1, WHITE, 12)
+    if inner_int < 10:                      # alt < 1,000 ft — hundreds only
+        rolling_drum(img, R-80, TAPE_MID-14, 41, 28, alt_inner, 1, WHITE, 24)
+    elif inner_int < 100:                   # 1,000–9,999 ft — thousands (24pt) + hundreds (22pt)
+        # Thousands in right cell of 28px slot (R-66..R-52); ten-thousands slot left empty
+        rolling_drum(img, R-66, TAPE_MID-14, 14, 28, alt_inner, 1, WHITE, 24,
+                     power_offset=1)
+        rolling_drum(img, R-52, TAPE_MID-14, 12, 28, alt_inner, 1, WHITE, 22)
+    else:                                   # alt ≥ 10,000 ft — ten-thou+thou (22pt) + hundreds
+        rolling_drum(img, R-80, TAPE_MID-14, 28, 28, alt_inner, 2, WHITE, 22,
+                     suppress_leading=True, power_offset=1)
+        rolling_drum(img, R-52, TAPE_MID-14, 12, 28, alt_inner, 1, WHITE, 22)
     # Drum: 20-ft labels scroll together, adjacent labels half-visible
-    rolling_drum_alt20(img, R-38, TAPE_MID-28, 22, 56, alt, WHITE, 16, show_adjacent=True)
-    _drum_shade(img,   R-37, TAPE_MID-27, 20, 54)   # 2px inset from border
+    rolling_drum_alt20(img, R-38, TAPE_MID-28, 22, 56, alt, WHITE, 16,
+                       show_adjacent=True, adj_slot_h=23)
+    _drum_shade(img,   R-38, TAPE_MID-28, 22, 56)   # 1px inset from border
 
     # VSI
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
@@ -486,7 +494,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     # ── 5. HEADING TAPE CONTENT ───────────────────────────────────────────────
     CARDS = {0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'}
-    for i in range(-35, 36):
+    _hf = fnt(17, bold=True)
+    for i in range(-70, 71):
         deg = int((round(hdg) + i + 3600)) % 360
         off = i - (hdg - round(hdg))
         x = int(CX + off * PX_PER_DEG)
@@ -496,9 +505,10 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             draw.line([(x, HDG_Y), (x, HDG_Y+th)],
                       fill=(200,200,200), width=2 if deg%10==0 else 1)
         if deg % 10 == 0:
-            lbl = CARDS.get(deg, f"{deg:03d}")
+            lbl = CARDS.get(deg, str(deg // 10))
             col = YELLOW if deg in CARDS else (230,230,230)
-            draw.text((x-7, HDG_Y+HDG_H-15), lbl, fill=col, font=fnt(13))
+            tw = int(draw.textlength(lbl, font=_hf))
+            draw.text((x - tw // 2, HDG_Y+HDG_H-18), lbl, fill=col, font=_hf)
 
     # Heading bug — wide, short, V-notch at top matching speed/alt bug style
     hb_off = ((hdg_bug - hdg + 180) % 360) - 180
@@ -525,8 +535,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                       (bx,       by2+bh2)], {0, 1, 2, 6})
     draw.polygon(pts_h, fill=(0, 0, 0))
     draw.line(pts_h + [pts_h[0]], fill=WHITE, width=2)
-    draw.text((CX-22, by2+2), f"{round(hdg)%360:03d}\u00b0",
-              fill=WHITE, font=fnt(18))
+    _hbf  = fnt(17)
+    _hstr = f"{round(hdg)%360:03d}\u00b0"
+    _hbb  = draw.textbbox((0, 0), _hstr, font=_hbf)   # (l, t, r, b)
+    _htw  = _hbb[2] - _hbb[0]
+    _hth  = _hbb[3] - _hbb[1]
+    draw.text((CX - _htw // 2 - _hbb[0],
+               by2 + (bh2 - _hth) // 2 - _hbb[1]),
+              _hstr, fill=WHITE, font=_hbf)
 
     # ── 6. ROLL ARC (rendered at 2× for anti-aliasing) ───────────────────────
     # Drawing at 2× then scaling down via LANCZOS gives smooth arc and shapes.
