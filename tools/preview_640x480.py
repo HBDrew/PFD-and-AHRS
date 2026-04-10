@@ -757,6 +757,143 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     print(f"Saved {filename}")
 
 
+# ── Setup screen previews ─────────────────────────────────────────────────────
+
+def _setup_btn(draw, bx, by, bw, bh, label, subtitle="", exit_btn=False, r=8):
+    """Draw one setup-menu button (shared by setup and numpad screens)."""
+    bg = (28, 6, 6) if exit_btn else (0, 12, 32)
+    draw.rounded_rectangle([(bx, by), (bx+bw-1, by+bh-1)], radius=r, fill=bg)
+    glow_h = bh // 5
+    for i in range(glow_h):
+        t = 1.0 - i / glow_h
+        if exit_btn:
+            gc = (int(45+t*55), int(8+t*12), int(8+t*12))
+        else:
+            gc = (int(15+t*35), int(20+t*50), int(40+t*80))
+        draw.line([(bx+r, by+1+i), (bx+bw-r, by+1+i)], fill=gc)
+    oc = (200, 55, 55) if exit_btn else WHITE
+    draw.rounded_rectangle([(bx, by), (bx+bw-1, by+bh-1)], radius=r, outline=oc, width=2)
+    lf = fnt(19, bold=True)
+    lh = 22
+    total_h = lh + (16 if subtitle else 0)
+    ly = by + (bh - total_h) // 2
+    lw = int(draw.textlength(label, font=lf))
+    draw.text((bx + (bw-lw)//2, ly), label, fill=WHITE, font=lf)
+    if subtitle:
+        sf = fnt(11)
+        sw = int(draw.textlength(subtitle, font=sf))
+        draw.text((bx + (bw-sw)//2, ly+lh+4), subtitle, fill=(155, 170, 190), font=sf)
+
+
+def draw_setup_screen(filename):
+    """Render the setup/settings main page."""
+    img  = Image.new('RGB', (W, H), (0, 8, 22))
+    draw = ImageDraw.Draw(img)
+
+    # Title bar
+    draw.rectangle([(0, 0), (W-1, 43)], fill=(0, 18, 45))
+    draw.line([(0, 43), (W-1, 43)], fill=WHITE, width=1)
+    tf = fnt(22, bold=True)
+    draw.text(((W - int(draw.textlength("SETUP", font=tf)))//2, 8),
+              "SETUP", fill=WHITE, font=tf)
+    hf = fnt(10)
+    hint = "Hold 2 fingers to return to PFD"
+    draw.text((W - int(draw.textlength(hint, font=hf)) - 6, 15),
+              hint, fill=(110, 120, 140), font=hf)
+
+    # Button grid — 2 cols × 3 rows
+    MX = 15; MY = 50; GAP_X = 10; GAP_Y = 12
+    BW = (W  - 2*MX - GAP_X) // 2       # 300
+    BH = (H  - MY - 14 - 2*GAP_Y) // 3  # 130
+    COLS = [MX, MX + BW + GAP_X]
+    ROWS = [MY, MY + BH + GAP_Y, MY + 2*(BH + GAP_Y)]
+
+    items = [
+        (0, 0, "FLIGHT PROFILE",  "V-speeds · Aircraft · Tail #",    False),
+        (1, 0, "DISPLAY",         "Units · Brightness · Night mode", False),
+        (0, 1, "AHRS / SENSORS",  "Trim · Mag cal · Mounting",       False),
+        (1, 1, "CONNECTIVITY",    "WiFi · AHRS link",                False),
+        (0, 2, "SYSTEM",          "Version · Diagnostics · Reset",   False),
+        (1, 2, "EXIT",            "Return to PFD",                   True),
+    ]
+    for col, row, lbl, sub, ex in items:
+        _setup_btn(draw, COLS[col], ROWS[row], BW, BH, lbl, sub, ex)
+
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
+# Numpad key table: (label, style)  styles: 'n'=normal  'x'=cancel  'ok'=enter
+_NP_KEYS = [
+    [('7','n'), ('8','n'), ('9','n')],
+    [('4','n'), ('5','n'), ('6','n')],
+    [('1','n'), ('2','n'), ('3','n')],
+    [('CANCEL','x'), ('0','n'), ('ENTER','ok')],
+]
+_NP_PW = 120; _NP_PH = 64; _NP_GX = 12; _NP_GY = 10
+_NP_TW = 3*_NP_PW + 2*_NP_GX   # 384  — total numpad width
+_NP_X0 = (W - _NP_TW) // 2     # 128  — left edge of numpad
+
+
+def _numpad_btn(draw, col, row, label, style, r=8):
+    bx = _NP_X0 + col * (_NP_PW + _NP_GX)
+    by = 118     + row * (_NP_PH + _NP_GY)
+    if style == 'x':
+        bg=(28,6,6);   oc=(200,55,55);  tc=(220,80,80)
+    elif style == 'ok':
+        bg=(5,25,10);  oc=(50,200,80);  tc=(60,220,90)
+    else:
+        bg=(0,12,32);  oc=WHITE;        tc=WHITE
+    draw.rounded_rectangle([(bx, by), (bx+_NP_PW-1, by+_NP_PH-1)], radius=r, fill=bg)
+    glow_h = _NP_PH // 5
+    for i in range(glow_h):
+        t = 1.0 - i / glow_h
+        if style == 'x':
+            gc = (int(45+t*55), int(8+t*12),  int(8+t*12))
+        elif style == 'ok':
+            gc = (int(5+t*15),  int(40+t*60), int(10+t*20))
+        else:
+            gc = (int(15+t*30), int(20+t*45), int(40+t*75))
+        draw.line([(bx+r, by+1+i), (bx+_NP_PW-r, by+1+i)], fill=gc)
+    draw.rounded_rectangle([(bx, by), (bx+_NP_PW-1, by+_NP_PH-1)], radius=r, outline=oc, width=2)
+    lf = fnt(20, bold=True)
+    lw = int(draw.textlength(label, font=lf))
+    draw.text((bx + (_NP_PW-lw)//2, by + (_NP_PH-22)//2), label, fill=tc, font=lf)
+
+
+def draw_numpad_screen(title, current_val, filename, entered=""):
+    """Render a full-screen numeric-entry pad (alt bug, hdg bug, GS bug, etc.)."""
+    img  = Image.new('RGB', (W, H), (0, 8, 22))
+    draw = ImageDraw.Draw(img)
+
+    # Title bar
+    draw.rectangle([(0, 0), (W-1, 43)], fill=(0, 18, 45))
+    draw.line([(0, 43), (W-1, 43)], fill=WHITE, width=1)
+    tf = fnt(18, bold=True)
+    draw.text(((W - int(draw.textlength(title, font=tf)))//2, 12),
+              title, fill=WHITE, font=tf)
+
+    # Value display box
+    disp_str = entered if entered else str(current_val)
+    draw.rounded_rectangle([(80, 50), (W-81, 100)], radius=6, fill=(0, 15, 38))
+    draw.rounded_rectangle([(80, 50), (W-81, 100)], radius=6, outline=WHITE, width=1)
+    vf = fnt(32, bold=True)
+    vw = int(draw.textlength(disp_str, font=vf))
+    draw.text(((W-vw)//2, 55), disp_str, fill=CYAN, font=vf)
+    hf = fnt(10)
+    hint = f"Current: {current_val}"
+    hw = int(draw.textlength(hint, font=hf))
+    draw.text(((W-hw)//2, 104), hint, fill=(110, 120, 140), font=hf)
+
+    # 4 × 3 numpad grid
+    for ri, row in enumerate(_NP_KEYS):
+        for ci, (lbl, sty) in enumerate(row):
+            _numpad_btn(draw, ci, ri, lbl, sty)
+
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
 # ── Render 3 Sedona scenarios ─────────────────────────────────────────────────
 OUT = os.path.dirname(os.path.abspath(__file__))
 
@@ -796,5 +933,15 @@ draw_scene(
     filename=os.path.join(OUT, "preview_sedona_approach.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
 )
+
+draw_setup_screen(os.path.join(OUT, "preview_setup_main.png"))
+
+draw_numpad_screen("SET ALTITUDE BUG", 8500,
+                   os.path.join(OUT, "preview_numpad_alt.png"),
+                   entered="95")
+
+draw_numpad_screen("SET HEADING BUG", 133,
+                   os.path.join(OUT, "preview_numpad_hdg.png"),
+                   entered="250")
 
 print("Done.")

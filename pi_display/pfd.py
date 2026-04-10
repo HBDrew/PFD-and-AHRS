@@ -57,10 +57,14 @@ state = {
 
 # ── Display values (smoothed) ─────────────────────────────────────────────────
 disp = dict(state)
-disp["hdg_bug"]    = 0.0
-disp["alt_bug"]    = 0.0
-disp["baro_hpa"]   = BARO_DEFAULT_HPA
-disp["show_demo"]  = False
+disp["hdg_bug"]       = 0.0
+disp["alt_bug"]       = 0.0
+disp["baro_hpa"]      = BARO_DEFAULT_HPA
+disp["show_demo"]     = False
+disp["mode"]          = "pfd"       # "pfd" | "setup" | "numpad"
+disp["numpad_target"] = ""          # "alt_bug" | "hdg_bug" | "spd_bug"
+disp["numpad_buf"]    = ""          # digits entered so far
+disp["numpad_prev"]   = "pfd"       # mode to return to on cancel/enter
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 
@@ -973,47 +977,251 @@ class DemoState:
 
 
 # ── Touch handler ─────────────────────────────────────────────────────────────
-_touch_t0    = {}
-_bug_dragging = None   # "hdg" | "alt"
+_touch_t0      = {}
+_bug_dragging  = None    # "hdg" | "alt"
+_active_fingers = {}     # finger_id → touch-down time (ms)
+_multitouch_t0  = None   # time when 2nd finger touched down
+
+
+def _open_numpad(target):
+    """Switch to numpad mode for the given bug target."""
+    disp["numpad_target"] = target
+    disp["numpad_buf"]    = ""
+    disp["numpad_prev"]   = disp["mode"]
+    disp["mode"]          = "numpad"
 
 
 def handle_event(event, demo_mode):
-    global _bug_dragging
+    global _bug_dragging, _active_fingers, _multitouch_t0
+
     if event.type == pygame.QUIT:
         return False
 
+    # ── Keyboard shortcuts ────────────────────────────────────────────────────
     if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_ESCAPE:
-            return False
+            if disp["mode"] != "pfd":
+                disp["mode"] = "pfd"   # ESC exits any overlay
+            else:
+                return False
         if event.key == pygame.K_d:
             return "toggle_demo"
-        if event.key == pygame.K_UP:
-            disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 + 100
-        if event.key == pygame.K_DOWN:
-            disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 - 100
-        if event.key == pygame.K_LEFT:
-            disp["hdg_bug"] = (round(disp["hdg_bug"]) - 10) % 360
-        if event.key == pygame.K_RIGHT:
-            disp["hdg_bug"] = (round(disp["hdg_bug"]) + 10) % 360
-        if event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
-            disp["baro_hpa"] = round(disp["baro_hpa"] * 100 + 1) / 100
-        if event.key == pygame.K_MINUS:
-            disp["baro_hpa"] = round(disp["baro_hpa"] * 100 - 1) / 100
+        if disp["mode"] == "pfd":
+            if event.key == pygame.K_UP:
+                disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 + 100
+            if event.key == pygame.K_DOWN:
+                disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 - 100
+            if event.key == pygame.K_LEFT:
+                disp["hdg_bug"] = (round(disp["hdg_bug"]) - 10) % 360
+            if event.key == pygame.K_RIGHT:
+                disp["hdg_bug"] = (round(disp["hdg_bug"]) + 10) % 360
+            if event.key in (pygame.K_PLUS, pygame.K_EQUALS):
+                disp["baro_hpa"] = round(disp["baro_hpa"] * 100 + 1) / 100
+            if event.key == pygame.K_MINUS:
+                disp["baro_hpa"] = round(disp["baro_hpa"] * 100 - 1) / 100
 
+    # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────
+    if event.type == pygame.FINGERDOWN:
+        _active_fingers[event.finger_id] = pygame.time.get_ticks()
+        if len(_active_fingers) >= 2 and _multitouch_t0 is None:
+            _multitouch_t0 = pygame.time.get_ticks()
+
+    if event.type == pygame.FINGERUP:
+        _active_fingers.pop(event.finger_id, None)
+        if len(_active_fingers) < 2:
+            _multitouch_t0 = None
+
+    # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
+        # Skip if this is part of a multi-touch gesture
+        if len(_active_fingers) >= 2:
+            return True
+
         pos = event.pos if hasattr(event, "pos") else (
             int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
         x, y = pos
-        # Touch on alt tape → adjust alt bug
+
+        mode = disp["mode"]
+
+        # ── Setup screen taps ─────────────────────────────────────────────
+        if mode == "setup":
+            idx = setup_hit(x, y)
+            if idx == 5:                      # EXIT button
+                disp["mode"] = "pfd"
+            # Other buttons: sub-screens (future — placeholder)
+            return True
+
+        # ── Numpad taps ───────────────────────────────────────────────────
+        if mode == "numpad":
+            hit = numpad_hit(x, y)
+            if hit:
+                lbl, sty = hit
+                target = disp["numpad_target"]
+                if sty == 'n':                # digit
+                    max_digits = 5 if target == "alt_bug" else 3
+                    if len(disp["numpad_buf"]) < max_digits:
+                        disp["numpad_buf"] += lbl
+                elif sty == 'x':              # CANCEL
+                    disp["mode"] = disp["numpad_prev"]
+                    disp["numpad_buf"] = ""
+                elif sty == 'ok':             # ENTER
+                    buf = disp["numpad_buf"]
+                    if buf:
+                        val = int(buf)
+                        if target == "alt_bug":
+                            disp["alt_bug"] = float(round(val / 100) * 100)
+                        elif target == "hdg_bug":
+                            disp["hdg_bug"] = float(val % 360)
+                        elif target == "spd_bug":
+                            disp["spd_bug"] = float(val)
+                    disp["mode"] = disp["numpad_prev"]
+                    disp["numpad_buf"] = ""
+            return True
+
+        # ── PFD taps ──────────────────────────────────────────────────────
+        # Tap on alt bug button → open numpad
+        if ALT_X <= x <= DISPLAY_W and 2 <= y <= 24:
+            _open_numpad("alt_bug")
+            return True
+        # Tap on GS bug button → open numpad
+        if SPD_X <= x <= SPD_X + SPD_W and 2 <= y <= 24:
+            _open_numpad("spd_bug")
+            return True
+        # Tap on hdg bug button → open numpad
+        if SPD_X <= x <= SPD_X + SPD_W and HDG_Y + 2 <= y <= HDG_Y + 24:
+            _open_numpad("hdg_bug")
+            return True
+        # Tap on alt tape → adjust alt bug by position
         if ALT_X <= x <= DISPLAY_W and TAPE_TOP <= y <= TAPE_BOT:
             ft = round(disp["alt"] + (TAPE_MID - y) / PX_PER_FT)
             disp["alt_bug"] = round(ft / 100) * 100
-        # Touch on heading tape → adjust hdg bug
+        # Tap on heading tape → adjust hdg bug by position
         if HDG_Y <= y <= DISPLAY_H:
             off = (x - CX) / PX_PER_DEG
             disp["hdg_bug"] = round(disp["yaw"] + off) % 360
 
     return True
+
+
+# ── Setup / numpad screens ────────────────────────────────────────────────────
+
+_SETUP_ITEMS = [
+    (0, 0, "FLIGHT PROFILE",  "V-speeds · Aircraft · Tail #"),
+    (1, 0, "DISPLAY",         "Units · Brightness · Night mode"),
+    (0, 1, "AHRS / SENSORS",  "Trim · Mag cal · Mounting"),
+    (1, 1, "CONNECTIVITY",    "WiFi · AHRS link"),
+    (0, 2, "SYSTEM",          "Version · Diagnostics · Reset"),
+    (1, 2, "EXIT",            "Return to PFD"),
+]
+_S_MX=15; _S_MY=50; _S_GX=10; _S_GY=12
+_S_BW = (DISPLAY_W - 2*_S_MX - _S_GX) // 2
+_S_BH = (DISPLAY_H - _S_MY - 14 - 2*_S_GY) // 3
+_S_COLS = [_S_MX, _S_MX + _S_BW + _S_GX]
+_S_ROWS = [_S_MY, _S_MY + _S_BH + _S_GY, _S_MY + 2*(_S_BH + _S_GY)]
+
+
+def _setup_button(surf, bx, by, bw, bh, label, subtitle="", exit_btn=False, r=8):
+    bg = (28, 6, 6) if exit_btn else (0, 12, 32)
+    pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=r)
+    glow_h = bh // 5
+    for i in range(glow_h):
+        t = 1.0 - i / glow_h
+        gc = ((int(45+t*55), int(8+t*12),  int(8+t*12)) if exit_btn
+              else (int(15+t*35), int(20+t*50), int(40+t*80)))
+        pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
+    oc = (200, 55, 55) if exit_btn else WHITE
+    pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=2, border_radius=r)
+    lh = 22
+    total_h = lh + (16 if subtitle else 0)
+    ly = by + (bh - total_h) // 2
+    _text(surf, label,    19, WHITE,         bold=True, cx=bx+bw//2, cy=ly+lh//2)
+    if subtitle:
+        _text(surf, subtitle, 11, (155,170,190),           cx=bx+bw//2, cy=ly+lh+10)
+
+
+def draw_setup_screen(surf):
+    """Full-screen setup main menu — entered via 2-finger hold."""
+    surf.fill((0, 8, 22))
+    pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
+    pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
+    _text(surf, "SETUP", 22, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+    _text(surf, "Hold 2 fingers to return", 10, (110,120,140),
+          x=DISPLAY_W-215, y=15)
+    for col, row, lbl, sub in _SETUP_ITEMS:
+        exit_btn = (lbl == "EXIT")
+        _setup_button(surf, _S_COLS[col], _S_ROWS[row], _S_BW, _S_BH,
+                      lbl, sub, exit_btn)
+
+
+def setup_hit(x, y):
+    """Return index 0–5 of the tapped setup button, or None."""
+    for idx, (col, row, *_) in enumerate(_SETUP_ITEMS):
+        bx = _S_COLS[col]; by = _S_ROWS[row]
+        if bx <= x <= bx+_S_BW and by <= y <= by+_S_BH:
+            return idx
+    return None
+
+
+# Numpad constants — shared between draw and hit-test
+_NP_KEYS = [
+    [('7','n'), ('8','n'), ('9','n')],
+    [('4','n'), ('5','n'), ('6','n')],
+    [('1','n'), ('2','n'), ('3','n')],
+    [('CANCEL','x'), ('0','n'), ('ENTER','ok')],
+]
+_NP_PW=120; _NP_PH=64; _NP_GX=12; _NP_GY=10
+_NP_TW = 3*_NP_PW + 2*_NP_GX   # 384
+_NP_X0 = (DISPLAY_W - _NP_TW) // 2  # 128
+_NP_Y0 = 118
+
+
+def _numpad_key(surf, col, row, label, style, r=8):
+    bx = _NP_X0 + col*(_NP_PW+_NP_GX)
+    by = _NP_Y0 + row*(_NP_PH+_NP_GY)
+    if style == 'x':
+        bg=(28,6,6);  oc=(200,55,55); tc=(220,80,80)
+    elif style == 'ok':
+        bg=(5,25,10); oc=(50,200,80); tc=(60,220,90)
+    else:
+        bg=(0,12,32); oc=WHITE;       tc=WHITE
+    pygame.draw.rect(surf, bg, (bx, by, _NP_PW, _NP_PH), border_radius=r)
+    glow_h = _NP_PH // 5
+    for i in range(glow_h):
+        t = 1.0 - i / glow_h
+        gc = ((int(45+t*55), int(8+t*12),  int(8+t*12))  if style=='x'  else
+              (int(5+t*15),  int(40+t*60), int(10+t*20)) if style=='ok' else
+              (int(15+t*30), int(20+t*45), int(40+t*75)))
+        pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+_NP_PW-r, by+1+i))
+    pygame.draw.rect(surf, oc, (bx, by, _NP_PW, _NP_PH), width=2, border_radius=r)
+    _text(surf, label, 20, tc, bold=True, cx=bx+_NP_PW//2, cy=by+_NP_PH//2)
+
+
+def draw_numpad(surf, title, current_val, entered=""):
+    """Full-screen numeric entry pad."""
+    surf.fill((0, 8, 22))
+    pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
+    pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
+    _text(surf, title, 18, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+    # Value display
+    disp_str = entered if entered else str(current_val)
+    pygame.draw.rect(surf, (0,15,38), (80, 50, DISPLAY_W-161, 50), border_radius=6)
+    pygame.draw.rect(surf, WHITE,     (80, 50, DISPLAY_W-161, 50), width=1, border_radius=6)
+    _text(surf, disp_str, 32, CYAN, bold=True, cx=DISPLAY_W//2, cy=75)
+    _text(surf, f"Current: {current_val}", 10, (110,120,140), cx=DISPLAY_W//2, cy=108)
+    for ri, row in enumerate(_NP_KEYS):
+        for ci, (lbl, sty) in enumerate(row):
+            _numpad_key(surf, ci, ri, lbl, sty)
+
+
+def numpad_hit(x, y):
+    """Return (label, style) of the tapped numpad key, or None."""
+    for ri, row in enumerate(_NP_KEYS):
+        for ci, (lbl, sty) in enumerate(row):
+            bx = _NP_X0 + ci*(_NP_PW+_NP_GX)
+            by = _NP_Y0 + ri*(_NP_PH+_NP_GY)
+            if bx <= x <= bx+_NP_PW and by <= y <= by+_NP_PH:
+                return (lbl, sty)
+    return None
 
 
 # ── Cyan tap-buttons (HDG bug, BARO, ALT bug) ────────────────────────────────
@@ -1066,6 +1274,25 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
 
 # ── Main render function ──────────────────────────────────────────────────────
 def render(surf, demo_mode, connected):
+    mode = disp.get("mode", "pfd")
+
+    if mode == "setup":
+        draw_setup_screen(surf)
+        return
+
+    if mode == "numpad":
+        target  = disp.get("numpad_target", "")
+        buf     = disp.get("numpad_buf", "")
+        titles  = {"alt_bug": "SET ALTITUDE BUG",
+                   "hdg_bug": "SET HEADING BUG",
+                   "spd_bug": "SET GS BUG"}
+        curvals = {"alt_bug": int(disp.get("alt_bug", 0)),
+                   "hdg_bug": int(disp.get("hdg_bug", 0)),
+                   "spd_bug": int(disp.get("spd_bug", 0))}
+        draw_numpad(surf, titles.get(target, "ENTER VALUE"),
+                    curvals.get(target, 0), buf)
+        return
+
     surf.fill((0, 0, 0))
 
     roll    = disp["roll"]
@@ -1208,6 +1435,14 @@ def main():
 
         if sse:
             connected = sse.connected
+
+        # 2-finger hold → toggle setup screen
+        if (_multitouch_t0 is not None
+                and len(_active_fingers) >= 2
+                and pygame.time.get_ticks() - _multitouch_t0 >= LONG_PRESS_MS):
+            disp["mode"] = "pfd" if disp["mode"] != "pfd" else "setup"
+            _active_fingers.clear()
+            _multitouch_t0 = None
 
         # Render
         render(surf, demo_mode, connected)
