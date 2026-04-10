@@ -1107,6 +1107,295 @@ def draw_keyboard_screen(title, current_val, filename, entered=""):
     print(f"Saved {filename}")
 
 
+# ── Sub-setup screens (Display · AHRS · Connectivity · System) ───────────────
+
+_SS_MX  = 12
+_SS_Y0  = 52
+_SS_RH  = 68
+_SS_GAP = 8
+
+
+def _ss_row_y(i):
+    return _SS_Y0 + i * (_SS_RH + _SS_GAP)
+
+
+def _screen_header_p(draw, title):
+    draw.rectangle([(0,0),(W-1,43)], fill=(0,18,45))
+    draw.line([(0,43),(W-1,43)], fill=WHITE, width=1)
+    _setup_btn(draw, 8, 6, 72, 31, "\u2190 BACK", r=5)
+    tf = fnt(20, bold=True)
+    draw.text(((W-int(draw.textlength(title,font=tf)))//2, 10), title, fill=WHITE, font=tf)
+
+
+def _setting_row_p(draw, row_i, label, sub=""):
+    bx = _SS_MX; by = _ss_row_y(row_i)
+    bw = W - 2*_SS_MX; bh = _SS_RH
+    draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=6, fill=(0,12,32))
+    gh = bh // 6
+    for i in range(gh):
+        t = 1.0 - i/gh
+        gc = (int(15+t*25), int(20+t*40), int(40+t*65))
+        draw.line([(bx+6,by+1+i),(bx+bw-6,by+1+i)], fill=gc)
+    draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=6, outline=(55,75,105), width=1)
+    draw.text((bx+14, by+10), label, fill=WHITE, font=fnt(14,bold=True))
+    if sub:
+        draw.text((bx+14, by+32), sub, fill=(120,135,155), font=fnt(10))
+    return bx, by, bw, bh
+
+
+def _seg_btn_p(draw, bx, by, bw, bh, label, active, r=5):
+    bg = (0,55,65) if active else (0,10,25)
+    oc = CYAN      if active else (50,68,92)
+    tc = CYAN      if active else (130,148,168)
+    draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=r, fill=bg)
+    if active:
+        gh = bh // 4
+        for i in range(gh):
+            t = 1.0-i/gh
+            draw.line([(bx+r,by+1+i),(bx+bw-r,by+1+i)],
+                      fill=(int(t*20), int(60+t*40), int(70+t*50)))
+    draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=r, outline=oc, width=2)
+    lf = fnt(14, bold=active)
+    lw = int(draw.textlength(label, font=lf))
+    draw.text((bx+(bw-lw)//2, by+(bh-16)//2), label, fill=tc, font=lf)
+
+
+def _step_btn_p(draw, bx, by, bw, bh, label):
+    if label == "+":
+        bg=(8,28,12);  oc=(50,180,70);  tc=(70,220,90)
+    else:
+        bg=(30,12,12); oc=(180,50,50);  tc=(220,80,80)
+    draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=5, fill=bg)
+    draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=5, outline=oc, width=2)
+    lf = fnt(20, bold=True)
+    lw = int(draw.textlength(label, font=lf))
+    draw.text((bx+(bw-lw)//2, by+(bh-22)//2), label, fill=tc, font=lf)
+
+
+def _action_btn_p(draw, bx, by, bw, bh, label, style="normal", r=6):
+    if   style == "danger": bg=(35,5,5);  oc=(200,40,40);  tc=RED
+    elif style == "warn":   bg=(30,20,5); oc=(200,140,40); tc=YELLOW
+    elif style == "ok":     bg=(5,28,10); oc=(40,180,60);  tc=(60,220,80)
+    else:                   bg=(0,18,45); oc=WHITE;        tc=WHITE
+    draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=r, fill=bg)
+    gh = bh // 5
+    for i in range(gh):
+        t = 1.0 - i/gh
+        if   style == "danger": gc=(int(bg[0]+t*40),int(bg[1]+t*10),int(bg[2]+t*10))
+        elif style == "warn":   gc=(int(bg[0]+t*35),int(bg[1]+t*25),int(bg[2]+t*5))
+        elif style == "ok":     gc=(int(bg[0]+t*10),int(bg[1]+t*35),int(bg[2]+t*10))
+        else:                   gc=(int(bg[0]+t*15),int(bg[1]+t*25),int(bg[2]+t*50))
+        draw.line([(bx+r,by+1+i),(bx+bw-r,by+1+i)], fill=gc)
+    draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=r, outline=oc, width=2)
+    lf = fnt(15, bold=True)
+    lw = int(draw.textlength(label, font=lf))
+    draw.text((bx+(bw-lw)//2, by+(bh-17)//2), label, fill=tc, font=lf)
+
+
+# Display settings ─────────────────────────────────────────────────────────────
+
+_DSP_BTN_H = 40; _DSP_BTN_G = 6; _DSP_SW = 40; _DSP_VW = 70
+
+_DSP_ROWS = [
+    ("spd_unit",   "SPEED UNITS",  "Knots \u00b7 Miles \u00b7 Km/h",
+     ["kt","mph","kph"], ["KT","MPH","KPH"], 80),
+    ("alt_unit",   "ALTITUDE",     "Feet or Metres",
+     ["ft","m"],         ["FT","M"],         100),
+    ("baro_unit",  "PRESSURE",     "Inches Hg or hPa",
+     ["inhg","hpa"],     ["inHg","hPa"],     100),
+    ("brightness", "BRIGHTNESS",   "Screen brightness 1\u201310",
+     None, None, None),
+    ("night_mode", "NIGHT MODE",   "Dim red cockpit lighting",
+     [False,True],       ["OFF","ON"],        100),
+]
+
+
+def _dsp_rx_p(row, bx, bw):
+    *_, opts_v, opts_l, bw_each = row
+    if opts_v is None:
+        total = _DSP_SW + _DSP_BTN_G + _DSP_VW + _DSP_BTN_G + _DSP_SW
+    else:
+        total = len(opts_v)*bw_each + (len(opts_v)-1)*_DSP_BTN_G
+    return bx + bw - total - 14
+
+
+def draw_display_screen(filename, ds=None):
+    if ds is None:
+        ds = {"spd_unit":"kt","alt_unit":"ft","baro_unit":"inhg","brightness":8,"night_mode":False}
+    img  = Image.new('RGB',(W,H),(0,8,22))
+    draw = ImageDraw.Draw(img)
+    _screen_header_p(draw, "DISPLAY")
+    for ri, row in enumerate(_DSP_ROWS):
+        key, label, sub, opts_v, opts_l, bw_each = row
+        bx, by, bw, bh = _setting_row_p(draw, ri, label, sub)
+        ry = by + (bh - _DSP_BTN_H) // 2
+        rx = _dsp_rx_p(row, bx, bw)
+        if opts_v is None:
+            val = ds.get("brightness", 8)
+            _step_btn_p(draw, rx, ry, _DSP_SW, _DSP_BTN_H, "\u2212")
+            vx = rx + _DSP_SW + _DSP_BTN_G
+            draw.rounded_rectangle([(vx,ry),(vx+_DSP_VW-1,ry+_DSP_BTN_H-1)],
+                                    radius=4, fill=(0,18,38))
+            draw.rounded_rectangle([(vx,ry),(vx+_DSP_VW-1,ry+_DSP_BTN_H-1)],
+                                    radius=4, outline=(60,80,110), width=1)
+            vf = fnt(18, bold=True)
+            vw = int(draw.textlength(str(val), font=vf))
+            draw.text((vx+(_DSP_VW-vw)//2, ry+(_DSP_BTN_H-20)//2), str(val), fill=WHITE, font=vf)
+            _step_btn_p(draw, vx+_DSP_VW+_DSP_BTN_G, ry, _DSP_SW, _DSP_BTN_H, "+")
+        else:
+            cur = ds.get(key, opts_v[0])
+            for i,(v,lbl) in enumerate(zip(opts_v, opts_l)):
+                _seg_btn_p(draw, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
+# AHRS / Sensors ───────────────────────────────────────────────────────────────
+
+_SS_TRIM_SW = 40; _SS_TRIM_VW = 90; _SS_TRIM_H = 40; _SS_TRIM_G = 6
+_SS_MAG_LABELS = {
+    "idle":    ("IDLE",          (100,110,130)),
+    "running": ("RUNNING\u2026", YELLOW),
+    "done":    ("DONE  \u2713",  (50,200,80)),
+    "error":   ("ERROR",         RED),
+}
+
+
+def draw_ahrs_screen(filename, ss=None):
+    if ss is None:
+        ss = {"pitch_trim":0.0,"roll_trim":0.0,"mag_cal":"idle","mounting":"normal"}
+    img  = Image.new('RGB',(W,H),(0,8,22))
+    draw = ImageDraw.Draw(img)
+    _screen_header_p(draw, "AHRS / SENSORS")
+
+    def _trim_row(ri, key, label, sub):
+        bx, by, bw, bh = _setting_row_p(draw, ri, label, sub)
+        val = ss.get(key, 0.0)
+        total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
+        rx = bx + bw - total - 14
+        ry = by + (bh - _SS_TRIM_H) // 2
+        _step_btn_p(draw, rx, ry, _SS_TRIM_SW, _SS_TRIM_H, "\u2212")
+        vx = rx + _SS_TRIM_SW + _SS_TRIM_G
+        draw.rounded_rectangle([(vx,ry),(vx+_SS_TRIM_VW-1,ry+_SS_TRIM_H-1)],
+                                radius=4, fill=(0,18,38))
+        draw.rounded_rectangle([(vx,ry),(vx+_SS_TRIM_VW-1,ry+_SS_TRIM_H-1)],
+                                radius=4, outline=(60,80,110), width=1)
+        vf = fnt(16, bold=True)
+        s = f"{val:+.1f}\u00b0"
+        vw = int(draw.textlength(s, font=vf))
+        draw.text((vx+(_SS_TRIM_VW-vw)//2, ry+(_SS_TRIM_H-18)//2), s, fill=WHITE, font=vf)
+        _step_btn_p(draw, vx+_SS_TRIM_VW+_SS_TRIM_G, ry, _SS_TRIM_SW, _SS_TRIM_H, "+")
+
+    _trim_row(0, "pitch_trim", "PITCH TRIM", "Horizon offset correction")
+    _trim_row(1, "roll_trim",  "ROLL TRIM",  "Wing-level correction")
+
+    # Row 2: magnetometer
+    bx, by, bw, bh = _setting_row_p(draw, 2, "MAGNETOMETER", "Compass calibration")
+    cal = ss.get("mag_cal", "idle")
+    state_lbl, state_col = _SS_MAG_LABELS.get(cal, ("?", WHITE))
+    draw.text((bx+220, by+(bh-15)//2), state_lbl, fill=state_col, font=fnt(13,bold=True))
+    _action_btn_p(draw, bx+bw-138-14, by+(bh-36)//2, 138, 36, "CALIBRATE", "warn")
+
+    # Row 3: mounting
+    bx, by, bw, bh = _setting_row_p(draw, 3, "MOUNTING", "Board orientation")
+    cur = ss.get("mounting", "normal")
+    opts = [("normal","NORMAL"),("inverted","INVERTED")]
+    total = 2*120 + _DSP_BTN_G
+    rx = bx + bw - total - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    for i,(v,lbl) in enumerate(opts):
+        _seg_btn_p(draw, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
+
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
+# Connectivity ─────────────────────────────────────────────────────────────────
+
+_CS_FIELDS = [
+    ("ahrs_url",  "AHRS URL",  "Pico W access-point address"),
+    ("wifi_ssid", "WiFi SSID", "Local network for forwarding"),
+]
+
+
+def draw_connectivity_screen(filename, cs=None):
+    if cs is None:
+        cs = {"ahrs_url":"http://192.168.4.1","wifi_ssid":"AHRS-Link",
+              "ahrs_ok":False,"wifi_ok":False}
+    img  = Image.new('RGB',(W,H),(0,8,22))
+    draw = ImageDraw.Draw(img)
+    _screen_header_p(draw, "CONNECTIVITY")
+    bw = W - 2*_SS_MX
+
+    for ri,(key, label, sub) in enumerate(_CS_FIELDS):
+        bx, by, _, bh = _setting_row_p(draw, ri, label, sub)
+        val = cs.get(key, "\u2014")
+        vbx = bx+230; vby = by+14; vbw = bx+bw-vbx-12; vbh = bh-28
+        draw.rounded_rectangle([(vbx,vby),(vbx+vbw-1,vby+vbh-1)], radius=4, fill=(0,20,42))
+        draw.rounded_rectangle([(vbx,vby),(vbx+vbw-1,vby+vbh-1)], radius=4, outline=CYAN, width=1)
+        vf = fnt(13,bold=True)
+        vw = int(draw.textlength(val, font=vf))
+        draw.text((vbx+(vbw-vw)//2, vby+(vbh-15)//2), val, fill=CYAN, font=vf)
+        draw.text((vbx+6, vby+vbh-13), "tap to edit", fill=(80,100,125), font=fnt(9))
+
+    # Row 2: status
+    bx, by, _, bh = _setting_row_p(draw, 2, "STATUS", "Live connection state")
+    for i,(ok_k, ok_y, ok_n) in enumerate([
+            ("ahrs_ok","AHRS  CONNECTED","AHRS  NO LINK"),
+            ("wifi_ok","WiFi  CONNECTED","WiFi  NO LINK")]):
+        ok = cs.get(ok_k, False)
+        col = (60,220,80) if ok else (200,50,50)
+        lbl = ok_y if ok else ok_n
+        cy = by + bh//4 + i*bh//2
+        draw.ellipse([(bx+232,cy-6),(bx+244,cy+6)], fill=col)
+        draw.text((bx+252, cy-9), lbl, fill=col, font=fnt(13,bold=True))
+
+    # Row 3: test button
+    by3 = _ss_row_y(3)
+    _action_btn_p(draw, _SS_MX, by3, bw, _SS_RH, "TEST CONNECTION", "ok")
+
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
+# System ───────────────────────────────────────────────────────────────────────
+
+_SYS_VERSION = "0.1.0"
+_SYS_BUILD   = "2026-04-10"
+_SYS_INFO_LH = 28
+
+
+def draw_system_screen(filename):
+    img  = Image.new('RGB',(W,H),(0,8,22))
+    draw = ImageDraw.Draw(img)
+    _screen_header_p(draw, "SYSTEM")
+    bx = _SS_MX; bw = W - 2*_SS_MX
+    lines = [
+        ("Firmware version",  _SYS_VERSION),
+        ("Build date",        _SYS_BUILD),
+        ("Display",           "640\u00d7480  DSI"),
+        ("Hardware",          "Pi Zero 2W + Pico W"),
+        ("SRTM terrain data", "not found"),
+    ]
+    ih = len(lines)*_SYS_INFO_LH + 16
+    INFO_Y = 56
+    draw.rounded_rectangle([(bx,INFO_Y),(bx+bw-1,INFO_Y+ih-1)], radius=6, fill=(0,12,32))
+    draw.rounded_rectangle([(bx,INFO_Y),(bx+bw-1,INFO_Y+ih-1)], radius=6,
+                            outline=(55,75,105), width=1)
+    for i,(k,v) in enumerate(lines):
+        ty = INFO_Y + 10 + i*_SYS_INFO_LH
+        draw.text((bx+14, ty), k, fill=(120,140,165), font=fnt(12))
+        draw.text((bx+310, ty), v, fill=WHITE, font=fnt(13,bold=True))
+
+    btn_y = INFO_Y + ih + 16; btn_h = 54
+    half_w = (bw - 10) // 2
+    _action_btn_p(draw, bx,           btn_y, half_w, btn_h, "DIAGNOSTICS",   "normal")
+    _action_btn_p(draw, bx+half_w+10, btn_y, half_w, btn_h, "RESET DEFAULTS","danger")
+
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
 # ── Render 3 Sedona scenarios ─────────────────────────────────────────────────
 OUT = os.path.dirname(os.path.abspath(__file__))
 
@@ -1160,5 +1449,13 @@ draw_numpad_screen("SET ALTITUDE BUG", 8500,
 draw_numpad_screen("SET HEADING BUG", 133,
                    os.path.join(OUT, "preview_numpad_hdg.png"),
                    entered="250")
+
+draw_display_screen(os.path.join(OUT, "preview_setup_display.png"))
+draw_ahrs_screen(os.path.join(OUT, "preview_setup_ahrs.png"),
+                 ss={"pitch_trim":1.5,"roll_trim":-0.5,"mag_cal":"done","mounting":"normal"})
+draw_connectivity_screen(os.path.join(OUT, "preview_setup_connectivity.png"),
+                         cs={"ahrs_url":"http://192.168.4.1","wifi_ssid":"AHRS-Link",
+                             "ahrs_ok":True,"wifi_ok":False})
+draw_system_screen(os.path.join(OUT, "preview_setup_system.png"))
 
 print("Done.")

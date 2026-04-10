@@ -62,16 +62,30 @@ disp["alt_bug"]       = 0.0
 disp["baro_hpa"]      = BARO_DEFAULT_HPA
 disp["show_demo"]     = False
 disp["mode"]          = "pfd"       # "pfd"|"setup"|"flight_profile"|"numpad"|"keyboard"
+                                     # |"display_setup"|"ahrs_setup"|"connectivity_setup"|"system_setup"
 disp["numpad_target"] = ""          # "alt_bug"|"hdg_bug"|"spd_bug"|fp key
 disp["numpad_buf"]    = ""          # digits entered so far
 disp["numpad_prev"]   = "pfd"       # mode to return to on cancel/enter
-disp["kbd_target"]    = ""          # flight-profile field being edited
+disp["kbd_target"]    = ""          # field being edited in keyboard mode
 disp["kbd_buf"]       = ""          # text entered so far
+disp["kbd_prev"]      = "flight_profile"  # mode to return to on DONE/CANCEL
 disp["fp"] = {                      # flight-profile values
     "tail":   "N12345", "actype": "C172S",
     "vs0":    VS0,  "vs1": VS1,  "vfe": VFE,
     "vno":    VNO,  "vne": VNE,  "va":  VA,
     "vy":     VY,   "vx":  VX,
+}
+disp["ds"] = {                      # display settings
+    "spd_unit":  "kt",   "alt_unit":   "ft",
+    "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
+}
+disp["ss"] = {                      # AHRS / sensor settings
+    "pitch_trim": 0.0, "roll_trim": 0.0,
+    "mag_cal":    "idle", "mounting": "normal",
+}
+disp["cs"] = {                      # connectivity settings
+    "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
+    "ahrs_ok":   False,    "wifi_ok":   False,
 }
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
@@ -1054,11 +1068,67 @@ def handle_event(event, demo_mode):
         # ── Setup screen taps ─────────────────────────────────────────────
         if mode == "setup":
             idx = setup_hit(x, y)
-            if idx == 5:                      # EXIT button
-                disp["mode"] = "pfd"
-            elif idx == 0:                    # FLIGHT PROFILE
-                disp["mode"] = "flight_profile"
-            # Other buttons: sub-screens (future — placeholder)
+            if   idx == 5: disp["mode"] = "pfd"
+            elif idx == 0: disp["mode"] = "flight_profile"
+            elif idx == 1: disp["mode"] = "display_setup"
+            elif idx == 2: disp["mode"] = "ahrs_setup"
+            elif idx == 3: disp["mode"] = "connectivity_setup"
+            elif idx == 4: disp["mode"] = "system_setup"
+            return True
+
+        # ── Display settings taps ─────────────────────────────────────────
+        if mode == "display_setup":
+            action = display_setup_hit(x, y, disp["ds"])
+            if action == "back":
+                disp["mode"] = "setup"
+            elif action and action.startswith("set:"):
+                _, key, val_str = action.split(":", 2)
+                disp["ds"][key] = (val_str == "True") if key == "night_mode" else val_str
+            elif action and action.startswith("inc:brightness:"):
+                delta = int(action.split(":")[-1])
+                disp["ds"]["brightness"] = max(1, min(10, disp["ds"]["brightness"] + delta))
+            return True
+
+        # ── AHRS / Sensors taps ───────────────────────────────────────────
+        if mode == "ahrs_setup":
+            action = ahrs_setup_hit(x, y, disp["ss"])
+            if action == "back":
+                disp["mode"] = "setup"
+            elif action and action.startswith("trim:"):
+                _, key, delta_str = action.split(":")
+                disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
+            elif action == "mag_cal":
+                disp["ss"]["mag_cal"] = "running"
+            elif action and action.startswith("set:"):
+                _, key, val = action.split(":", 2)
+                disp["ss"][key] = val
+            return True
+
+        # ── Connectivity taps ─────────────────────────────────────────────
+        if mode == "connectivity_setup":
+            action = connectivity_setup_hit(x, y, disp["cs"])
+            if action == "back":
+                disp["mode"] = "setup"
+            elif action and action.startswith("edit:"):
+                key = action.split(":", 1)[1]
+                disp["kbd_target"] = key
+                disp["kbd_buf"]    = ""
+                disp["kbd_prev"]   = "connectivity_setup"
+                disp["mode"]       = "keyboard"
+            return True
+
+        # ── System screen taps ────────────────────────────────────────────
+        if mode == "system_setup":
+            action = system_setup_hit(x, y)
+            if action == "back":
+                disp["mode"] = "setup"
+            elif action == "reset_defaults":
+                for k,v in [("vs0",VS0),("vs1",VS1),("vfe",VFE),("vno",VNO),
+                             ("vne",VNE),("va",VA),("vy",VY),("vx",VX)]:
+                    disp["fp"][k] = v
+                disp["ds"].update(spd_unit="kt", alt_unit="ft", baro_unit="inhg",
+                                   brightness=8, night_mode=False)
+                disp["ss"].update(pitch_trim=0.0, roll_trim=0.0)
             return True
 
         # ── Flight Profile screen taps ────────────────────────────────────
@@ -1094,13 +1164,16 @@ def handle_event(event, demo_mode):
                     disp["kbd_buf"] = disp["kbd_buf"][:-1]
                 elif sty == 'x':              # CANCEL
                     disp["kbd_buf"] = ""
-                    disp["mode"] = "flight_profile"
+                    disp["mode"] = disp["kbd_prev"]
                 elif sty == 'ok':             # DONE
                     buf = disp["kbd_buf"].strip()
                     if buf:
-                        disp["fp"][target] = buf
+                        if disp["kbd_prev"] == "connectivity_setup":
+                            disp["cs"][target] = buf
+                        else:
+                            disp["fp"][target] = buf
                     disp["kbd_buf"] = ""
-                    disp["mode"] = "flight_profile"
+                    disp["mode"] = disp["kbd_prev"]
             return True
 
         # ── Numpad taps ───────────────────────────────────────────────────
@@ -1451,6 +1524,370 @@ def keyboard_hit(x, y):
     return None
 
 
+# ── Sub-setup screens (Display · AHRS · Connectivity · System) ───────────────
+
+_SS_MX  = 12     # side margin
+_SS_Y0  = 52     # first row top (44px title bar + 8px gap)
+_SS_RH  = 68     # row height
+_SS_GAP = 8      # gap between rows
+
+
+def _ss_row_y(i):
+    return _SS_Y0 + i * (_SS_RH + _SS_GAP)
+
+
+def _screen_header(surf, title):
+    surf.fill((0, 8, 22))
+    pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
+    pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
+    _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
+    _text(surf, title, 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+
+
+def _setting_row(surf, row_i, label, sub=""):
+    """Draw settings row background + label. Returns (bx, by, bw, bh)."""
+    bx = _SS_MX; by = _ss_row_y(row_i)
+    bw = DISPLAY_W - 2*_SS_MX; bh = _SS_RH
+    pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=6)
+    gh = bh // 6
+    for i in range(gh):
+        t = 1.0 - i/gh
+        gc = (int(15+t*25), int(20+t*40), int(40+t*65))
+        pygame.draw.line(surf, gc, (bx+6, by+1+i), (bx+bw-6, by+1+i))
+    pygame.draw.rect(surf, (55, 75, 105), (bx, by, bw, bh), width=1, border_radius=6)
+    _text(surf, label, 14, WHITE, bold=True, x=bx+14, y=by+10)
+    if sub:
+        _text(surf, sub, 10, (120, 135, 155), x=bx+14, y=by+32)
+    return bx, by, bw, bh
+
+
+def _seg_btn(surf, bx, by, bw, bh, label, active, r=5):
+    """Segmented-control button — CYAN highlight when active."""
+    bg = (0, 55, 65) if active else (0, 10, 25)
+    oc = CYAN        if active else (50, 68, 92)
+    tc = CYAN        if active else (130, 148, 168)
+    pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=r)
+    if active:
+        gh = bh // 4
+        for i in range(gh):
+            t = 1.0 - i/gh
+            gc = (int(t*20), int(60+t*40), int(70+t*50))
+            pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
+    pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=2, border_radius=r)
+    _text(surf, label, 14, tc, bold=active, cx=bx+bw//2, cy=by+bh//2)
+
+
+def _step_btn(surf, bx, by, bw, bh, label):
+    """+/- stepper button."""
+    if label == "+":
+        bg=(8,28,12); oc=(50,180,70); tc=(70,220,90)
+    else:
+        bg=(30,12,12); oc=(180,50,50); tc=(220,80,80)
+    pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=5)
+    pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=2, border_radius=5)
+    _text(surf, label, 20, tc, bold=True, cx=bx+bw//2, cy=by+bh//2)
+
+
+def _action_btn(surf, bx, by, bw, bh, label, style="normal", r=6):
+    """Standalone action button (normal / ok / warn / danger)."""
+    if style == "danger":
+        bg=(35,5,5);   oc=(200,40,40);  tc=RED
+    elif style == "warn":
+        bg=(30,20,5);  oc=(200,140,40); tc=YELLOW
+    elif style == "ok":
+        bg=(5,28,10);  oc=(40,180,60);  tc=(60,220,80)
+    else:
+        bg=(0,18,45);  oc=WHITE;        tc=WHITE
+    pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=r)
+    gh = bh // 5
+    for i in range(gh):
+        t = 1.0 - i/gh
+        if   style == "danger": gc=(int(bg[0]+t*40),int(bg[1]+t*10),int(bg[2]+t*10))
+        elif style == "warn":   gc=(int(bg[0]+t*35),int(bg[1]+t*25),int(bg[2]+t*5))
+        elif style == "ok":     gc=(int(bg[0]+t*10),int(bg[1]+t*35),int(bg[2]+t*10))
+        else:                   gc=(int(bg[0]+t*15),int(bg[1]+t*25),int(bg[2]+t*50))
+        pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
+    pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=2, border_radius=r)
+    _text(surf, label, 15, tc, bold=True, cx=bx+bw//2, cy=by+bh//2)
+
+
+# ── Display settings screen ───────────────────────────────────────────────────
+
+_DSP_BTN_H = 40    # control button height inside row
+_DSP_BTN_G = 6     # gap between buttons
+_DSP_SW    = 40    # stepper +/- button width
+_DSP_VW    = 70    # stepper value-display box width
+
+_DSP_ROWS = [
+    # (key, label, sub, opts_vals, opts_labels, btn_w)   None → stepper
+    ("spd_unit",   "SPEED UNITS",  "Knots · Miles · Km/h",
+     ["kt","mph","kph"], ["KT","MPH","KPH"], 80),
+    ("alt_unit",   "ALTITUDE",     "Feet or Metres",
+     ["ft","m"],         ["FT","M"],         100),
+    ("baro_unit",  "PRESSURE",     "Inches Hg or hPa",
+     ["inhg","hpa"],     ["inHg","hPa"],     100),
+    ("brightness", "BRIGHTNESS",   "Screen brightness 1\u201310",
+     None, None, None),
+    ("night_mode", "NIGHT MODE",   "Dim red cockpit lighting",
+     [False, True],      ["OFF","ON"],        100),
+]
+
+
+def _dsp_rx(row, bx, bw):
+    """Left x of control group (right-aligned, 14 px margin)."""
+    *_, opts_v, opts_l, bw_each = row
+    if opts_v is None:
+        total = _DSP_SW + _DSP_BTN_G + _DSP_VW + _DSP_BTN_G + _DSP_SW
+    else:
+        total = len(opts_v)*bw_each + (len(opts_v)-1)*_DSP_BTN_G
+    return bx + bw - total - 14
+
+
+def draw_display_setup(surf, ds):
+    _screen_header(surf, "DISPLAY")
+    for ri, row in enumerate(_DSP_ROWS):
+        key, label, sub, opts_v, opts_l, bw_each = row
+        bx, by, bw, bh = _setting_row(surf, ri, label, sub)
+        ry = by + (bh - _DSP_BTN_H) // 2
+        rx = _dsp_rx(row, bx, bw)
+        if opts_v is None:                              # brightness stepper
+            val = ds.get("brightness", 8)
+            _step_btn(surf, rx, ry, _DSP_SW, _DSP_BTN_H, "\u2212")
+            vx = rx + _DSP_SW + _DSP_BTN_G
+            pygame.draw.rect(surf, (0,18,38), (vx, ry, _DSP_VW, _DSP_BTN_H), border_radius=4)
+            pygame.draw.rect(surf, (60,80,110), (vx, ry, _DSP_VW, _DSP_BTN_H), width=1, border_radius=4)
+            _text(surf, str(val), 18, WHITE, bold=True, cx=vx+_DSP_VW//2, cy=ry+_DSP_BTN_H//2)
+            _step_btn(surf, vx+_DSP_VW+_DSP_BTN_G, ry, _DSP_SW, _DSP_BTN_H, "+")
+        else:                                           # segmented control
+            cur = ds.get(key, opts_v[0])
+            for i, (v, lbl) in enumerate(zip(opts_v, opts_l)):
+                _seg_btn(surf, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
+
+
+def display_setup_hit(x, y, ds):
+    """Return action string or None."""
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    for ri, row in enumerate(_DSP_ROWS):
+        key, *_, opts_v, opts_l, bw_each = row
+        by = _ss_row_y(ri)
+        if not (by <= y <= by+_SS_RH):
+            continue
+        bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+        ry = by + (_SS_RH - _DSP_BTN_H) // 2
+        rx = _dsp_rx(row, bx, bw)
+        if not (ry <= y <= ry+_DSP_BTN_H):
+            continue
+        if opts_v is None:
+            if rx <= x <= rx+_DSP_SW:
+                return "inc:brightness:-1"
+            plus_x = rx + _DSP_SW + _DSP_BTN_G + _DSP_VW + _DSP_BTN_G
+            if plus_x <= x <= plus_x+_DSP_SW:
+                return "inc:brightness:1"
+        else:
+            for i, v in enumerate(opts_v):
+                bx_b = rx + i*(bw_each+_DSP_BTN_G)
+                if bx_b <= x <= bx_b+bw_each:
+                    return f"set:{key}:{v}"
+    return None
+
+
+# ── AHRS / Sensors screen ─────────────────────────────────────────────────────
+
+_SS_TRIM_SW = 40   # stepper button width
+_SS_TRIM_VW = 90   # trim value box width
+_SS_TRIM_H  = 40   # stepper/control height
+_SS_TRIM_G  = 6    # gap
+
+_SS_MAG_LABELS = {
+    "idle":    ("IDLE",       (100,110,130)),
+    "running": ("RUNNING\u2026", YELLOW),
+    "done":    ("DONE  \u2713",  (50,200,80)),
+    "error":   ("ERROR",      RED),
+}
+
+
+def _trim_stepper(surf, bx, by, bw, bh, val, key):
+    """Draw [-][val°][+] stepper right-aligned in a settings row."""
+    total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
+    rx = bx + bw - total - 14
+    ry = by + (bh - _SS_TRIM_H) // 2
+    _step_btn(surf, rx, ry, _SS_TRIM_SW, _SS_TRIM_H, "\u2212")
+    vx = rx + _SS_TRIM_SW + _SS_TRIM_G
+    pygame.draw.rect(surf, (0,18,38), (vx, ry, _SS_TRIM_VW, _SS_TRIM_H), border_radius=4)
+    pygame.draw.rect(surf, (60,80,110), (vx, ry, _SS_TRIM_VW, _SS_TRIM_H), width=1, border_radius=4)
+    _text(surf, f"{val:+.1f}\u00b0", 16, WHITE, bold=True,
+          cx=vx+_SS_TRIM_VW//2, cy=ry+_SS_TRIM_H//2)
+    _step_btn(surf, vx+_SS_TRIM_VW+_SS_TRIM_G, ry, _SS_TRIM_SW, _SS_TRIM_H, "+")
+    return rx   # leftmost x of stepper (for hit detection)
+
+
+def draw_ahrs_setup(surf, ss):
+    _screen_header(surf, "AHRS / SENSORS")
+
+    # Row 0: Pitch trim
+    bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction")
+    _trim_stepper(surf, bx, by, bw, bh, ss.get("pitch_trim", 0.0), "pitch_trim")
+
+    # Row 1: Roll trim
+    bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction")
+    _trim_stepper(surf, bx, by, bw, bh, ss.get("roll_trim", 0.0), "roll_trim")
+
+    # Row 2: Magnetometer calibration
+    bx, by, bw, bh = _setting_row(surf, 2, "MAGNETOMETER", "Compass calibration")
+    cal = ss.get("mag_cal", "idle")
+    state_lbl, state_col = _SS_MAG_LABELS.get(cal, ("?", WHITE))
+    _text(surf, state_lbl, 13, state_col, bold=True, x=bx+220, y=by+(bh-18)//2)
+    _action_btn(surf, bx+bw-138-14, by+(bh-36)//2, 138, 36, "CALIBRATE", "warn")
+
+    # Row 3: Mounting orientation
+    bx, by, bw, bh = _setting_row(surf, 3, "MOUNTING", "Board orientation")
+    cur = ss.get("mounting", "normal")
+    opts = [("normal","NORMAL"),("inverted","INVERTED")]
+    total = 2*120 + _DSP_BTN_G
+    rx = bx + bw - total - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    for i, (v, lbl) in enumerate(opts):
+        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
+
+
+def ahrs_setup_hit(x, y, ss):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bw = DISPLAY_W - 2*_SS_MX
+    total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
+    rx_trim = _SS_MX + bw - total - 14
+    for ri in range(4):
+        by = _ss_row_y(ri)
+        if not (by <= y <= by+_SS_RH):
+            continue
+        bx = _SS_MX
+        if ri in (0, 1):
+            key = "pitch_trim" if ri == 0 else "roll_trim"
+            ry = by + (_SS_RH - _SS_TRIM_H) // 2
+            if not (ry <= y <= ry+_SS_TRIM_H):
+                continue
+            if rx_trim <= x <= rx_trim+_SS_TRIM_SW:
+                return f"trim:{key}:-0.5"
+            plus_x = rx_trim + _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G
+            if plus_x <= x <= plus_x+_SS_TRIM_SW:
+                return f"trim:{key}:+0.5"
+        elif ri == 2:
+            if bx+bw-138-14 <= x <= bx+bw-14 and by+(bh:=_SS_RH)-36 >= 0:
+                if by+((_SS_RH-36)//2) <= y <= by+((_SS_RH-36)//2)+36:
+                    return "mag_cal"
+        elif ri == 3:
+            total_m = 2*120 + _DSP_BTN_G
+            rx = bx + bw - total_m - 14
+            ry = by + (_SS_RH - _DSP_BTN_H) // 2
+            for i, v in enumerate(("normal","inverted")):
+                if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
+                    if ry <= y <= ry+_DSP_BTN_H:
+                        return f"set:mounting:{v}"
+    return None
+
+
+# ── Connectivity screen ───────────────────────────────────────────────────────
+
+_CS_FIELDS = [
+    ("ahrs_url",  "AHRS URL",   "Pico W access-point address"),
+    ("wifi_ssid", "WiFi SSID",  "Local network for forwarding"),
+]
+
+
+def draw_connectivity_setup(surf, cs):
+    _screen_header(surf, "CONNECTIVITY")
+    bw = DISPLAY_W - 2*_SS_MX
+
+    # Rows 0-1: editable URL / SSID
+    for ri, (key, label, sub) in enumerate(_CS_FIELDS):
+        bx, by, _, bh = _setting_row(surf, ri, label, sub)
+        val = cs.get(key, "\u2014")
+        vbx = bx+230; vby = by+14; vbw = bx+bw-vbx-12; vbh = bh-28
+        pygame.draw.rect(surf, (0,20,42), (vbx, vby, vbw, vbh), border_radius=4)
+        pygame.draw.rect(surf, CYAN, (vbx, vby, vbw, vbh), width=1, border_radius=4)
+        _text(surf, val, 13, CYAN, bold=True, cx=vbx+vbw//2, cy=vby+vbh//2)
+        _text(surf, "tap to edit", 9, (80,100,125), x=vbx+6, y=vby+vbh-13)
+
+    # Row 2: live status
+    bx, by, _, bh = _setting_row(surf, 2, "STATUS", "Live connection state")
+    for i, (ok_key, ok_lbl_y, ok_lbl_n) in enumerate([
+            ("ahrs_ok", "AHRS  CONNECTED", "AHRS  NO LINK"),
+            ("wifi_ok", "WiFi  CONNECTED", "WiFi  NO LINK")]):
+        ok = cs.get(ok_key, False)
+        col = (60,220,80) if ok else (200,50,50)
+        lbl = ok_lbl_y if ok else ok_lbl_n
+        cy = by + bh//4 + i*bh//2
+        pygame.draw.circle(surf, col, (bx+238, cy), 6)
+        _text(surf, lbl, 13, col, bold=True, x=bx+252, y=cy-9)
+
+    # Row 3: test button (full row width)
+    _action_btn(surf, _SS_MX, _ss_row_y(3), bw, _SS_RH, "TEST CONNECTION", "ok")
+
+
+def connectivity_setup_hit(x, y, cs):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bw = DISPLAY_W - 2*_SS_MX
+    for ri, (key, _, __) in enumerate(_CS_FIELDS):
+        by = _ss_row_y(ri)
+        if by <= y <= by+_SS_RH:
+            vbx = _SS_MX+230; vbw = _SS_MX+bw-vbx-12
+            if vbx <= x <= vbx+vbw:
+                return f"edit:{key}"
+    if _ss_row_y(3) <= y <= _ss_row_y(3)+_SS_RH:
+        return "test_connection"
+    return None
+
+
+# ── System screen ─────────────────────────────────────────────────────────────
+
+_SYS_VERSION = "0.1.0"
+_SYS_BUILD   = "2026-04-10"
+_SYS_INFO_Y  = 56
+_SYS_INFO_LH = 28
+
+
+def draw_system_setup(surf):
+    _screen_header(surf, "SYSTEM")
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    lines = [
+        ("Firmware version",  _SYS_VERSION),
+        ("Build date",        _SYS_BUILD),
+        ("Display",           "640\u00d7480  DSI"),
+        ("Hardware",          "Pi Zero 2W + Pico W"),
+        ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
+    ]
+    ih = len(lines)*_SYS_INFO_LH + 16
+    pygame.draw.rect(surf, (0,12,32), (bx, _SYS_INFO_Y, bw, ih), border_radius=6)
+    pygame.draw.rect(surf, (55,75,105), (bx, _SYS_INFO_Y, bw, ih), width=1, border_radius=6)
+    for i, (k, v) in enumerate(lines):
+        ty = _SYS_INFO_Y + 10 + i*_SYS_INFO_LH
+        _text(surf, k, 12, (120,140,165), x=bx+14, y=ty)
+        _text(surf, v, 13, WHITE, bold=True, x=bx+310, y=ty)
+    btn_y = _SYS_INFO_Y + ih + 16
+    btn_h = 54
+    half_w = (bw - 10) // 2
+    _action_btn(surf, bx,            btn_y, half_w, btn_h, "DIAGNOSTICS", "normal")
+    _action_btn(surf, bx+half_w+10,  btn_y, half_w, btn_h, "RESET DEFAULTS", "danger")
+
+
+def system_setup_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    n = 5
+    ih = n*_SYS_INFO_LH + 16
+    btn_y = _SYS_INFO_Y + ih + 16; btn_h = 54
+    half_w = (bw - 10) // 2
+    if btn_y <= y <= btn_y+btn_h:
+        if bx <= x <= bx+half_w:
+            return "diagnostics"
+        if bx+half_w+10 <= x <= bx+half_w+10+half_w:
+            return "reset_defaults"
+    return None
+
+
 # ── Cyan tap-buttons (HDG bug, BARO, ALT bug) ────────────────────────────────
 # These sit just below the heading tape and below each tape's bottom edge,
 # styled as cyan-bordered dark boxes matching the GI-275 blue label style.
@@ -1529,11 +1966,33 @@ def render(surf, demo_mode, connected):
         draw_flight_profile(surf, disp["fp"])
         return
 
+    if mode == "display_setup":
+        draw_display_setup(surf, disp["ds"])
+        return
+
+    if mode == "ahrs_setup":
+        draw_ahrs_setup(surf, disp["ss"])
+        return
+
+    if mode == "connectivity_setup":
+        draw_connectivity_setup(surf, disp["cs"])
+        return
+
+    if mode == "system_setup":
+        draw_system_setup(surf)
+        return
+
     if mode == "keyboard":
         target = disp.get("kbd_target", "")
         buf    = disp.get("kbd_buf", "")
-        cur    = disp["fp"].get(target, "")
-        title  = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
+        prev   = disp.get("kbd_prev", "flight_profile")
+        if prev == "connectivity_setup":
+            cur   = disp["cs"].get(target, "")
+            _cs_titles = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID"}
+            title = _cs_titles.get(target, "ENTER TEXT")
+        else:
+            cur   = disp["fp"].get(target, "")
+            title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
         draw_keyboard(surf, f"ENTER {title}", cur, buf)
         return
 
