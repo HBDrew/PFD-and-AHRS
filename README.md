@@ -192,38 +192,42 @@ bash wifi_switch.sh status
 | Action | Effect |
 |--------|--------|
 | Tap altitude tape | Set altitude bug to tapped position |
+| Tap top of alt tape | Open altitude bug numpad |
 | Tap heading tape | Set heading bug to tapped position |
-| (keyboard) ↑ / ↓ | Altitude bug ±100 ft |
-| (keyboard) ← / → | Heading bug ±10° |
-| (keyboard) + / − | Baro setting ±0.01 hPa |
+| Tap bottom-left of heading strip | Open heading bug numpad |
+| Tap bottom-right of heading strip | Open baro setting numpad |
+| Two-finger hold (0.8 s) | Open setup menu |
 | (keyboard) D | Toggle demo mode |
 | (keyboard) Esc | Quit |
+
+See `Docs/USER_MANUAL.md` for full operational documentation.
 
 ---
 
 ## AHRS Trim Calibration
 
-If the horizon is not level on the ground, adjust the trim offsets.
+If the horizon is not level on the ground, adjust the trim offsets via the on-screen setup menu:
 
-1. On a phone/tablet connected to `PFD_AP`, open `http://192.168.4.1`
-2. Tap **TRIM** badge → adjust Pitch / Roll / Yaw
-3. Tap **Save** — values persist to `trims.json` on the Pico flash
+1. Two-finger hold anywhere on the PFD for 0.8 s to open the setup menu
+2. Tap **AHRS / SENSORS**
+3. Adjust **PITCH TRIM** and **ROLL TRIM** with the − / + buttons (0.5° steps)
+4. Tap **EXIT** to return to the PFD — changes take effect immediately
+
+If the Pico W sensor board is mounted upside-down, set **MOUNTING** to **INVERTED** on the same screen.
 
 ---
 
 ## V-Speed Configuration
 
-Edit `pi_display/config.py` to match your aircraft:
+V-speeds are set via the on-screen setup menu and take effect immediately on the speed tape:
 
-```python
-VS0  =  48   # Stall speed, flaps full
-VS1  =  55   # Stall speed, clean
-VFE  =  85   # Max flap extension
-VNO  = 129   # Max structural cruising
-VNE  = 163   # Never exceed
-```
+1. Two-finger hold anywhere on the PFD for 0.8 s to open the setup menu
+2. Tap **FLIGHT PROFILE**
+3. Tap any V-speed field and enter the value with the numpad
 
-Defaults are Cessna 172S values. Changes take effect on next `pfd.py` restart.
+Default values (Cessna 172S) are restored by tapping **RESET DEFAULTS** on the Flight Profile screen, or via **System → RESET DEFAULTS**.
+
+The values in `pi_display/config.py` serve as the factory defaults only — edit them there if you want a different baseline for a new installation.
 
 ---
 
