@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>AHRS PFD</title>
+<style>
+  :root {
+    --sat: env(safe-area-inset-top,    0px);
+    --sar: env(safe-area-inset-right,  0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left,   0px);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; background:#000; overflow:hidden;
+              -webkit-tap-highlight-color:transparent; }
+  canvas { display:block; position:absolute; top:0; left:0; }
+
+  /* ── Terrain download panel ── */
+  #terrain-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.88);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
+  }
+  #terrain-panel p  { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+  .trn-btns         { display:flex; gap:8px; flex-wrap:wrap; }
+  .trn-btn {
+    flex:1; min-width:120px; background:#1a4a80; color:#fff;
+    border:1px solid #4a8adf; border-radius:4px; padding:7px 10px;
+    font:bold 12px monospace; cursor:pointer; text-align:center;
+  }
+  .trn-btn:active   { background:#2a6ab0; }
+  .trn-btn:disabled { opacity:.4; cursor:default; }
+  #trn-progress-wrap { display:none; margin-top:8px; }
+  #trn-progress-bar  {
+    height:6px; background:#1a4a80; border-radius:3px; overflow:hidden;
+  }
+  #trn-progress-fill { height:100%; width:0%; background:#4a9fe0; transition:width .15s; }
+  #trn-progress-txt  { color:rgba(180,210,255,.85); font-size:11px; margin-top:4px; }
+
+  /* ── Status badges ── */
+  #link-status, #terrain-status {
+    position:absolute; font:bold 11px/1 monospace;
+    padding:3px 7px; border-radius:3px;
+    pointer-events:none; z-index:10; letter-spacing:.04em;
+  }
+  #link-status    { top:6px; right:8px; }
+  #terrain-status { top:6px; right:78px; cursor:pointer; pointer-events:auto; }
+
+  .link-ok     { background:rgba(0,170,0,.75);    color:#fff; }
+  .link-warn   { background:rgba(210,130,0,.75);  color:#fff; }
+  .link-dead   { background:rgba(190,0,0,.75);    color:#fff; }
+  .trn-ready   { background:rgba(0,130,60,.75);   color:#fff; }
+  .trn-partial { background:rgba(160,100,0,.75);  color:#fff; }
+  .trn-idle    { background:rgba(60,60,80,.80);   color:#aac; }
+  .trn-loading { background:rgba(30,60,120,.80);  color:#adf; }
+
+  /* ── Baro badge ── */
+  #baro-status {
+    position:absolute; top:6px; right:170px;
+    background:rgba(0,55,115,.80); color:#cef;
+    font:bold 11px/1 monospace; padding:3px 7px; border-radius:3px;
+    cursor:pointer; pointer-events:auto; z-index:10; letter-spacing:.04em;
+  }
+
+  /* ── Baro panel ── */
+  #baro-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.92);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
+  }
+  #baro-panel p    { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+  #qnh-val         { display:block; font:bold 24px/1.3 monospace; color:#fff;
+                     text-align:center; margin:4px 0; }
+  #baro-src-badge  { font-size:10px; padding:2px 5px; border-radius:2px;
+                     background:rgba(0,100,60,.7); color:#afa; vertical-align:middle; }
+  #baro-msg        { color:rgba(255,200,100,.85); font-size:11px;
+                     margin-top:5px; min-height:14px; }
+  #cal-alt-row     { display:flex; gap:8px; margin-top:6px; align-items:center; }
+  #cal-alt-input   {
+    flex:1; background:#0a1a30; color:#fff; border:1px solid #3a6aaf;
+    border-radius:4px; padding:6px 8px; font:13px monospace;
+    -webkit-appearance:none; appearance:none;
+  }
+  #cal-alt-input::placeholder { color:rgba(180,200,230,.4); }
+
+  /* ── Trim badge ── */
+  #trim-status {
+    position:absolute; top:6px; right:252px;
+    background:rgba(40,30,0,.80); color:#fd8;
+    font:bold 11px/1 monospace; padding:3px 7px; border-radius:3px;
+    cursor:pointer; pointer-events:auto; z-index:10; letter-spacing:.04em;
+  }
+
+  /* ── Trim panel ── */
+  #trim-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.92);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
+  }
+  #trim-panel p  { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+  .trim-row      { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+  .trim-lbl      { color:rgba(180,210,255,.85); font:bold 12px monospace; min-width:48px; }
+  .trim-val      { color:#fff; font:bold 14px monospace; min-width:52px; text-align:right; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="baro-status"    title="Tap to set QNH / calibrate barometer">QNH ···</div>
+<div id="trim-status"    title="Tap to adjust AHRS trim">TRIM</div>
+<div id="terrain-status" class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
+<div id="link-status"    class="link-dead">NO LINK</div>
+
+<div id="terrain-panel">
+  <p>Download terrain tiles once over WiFi — used offline in flight.<br>
+     <strong>Coarse global</strong> (~10 MB) covers the whole world at low resolution.<br>
+     <strong>Regional detail</strong> (~3 MB) improves your current area (requires GPS fix).</p>
+  <div class="trn-btns">
+    <button class="trn-btn" id="btn-coarse"  onclick="startCoarse()">⬇ Coarse global</button>
+    <button class="trn-btn" id="btn-detail"  onclick="startDetail()">⬇ Regional detail</button>
+    <button class="trn-btn" id="btn-close"   onclick="closePanel()">✕ Close</button>
+  </div>
+  <div id="trn-progress-wrap">
+    <div id="trn-progress-bar"><div id="trn-progress-fill"></div></div>
+    <div id="trn-progress-txt">Downloading…</div>
+  </div>
+</div>
+
+<div id="baro-panel">
+  <p>Barometric altimeter  <span id="baro-src-badge">GPS ALT</span></p>
+  <span id="qnh-val">1013.25 hPa</span>
+  <div class="trn-btns">
+    <button class="trn-btn" id="btn-qnh-cl" onclick="adjustQNHCoarse(-1)">−1 hPa</button>
+    <button class="trn-btn" id="btn-qnh-fl" onclick="adjustQNHFine(-1)">−0.1</button>
+    <button class="trn-btn" id="btn-qnh-fr" onclick="adjustQNHFine(+1)">+0.1</button>
+    <button class="trn-btn" id="btn-qnh-cr" onclick="adjustQNHCoarse(+1)">+1 hPa</button>
+  </div>
+  <div class="trn-btns" style="margin-top:6px">
+    <button class="trn-btn" id="btn-std"    onclick="setQNH(1013.25)">STD 1013</button>
+    <button class="trn-btn" id="btn-setalt" onclick="setAltHere()">⊕ GPS Alt</button>
+    <button class="trn-btn" onclick="closeBaroPanel()">✕ Close</button>
+  </div>
+  <div class="trn-btns" style="margin-top:6px">
+    <button class="trn-btn" id="btn-spd-unit" onclick="toggleSpeedUnit()">Speed: KT</button>
+    <button class="trn-btn" id="btn-qnh-unit" onclick="toggleQNHUnit()">QNH: hPa</button>
+  </div>
+  <div id="cal-alt-row">
+    <input type="number" id="cal-alt-input" placeholder="Manual alt (ft MSL)"
+           min="-1500" max="60000" step="1"
+           onkeydown="if(event.key==='Enter')setManualAlt()">
+    <button class="trn-btn" style="flex:0 0 auto" onclick="setManualAlt()">Set Alt</button>
+  </div>
+  <div id="baro-msg"></div>
+</div>
+
+<div id="trim-panel">
+  <p>AHRS mounting trim  <small style="color:rgba(180,200,255,.6)">(offset added to raw sensor output)</small></p>
+  <div class="trim-row">
+    <span class="trim-lbl">PITCH</span>
+    <button class="trn-btn" onclick="adjustTrim('pitch',-0.5)">−0.5°</button>
+    <button class="trn-btn" onclick="adjustTrim('pitch',-0.1)">−0.1°</button>
+    <button class="trn-btn" onclick="adjustTrim('pitch',+0.1)">+0.1°</button>
+    <button class="trn-btn" onclick="adjustTrim('pitch',+0.5)">+0.5°</button>
+    <span class="trim-val" id="trim-pitch-val">0.0°</span>
+  </div>
+  <div class="trim-row">
+    <span class="trim-lbl">ROLL</span>
+    <button class="trn-btn" onclick="adjustTrim('roll',-0.5)">−0.5°</button>
+    <button class="trn-btn" onclick="adjustTrim('roll',-0.1)">−0.1°</button>
+    <button class="trn-btn" onclick="adjustTrim('roll',+0.1)">+0.1°</button>
+    <button class="trn-btn" onclick="adjustTrim('roll',+0.5)">+0.5°</button>
+    <span class="trim-val" id="trim-roll-val">0.0°</span>
+  </div>
+  <div class="trim-row">
+    <span class="trim-lbl">HDG</span>
+    <button class="trn-btn" onclick="adjustTrim('yaw',-1.0)">−1.0°</button>
+    <button class="trn-btn" onclick="adjustTrim('yaw',-0.5)">−0.5°</button>
+    <button class="trn-btn" onclick="adjustTrim('yaw',+0.5)">+0.5°</button>
+    <button class="trn-btn" onclick="adjustTrim('yaw',+1.0)">+1.0°</button>
+    <span class="trim-val" id="trim-yaw-val">0.0°</span>
+  </div>
+  <div class="trn-btns" style="margin-top:6px">
+    <button class="trn-btn" onclick="resetAllTrims()">&#8635; Reset All</button>
+    <button class="trn-btn" onclick="closeTrimPanel()">&#x2715; Close</button>
+  </div>
+</div>
+
+<script src="terrain.js"></script>
+<script>
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────
+const TARGET = { roll:0, pitch:0, yaw:0, lat:0, lon:0, alt:0,
+                 speed:0, track:0, vspeed:0, fix:0, sats:0,
+                 ay:0, baro_hpa:1013.25, baro_src:'gps', gps_alt:0,
+                 pitch_trim:0, roll_trim:0, yaw_trim:0,
+                 ahrs_ok:false, gps_ok:false, baro_ok:false };
+const D = Object.assign({}, TARGET);
+
+// ── SSE ────────────────────────────────────────────────────────────────────
+const linkEl    = document.getElementById('link-status');
+const trnEl     = document.getElementById('terrain-status');
+let lastMsgMs   = 0, es = null;
+
+function connectSSE() {
+  if (es) { try { es.close(); } catch(e){} }
+  es = new EventSource('/events');
+  es.onmessage = e => {
+    try { Object.assign(TARGET, JSON.parse(e.data)); lastMsgMs = performance.now(); }
+    catch(ex){}
+  };
+}
+connectSSE();
+
+function updateLinkStatus() {
+  const age = performance.now() - lastMsgMs;
+  if (!lastMsgMs)      { linkEl.textContent='CONNECTING'; linkEl.className='link-warn'; }
+  else if (age < 3000) { linkEl.textContent='LINK OK';    linkEl.className='link-ok';   }
+  else if (age < 8000) { linkEl.textContent='LINK WARN';  linkEl.className='link-warn'; }
+  else                 { linkEl.textContent='NO LINK';    linkEl.className='link-dead'; }
+}
+
+// ── Terrain UI ─────────────────────────────────────────────────────────────
+const panel    = document.getElementById('terrain-panel');
+const btnC     = document.getElementById('btn-coarse');
+const btnD     = document.getElementById('btn-detail');
+const prgWrap  = document.getElementById('trn-progress-wrap');
+const prgFill  = document.getElementById('trn-progress-fill');
+const prgTxt   = document.getElementById('trn-progress-txt');
+
+trnEl.addEventListener('click', () => {
+  panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+});
+
+function closePanel() { panel.style.display = 'none'; }
+
+function onTerrainStatus(status, count) {
+  const labels = { idle:'NO TERRAIN', loading:'TERRAIN…',
+                   ready:'TERRAIN OK', partial:'TERRAIN ▲', error:'TERRAIN ERR' };
+  const cls    = { idle:'trn-idle', loading:'trn-loading',
+                   ready:'trn-ready', partial:'trn-partial', error:'link-dead' };
+  trnEl.textContent = labels[status] || status.toUpperCase();
+  trnEl.className   = cls[status]    || 'trn-idle';
+}
+
+function setProgress(pct, txt) {
+  prgWrap.style.display = 'block';
+  prgFill.style.width   = (pct * 100).toFixed(1) + '%';
+  prgTxt.textContent    = txt;
+}
+
+async function startCoarse() {
+  btnC.disabled = btnD.disabled = true;
+  await Terrain.downloadCoarse((pct, done, total) => {
+    setProgress(pct, `Coarse global: ${done} / ${total} tiles`);
+  });
+  btnC.disabled = btnD.disabled = false;
+  prgTxt.textContent = `Done — ${Terrain.tileCount} tiles cached`;
+}
+
+async function startDetail() {
+  if (TARGET.fix === 0) {
+    prgWrap.style.display = 'block';
+    prgTxt.textContent = 'Waiting for GPS fix…';
+    return;
+  }
+  btnC.disabled = btnD.disabled = true;
+  await Terrain.downloadRegion(TARGET.lat, TARGET.lon, 100,
+    (pct, done, total) => setProgress(pct, `Regional: ${done} / ${total} tiles`));
+  btnC.disabled = btnD.disabled = false;
+  prgTxt.textContent = `Done — ${Terrain.tileCount} tiles cached`;
+}
+
+Terrain.init(onTerrainStatus);
+
+// ── Baro panel ─────────────────────────────────────────────────────────────
+const baroEl    = document.getElementById('baro-status');
+const baroPanel = document.getElementById('baro-panel');
+const qnhValEl  = document.getElementById('qnh-val');
+const baroSrcEl = document.getElementById('baro-src-badge');
+const baroMsgEl = document.getElementById('baro-msg');
+
+baroEl.addEventListener('click', () => {
+  const opening = baroPanel.style.display !== 'block';
+  baroPanel.style.display = opening ? 'block' : 'none';
+  panel.style.display = 'none';
+  if (opening) {
+    updateBaroUI();
+    // Pre-fill manual alt with GPS altitude if available
+    const inp = document.getElementById('cal-alt-input');
+    if (TARGET.fix > 0) inp.value = Math.round(TARGET.gps_alt);
+  }
+});
+
+function closeBaroPanel() { baroPanel.style.display = 'none'; }
+
+// ── Trim panel ─────────────────────────────────────────────────────────────
+const trimEl    = document.getElementById('trim-status');
+const trimPanel = document.getElementById('trim-panel');
+
+trimEl.addEventListener('click', () => {
+  const opening = trimPanel.style.display !== 'block';
+  trimPanel.style.display = opening ? 'block' : 'none';
+  panel.style.display     = 'none';
+  baroPanel.style.display = 'none';
+  if (opening) updateTrimUI();
+});
+
+function closeTrimPanel() { trimPanel.style.display = 'none'; }
+
+function updateTrimUI() {
+  document.getElementById('trim-pitch-val').textContent = TARGET.pitch_trim.toFixed(1) + '\u00b0';
+  document.getElementById('trim-roll-val').textContent  = TARGET.roll_trim.toFixed(1)  + '\u00b0';
+  document.getElementById('trim-yaw-val').textContent   = TARGET.yaw_trim.toFixed(1)   + '\u00b0';
+}
+
+function adjustTrim(axis, delta) {
+  const limits = { pitch:10, roll:10, yaw:180 };
+  const key = axis + '_trim';
+  const v = Math.max(-limits[axis], Math.min(limits[axis],
+              parseFloat((TARGET[key] + delta).toFixed(1))));
+  TARGET[key] = v;
+  fetch('/trim?' + axis + '=' + v).catch(() => {});
+  updateTrimUI();
+}
+
+function resetAllTrims() {
+  TARGET.pitch_trim = 0; TARGET.roll_trim = 0; TARGET.yaw_trim = 0;
+  fetch('/trim?pitch=0&roll=0&yaw=0').catch(() => {});
+  updateTrimUI();
+}
+
+// ── Unit preferences (persist across sessions) ─────────────────────────────
+const HPA_TO_INHG = 0.02953;
+const INHG_TO_HPA = 33.8639;
+let speedUnit = localStorage.getItem('speedUnit') || 'kt';   // 'kt' | 'mph'
+let qnhUnit   = localStorage.getItem('qnhUnit')   || 'hpa'; // 'hpa' | 'inhg'
+
+function toDisplaySpd(kt)  { return speedUnit === 'mph' ? kt * 1.15078 : kt; }
+function toDisplayQNH(hpa) { return qnhUnit  === 'inhg' ? hpa * HPA_TO_INHG : hpa; }
+
+function toggleSpeedUnit() {
+  speedUnit = speedUnit === 'kt' ? 'mph' : 'kt';
+  localStorage.setItem('speedUnit', speedUnit);
+  updateBaroUI();
+}
+function toggleQNHUnit() {
+  qnhUnit = qnhUnit === 'hpa' ? 'inhg' : 'hpa';
+  localStorage.setItem('qnhUnit', qnhUnit);
+  updateBaroUI();
+}
+
+function updateBaroUI() {
+  const hpa  = TARGET.baro_hpa;
+  const disp = toDisplayQNH(hpa);
+  const isInHg = qnhUnit === 'inhg';
+
+  // Badge: "29.92"" or "QNH 1013"
+  baroEl.textContent = isInHg ? disp.toFixed(2) + '\u2033' : 'QNH ' + Math.round(hpa);
+  // Panel large display
+  qnhValEl.textContent = isInHg ? disp.toFixed(2) + ' inHg' : hpa.toFixed(2) + ' hPa';
+
+  // Adjustment button labels
+  const [cl, fl, fr, cr] = isInHg
+    ? ['−.10\u2033', '−.01\u2033', '+.01\u2033', '+.10\u2033']
+    : ['−1 hPa', '−0.1', '+0.1', '+1 hPa'];
+  document.getElementById('btn-qnh-cl').textContent = cl;
+  document.getElementById('btn-qnh-fl').textContent = fl;
+  document.getElementById('btn-qnh-fr').textContent = fr;
+  document.getElementById('btn-qnh-cr').textContent = cr;
+
+  // STD button
+  document.getElementById('btn-std').textContent = isInHg ? 'STD 29.92' : 'STD 1013';
+
+  // Unit toggle buttons
+  document.getElementById('btn-spd-unit').textContent = 'Speed: ' + speedUnit.toUpperCase();
+  document.getElementById('btn-qnh-unit').textContent = 'QNH: ' + (isInHg ? 'inHg' : 'hPa');
+
+  // Baro source badge
+  const isBaro = TARGET.baro_src === 'bme280';
+  baroSrcEl.textContent          = isBaro ? 'BME280' : 'GPS ALT';
+  baroSrcEl.style.background     = isBaro ? 'rgba(0,100,60,.7)' : 'rgba(80,60,0,.7)';
+  baroSrcEl.style.color          = isBaro ? '#afa' : '#fd8';
+}
+
+function _adjustQNHhpa(deltaHpa) {
+  const v = parseFloat(Math.max(800, Math.min(1100, TARGET.baro_hpa + deltaHpa)).toFixed(2));
+  TARGET.baro_hpa = v;
+  fetch('/baro?qnh=' + v).catch(() => {});
+  updateBaroUI();
+}
+// Coarse/fine step sizes depend on active unit
+function adjustQNHCoarse(sign) {
+  _adjustQNHhpa(sign * (qnhUnit === 'inhg' ? 0.10 * INHG_TO_HPA : 1.0));
+}
+function adjustQNHFine(sign) {
+  _adjustQNHhpa(sign * (qnhUnit === 'inhg' ? 0.01 * INHG_TO_HPA : 0.1));
+}
+
+function setQNH(val) {  // val always in hPa
+  TARGET.baro_hpa = val;
+  fetch('/baro?qnh=' + val).catch(() => {});
+  updateBaroUI();
+}
+
+function setAltHere() {
+  if (TARGET.fix === 0) {
+    baroMsgEl.textContent = 'No GPS fix — use manual alt entry below';
+    setTimeout(() => { baroMsgEl.textContent = ''; }, 3000);
+    return;
+  }
+  _sendCalFt(Math.round(TARGET.gps_alt));
+}
+
+function setManualAlt() {
+  const input = document.getElementById('cal-alt-input');
+  const ft = parseInt(input.value, 10);
+  if (isNaN(ft) || ft < -1500 || ft > 60000) {
+    baroMsgEl.textContent = 'Enter a valid altitude (−1500 to 60000 ft)';
+    setTimeout(() => { baroMsgEl.textContent = ''; }, 3000);
+    return;
+  }
+  _sendCalFt(ft);
+  input.value = '';
+}
+
+function _sendCalFt(ft) {
+  fetch('/baro?cal_ft=' + ft).catch(() => {});
+  baroMsgEl.textContent = 'Calibrating to ' + ft + ' ft MSL…';
+  setTimeout(() => { baroMsgEl.textContent = ''; }, 3000);
+}
+
+// updateBaroUI() is also called from the render loop (once per second) to
+// keep the badge in sync with SSE-pushed baro_hpa/baro_src values.
+
+// ── Canvas & layout ────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W = 0, H = 0;
+const L = {};
+
+function computeLayout() {
+  const cs = getComputedStyle(document.documentElement);
+  const sv = n => parseFloat(cs.getPropertyValue(n)) || 0;
+  L.safeT = sv('--sat'); L.safeR = sv('--sar');
+  L.safeB = sv('--sab'); L.safeL = sv('--sal');
+
+  L.cx = W / 2;  L.cy = H / 2;
+
+  L.hdgH     = Math.max(38, H * 0.10);
+  L.hdgY     = H - L.hdgH - L.safeB;
+  L.tapeTopY = L.safeT + 26;
+  L.tapeBotY = L.hdgY;
+  L.tapeH    = L.tapeBotY - L.tapeTopY;
+  L.tapeMidY = (L.tapeTopY + L.tapeBotY) / 2;
+
+  L.spdW = 68;  L.spdX = L.safeL;
+  L.altW = 78;  L.altX = W - L.safeR - L.altW;
+
+  L.rollR  = Math.min(H * 0.36, 155);
+  L.rollCY = L.rollR + Math.max(12, L.safeT + 6);
+
+  // Slip ball: just above the heading readout box (box top ≈ hdgY-24)
+  L.ballY  = L.hdgY - 36;
+
+  // Perspective focal length: 70° horizontal FOV across the AI clip area
+  const clipW = L.altX - (L.spdX + L.spdW);
+  L.focal = clipW > 0 ? (clipW / 2) / Math.tan(35 * Math.PI / 180) : 300;
+}
+
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  computeLayout();
+}
+resize();
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+
+// Tap the speed tape (anywhere along its width) to toggle kt / mph
+function _handleSpdTap(x, y) {
+  if (x >= L.spdX && x <= L.spdX + L.spdW + 14
+      && y >= L.tapeTopY && y <= L.tapeBotY) {
+    toggleSpeedUnit();
+  }
+}
+canvas.addEventListener('click',    e => {
+  const r=canvas.getBoundingClientRect();
+  _handleSpdTap(e.clientX-r.left, e.clientY-r.top);
+});
+canvas.addEventListener('touchend', e => {
+  const r=canvas.getBoundingClientRect(), t=e.changedTouches[0];
+  _handleSpdTap(t.clientX-r.left, t.clientY-r.top);
+  // Don't preventDefault here — let other touch events (terrain panel) still work
+}, {passive:true});
+
+// ── Maths ──────────────────────────────────────────────────────────────────
+const DEG = Math.PI / 180;
+function lerp(a,b,t)      { return a+(b-a)*t; }
+function lerpAngle(a,b,t) { let d=((b-a+540)%360)-180; return (a+d*t+360)%360; }
+function smooth(alpha) {
+  D.roll   = lerp(D.roll,  TARGET.roll,  alpha);
+  D.pitch  = lerp(D.pitch, TARGET.pitch, alpha);
+  D.yaw    = lerpAngle(D.yaw, TARGET.yaw, alpha);
+  D.alt    = lerp(D.alt,   TARGET.alt,   alpha);
+  D.speed  = lerp(D.speed, TARGET.speed, alpha);
+  D.vspeed = lerp(D.vspeed,TARGET.vspeed,alpha);
+  D.track  = lerpAngle(D.track, TARGET.track, alpha);
+  D.ay     = lerp(D.ay,    TARGET.ay,    alpha);
+  D.fix=TARGET.fix; D.sats=TARGET.sats;
+  D.lat=TARGET.lat; D.lon=TARGET.lon;
+  D.gps_alt=TARGET.gps_alt;
+  D.baro_hpa=TARGET.baro_hpa; D.baro_src=TARGET.baro_src;
+  D.pitch_trim=TARGET.pitch_trim; D.roll_trim=TARGET.roll_trim; D.yaw_trim=TARGET.yaw_trim;
+  D.ahrs_ok=TARGET.ahrs_ok; D.gps_ok=TARGET.gps_ok; D.baro_ok=TARGET.baro_ok;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function pillRect(x,y,w,h) {
+  const r=h/2;
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function roundRect(x,y,w,h,r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
+}
+
+// ── Synthetic vision (sky/ground + pitch ladder) ───────────────────────────
+// Uses perspective-correct pitch offset so horizon aligns with terrain render.
+function drawAI() {
+  const { cx, tapeMidY, focal } = L;
+  // Perspective-correct horizon offset: matches terrain projection exactly
+  const pitchOff = focal * Math.tan(D.pitch * DEG);
+  const rollRad  = -D.roll * DEG;
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0,0,W,H); ctx.clip();
+  ctx.translate(cx, tapeMidY);
+  ctx.rotate(rollRad);
+
+  // Sky
+  const sg = ctx.createLinearGradient(0,-H*2,0,pitchOff);
+  sg.addColorStop(0,'#0b1a2e'); sg.addColorStop(0.6,'#1a5fa8'); sg.addColorStop(1,'#4a9fe0');
+  ctx.fillStyle=sg; ctx.fillRect(-W*2,-H*2,W*4,H*2+pitchOff);
+
+  // Ground
+  const gg = ctx.createLinearGradient(0,pitchOff,0,H*2);
+  gg.addColorStop(0,'#8b6810'); gg.addColorStop(0.4,'#5a3e0a'); gg.addColorStop(1,'#2a1a03');
+  ctx.fillStyle=gg; ctx.fillRect(-W*2,pitchOff,W*4,H*2);
+
+  // Horizon
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2.5;
+  ctx.shadowColor='rgba(0,0,0,.8)'; ctx.shadowBlur=4;
+  ctx.beginPath(); ctx.moveTo(-W*2,pitchOff); ctx.lineTo(W*2,pitchOff); ctx.stroke();
+  ctx.shadowBlur=0;
+
+  // Pitch ladder – perspective-correct spacing
+  const shortL=W*.10, longL=W*.18;
+  ctx.font=`${Math.max(11,H*.025)}px monospace`;
+  for (let deg=-30; deg<=30; deg+=5) {
+    if (deg===0) continue;
+    // y position uses same perspective formula as pitchOff
+    const y    = pitchOff - focal * Math.tan(deg * DEG);
+    const half = deg%10===0 ? longL : shortL;
+    const td   = deg > 0 ? 1 : -1;
+    ctx.strokeStyle='#fff'; ctx.lineWidth=deg%10===0?1.8:1.2;
+    ctx.shadowColor='rgba(0,0,0,.7)'; ctx.shadowBlur=3;
+    ctx.beginPath(); ctx.moveTo(-half,y); ctx.lineTo(half,y); ctx.stroke();
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.moveTo(-half,y); ctx.lineTo(-half,y+td*8);
+    ctx.moveTo( half,y); ctx.lineTo( half,y+td*8);
+    ctx.stroke(); ctx.shadowBlur=0;
+    if (deg%10===0) {
+      ctx.fillStyle='#fff'; ctx.shadowColor='rgba(0,0,0,.8)'; ctx.shadowBlur=3;
+      ctx.textAlign='right'; ctx.textBaseline='middle';
+      ctx.fillText(Math.abs(deg),-half-8,y);
+      ctx.textAlign='left';  ctx.fillText(Math.abs(deg),half+8,y);
+      ctx.shadowBlur=0;
+    }
+  }
+  ctx.textBaseline='alphabetic';
+  ctx.restore();
+}
+
+// ── Roll arc ───────────────────────────────────────────────────────────────
+function drawRollIndicator() {
+  const { cx, rollR, rollCY } = L;
+  ctx.save(); ctx.translate(cx,rollCY);
+  ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(0,0,rollR,-150*DEG,-30*DEG); ctx.stroke();
+  [0,10,20,30,45,60].forEach(deg => {
+    [-deg,deg].forEach(a => {
+      const angle=(-90+a)*DEG, len=deg===0?18:deg%30===0?14:10;
+      ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=deg===0?2:1.2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(angle)*(rollR-len),Math.sin(angle)*(rollR-len));
+      ctx.lineTo(Math.cos(angle)*rollR,      Math.sin(angle)*rollR);
+      ctx.stroke();
+    });
+  });
+  const ra=(-90-D.roll)*DEG;
+  ctx.save();
+  ctx.translate(Math.cos(ra)*(rollR-2),Math.sin(ra)*(rollR-2));
+  ctx.rotate(ra+Math.PI/2);
+  ctx.fillStyle='#fff'; ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=.6;
+  ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(-6,0); ctx.lineTo(6,0);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore(); ctx.restore();
+}
+
+// ── Slip/skid ball ─────────────────────────────────────────────────────────
+function drawSlipBall() {
+  const { cx, ballY } = L;
+  const bw=54, bh=16, r=6;
+
+  // Tube
+  pillRect(cx-bw/2, ballY-bh/2, bw, bh);
+  ctx.fillStyle='rgba(0,0,0,.60)'; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.65)'; ctx.lineWidth=1.2; ctx.stroke();
+
+  // Fixed reference lines — gap between them slightly wider than ball diameter
+  // (r=6 → ball ø=12 px; lines at ±10 px = 20 px gap, like a real inclinometer)
+  const mark = r + 4;
+  ctx.strokeStyle='rgba(255,255,255,.95)'; ctx.lineWidth=1.8;
+  ctx.beginPath();
+  ctx.moveTo(cx - mark, ballY - bh/2 + 2); ctx.lineTo(cx - mark, ballY + bh/2 - 2);
+  ctx.moveTo(cx + mark, ballY - bh/2 + 2); ctx.lineTo(cx + mark, ballY + bh/2 - 2);
+  ctx.stroke();
+
+  // Ball — real lateral-g; 0.2 g = full deflection
+  // Flip WT901_AY_SIGN in firmware/config.py if ball deflects the wrong way
+  const defl=Math.max(-1,Math.min(1,D.ay/0.2))*(bw/2-r-2);
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.arc(cx+defl, ballY, r, 0, Math.PI*2); ctx.fill();
+}
+
+// ── Aircraft symbol ────────────────────────────────────────────────────────
+function drawAircraftSymbol() {
+  const { cx, tapeMidY } = L;
+  const ws=Math.min(W*.12,88);
+  ctx.save(); ctx.translate(cx,tapeMidY);
+  ctx.strokeStyle='#ffd700'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.shadowColor='rgba(0,0,0,.9)'; ctx.shadowBlur=5;
+  ctx.beginPath(); ctx.moveTo(-ws,0); ctx.lineTo(-ws*.22,0); ctx.lineTo(-ws*.22,9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo( ws,0); ctx.lineTo( ws*.22,0); ctx.lineTo( ws*.22,9); ctx.stroke();
+  ctx.fillStyle='#ffd700'; ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+// ── Speed tape ─────────────────────────────────────────────────────────────
+function drawSpeedTape() {
+  const { spdX, spdW, tapeTopY, tapeH, tapeMidY } = L;
+  const spd      = toDisplaySpd(D.speed);
+  const spdRange = speedUnit === 'mph' ? 175 : 150;  // ~2.5× wider than before
+  const pxPerSpd = tapeH / spdRange;
+  const boxH=Math.max(28,H*.065), boxHalf=boxH/2, fs=Math.max(10,H*.021);
+
+  ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(spdX,tapeTopY,spdW,tapeH);
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(spdX+spdW,tapeTopY); ctx.lineTo(spdX+spdW,tapeTopY+tapeH); ctx.stroke();
+  // Label shows current unit; ▾ hints it's tappable
+  const spdLabel = speedUnit === 'mph' ? 'GS MPH\u25be' : 'GS KT\u25be';
+  ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText(spdLabel,spdX+spdW/2,tapeTopY+4);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(spdX,tapeTopY,spdW,tapeH); ctx.clip();
+  // Ticks and labels every 20 units — no minor ticks
+  const spdBase = Math.round(spd / 20) * 20;
+  for (let v=spdBase-120; v<=spdBase+120; v+=20) {
+    if (v<0) continue;
+    const y=tapeMidY-(v-spd)*pxPerSpd;
+    if (Math.abs(y-tapeMidY)<boxHalf+4) continue;
+    ctx.strokeStyle='rgba(255,255,255,.80)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(spdX+spdW,y); ctx.lineTo(spdX+spdW-14,y); ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
+    ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText(v.toString(),spdX+spdW-17,y);
+  }
+  ctx.restore();
+
+  const bx=spdX, by=tapeMidY-boxHalf, ptr=9;
+  ctx.beginPath();
+  ctx.moveTo(bx,by); ctx.lineTo(bx+spdW,by);
+  ctx.lineTo(bx+spdW+ptr,tapeMidY); ctx.lineTo(bx+spdW,by+boxH); ctx.lineTo(bx,by+boxH);
+  ctx.closePath();
+  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(17,H*.042)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(spd).toString(),bx+spdW/2,tapeMidY);
+  ctx.textBaseline='alphabetic';
+}
+
+// ── Altitude tape ──────────────────────────────────────────────────────────
+function drawAltTape() {
+  const { altX, altW, tapeTopY, tapeH, tapeMidY } = L;
+  const pxPerFt=tapeH/600, alt=D.alt;
+  const boxH=Math.max(28,H*.065), boxHalf=boxH/2, fs=Math.max(10,H*.021);
+
+  ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(altX,tapeTopY,altW,tapeH);
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(altX,tapeTopY); ctx.lineTo(altX,tapeTopY+tapeH); ctx.stroke();
+  ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('ALT FT',altX+altW/2,tapeTopY+4);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(altX,tapeTopY,altW,tapeH); ctx.clip();
+  // Start on a multiple of 100 so ft%200 and ft%500 resolve correctly.
+  const baseAlt = Math.round(alt / 100) * 100;
+  for (let ft=baseAlt-300; ft<=baseAlt+300; ft+=100) {
+    const y=tapeMidY-(ft-alt)*pxPerFt;
+    if (Math.abs(y-tapeMidY)<boxHalf+4) continue;
+    const isMaj=ft%500===0, tlen=isMaj?16:8;
+    ctx.strokeStyle=isMaj?'rgba(255,255,255,.85)':'rgba(255,255,255,.45)';
+    ctx.lineWidth=isMaj?1.8:1;
+    ctx.beginPath(); ctx.moveTo(altX,y); ctx.lineTo(altX+tlen,y); ctx.stroke();
+    // Label every 200ft mark; major (500ft) marks get a brighter label
+    if (ft%200===0) {
+      ctx.fillStyle=isMaj?'rgba(255,255,255,.95)':'rgba(255,255,255,.80)';
+      ctx.font=`${isMaj?fs+1:fs}px monospace`;
+      ctx.textAlign='left'; ctx.textBaseline='middle';
+      ctx.fillText(ft.toString(),altX+tlen+3,y);
+    }
+  }
+  ctx.restore();
+
+  const by=tapeMidY-boxHalf, ptr=9;
+  ctx.beginPath();
+  ctx.moveTo(altX+altW,by); ctx.lineTo(altX,by);
+  ctx.lineTo(altX-ptr,tapeMidY); ctx.lineTo(altX,by+boxH); ctx.lineTo(altX+altW,by+boxH);
+  ctx.closePath();
+  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(15,H*.038)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(alt).toString(),altX+altW/2,tapeMidY);
+
+  const vsiY=by+boxH+5, arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
+  const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
+  ctx.fillStyle=vcol; ctx.font=`${Math.max(10,H*.022)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillText(`${arrow}${Math.abs(Math.round(D.vspeed/10)*10)}`,altX+altW/2,vsiY);
+  const fpmLblY=vsiY+Math.max(13,H*.026);
+  ctx.fillStyle='rgba(140,175,210,.7)'; ctx.font=`${Math.max(8,H*.016)}px monospace`;
+  ctx.fillText('fpm',altX+altW/2,fpmLblY);
+  // QNH and altitude source
+  const qnhY=fpmLblY+Math.max(11,H*.019)+2;
+  const isBaro=D.baro_src==='bme280';
+  const isInHg=qnhUnit==='inhg';
+  const qnhDisp=toDisplayQNH(D.baro_hpa);
+  ctx.fillStyle=isBaro?'rgba(80,200,255,.90)':'rgba(140,175,210,.50)';
+  ctx.font=`${Math.max(8,H*.016)}px monospace`;
+  ctx.fillText(isInHg?qnhDisp.toFixed(2)+'\u2033':qnhDisp.toFixed(2),altX+altW/2,qnhY);
+  ctx.fillText(isInHg?(isBaro?'Hg B':'Hg G'):(isBaro?'hPa B':'hPa G'),altX+altW/2,qnhY+Math.max(10,H*.017));
+  ctx.textBaseline='alphabetic';
+}
+
+// ── Heading tape ───────────────────────────────────────────────────────────
+const CARDS={0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
+function drawHeadingTape() {
+  const { hdgY, hdgH, cx } = L;
+  const pxPerDeg=W/60, hdg=D.yaw;
+  ctx.fillStyle='rgba(0,8,22,.82)'; ctx.fillRect(0,hdgY,W,hdgH);
+  ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,hdgY); ctx.lineTo(W,hdgY); ctx.stroke();
+  ctx.font=`${Math.max(10,H*.022)}px monospace`; ctx.textBaseline='bottom';
+  for (let i=-34; i<=34; i++) {
+    const deg=((Math.round(hdg)+i+3600)%360);
+    const offset=i-(hdg-Math.round(hdg)), x=cx+offset*pxPerDeg;
+    if (x<0||x>W) continue;
+    if (deg%5===0) {
+      const th=deg%10===0?hdgH*.35:hdgH*.18;
+      ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=deg%10===0?1.5:1;
+      ctx.beginPath(); ctx.moveTo(x,hdgY); ctx.lineTo(x,hdgY+th); ctx.stroke();
+    }
+    if (deg%10===0) {
+      const label=CARDS[deg]||deg.toString().padStart(3,'0');
+      ctx.fillStyle=CARDS[deg]?'#ffd700':'rgba(255,255,255,.9)';
+      ctx.textAlign='center'; ctx.fillText(label,x,hdgY+hdgH-3);
+    }
+  }
+  const bw=58,bh=22;
+  roundRect(cx-bw/2,hdgY-bh-2,bw,bh,3);
+  ctx.fillStyle='rgba(0,0,0,.88)'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.2; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(13,H*.030)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(D.yaw).toString().padStart(3,'0'),cx,hdgY-bh/2-2);
+  ctx.fillStyle='#ffd700';
+  ctx.beginPath(); ctx.moveTo(cx,hdgY-1); ctx.lineTo(cx-7,hdgY-9); ctx.lineTo(cx+7,hdgY-9);
+  ctx.closePath(); ctx.fill(); ctx.textBaseline='alphabetic';
+}
+
+// ── GPS status ─────────────────────────────────────────────────────────────
+function drawGPSStatus() {
+  const x=L.safeL+10, y=L.safeT+8;
+  const label=D.fix===0?'NO FIX':D.fix===1?'GPS':'DGPS';
+  const col  =D.fix===0?'#f44':D.fix===1?'#fa0':'#0d0';
+  ctx.fillStyle=col; ctx.font=`bold ${Math.max(10,H*.022)}px monospace`;
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.shadowColor='rgba(0,0,0,.9)'; ctx.shadowBlur=4;
+  ctx.fillText(`${label} ${D.sats}sat`,x,y);
+  ctx.shadowBlur=0; ctx.textBaseline='alphabetic';
+}
+
+// ── Failure overlay ────────────────────────────────────────────────────────
+function drawRedX(x, y, w, h, label) {
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(x, y, w, h);
+  const pad=Math.min(w,h)*.12;
+  ctx.strokeStyle='#cc0000';
+  ctx.lineWidth=Math.max(2,Math.min(w,h)*.06);
+  ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(x+pad,y+pad); ctx.lineTo(x+w-pad,y+h-pad);
+  ctx.moveTo(x+w-pad,y+pad); ctx.lineTo(x+pad,y+h-pad);
+  ctx.stroke();
+  if (label) {
+    ctx.fillStyle='#cc0000';
+    ctx.font=`bold ${Math.max(10,Math.min(w*.15,14))}px monospace`;
+    ctx.textAlign='center'; ctx.textBaseline='bottom';
+    ctx.fillText(label, x+w/2, y+h-4);
+  }
+  ctx.restore();
+}
+
+// ── Render loop ────────────────────────────────────────────────────────────
+let lastTs = null, lastBaroRefresh = 0;
+function render(ts) {
+  if (lastTs===null) lastTs=ts;
+  smooth(Math.min(1,(ts-lastTs)/60));
+  lastTs=ts;
+
+  updateLinkStatus();
+  if (ts - lastBaroRefresh > 1000) {
+    updateBaroUI();
+    if (trimPanel.style.display === 'block') updateTrimUI();
+    lastBaroRefresh=ts;
+  }
+  ctx.clearRect(0,0,W,H);
+
+  // 1. Sky/ground background (full canvas, rotated with roll)
+  drawAI();
+
+  // 2. Terrain mesh — drawn on top of sky/ground, clipped to AI area between tapes
+  Terrain.render(ctx, D, L);
+
+  // 3. Fixed instrument overlays (always on top of terrain)
+  drawRollIndicator();
+  drawSlipBall();
+  drawAircraftSymbol();
+  drawSpeedTape();
+  drawAltTape();
+  drawHeadingTape();
+  drawGPSStatus();
+
+  // ── Failure overlays ──────────────────────────────────────────────────────
+  if (!D.ahrs_ok) {
+    drawRedX(L.spdX+L.spdW, L.tapeTopY, L.altX-(L.spdX+L.spdW), L.tapeH, 'AHRS');
+    drawRedX(0, L.hdgY, W, H-L.hdgY, 'HDG');
+  }
+  if (!D.gps_ok) drawRedX(L.spdX, L.tapeTopY, L.spdW, L.tapeH, 'GPS');
+  if (!D.baro_ok && !D.gps_ok) drawRedX(L.altX, L.tapeTopY, L.altW, L.tapeH, 'ALT');
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

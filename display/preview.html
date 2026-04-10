@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>AHRS PFD — Preview</title>
+<style>
+  :root {
+    --sat: env(safe-area-inset-top,    0px);
+    --sar: env(safe-area-inset-right,  0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left,   0px);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; background:#000; overflow:hidden;
+              -webkit-tap-highlight-color:transparent; }
+  canvas { display:block; position:absolute; top:0; left:0; }
+
+  #badge {
+    position:absolute; top:6px; right:8px;
+    background:rgba(0,100,210,.78); color:#fff;
+    font:bold 11px/1 monospace; padding:3px 7px;
+    border-radius:3px; pointer-events:none; z-index:10;
+  }
+  #scenario {
+    position:absolute; bottom:56px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,.55); color:rgba(255,210,60,.9);
+    font:12px/1.4 monospace; padding:4px 10px; border-radius:3px;
+    pointer-events:none; z-index:10; white-space:nowrap;
+  }
+  #terrain-status {
+    position:absolute; top:6px; right:78px;
+    font:bold 11px/1 monospace; padding:3px 7px;
+    border-radius:3px; pointer-events:none; z-index:10;
+  }
+  .trn-ready   { background:rgba(0,130,60,.75);   color:#fff; }
+  .trn-partial { background:rgba(160,100,0,.75);  color:#fff; }
+  .trn-idle    { background:rgba(60,60,80,.80);   color:#aac; }
+  .trn-loading { background:rgba(30,60,120,.80);  color:#adf; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="terrain-status" class="trn-loading">TERRAIN…</div>
+<div id="badge">SIMULATOR</div>
+<div id="scenario">Level flight</div>
+
+<script src="terrain.js"></script>
+<script>
+'use strict';
+
+// ── Simulator state ────────────────────────────────────────────────────────
+// Starting position: Swiss Alps (Lauterbrunnen valley area) — dramatic terrain
+// visible at ~8 000 ft with high alpine peaks above.
+const SIM = {
+  roll:0, pitch:1, yaw:210,
+  lat:46.55, lon:7.90,   // Lauterbrunnen, Switzerland
+  alt:8000,              // ft MSL  (Jungfrau is ~13 600 ft to the south)
+  speed:115, track:210, vspeed:0, fix:3, sats:9,
+  ay:0,                  // lateral acceleration g (slip ball)
+  baro_hpa:1013.25, baro_src:'gps', gps_alt:8000,
+  ahrs_ok:true, gps_ok:true, baro_ok:false,
+  pitch_trim:0, roll_trim:0, yaw_trim:0,
+};
+const D = Object.assign({}, SIM);
+
+// ay: lateral acceleration g driving the slip ball.
+// Coordinated flight → ay ≈ 0.  Deliberate slip/skid → non-zero ay.
+const scenarios = [
+  { label:'Level cruise heading south (Alps ahead)', dur:5000,
+    fn(t) { return { roll:0, pitch:0.6, alt:8000+Math.sin(t*Math.PI*2)*30,
+                     speed:115, vspeed:0, ay:0 }; } },
+  { label:'Standard-rate right turn  (coordinated)', dur:5000,
+    fn(t) { const r=19*Math.sin(Math.PI*t);
+            return { roll:r, pitch:0.6+r*.04, alt:8100+r*2,
+                     speed:115, vspeed:0, ay:0 }; } },
+  { label:'Climbing left turn  +800 fpm', dur:5500,
+    fn(t) { const r=-22*Math.sin(Math.PI*t), v=800*Math.sin(Math.PI*t);
+            return { roll:r, pitch:4+r*.05, alt:8000+v*.06*t*5.5,
+                     speed:112, vspeed:v, ay:0 }; } },
+  { label:'Steep bank 45°  (slip demo)', dur:5000,
+    fn(t) { const r=45*Math.sin(Math.PI*t);
+            // Deliberate slip: ball deflects into the bank
+            return { roll:r, pitch:1.5+Math.abs(r)*.06, alt:8300+r*5,
+                     speed:118, vspeed:r*8, ay: r * 0.005 }; } },
+  { label:'Descent into valley  -700 fpm', dur:6000,
+    fn(t) { const v=t<.5?-700*(t/.5):-700*(1-(t-.5)/.5);
+            return { roll:0, pitch:-3*Math.sin(Math.PI*t),
+                     alt:8300+v/60*(t*6), speed:120, vspeed:v, ay:0 }; } },
+  { label:'Turbulence  (random slip)', dur:5500,
+    fn(t) { const n=s=>Math.sin(t*Math.PI*s*7)*.6+Math.sin(t*Math.PI*s*13)*.3
+                          +Math.sin(t*Math.PI*s*23)*.1;
+            return { roll:n(1)*10, pitch:n(2)*5+.5, alt:7800+n(3)*80,
+                     speed:112+n(4)*8, vspeed:n(5)*350,
+                     ay: n(6)*0.12 }; } },
+];
+
+let scIdx=0, scStart=null;
+const scEl=document.getElementById('scenario');
+const trnEl=document.getElementById('terrain-status');
+
+function tickSim(ts) {
+  if (scStart===null) scStart=ts;
+  const sc=scenarios[scIdx], age=ts-scStart, t01=Math.min(1,age/sc.dur);
+  Object.assign(SIM, sc.fn(t01));
+  // Very slow position drift along track so terrain scrolls gently
+  const nm_per_frame = SIM.speed / 3600 / 60 * (1/60);  // approx nm at 60fps
+  SIM.lat += nm_per_frame * Math.cos(SIM.yaw * Math.PI/180) / 60;
+  SIM.lon += nm_per_frame * Math.sin(SIM.yaw * Math.PI/180) / (60 * Math.cos(SIM.lat * Math.PI/180));
+  SIM.track   = SIM.yaw;
+  SIM.gps_alt = SIM.alt;
+  scEl.textContent=sc.label;
+  if (age>=sc.dur){ scIdx=(scIdx+1)%scenarios.length; scStart=ts; }
+}
+
+// ── Terrain status ─────────────────────────────────────────────────────────
+function onTerrainStatus(status, count) {
+  const labels={idle:'NO TERRAIN',loading:'TERRAIN…',ready:'TERRAIN OK',
+                partial:'TERRAIN ▲',error:'TERRAIN ERR'};
+  const cls   ={idle:'trn-idle',loading:'trn-loading',ready:'trn-ready',
+                partial:'trn-partial',error:'trn-idle'};
+  trnEl.textContent=labels[status]||status.toUpperCase();
+  trnEl.className  =cls[status]||'trn-idle';
+}
+Terrain.init(onTerrainStatus);
+
+// ── Canvas & layout ────────────────────────────────────────────────────────
+const canvas=document.getElementById('c');
+const ctx   =canvas.getContext('2d');
+let W=0, H=0;
+const L={};
+
+function computeLayout() {
+  const cs=getComputedStyle(document.documentElement);
+  const sv=n=>parseFloat(cs.getPropertyValue(n))||0;
+  L.safeT=sv('--sat'); L.safeR=sv('--sar');
+  L.safeB=sv('--sab'); L.safeL=sv('--sal');
+  L.cx=W/2; L.cy=H/2;
+  L.hdgH=Math.max(38,H*0.10); L.hdgY=H-L.hdgH-L.safeB;
+  L.tapeTopY=L.safeT+26; L.tapeBotY=L.hdgY;
+  L.tapeH=L.tapeBotY-L.tapeTopY; L.tapeMidY=(L.tapeTopY+L.tapeBotY)/2;
+  L.spdW=68; L.spdX=L.safeL;
+  L.altW=78; L.altX=W-L.safeR-L.altW;
+  L.rollR=Math.min(H*0.36,155);
+  L.rollCY=L.rollR+Math.max(12,L.safeT+6);
+  L.ballY=L.hdgY-36;
+  const clipW=L.altX-(L.spdX+L.spdW);
+  L.focal=clipW>0?(clipW/2)/Math.tan(35*Math.PI/180):300;
+}
+function resize(){
+  W=canvas.width=window.innerWidth; H=canvas.height=window.innerHeight;
+  computeLayout();
+}
+resize();
+window.addEventListener('resize',resize);
+window.addEventListener('orientationchange',()=>setTimeout(resize,200));
+
+function _handleSpdTap(x,y){
+  if(x>=L.spdX&&x<=L.spdX+L.spdW+14&&y>=L.tapeTopY&&y<=L.tapeBotY){
+    speedUnit=speedUnit==='kt'?'mph':'kt';
+    localStorage.setItem('speedUnit',speedUnit);
+  }
+}
+canvas.addEventListener('click',e=>{
+  const r=canvas.getBoundingClientRect();
+  _handleSpdTap(e.clientX-r.left,e.clientY-r.top);
+});
+canvas.addEventListener('touchend',e=>{
+  const r=canvas.getBoundingClientRect(),t=e.changedTouches[0];
+  _handleSpdTap(t.clientX-r.left,t.clientY-r.top);
+},{passive:true});
+
+// ── Unit preferences ───────────────────────────────────────────────────────
+const HPA_TO_INHG=0.02953, INHG_TO_HPA=33.8639;
+let speedUnit=localStorage.getItem('speedUnit')||'kt';
+let qnhUnit  =localStorage.getItem('qnhUnit')  ||'hpa';
+function toDisplaySpd(kt)  { return speedUnit==='mph'  ? kt*1.15078     : kt;  }
+function toDisplayQNH(hpa) { return qnhUnit  ==='inhg' ? hpa*HPA_TO_INHG : hpa; }
+
+// ── Maths ──────────────────────────────────────────────────────────────────
+const DEG=Math.PI/180;
+function lerp(a,b,t){return a+(b-a)*t;}
+function lerpAngle(a,b,t){let d=((b-a+540)%360)-180;return(a+d*t+360)%360;}
+function smooth(alpha){
+  D.roll   =lerp(D.roll,   SIM.roll,  alpha);
+  D.pitch  =lerp(D.pitch,  SIM.pitch, alpha);
+  D.yaw    =lerpAngle(D.yaw,SIM.yaw,  alpha);
+  D.alt    =lerp(D.alt,    SIM.alt,   alpha);
+  D.speed  =lerp(D.speed,  SIM.speed, alpha);
+  D.vspeed =lerp(D.vspeed, SIM.vspeed,alpha);
+  D.track  =lerpAngle(D.track,SIM.track,alpha);
+  D.ay     =lerp(D.ay,     SIM.ay,   alpha);
+  D.lat=SIM.lat; D.lon=SIM.lon; D.fix=SIM.fix; D.sats=SIM.sats;
+  D.gps_alt=SIM.gps_alt;
+  D.baro_hpa=SIM.baro_hpa; D.baro_src=SIM.baro_src;
+  D.ahrs_ok=SIM.ahrs_ok; D.gps_ok=SIM.gps_ok; D.baro_ok=SIM.baro_ok;
+  D.pitch_trim=SIM.pitch_trim; D.roll_trim=SIM.roll_trim; D.yaw_trim=SIM.yaw_trim;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function pillRect(x,y,w,h){
+  const r=h/2; ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
+}
+
+// ── Synthetic vision ───────────────────────────────────────────────────────
+function drawAI(){
+  const {cx,tapeMidY,focal}=L;
+  const pitchOff=focal*Math.tan(D.pitch*DEG);
+  const rollRad=-D.roll*DEG;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0,0,W,H); ctx.clip();
+  ctx.translate(cx,tapeMidY); ctx.rotate(rollRad);
+  const sg=ctx.createLinearGradient(0,-H*2,0,pitchOff);
+  sg.addColorStop(0,'#0b1a2e'); sg.addColorStop(.6,'#1a5fa8'); sg.addColorStop(1,'#4a9fe0');
+  ctx.fillStyle=sg; ctx.fillRect(-W*2,-H*2,W*4,H*2+pitchOff);
+  const gg=ctx.createLinearGradient(0,pitchOff,0,H*2);
+  gg.addColorStop(0,'#8b6810'); gg.addColorStop(.4,'#5a3e0a'); gg.addColorStop(1,'#2a1a03');
+  ctx.fillStyle=gg; ctx.fillRect(-W*2,pitchOff,W*4,H*2);
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2.5;
+  ctx.shadowColor='rgba(0,0,0,.8)'; ctx.shadowBlur=4;
+  ctx.beginPath(); ctx.moveTo(-W*2,pitchOff); ctx.lineTo(W*2,pitchOff); ctx.stroke();
+  ctx.shadowBlur=0;
+  const shortL=W*.10, longL=W*.18;
+  ctx.font=`${Math.max(11,H*.025)}px monospace`;
+  for(let deg=-30;deg<=30;deg+=5){
+    if(deg===0) continue;
+    const y=pitchOff-focal*Math.tan(deg*DEG), half=deg%10===0?longL:shortL, td=deg>0?1:-1;
+    ctx.strokeStyle='#fff'; ctx.lineWidth=deg%10===0?1.8:1.2;
+    ctx.shadowColor='rgba(0,0,0,.7)'; ctx.shadowBlur=3;
+    ctx.beginPath(); ctx.moveTo(-half,y); ctx.lineTo(half,y); ctx.stroke();
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.moveTo(-half,y); ctx.lineTo(-half,y+td*8);
+    ctx.moveTo( half,y); ctx.lineTo( half,y+td*8);
+    ctx.stroke(); ctx.shadowBlur=0;
+    if(deg%10===0){
+      ctx.fillStyle='#fff'; ctx.shadowColor='rgba(0,0,0,.8)'; ctx.shadowBlur=3;
+      ctx.textAlign='right'; ctx.textBaseline='middle';
+      ctx.fillText(Math.abs(deg),-half-8,y);
+      ctx.textAlign='left'; ctx.fillText(Math.abs(deg),half+8,y);
+      ctx.shadowBlur=0;
+    }
+  }
+  ctx.textBaseline='alphabetic'; ctx.restore();
+}
+
+// ── Roll arc ───────────────────────────────────────────────────────────────
+function drawRollIndicator(){
+  const{cx,rollR,rollCY}=L;
+  ctx.save(); ctx.translate(cx,rollCY);
+  ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(0,0,rollR,-150*DEG,-30*DEG); ctx.stroke();
+  [0,10,20,30,45,60].forEach(deg=>{
+    [-deg,deg].forEach(a=>{
+      const angle=(-90+a)*DEG, len=deg===0?18:deg%30===0?14:10;
+      ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=deg===0?2:1.2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(angle)*(rollR-len),Math.sin(angle)*(rollR-len));
+      ctx.lineTo(Math.cos(angle)*rollR,      Math.sin(angle)*rollR);
+      ctx.stroke();
+    });
+  });
+  const ra=(-90-D.roll)*DEG;
+  ctx.save();
+  ctx.translate(Math.cos(ra)*(rollR-2),Math.sin(ra)*(rollR-2));
+  ctx.rotate(ra+Math.PI/2);
+  ctx.fillStyle='#fff'; ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=.6;
+  ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(-6,0); ctx.lineTo(6,0);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore(); ctx.restore();
+}
+
+// ── Slip ball ──────────────────────────────────────────────────────────────
+function drawSlipBall(){
+  const{cx,ballY}=L; const bw=54,bh=16,r=6;
+  pillRect(cx-bw/2,ballY-bh/2,bw,bh);
+  ctx.fillStyle='rgba(0,0,0,.60)'; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.65)'; ctx.lineWidth=1.2; ctx.stroke();
+  // Fixed reference lines (gap slightly wider than ball diameter)
+  const mark=r+4;
+  ctx.strokeStyle='rgba(255,255,255,.95)'; ctx.lineWidth=1.8;
+  ctx.beginPath();
+  ctx.moveTo(cx-mark,ballY-bh/2+2); ctx.lineTo(cx-mark,ballY+bh/2-2);
+  ctx.moveTo(cx+mark,ballY-bh/2+2); ctx.lineTo(cx+mark,ballY+bh/2-2);
+  ctx.stroke();
+  const defl=Math.max(-1,Math.min(1,D.ay/0.2))*(bw/2-r-2);
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(cx+defl,ballY,r,0,Math.PI*2); ctx.fill();
+}
+
+// ── Aircraft symbol ────────────────────────────────────────────────────────
+function drawAircraftSymbol(){
+  const{cx,tapeMidY}=L; const ws=Math.min(W*.12,88);
+  ctx.save(); ctx.translate(cx,tapeMidY);
+  ctx.strokeStyle='#ffd700'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.shadowColor='rgba(0,0,0,.9)'; ctx.shadowBlur=5;
+  ctx.beginPath(); ctx.moveTo(-ws,0); ctx.lineTo(-ws*.22,0); ctx.lineTo(-ws*.22,9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo( ws,0); ctx.lineTo( ws*.22,0); ctx.lineTo( ws*.22,9); ctx.stroke();
+  ctx.fillStyle='#ffd700'; ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+// ── Speed tape ─────────────────────────────────────────────────────────────
+function drawSpeedTape(){
+  const{spdX,spdW,tapeTopY,tapeH,tapeMidY}=L;
+  const spd=toDisplaySpd(D.speed);
+  const spdRange=speedUnit==='mph'?175:150, pxPerSpd=tapeH/spdRange;
+  const boxH=Math.max(28,H*.065),boxHalf=boxH/2,fs=Math.max(10,H*.021);
+  ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(spdX,tapeTopY,spdW,tapeH);
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(spdX+spdW,tapeTopY); ctx.lineTo(spdX+spdW,tapeTopY+tapeH); ctx.stroke();
+  const spdLabel=speedUnit==='mph'?'GS MPH\u25be':'GS KT\u25be';
+  ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText(spdLabel,spdX+spdW/2,tapeTopY+4);
+  ctx.save(); ctx.beginPath(); ctx.rect(spdX,tapeTopY,spdW,tapeH); ctx.clip();
+  const spdBase=Math.round(spd/20)*20;
+  for(let v=spdBase-120;v<=spdBase+120;v+=20){
+    if(v<0) continue;
+    const y=tapeMidY-(v-spd)*pxPerSpd;
+    if(Math.abs(y-tapeMidY)<boxHalf+4) continue;
+    ctx.strokeStyle='rgba(255,255,255,.80)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(spdX+spdW,y); ctx.lineTo(spdX+spdW-14,y); ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
+    ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText(v.toString(),spdX+spdW-17,y);
+  }
+  ctx.restore();
+  const bx=spdX,by=tapeMidY-boxHalf,ptr=9;
+  ctx.beginPath();
+  ctx.moveTo(bx,by); ctx.lineTo(bx+spdW,by);
+  ctx.lineTo(bx+spdW+ptr,tapeMidY); ctx.lineTo(bx+spdW,by+boxH); ctx.lineTo(bx,by+boxH);
+  ctx.closePath();
+  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(17,H*.042)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(spd).toString(),bx+spdW/2,tapeMidY);
+  ctx.textBaseline='alphabetic';
+}
+
+// ── Altitude tape ──────────────────────────────────────────────────────────
+function drawAltTape(){
+  const{altX,altW,tapeTopY,tapeH,tapeMidY}=L;
+  const pxPerFt=tapeH/600,alt=D.alt;
+  const boxH=Math.max(28,H*.065),boxHalf=boxH/2,fs=Math.max(10,H*.021);
+  ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(altX,tapeTopY,altW,tapeH);
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(altX,tapeTopY); ctx.lineTo(altX,tapeTopY+tapeH); ctx.stroke();
+  ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('ALT FT',altX+altW/2,tapeTopY+4);
+  ctx.save(); ctx.beginPath(); ctx.rect(altX,tapeTopY,altW,tapeH); ctx.clip();
+  const baseAlt=Math.round(alt/100)*100;
+  for(let ft=baseAlt-300;ft<=baseAlt+300;ft+=100){
+    const y=tapeMidY-(ft-alt)*pxPerFt;
+    if(Math.abs(y-tapeMidY)<boxHalf+4) continue;
+    const isMaj=ft%500===0,tlen=isMaj?16:8;
+    ctx.strokeStyle=isMaj?'rgba(255,255,255,.85)':'rgba(255,255,255,.45)';
+    ctx.lineWidth=isMaj?1.8:1;
+    ctx.beginPath(); ctx.moveTo(altX,y); ctx.lineTo(altX+tlen,y); ctx.stroke();
+    if(ft%200===0){
+      ctx.fillStyle=isMaj?'rgba(255,255,255,.95)':'rgba(255,255,255,.80)';
+      ctx.font=`${isMaj?fs+1:fs}px monospace`;
+      ctx.textAlign='left'; ctx.textBaseline='middle';
+      ctx.fillText(ft.toString(),altX+tlen+3,y);
+    }
+  }
+  ctx.restore();
+  const by=tapeMidY-boxHalf,ptr=9;
+  ctx.beginPath();
+  ctx.moveTo(altX+altW,by); ctx.lineTo(altX,by);
+  ctx.lineTo(altX-ptr,tapeMidY); ctx.lineTo(altX,by+boxH); ctx.lineTo(altX+altW,by+boxH);
+  ctx.closePath();
+  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(15,H*.038)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(alt).toString(),altX+altW/2,tapeMidY);
+  const vsiY=by+boxH+5,arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
+  const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
+  ctx.fillStyle=vcol; ctx.font=`${Math.max(10,H*.022)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillText(`${arrow}${Math.abs(Math.round(D.vspeed/10)*10)}`,altX+altW/2,vsiY);
+  const fpmLblY=vsiY+Math.max(13,H*.026);
+  ctx.fillStyle='rgba(140,175,210,.7)'; ctx.font=`${Math.max(8,H*.016)}px monospace`;
+  ctx.fillText('fpm',altX+altW/2,fpmLblY);
+  // QNH and altitude source
+  const qnhY=fpmLblY+Math.max(11,H*.019)+2;
+  const isBaro=D.baro_src==='bme280';
+  const isInHg=qnhUnit==='inhg', qnhDisp=toDisplayQNH(D.baro_hpa);
+  ctx.fillStyle=isBaro?'rgba(80,200,255,.90)':'rgba(140,175,210,.50)';
+  ctx.font=`${Math.max(8,H*.016)}px monospace`;
+  ctx.fillText(isInHg?qnhDisp.toFixed(2)+'\u2033':qnhDisp.toFixed(2),altX+altW/2,qnhY);
+  ctx.fillText(isInHg?(isBaro?'Hg B':'Hg G'):(isBaro?'hPa B':'hPa G'),altX+altW/2,qnhY+Math.max(10,H*.017));
+  ctx.textBaseline='alphabetic';
+}
+
+// ── Heading tape ───────────────────────────────────────────────────────────
+const CARDS={0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
+function drawHeadingTape(){
+  const{hdgY,hdgH,cx}=L; const pxPerDeg=W/60,hdg=D.yaw;
+  ctx.fillStyle='rgba(0,8,22,.82)'; ctx.fillRect(0,hdgY,W,hdgH);
+  ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,hdgY); ctx.lineTo(W,hdgY); ctx.stroke();
+  ctx.font=`${Math.max(10,H*.022)}px monospace`; ctx.textBaseline='bottom';
+  for(let i=-34;i<=34;i++){
+    const deg=((Math.round(hdg)+i+3600)%360);
+    const offset=i-(hdg-Math.round(hdg)),x=cx+offset*pxPerDeg;
+    if(x<0||x>W) continue;
+    if(deg%5===0){
+      const th=deg%10===0?hdgH*.35:hdgH*.18;
+      ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=deg%10===0?1.5:1;
+      ctx.beginPath(); ctx.moveTo(x,hdgY); ctx.lineTo(x,hdgY+th); ctx.stroke();
+    }
+    if(deg%10===0){
+      const label=CARDS[deg]||deg.toString().padStart(3,'0');
+      ctx.fillStyle=CARDS[deg]?'#ffd700':'rgba(255,255,255,.9)';
+      ctx.textAlign='center'; ctx.fillText(label,x,hdgY+hdgH-3);
+    }
+  }
+  const bw=58,bh=22;
+  roundRect(cx-bw/2,hdgY-bh-2,bw,bh,3);
+  ctx.fillStyle='rgba(0,0,0,.88)'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.2; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(13,H*.030)}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(Math.round(D.yaw).toString().padStart(3,'0'),cx,hdgY-bh/2-2);
+  ctx.fillStyle='#ffd700';
+  ctx.beginPath(); ctx.moveTo(cx,hdgY-1); ctx.lineTo(cx-7,hdgY-9); ctx.lineTo(cx+7,hdgY-9);
+  ctx.closePath(); ctx.fill(); ctx.textBaseline='alphabetic';
+}
+
+// ── GPS status ─────────────────────────────────────────────────────────────
+function drawGPSStatus(){
+  const x=L.safeL+10,y=L.safeT+8;
+  const label=D.fix===0?'NO FIX':D.fix===1?'GPS':'DGPS';
+  const col  =D.fix===0?'#f44':D.fix===1?'#fa0':'#0d0';
+  ctx.fillStyle=col; ctx.font=`bold ${Math.max(10,H*.022)}px monospace`;
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.shadowColor='rgba(0,0,0,.9)'; ctx.shadowBlur=4;
+  ctx.fillText(`${label} ${D.sats}sat`,x,y);
+  ctx.shadowBlur=0; ctx.textBaseline='alphabetic';
+}
+
+// ── Failure overlay ────────────────────────────────────────────────────────
+function drawRedX(x,y,w,h,label){
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x,y,w,h); ctx.clip();
+  ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(x,y,w,h);
+  const pad=Math.min(w,h)*.12;
+  ctx.strokeStyle='#cc0000';
+  ctx.lineWidth=Math.max(2,Math.min(w,h)*.06);
+  ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(x+pad,y+pad); ctx.lineTo(x+w-pad,y+h-pad);
+  ctx.moveTo(x+w-pad,y+pad); ctx.lineTo(x+pad,y+h-pad);
+  ctx.stroke();
+  if(label){
+    ctx.fillStyle='#cc0000';
+    ctx.font=`bold ${Math.max(10,Math.min(w*.15,14))}px monospace`;
+    ctx.textAlign='center'; ctx.textBaseline='bottom';
+    ctx.fillText(label,x+w/2,y+h-4);
+  }
+  ctx.restore();
+}
+
+// ── Render loop ────────────────────────────────────────────────────────────
+let lastTs=null;
+function render(ts){
+  if(lastTs===null) lastTs=ts;
+  const dt=ts-lastTs; lastTs=ts;
+  tickSim(ts);
+  smooth(Math.min(1,dt/60));
+  ctx.clearRect(0,0,W,H);
+  drawAI();
+  Terrain.render(ctx, D, L);   // SVS on top of sky/ground, behind instruments
+  drawRollIndicator();
+  drawSlipBall();
+  drawAircraftSymbol();
+  drawSpeedTape();
+  drawAltTape();
+  drawHeadingTape();
+  drawGPSStatus();
+  if(!D.ahrs_ok){
+    drawRedX(L.spdX+L.spdW,L.tapeTopY,L.altX-(L.spdX+L.spdW),L.tapeH,'AHRS');
+    drawRedX(0,L.hdgY,W,H-L.hdgY,'HDG');
+  }
+  if(!D.gps_ok) drawRedX(L.spdX,L.tapeTopY,L.spdW,L.tapeH,'GPS');
+  if(!D.baro_ok&&!D.gps_ok) drawRedX(L.altX,L.tapeTopY,L.altW,L.tapeH,'ALT');
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
