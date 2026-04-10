@@ -90,6 +90,14 @@ DEMO_HDG = 133.0    # degrees
 LONG_PRESS_MS    = 800  # ms for long-press to enter setup
 STALE_TIMEOUT_S  = 3    # seconds after link loss before AHRS is marked failed
 
+# ── GPS heading complementary filter ─────────────────────────────────────────
+# GPS_HDG_SLAVE_K controls how quickly the gyro-propagated heading is pulled
+# toward the GPS ground track each render frame.
+#   K = 0.05  →  ~1.5 s to resolve a 10° error at 30 fps  (recommended)
+#   K = 0.01  →  ~7 s  (more inertia, smoother, slower convergence)
+#   K = 0.10  →  ~0.7 s (snappier, more GPS noise bleeds through)
+GPS_HDG_SLAVE_K  = 0.05
+
 # ── Try to import local overrides ─────────────────────────────────────────────
 try:
     from config_local import *  # noqa: F401,F403

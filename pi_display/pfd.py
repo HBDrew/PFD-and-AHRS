@@ -123,6 +123,50 @@ SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 _sse_client  = None
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
+# ── GPS-slaved heading complementary filter ───────────────────────────────────
+# Propagate heading using the AHRS gyro yaw-rate (smooth, 30 Hz) and
+# slowly slave the absolute reference toward the GPS ground track (1–5 Hz,
+# noisy).  This mirrors how real GPS/IRS heading modes work.
+_gps_hdg      = None   # current complementary-filter output (degrees, 0–360)
+_prev_yaw_disp = None  # disp["yaw"] value from the previous frame
+
+
+# ── GPS heading complementary filter ─────────────────────────────────────────
+
+def _update_gps_heading(yaw_now: float, track: float, gps_ok: bool) -> float:
+    """
+    Complementary filter for GPS-slaved heading.
+
+    High-frequency path: AHRS yaw rate (smooth, 30 Hz) propagates _gps_hdg.
+    Low-frequency path:  GPS ground track slowly slaves the absolute value.
+
+    Returns the filtered heading in degrees [0, 360).
+    """
+    global _gps_hdg, _prev_yaw_disp
+
+    if _gps_hdg is None:
+        # Initialise from GPS track if available, else fall back to yaw
+        _gps_hdg       = track if gps_ok else yaw_now
+        _prev_yaw_disp = yaw_now
+        return _gps_hdg
+
+    # ── Gyro propagation ───────────────────────────────────────────────────────
+    # Use the frame-to-frame change in the AHRS yaw (already smoothed) as a
+    # proxy for the gyro turn rate.  Normalise to (−180, +180] to handle the
+    # 359° → 0° wrap correctly.
+    delta = ((yaw_now - _prev_yaw_disp) + 180) % 360 - 180
+    _gps_hdg = (_gps_hdg + delta) % 360
+    _prev_yaw_disp = yaw_now
+
+    # ── GPS slaving ────────────────────────────────────────────────────────────
+    # Pull _gps_hdg toward the GPS track at rate GPS_HDG_SLAVE_K per frame.
+    # Signed error handles the 359°/0° wrap.
+    if gps_ok:
+        err = ((track - _gps_hdg) + 180) % 360 - 180
+        _gps_hdg = (_gps_hdg + err * GPS_HDG_SLAVE_K) % 360
+
+    return _gps_hdg
+
 
 # ── Connectivity helpers ──────────────────────────────────────────────────────
 
@@ -3086,12 +3130,16 @@ def render(surf, demo_mode, connected, data_stale=False):
         ahrs_ok = False
 
     # ── Heading source selection ──────────────────────────────────────────────
-    # MAG  (default): use magnetometer/gyro yaw from AHRS
-    # GPS TRK:        use GPS ground track as heading reference (requires fix)
+    # MAG  (default): use magnetometer/gyro yaw from AHRS (already fused)
+    # GPS TRK:        complementary filter — gyro propagates each frame,
+    #                 GPS track slowly slaves the absolute reference.
+    #                 Falls back to yaw if GPS fix is lost.
     hdg_src = ss.get("hdg_src", "mag")
-    if hdg_src == "gps" and gps_ok:
-        hdg = disp["track"]
+    if hdg_src == "gps":
+        hdg = _update_gps_heading(disp["yaw"], disp["track"], gps_ok)
     else:
+        global _gps_hdg, _prev_yaw_disp  # reset filter when switching back to MAG
+        _gps_hdg = _prev_yaw_disp = None
         hdg = disp["yaw"]
 
     # ── Unit conversions ──────────────────────────────────────────────────────
