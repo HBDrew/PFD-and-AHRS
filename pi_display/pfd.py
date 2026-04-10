@@ -735,7 +735,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
         _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
     # Drum: 20-ft labels scroll together, adjacent labels half-visible
     _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 18,
-                        show_adjacent=True, adj_slot_h=23)
+                        show_adjacent=True, adj_slot_h=18)
     _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)   # 1px inset from border
 
     # VSI (vertical speed)

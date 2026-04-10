@@ -473,7 +473,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         rolling_drum(img, R-52, TAPE_MID-14, 12, 28, alt_inner, 1, WHITE, 22)
     # Drum: 20-ft labels scroll together, adjacent labels half-visible
     rolling_drum_alt20(img, R-38, TAPE_MID-28, 22, 56, alt, WHITE, 18,
-                       show_adjacent=True, adj_slot_h=23)
+                       show_adjacent=True, adj_slot_h=18)
     _drum_shade(img,   R-38, TAPE_MID-28, 22, 56)   # 1px inset from border
 
     # VSI
