@@ -158,7 +158,8 @@ Badges appear **only when something requires attention** — the strip is blank 
 | `NO OBS` | Amber | No FAA obstacle data loaded |
 | `EXP OBS` | Orange | Obstacle data is more than 28 days old — update recommended |
 | `GPS ALT` | Dim yellow | No barometric sensor; altitude derived from GPS |
-| `NO GPS` | Dim yellow | No GPS fix |
+| `GPS` *N*`sat` | Amber | GPS hardware visible but no position fix yet — *N* satellites in view |
+| `NO GPS` | Red | No GPS signal or hardware — speed tape unreliable |
 
 ---
 

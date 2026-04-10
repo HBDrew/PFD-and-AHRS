@@ -755,7 +755,10 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     if not baro_ok:
         badge_r("GPS ALT", (80, 80, 0), (220, 220, 100))
     if not gps_ok:
-        badge_r("NO GPS", (130, 130, 0))
+        if sats > 0:
+            badge_r(f"GPS {sats}sat", (120, 80, 0), (220, 180, 60))
+        else:
+            badge_r("NO GPS", (150, 0, 0))
 
     # ── 10b. TERRAIN / OBSTACLE ALERT BANNER ────────────────────────────────
     if terrain_alert > 0:

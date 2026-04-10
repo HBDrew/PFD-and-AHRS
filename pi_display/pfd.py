@@ -1163,9 +1163,15 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
     # Show GPS ALT only when baro sensor is absent (pilot needs to know alt source)
     if not baro_ok:
         badge_r("GPS ALT", (80, 80, 0), (220, 220, 100))
-    # Show NO GPS only when no fix
+    # GPS state:
+    #   fix valid          → no badge (clean)
+    #   satellites visible → amber sat-count (acquiring, no fix yet)
+    #   no satellites      → red NO GPS (hardware absent / no signal)
     if not gps_ok:
-        badge_r("NO GPS", (130, 130, 0))
+        if sats > 0:
+            badge_r(f"GPS {sats}sat", (120, 80, 0), (220, 180, 60))
+        else:
+            badge_r("NO GPS", (150, 0, 0))
 
 
 # ── Red-X failure overlays ────────────────────────────────────────────────────
@@ -1181,7 +1187,7 @@ def draw_red_x(surf, x, y, w, h, label):
         _text(surf, "FAIL", 14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 + 8)
 
 
-def draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok):
+def draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok, sats=0):
     ai_h_used = TAPE_H
     ai_y = TAPE_TOP
     ai_w = ALT_X - SPD_W
@@ -1189,9 +1195,12 @@ def draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok):
         # Cover AI center + heading strip
         draw_red_x(surf, SPD_W, ai_y, ai_w, ai_h_used, "ATTITUDE")
         draw_red_x(surf, 0, HDG_Y, DISPLAY_W, HDG_H, "HDG")
-    if not gps_ok:
+    # Red X on speed/alt tapes only when GPS is truly absent (no satellites).
+    # While acquiring (sats > 0 but no fix) the tape stays live — data may
+    # still be usable and the amber badge is sufficient warning.
+    if not gps_ok and sats == 0:
         draw_red_x(surf, SPD_X, ai_y, SPD_W, ai_h_used, "AIRSPD")
-    if not baro_ok and not gps_ok:
+    if not baro_ok and not gps_ok and sats == 0:
         draw_red_x(surf, ALT_X, ai_y, ALT_W, ai_h_used, "ALT")
 
 
@@ -3094,7 +3103,7 @@ def render(surf, demo_mode, connected):
     draw_terrain_alert(surf)
 
     # 10. Failure overlays
-    draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok)
+    draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok, sats)
 
     # 11. Cyan tap-buttons for heading bug, baro, and alt bug
     draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug)
