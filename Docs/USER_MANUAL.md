@@ -148,16 +148,17 @@ The heading tape runs across the bottom of the screen.  Current magnetic heading
 
 ## 6. Status Badges
 
-Small badges are rendered at the top of the AI when sensors are degraded:
+Badges appear **only when something requires attention** — the strip is blank during normal flight.
 
 | Badge | Colour | Meaning |
 |-------|--------|---------|
-| `NO LINK` | Red | SSE stream from Pico W is not connected |
 | `AHRS FAIL` | Red | IMU data absent or invalid |
-| `GPS` + satellite count | Cyan / dim | Fix quality — cyan = valid, dim = no fix |
-| `BARO` | Cyan / dim | BME280 pressure sensor status |
-
-All four badges are green/absent during normal flight.
+| `NO LINK` | Red | SSE stream from Pico W is not connected |
+| `NO TER` | Amber | No SRTM terrain tiles loaded — SVT shows flat ground |
+| `NO OBS` | Amber | No FAA obstacle data loaded |
+| `EXP OBS` | Orange | Obstacle data is more than 28 days old — update recommended |
+| `GPS ALT` | Dim yellow | No barometric sensor; altitude derived from GPS |
+| `NO GPS` | Dim yellow | No GPS fix |
 
 ---
 

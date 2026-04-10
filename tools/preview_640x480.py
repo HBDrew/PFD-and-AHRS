@@ -239,7 +239,8 @@ def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz, show_adjacent=F
 def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                hdg_bug, alt_bug, label, filename,
                gs_bug=None, ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
-               baro_hpa=1013.25, terrain_alert=0):
+               baro_hpa=1013.25, terrain_alert=0,
+               no_terrain=False, obs_state="ok"):
 
     img  = Image.new('RGB', (W, H), (0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -728,10 +729,21 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         draw.text((bx_l+5, 5), text, fill=fg, font=_bf)
         bx_l += tw + 2
 
-    badge_l("AHRS" if ahrs_ok else "AHRS FAIL",
-            (0, 100, 80) if ahrs_ok else (150, 0, 0))
-    badge_l("LINK", (0, 130, 0))
+    # Left badges — only shown when something requires attention
+    if not ahrs_ok:
+        badge_l("AHRS FAIL", (150, 0, 0))
+    if True:  # LINK always connected in standard previews; show for completeness
+        pass   # badge_l("NO LINK", (130, 0, 0))
 
+    _AMBER_BG = (130, 90, 0); _AMBER_FG = (220, 180, 60)
+    if no_terrain:
+        badge_l("NO TER", _AMBER_BG, _AMBER_FG)
+    if obs_state == "none":
+        badge_l("NO OBS", _AMBER_BG, _AMBER_FG)
+    elif obs_state == "expired":
+        badge_l("EXP OBS", (120, 55, 0), (255, 160, 40))
+
+    # Right badges — only shown when something requires attention
     bx_r = ALT_X - 4
     def badge_r(text, bg, fg=WHITE):
         nonlocal bx_r
@@ -740,12 +752,10 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         draw.rectangle([(bx_r, 4), (bx_r+tw, 19)], fill=bg)
         draw.text((bx_r+5, 5), text, fill=fg, font=_bf)
 
-    alt_lbl = "BARO ALT" if baro_ok else "GPS ALT"
-    badge_r(alt_lbl,
-            (0, 80, 120) if baro_ok else (80, 80, 0),
-            WHITE if baro_ok else (220, 220, 100))
-    badge_r(f"GPS {sats}sat" if gps_ok else "NO GPS",
-            (0, 150, 0) if gps_ok else (100, 100, 0))
+    if not baro_ok:
+        badge_r("GPS ALT", (80, 80, 0), (220, 220, 100))
+    if not gps_ok:
+        badge_r("NO GPS", (130, 130, 0))
 
     # ── 10b. TERRAIN / OBSTACLE ALERT BANNER ────────────────────────────────
     if terrain_alert > 0:
@@ -1518,8 +1528,8 @@ def draw_system_screen(filename, display_mode="pfd"):
             draw.text((tx+half-50, terrain_y+_SS_RH-18), "future",
                       fill=(48,55,65), font=fnt(10))
 
-    _data_tile_p(bx,        "TERRAIN DATA",  "12 tiles on disk  \u00b7  11.8 MB", active=True)
-    _data_tile_p(bx+half+8, "OBSTACLE DATA", "Tap to download FAA DOF",           active=True)
+    _data_tile_p(bx,        "TERRAIN DATA",  "12 tiles on disk  \u00b7  11.8 MB",                active=True)
+    _data_tile_p(bx+half+8, "OBSTACLE DATA", "76,842 obs  \u00b7  19.4 MB  \u00b7  8 Apr 2026", active=True)
 
     btn_y = terrain_y + _SS_RH + 8; btn_h = 54
     half_w = (bw - 10) // 2
@@ -1862,5 +1872,25 @@ draw_connectivity_screen(os.path.join(OUT, "preview_setup_connectivity.png"),
                              "apply_msg":"WiFi config applied — connecting…",
                              "test_msg": "Reached 192.168.4.1:80 \u2713"})
 draw_system_screen(os.path.join(OUT, "preview_setup_system.png"))
+
+# Status badge states: no terrain + no obstacle data
+draw_scene(
+    roll=0, pitch=0, hdg=133, alt=8500, speed=115,
+    vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
+    label="Level cruise — no terrain or obstacle data loaded",
+    filename=os.path.join(OUT, "preview_badges_no_data.png"),
+    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+    no_terrain=True, obs_state="none",
+)
+
+# Status badge states: obstacle data expired
+draw_scene(
+    roll=0, pitch=0, hdg=133, alt=8500, speed=115,
+    vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
+    label="Level cruise — obstacle data expired",
+    filename=os.path.join(OUT, "preview_badges_exp_obs.png"),
+    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+    no_terrain=False, obs_state="expired",
+)
 
 print("Done.")

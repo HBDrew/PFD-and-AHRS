@@ -63,8 +63,9 @@ TERRAIN_WARNING_FT = 100    # terrain within 100 ft → red
 OBSTACLE_DIR        = os.path.join(_HERE, "data", "obstacles")
 OBSTACLE_RADIUS_NM  = 10.0    # AI symbol render radius
 OBSTACLE_WINDOW_FT  = 2000.0  # only show obstacles within ±2000 ft of alt
-OBSTACLE_CAUTION_FT = 500     # amber below this clearance
-OBSTACLE_WARNING_FT = 100     # red below this clearance
+OBSTACLE_CAUTION_FT  = 500    # amber below this clearance
+OBSTACLE_WARNING_FT  = 100    # red below this clearance
+OBSTACLE_EXPIRY_DAYS = 28     # FAA DOF update cycle (days)
 
 # ── Proximity alert lookahead ─────────────────────────────────────────────────
 # Alert radius is computed dynamically: radius_nm = speed_kt * ALERT_TIME_S / 3600

@@ -342,3 +342,27 @@ def disk_stats(data_dir: str):
             record_count = sum(1 for _ in f) - 4  # subtract header lines
 
     return record_count, total_bytes / 1_048_576
+
+
+# ── Download date / expiry ─────────────────────────────────────────────────────
+
+import datetime as _dt
+
+
+def download_date(data_dir: str):
+    """
+    Return the download date of the obstacle file as a datetime.date,
+    or None if no file is present.  Uses the DAT file mtime.
+    """
+    dat_path = os.path.join(data_dir, DOF_FILENAME)
+    if not os.path.exists(dat_path):
+        return None
+    return _dt.date.fromtimestamp(os.path.getmtime(dat_path))
+
+
+def is_expired(data_dir: str, expiry_days: int = 28) -> bool:
+    """Return True if the obstacle file is older than expiry_days."""
+    d = download_date(data_dir)
+    if d is None:
+        return False
+    return (_dt.date.today() - d).days > expiry_days

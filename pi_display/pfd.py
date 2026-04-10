@@ -97,6 +97,9 @@ disp["od"] = {                      # obstacle download/parse state
     "parsing":     False,
     "records":     0,       # record count after successful load
     "used_mb":     0.0,
+    "dl_date":     None,    # datetime.date of last download (or None)
+    "expired":     False,   # True when file is > OBSTACLE_EXPIRY_DAYS old
+    "age_days":    0,
 }
 _obstacles = None           # loaded obstacle array (module-level)
 disp["ds"] = {                      # display settings
@@ -1115,13 +1118,15 @@ def draw_terrain_alert(surf):
 # ── Status badges ─────────────────────────────────────────────────────────────
 def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected):
     """
-    Status badges split left/right to stay clear of the tape areas.
-    Left  (from AI_X): AHRS, LINK
-    Right (to ALT_X):  GPS sats, ALT mode (GPS ALT / BARO ALT)
+    Badges are shown only when something requires pilot attention.
+    Nominal state = clean strip.  Problem state = badge appears.
+
+    Left  (from AI_X): AHRS FAIL, NO LINK, NO TER, NO OBS, EXP OBS
+    Right (to ALT_X):  NO GPS, GPS ALT (only when baro absent)
     """
     f10 = _get_font(10)
 
-    # ── Left badges: AHRS + LINK ──
+    # ── Left badges: problems only ──────────────────────────────────────────
     bx = AI_X + 4
     def badge_l(text, bg, fg=(255, 255, 255)):
         nonlocal bx
@@ -1130,13 +1135,23 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
         _text(surf, text, 10, fg, x=bx + 5, y=5)
         bx += w + 2
 
-    ahrs_col = (0, 100, 80) if ahrs_ok else (150, 0, 0)
-    badge_l("AHRS" if ahrs_ok else "AHRS FAIL", ahrs_col)
+    if not ahrs_ok:
+        badge_l("AHRS FAIL", (150, 0, 0))
+    if not connected:
+        badge_l("NO LINK", (130, 0, 0))
 
-    link_col = (0, 130, 0) if connected else (130, 0, 0)
-    badge_l("LINK" if connected else "NO LINK", link_col)
+    # Data-availability — only shown when something is missing/stale
+    _AMBER = (130, 90, 0)
+    if not _has_terrain:
+        badge_l("NO TER", _AMBER, (220, 180, 60))
 
-    # ── Right badges: GPS sats + ALT mode ──
+    od = disp["od"]
+    if od.get("records", 0) == 0:
+        badge_l("NO OBS", _AMBER, (220, 180, 60))
+    elif od.get("expired", False):
+        badge_l("EXP OBS", (120, 55, 0), (255, 160, 40))
+
+    # ── Right badges: problems only ─────────────────────────────────────────
     rx = ALT_X - 4
     def badge_r(text, bg, fg=(255, 255, 255)):
         nonlocal rx
@@ -1145,13 +1160,12 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
         pygame.draw.rect(surf, bg, (rx, 4, w, 15))
         _text(surf, text, 10, fg, x=rx + 5, y=5)
 
-    alt_lbl = "BARO ALT" if baro_ok else "GPS ALT"
-    alt_bg  = (0, 80, 120) if baro_ok else (80, 80, 0)
-    alt_fg  = (255, 255, 255) if baro_ok else (220, 220, 100)
-    badge_r(alt_lbl, alt_bg, alt_fg)
-
-    gps_col = (0, 150, 0) if gps_ok else (130, 130, 0)
-    badge_r(f"GPS {sats}sat" if gps_ok else "NO GPS", gps_col)
+    # Show GPS ALT only when baro sensor is absent (pilot needs to know alt source)
+    if not baro_ok:
+        badge_r("GPS ALT", (80, 80, 0), (220, 220, 100))
+    # Show NO GPS only when no fix
+    if not gps_ok:
+        badge_r("NO GPS", (130, 130, 0))
 
 
 # ── Red-X failure overlays ────────────────────────────────────────────────────
@@ -2293,10 +2307,20 @@ def draw_system_setup(surf):
                    "TERRAIN DATA",
                    f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB",
                    active=True)
-    od_cnt  = disp["od"].get("records", 0)
-    od_mb   = disp["od"].get("used_mb", 0.0)
-    od_sub  = (f"{od_cnt:,} obstacles  \u00b7  {od_mb:.1f} MB"
-               if od_cnt else "Tap to download FAA DOF")
+    od_cnt     = disp["od"].get("records", 0)
+    od_mb      = disp["od"].get("used_mb", 0.0)
+    od_expired = disp["od"].get("expired", False)
+    od_date    = disp["od"].get("dl_date", None)
+    if od_cnt:
+        date_str = od_date.strftime("%-d %b %Y") if od_date else ""
+        if od_expired:
+            od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB  \u00b7  \u26a0 EXPIRED"
+        elif date_str:
+            od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB  \u00b7  {date_str}"
+        else:
+            od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB"
+    else:
+        od_sub = "Tap to download FAA DOF"
     _sys_data_tile(surf, bx+half+8,   _SYS_TERRAIN_Y, half, _SS_RH,
                    "OBSTACLE DATA", od_sub, active=True)
 
@@ -2454,6 +2478,7 @@ def _td_start_current_area():
 
 def _od_load_obstacles():
     """(Re-)load the obstacle cache into module-level _obstacles."""
+    import datetime
     global _obstacles
     os.makedirs(OBSTACLE_DIR, exist_ok=True)
     arr = obs_mod.load(OBSTACLE_DIR)
@@ -2461,6 +2486,15 @@ def _od_load_obstacles():
     cnt, mb = obs_mod.disk_stats(OBSTACLE_DIR)
     disp["od"]["records"] = cnt
     disp["od"]["used_mb"] = mb
+    dl_date = obs_mod.download_date(OBSTACLE_DIR)
+    disp["od"]["dl_date"] = dl_date
+    if dl_date is not None:
+        age = (datetime.date.today() - dl_date).days
+        disp["od"]["age_days"] = age
+        disp["od"]["expired"]  = age > OBSTACLE_EXPIRY_DAYS
+    else:
+        disp["od"]["age_days"] = 0
+        disp["od"]["expired"]  = False
 
 
 def _od_download_thread():
