@@ -15,6 +15,8 @@ import argparse
 import os
 import io
 import gzip
+import socket
+import subprocess
 import urllib.request
 
 os.environ.setdefault("SDL_FBDEV", "/dev/fb0")
@@ -97,10 +99,128 @@ disp["ss"] = {                      # AHRS / sensor settings
 }
 disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
-    "ahrs_ok":   False,    "wifi_ok":   False,
+    "wifi_pass": "",        "wifi_ok":  False,
+    "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
 }
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
+
+# ── Module-level SSE handle (set in main, restarted by handle_event) ─────────
+_sse_client = None
+
+
+# ── Connectivity helpers ──────────────────────────────────────────────────────
+
+def _wifi_ssid_current():
+    """Return currently-associated WiFi SSID, or '' if not connected / unsupported."""
+    try:
+        r = subprocess.run(["iwgetid", "-r"],
+                           capture_output=True, text=True, timeout=2)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _poll_wifi_status():
+    """Background thread: update disp['cs']['wifi_ok'] every 5 s."""
+    while True:
+        disp["cs"]["wifi_ok"] = bool(_wifi_ssid_current())
+        time.sleep(5)
+
+
+def _apply_wifi(ssid, password):
+    """Write wpa_supplicant.conf and call wpa_cli reconfigure.
+    Returns (success: bool, message: str).
+    Requires root (or a sudoers entry for the wpa_supplicant path).
+    """
+    if not ssid:
+        return False, "SSID required"
+    net_block = (
+        f'network={{\n'
+        f'    ssid="{ssid}"\n'
+        + (f'    psk="{password}"\n    key_mgmt=WPA-PSK\n' if password
+           else '    key_mgmt=NONE\n')
+        + '}\n'
+    )
+    conf = (
+        "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n"
+        "update_config=1\ncountry=US\n\n"
+        + net_block
+    )
+    try:
+        with open("/etc/wpa_supplicant/wpa_supplicant.conf", "w") as f:
+            f.write(conf)
+        subprocess.run(["wpa_cli", "-i", "wlan0", "reconfigure"],
+                       capture_output=True, timeout=5)
+        return True, "WiFi config applied — connecting…"
+    except PermissionError:
+        return False, "Permission denied — run with sudo"
+    except FileNotFoundError:
+        return False, "wpa_cli not found"
+    except Exception as e:
+        return False, str(e)[:50]
+
+
+def _restart_sse(url):
+    """Stop the current SSE client and start a new one pointing at url."""
+    global _sse_client
+    if _sse_client:
+        _sse_client.stop()
+    sse_url = url.rstrip("/") + "/events"
+    _sse_client = SSEClient(sse_url, state, _state_lock)
+    _sse_client.start()
+    print(f"[PFD] SSE → {sse_url}")
+
+
+def _test_ahrs_connection(url):
+    """TCP connect test to the AHRS host. Returns (ok: bool, msg: str)."""
+    try:
+        stripped = url.replace("http://", "").replace("https://", "")
+        host_port, *_ = stripped.split("/")
+        host, *port_part = host_port.split(":")
+        port = int(port_part[0]) if port_part else 80
+        s = socket.socket()
+        s.settimeout(3)
+        s.connect((host, port))
+        s.close()
+        return True, f"Reached {host}:{port} \u2713"
+    except Exception as e:
+        return False, str(e)[:50]
+
+
+# ── Backlight control ─────────────────────────────────────────────────────────
+
+_BACKLIGHT_PATHS = [
+    "/sys/class/backlight/rpi_backlight/brightness",
+    "/sys/class/backlight/10-0045/brightness",
+]
+_backlight_path     = None
+_backlight_max_path = None   # max_brightness sysfs node
+
+def _init_backlight():
+    """Find the active backlight sysfs node (called once at startup)."""
+    global _backlight_path, _backlight_max_path
+    for p in _BACKLIGHT_PATHS:
+        if os.path.exists(p):
+            _backlight_path     = p
+            _backlight_max_path = os.path.join(os.path.dirname(p), "max_brightness")
+            print(f"[BL] Using backlight: {p}")
+            break
+
+def _set_backlight(level: int):
+    """Set brightness 1–10 → 0..max_brightness (or 0..255 fallback)."""
+    if _backlight_path is None:
+        return
+    try:
+        max_b = 255
+        if _backlight_max_path and os.path.exists(_backlight_max_path):
+            with open(_backlight_max_path) as f:
+                max_b = int(f.read().strip())
+        raw = max(0, min(max_b, int((level - 1) / 9.0 * max_b)))
+        with open(_backlight_path, "w") as f:
+            f.write(str(raw))
+    except OSError:
+        pass
 
 
 def smooth_state():
@@ -618,8 +738,10 @@ def spd_y(v, speed): return int(TAPE_MID - (v - speed) * PX_PER_KT)
 def alt_y(ft, alt):  return int(TAPE_MID - (ft - alt)  * PX_PER_FT)
 
 
-def draw_speed_tape(surf, speed, gs_bug=None):
-    """Left airspeed tape with GI-275-style V-speed colour bands."""
+def draw_speed_tape(surf, speed, gs_bug=None,
+                    vs0=VS0, vs1=VS1, vfe=VFE, vno=VNO, vne=VNE):
+    """Left airspeed tape with GI-275-style V-speed colour bands.
+    V-speed params should already be in the same unit as *speed*."""
     # Background (full height including top strip, matching alt tape)
     tape_surf = pygame.Surface((SPD_W, TAPE_BOT), pygame.SRCALPHA)
     tape_surf.fill(TAPE_BG)
@@ -639,13 +761,13 @@ def draw_speed_tape(surf, speed, gs_bug=None):
             pygame.draw.rect(surf, col, (bar_x, y1c, bar_w, y2c - y1c))
 
     # White arc: Vs0 – Vfe  (flap range)
-    _band(VS0, VFE, WHITE, SPD_X + SPD_W - 10, 3)
+    _band(vs0, vfe, WHITE, SPD_X + SPD_W - 10, 3)
     # Green arc: Vs1 – Vno  (normal ops)
-    _band(VS1, VNO, GREEN_ARC, SPD_X + SPD_W - 5, 4)
+    _band(vs1, vno, GREEN_ARC, SPD_X + SPD_W - 5, 4)
     # Yellow arc: Vno – Vne (caution)
-    _band(VNO, VNE, YELLOW_ARC, SPD_X + SPD_W - 5, 4)
+    _band(vno, vne, YELLOW_ARC, SPD_X + SPD_W - 5, 4)
     # Red Vne line
-    vne_y = sy(VNE)
+    vne_y = sy(vne)
     if TAPE_TOP < vne_y < TAPE_BOT:
         pygame.draw.line(surf, RED, (SPD_X + SPD_W - 16, vne_y),
                          (SPD_X + SPD_W, vne_y), 3)
@@ -686,7 +808,7 @@ def draw_speed_tape(surf, speed, gs_bug=None):
                       (SPD_X + 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7})
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
-    spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
+    spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     # Inner: hundreds + tens at same font as drum, cascade-rolling
     _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 24, power_offset=1)
     # Drum: units digit, adjacent digits ~50% visible
@@ -1099,6 +1221,7 @@ def handle_event(event, demo_mode):
             elif action and action.startswith("inc:brightness:"):
                 delta = int(action.split(":")[-1])
                 disp["ds"]["brightness"] = max(1, min(10, disp["ds"]["brightness"] + delta))
+                _set_backlight(disp["ds"]["brightness"])
             return True
 
         # ── AHRS / Sensors taps ───────────────────────────────────────────
@@ -1127,6 +1250,21 @@ def handle_event(event, demo_mode):
                 disp["kbd_buf"]    = ""
                 disp["kbd_prev"]   = "connectivity_setup"
                 disp["mode"]       = "keyboard"
+            elif action == "apply_wifi":
+                disp["cs"]["apply_msg"] = "Applying…"
+                def _do_apply():
+                    ok, msg = _apply_wifi(disp["cs"]["wifi_ssid"],
+                                          disp["cs"]["wifi_pass"])
+                    disp["cs"]["apply_msg"] = msg
+                threading.Thread(target=_do_apply, daemon=True).start()
+            elif action == "test_ahrs":
+                disp["cs"]["test_msg"] = "Testing…"
+                def _do_test():
+                    ok, msg = _test_ahrs_connection(disp["cs"]["ahrs_url"])
+                    disp["cs"]["test_msg"] = msg
+                    if ok:
+                        _restart_sse(disp["cs"]["ahrs_url"])
+                threading.Thread(target=_do_test, daemon=True).start()
             return True
 
         # ── System screen taps ────────────────────────────────────────────
@@ -1200,6 +1338,9 @@ def handle_event(event, demo_mode):
                     if buf:
                         if disp["kbd_prev"] == "connectivity_setup":
                             disp["cs"][target] = buf
+                            # Changing AHRS URL live-restarts the SSE stream
+                            if target == "ahrs_url":
+                                _restart_sse(buf)
                         else:
                             disp["fp"][target] = buf
                     disp["kbd_buf"] = ""
@@ -1689,7 +1830,15 @@ def draw_display_setup(surf, ds):
     _screen_header(surf, "DISPLAY")
     for ri, row in enumerate(_DSP_ROWS):
         key, label, sub, opts_v, opts_l, bw_each = row
+        is_night = (key == "night_mode")
         bx, by, bw, bh = _setting_row(surf, ri, label, sub)
+        if is_night:
+            # Overlay dim veil to show greyed-out state
+            veil = pygame.Surface((bw, bh), pygame.SRCALPHA)
+            veil.fill((0, 0, 0, 160))
+            surf.blit(veil, (bx, by))
+            _text(surf, "future", 10, (90,90,100), x=bx+bw-60, y=by+bh-18)
+            continue
         ry = by + (bh - _DSP_BTN_H) // 2
         rx = _dsp_rx(row, bx, bw)
         if opts_v is None:                              # brightness stepper
@@ -1712,6 +1861,8 @@ def display_setup_hit(x, y, ds):
         return "back"
     for ri, row in enumerate(_DSP_ROWS):
         key, *_, opts_v, opts_l, bw_each = row
+        if key == "night_mode":
+            continue   # greyed out — no interaction
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
@@ -1775,12 +1926,17 @@ def draw_ahrs_setup(surf, ss):
     bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction")
     _trim_stepper(surf, bx, by, bw, bh, ss.get("roll_trim", 0.0), "roll_trim")
 
-    # Row 2: Magnetometer calibration
+    # Row 2: Magnetometer calibration (greyed out — not yet implemented)
     bx, by, bw, bh = _setting_row(surf, 2, "MAGNETOMETER", "Compass calibration")
     cal = ss.get("mag_cal", "idle")
     state_lbl, state_col = _SS_MAG_LABELS.get(cal, ("?", WHITE))
     _text(surf, state_lbl, 13, state_col, bold=True, x=bx+220, y=by+(bh-18)//2)
-    _action_btn(surf, bx+bw-138-14, by+(bh-36)//2, 138, 36, "CALIBRATE", "warn")
+    # Draw disabled button (dim, no interaction)
+    cbx = bx+bw-138-14; cby = by+(bh-36)//2
+    pygame.draw.rect(surf, (18,18,20), (cbx, cby, 138, 36), border_radius=6)
+    pygame.draw.rect(surf, (55,55,65), (cbx, cby, 138, 36), width=2, border_radius=6)
+    _text(surf, "CALIBRATE", 15, (75,75,88), bold=False, cx=cbx+69, cy=cby+18)
+    _text(surf, "future", 9, (60,60,72), cx=cbx+69, cy=cby+29)
 
     # Row 3: Mounting orientation
     bx, by, bw, bh = _setting_row(surf, 3, "MOUNTING", "Board orientation")
@@ -1815,9 +1971,7 @@ def ahrs_setup_hit(x, y, ss):
             if plus_x <= x <= plus_x+_SS_TRIM_SW:
                 return f"trim:{key}:+0.5"
         elif ri == 2:
-            if bx+bw-138-14 <= x <= bx+bw-14 and by+(bh:=_SS_RH)-36 >= 0:
-                if by+((_SS_RH-36)//2) <= y <= by+((_SS_RH-36)//2)+36:
-                    return "mag_cal"
+            pass  # CALIBRATE is greyed out (future feature)
         elif ri == 3:
             total_m = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_m - 14
@@ -1832,53 +1986,79 @@ def ahrs_setup_hit(x, y, ss):
 # ── Connectivity screen ───────────────────────────────────────────────────────
 
 _CS_FIELDS = [
-    ("ahrs_url",  "AHRS URL",   "Pico W access-point address"),
-    ("wifi_ssid", "WiFi SSID",  "Local network for forwarding"),
+    ("ahrs_url",  "AHRS URL",        "Pico W access-point address"),
+    ("wifi_ssid", "WiFi SSID",       "Network name to join"),
+    ("wifi_pass", "WiFi PASSWORD",   "WPA2 passphrase"),
 ]
+_CS_BTN_Y  = _ss_row_y(len(_CS_FIELDS) + 1) + 4   # below fields + status row
+_CS_BTN_H  = 50
+
+
+def _cs_val_box(surf, bx, by, bw, bh, key, val):
+    """Draw the right-side value box for a connectivity field."""
+    masked = key == "wifi_pass" and val
+    display = "\u25cf" * min(len(val), 16) if masked else val
+    vbx = bx+210; vby = by+12; vbw = bx+bw-vbx-12; vbh = bh-24
+    pygame.draw.rect(surf, (0,20,42), (vbx, vby, vbw, vbh), border_radius=4)
+    pygame.draw.rect(surf, CYAN, (vbx, vby, vbw, vbh), width=1, border_radius=4)
+    _text(surf, display or "\u2014", 12, CYAN, bold=bool(val),
+          cx=vbx+vbw//2, cy=vby+vbh//2)
+    _text(surf, "tap to edit", 9, (80,100,125), x=vbx+6, y=vby+vbh-13)
 
 
 def draw_connectivity_setup(surf, cs):
     _screen_header(surf, "CONNECTIVITY")
-    bw = DISPLAY_W - 2*_SS_MX
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
 
-    # Rows 0-1: editable URL / SSID
+    # Rows 0-2: editable fields (URL / SSID / password)
     for ri, (key, label, sub) in enumerate(_CS_FIELDS):
-        bx, by, _, bh = _setting_row(surf, ri, label, sub)
-        val = cs.get(key, "\u2014")
-        vbx = bx+230; vby = by+14; vbw = bx+bw-vbx-12; vbh = bh-28
-        pygame.draw.rect(surf, (0,20,42), (vbx, vby, vbw, vbh), border_radius=4)
-        pygame.draw.rect(surf, CYAN, (vbx, vby, vbw, vbh), width=1, border_radius=4)
-        _text(surf, val, 13, CYAN, bold=True, cx=vbx+vbw//2, cy=vby+vbh//2)
-        _text(surf, "tap to edit", 9, (80,100,125), x=vbx+6, y=vby+vbh-13)
+        bx2, by, _, bh = _setting_row(surf, ri, label, sub)
+        _cs_val_box(surf, bx2, by, bw, bh, key, cs.get(key, ""))
 
-    # Row 2: live status
-    bx, by, _, bh = _setting_row(surf, 2, "STATUS", "Live connection state")
-    for i, (ok_key, ok_lbl_y, ok_lbl_n) in enumerate([
+    # Row 3: live status
+    stat_ri = len(_CS_FIELDS)
+    bx2, by, _, bh = _setting_row(surf, stat_ri, "STATUS", "Live connection state")
+    for i, (ok_key, ok_y_lbl, ok_n_lbl) in enumerate([
             ("ahrs_ok", "AHRS  CONNECTED", "AHRS  NO LINK"),
             ("wifi_ok", "WiFi  CONNECTED", "WiFi  NO LINK")]):
-        ok = cs.get(ok_key, False)
+        ok  = cs.get(ok_key, False)
         col = (60,220,80) if ok else (200,50,50)
-        lbl = ok_lbl_y if ok else ok_lbl_n
-        cy = by + bh//4 + i*bh//2
-        pygame.draw.circle(surf, col, (bx+238, cy), 6)
-        _text(surf, lbl, 13, col, bold=True, x=bx+252, y=cy-9)
+        lbl = ok_y_lbl if ok else ok_n_lbl
+        cy  = by + bh//4 + i*bh//2
+        pygame.draw.circle(surf, col, (bx2+238, cy), 6)
+        _text(surf, lbl, 13, col, bold=True, x=bx2+252, y=cy-9)
 
-    # Row 3: test button (full row width)
-    _action_btn(surf, _SS_MX, _ss_row_y(3), bw, _SS_RH, "TEST CONNECTION", "ok")
+    # Status messages from last apply / test
+    for msg, col, y_off in [
+            (cs.get("apply_msg",""), (100,180,80), _CS_BTN_Y - 20),
+            (cs.get("test_msg",""),  (100,160,220), _CS_BTN_Y - 8)]:
+        if msg:
+            _text(surf, msg, 10, col, cx=DISPLAY_W//2, y=y_off)
+
+    # Action buttons
+    half = (bw - 10) // 2
+    _action_btn(surf, bx,          _CS_BTN_Y, half, _CS_BTN_H, "APPLY WIFI", "warn")
+    _action_btn(surf, bx+half+10,  _CS_BTN_Y, half, _CS_BTN_H, "TEST AHRS",  "ok")
 
 
 def connectivity_setup_hit(x, y, cs):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
-    bw = DISPLAY_W - 2*_SS_MX
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    # Editable field rows
     for ri, (key, _, __) in enumerate(_CS_FIELDS):
         by = _ss_row_y(ri)
         if by <= y <= by+_SS_RH:
-            vbx = _SS_MX+230; vbw = _SS_MX+bw-vbx-12
-            if vbx <= x <= vbx+vbw:
+            vbx = bx+210
+            if vbx <= x <= bx+bw-12:
                 return f"edit:{key}"
-    if _ss_row_y(3) <= y <= _ss_row_y(3)+_SS_RH:
-        return "test_connection"
+    # Action buttons
+    half = (bw - 10) // 2
+    if _CS_BTN_Y <= y <= _CS_BTN_Y+_CS_BTN_H:
+        if bx <= x <= bx+half:
+            return "apply_wifi"
+        if bx+half+10 <= x <= bx+half+10+half:
+            return "test_ahrs"
     return None
 
 
@@ -2246,10 +2426,15 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
     _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=22)
 
     # Baro — right side of heading strip, exact alt-tape width
-    # Show "29.92 IN" (inHg) when pressure sensor active, else "GPS ALT"
+    # Show baro setting in user-selected units when pressure sensor active
     if baro_src == "bme280":
-        baro_lbl = f"{baro_hpa / 33.8639:.2f} IN"
-        baro_fsz = 12   # wider string needs slightly smaller font
+        baro_unit = disp["ds"].get("baro_unit", "inhg")
+        if baro_unit == "hpa":
+            baro_lbl = f"{baro_hpa:.0f} hPa"
+            baro_fsz = 12
+        else:
+            baro_lbl = f"{baro_hpa / 33.8639:.2f} IN"
+            baro_fsz = 12   # wider string needs slightly smaller font
     else:
         baro_lbl = "GPS ALT"
         baro_fsz = 14
@@ -2343,6 +2528,37 @@ def render(surf, demo_mode, connected):
     hdg_bug  = disp["hdg_bug"]
     alt_bug  = disp["alt_bug"]
 
+    # ── AHRS trim + mounting correction ──────────────────────────────────────
+    ss = disp["ss"]
+    pitch_trim = ss.get("pitch_trim", 0.0)
+    roll_trim  = ss.get("roll_trim",  0.0)
+    if ss.get("mounting") == "inverted":
+        pitch = -pitch + pitch_trim
+        roll  = -roll  + roll_trim
+    else:
+        pitch = pitch + pitch_trim
+        roll  = roll  + roll_trim
+
+    # ── Unit conversions ──────────────────────────────────────────────────────
+    ds = disp["ds"]
+    spd_unit = ds.get("spd_unit", "kt")
+    alt_unit = ds.get("alt_unit", "ft")
+    spd_factor = {"kt": 1.0, "mph": 1.15078, "kph": 1.852}.get(spd_unit, 1.0)
+    alt_factor = {"ft": 1.0, "m": 0.3048}.get(alt_unit, 1.0)
+
+    speed_d   = speed * spd_factor
+    alt_d     = alt   * alt_factor
+    alt_bug_d = (alt_bug * alt_factor) if alt_bug is not None else None
+    gs_bug_d  = (disp.get("spd_bug") * spd_factor) if disp.get("spd_bug") is not None else None
+
+    # V-speeds from flight profile, converted to display unit
+    fp = disp["fp"]
+    vs0_d = fp.get("vs0", VS0) * spd_factor
+    vs1_d = fp.get("vs1", VS1) * spd_factor
+    vfe_d = fp.get("vfe", VFE) * spd_factor
+    vno_d = fp.get("vno", VNO) * spd_factor
+    vne_d = fp.get("vne", VNE) * spd_factor
+
     ai_rect = (AI_X, AI_Y, AI_W, AI_H)
 
     # 1. SVT / AI background
@@ -2354,11 +2570,12 @@ def render(surf, demo_mode, connected):
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
 
-    # 3. Speed tape
-    draw_speed_tape(surf, speed, gs_bug=disp.get("spd_bug"))
+    # 3. Speed tape (display unit, fp V-speeds)
+    draw_speed_tape(surf, speed_d, gs_bug=gs_bug_d,
+                    vs0=vs0_d, vs1=vs1_d, vfe=vfe_d, vno=vno_d, vne=vne_d)
 
-    # 4. Alt tape
-    draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug)
+    # 4. Alt tape (display unit)
+    draw_alt_tape(surf, alt_d, vspeed, baro_hpa, baro_src, alt_bug_d)
 
     # 5. Heading tape
     draw_heading_tape(surf, hdg, hdg_bug, track, gps_ok)
@@ -2409,6 +2626,9 @@ def main():
         os.environ["SDL_VIDEODRIVER"] = "x11"
         os.environ.pop("SDL_FBDEV", None)
 
+    _init_backlight()
+    _set_backlight(disp["ds"].get("brightness", 8))
+
     pygame.init()
     pygame.mouse.set_visible(False)
 
@@ -2425,13 +2645,15 @@ def main():
 
     demo_mode = args.demo
     demo      = DemoState() if demo_mode else None
-    sse       = None
     connected = False
 
     if not demo_mode:
-        sse = SSEClient(SSE_URL, state, _state_lock)
-        sse.start()
+        global _sse_client
+        _sse_client = SSEClient(SSE_URL, state, _state_lock)
+        _sse_client.start()
         print(f"[PFD] Connecting to {SSE_URL}")
+        threading.Thread(target=_poll_wifi_status, daemon=True,
+                         name="WiFiPoll").start()
     else:
         # Seed initial state for demo
         state["alt"]   = DEMO_ALT
@@ -2462,8 +2684,9 @@ def main():
                 if demo_mode:
                     demo = DemoState()
 
-        if sse:
-            connected = sse.connected
+        if _sse_client:
+            connected = _sse_client.connected
+            disp["cs"]["ahrs_ok"] = connected
 
         # 2-finger hold → enter setup screen (EXIT button returns to PFD)
         if (_multitouch_t0 is not None
@@ -2479,8 +2702,8 @@ def main():
         pygame.display.flip()
         clock.tick(TARGET_FPS)
 
-    if sse:
-        sse.stop()
+    if _sse_client:
+        _sse_client.stop()
     pygame.quit()
 
 

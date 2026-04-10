@@ -1237,7 +1237,15 @@ def draw_display_screen(filename, ds=None):
     _screen_header_p(draw, "DISPLAY")
     for ri, row in enumerate(_DSP_ROWS):
         key, label, sub, opts_v, opts_l, bw_each = row
+        is_night = (key == "night_mode")
         bx, by, bw, bh = _setting_row_p(draw, ri, label, sub)
+        if is_night:
+            # Dim veil + "future" label
+            overlay = Image.new('RGBA', (bw, bh), (0,0,0,160))
+            img.paste(Image.new('RGB',(bw,bh),(0,0,0)), (bx,by),
+                      Image.new('L',(bw,bh),160))
+            draw.text((bx+bw-60, by+bh-18), "future", fill=(90,90,100), font=fnt(10))
+            continue
         ry = by + (bh - _DSP_BTN_H) // 2
         rx = _dsp_rx_p(row, bx, bw)
         if opts_v is None:
@@ -1299,12 +1307,18 @@ def draw_ahrs_screen(filename, ss=None):
     _trim_row(0, "pitch_trim", "PITCH TRIM", "Horizon offset correction")
     _trim_row(1, "roll_trim",  "ROLL TRIM",  "Wing-level correction")
 
-    # Row 2: magnetometer
+    # Row 2: magnetometer — CALIBRATE is greyed out (future)
     bx, by, bw, bh = _setting_row_p(draw, 2, "MAGNETOMETER", "Compass calibration")
     cal = ss.get("mag_cal", "idle")
     state_lbl, state_col = _SS_MAG_LABELS.get(cal, ("?", WHITE))
     draw.text((bx+220, by+(bh-15)//2), state_lbl, fill=state_col, font=fnt(13,bold=True))
-    _action_btn_p(draw, bx+bw-138-14, by+(bh-36)//2, 138, 36, "CALIBRATE", "warn")
+    cbx = bx+bw-138-14; cby = by+(bh-36)//2
+    draw.rounded_rectangle([(cbx,cby),(cbx+137,cby+35)], radius=6, fill=(18,18,20))
+    draw.rounded_rectangle([(cbx,cby),(cbx+137,cby+35)], radius=6, outline=(55,55,65), width=2)
+    cw = int(draw.textlength("CALIBRATE", font=fnt(15)))
+    draw.text((cbx+(138-cw)//2, cby+9), "CALIBRATE", fill=(75,75,88), font=fnt(15))
+    fw = int(draw.textlength("future", font=fnt(9)))
+    draw.text((cbx+(138-fw)//2, cby+26), "future", fill=(60,60,72), font=fnt(9))
 
     # Row 3: mounting
     bx, by, bw, bh = _setting_row_p(draw, 3, "MOUNTING", "Board orientation")
@@ -1323,46 +1337,68 @@ def draw_ahrs_screen(filename, ss=None):
 # Connectivity ─────────────────────────────────────────────────────────────────
 
 _CS_FIELDS = [
-    ("ahrs_url",  "AHRS URL",  "Pico W access-point address"),
-    ("wifi_ssid", "WiFi SSID", "Local network for forwarding"),
+    ("ahrs_url",  "AHRS URL",       "Pico W access-point address"),
+    ("wifi_ssid", "WiFi SSID",      "Network name to join"),
+    ("wifi_pass", "WiFi PASSWORD",  "WPA2 passphrase"),
 ]
+_CS_BTN_Y = _ss_row_y(len(_CS_FIELDS) + 1) + 4
+_CS_BTN_H = 50
 
 
 def draw_connectivity_screen(filename, cs=None):
     if cs is None:
-        cs = {"ahrs_url":"http://192.168.4.1","wifi_ssid":"AHRS-Link",
-              "ahrs_ok":False,"wifi_ok":False}
+        cs = {
+            "ahrs_url":  "http://192.168.4.1",
+            "wifi_ssid": "AHRS-Link",
+            "wifi_pass": "secret123",
+            "ahrs_ok":   False,
+            "wifi_ok":   False,
+            "apply_msg": "",
+            "test_msg":  "",
+        }
     img  = Image.new('RGB',(W,H),(0,8,22))
     draw = ImageDraw.Draw(img)
     _screen_header_p(draw, "CONNECTIVITY")
     bw = W - 2*_SS_MX
 
+    # Rows 0-2: editable fields
     for ri,(key, label, sub) in enumerate(_CS_FIELDS):
         bx, by, _, bh = _setting_row_p(draw, ri, label, sub)
-        val = cs.get(key, "\u2014")
-        vbx = bx+230; vby = by+14; vbw = bx+bw-vbx-12; vbh = bh-28
+        val = cs.get(key, "")
+        # Password masking
+        display = ("\u25cf" * min(len(val), 16)) if (key == "wifi_pass" and val) else val
+        vbx = bx+210; vby = by+12; vbw = bx+bw-vbx-12; vbh = bh-24
         draw.rounded_rectangle([(vbx,vby),(vbx+vbw-1,vby+vbh-1)], radius=4, fill=(0,20,42))
         draw.rounded_rectangle([(vbx,vby),(vbx+vbw-1,vby+vbh-1)], radius=4, outline=CYAN, width=1)
-        vf = fnt(13,bold=True)
-        vw = int(draw.textlength(val, font=vf))
-        draw.text((vbx+(vbw-vw)//2, vby+(vbh-15)//2), val, fill=CYAN, font=vf)
+        vf = fnt(12, bold=bool(val))
+        txt = display or "\u2014"
+        vw = int(draw.textlength(txt, font=vf))
+        draw.text((vbx+(vbw-vw)//2, vby+(vbh-14)//2), txt, fill=CYAN, font=vf)
         draw.text((vbx+6, vby+vbh-13), "tap to edit", fill=(80,100,125), font=fnt(9))
 
-    # Row 2: status
-    bx, by, _, bh = _setting_row_p(draw, 2, "STATUS", "Live connection state")
+    # Row 3: STATUS — live dots
+    bx, by, _, bh = _setting_row_p(draw, 3, "STATUS", "Connection state")
     for i,(ok_k, ok_y, ok_n) in enumerate([
-            ("ahrs_ok","AHRS  CONNECTED","AHRS  NO LINK"),
-            ("wifi_ok","WiFi  CONNECTED","WiFi  NO LINK")]):
-        ok = cs.get(ok_k, False)
+            ("ahrs_ok","AHRS  \u2713 CONNECTED","AHRS  \u2717 NO LINK"),
+            ("wifi_ok","WiFi  \u2713 CONNECTED","WiFi  \u2717 NO LINK")]):
+        ok  = cs.get(ok_k, False)
         col = (60,220,80) if ok else (200,50,50)
         lbl = ok_y if ok else ok_n
-        cy = by + bh//4 + i*bh//2
-        draw.ellipse([(bx+232,cy-6),(bx+244,cy+6)], fill=col)
-        draw.text((bx+252, cy-9), lbl, fill=col, font=fnt(13,bold=True))
+        cy  = by + bh//4 + i*bh//2
+        draw.ellipse([(bx+222,cy-5),(bx+232,cy+5)], fill=col)
+        draw.text((bx+240, cy-8), lbl, fill=col, font=fnt(12,bold=True))
 
-    # Row 3: test button
-    by3 = _ss_row_y(3)
-    _action_btn_p(draw, _SS_MX, by3, bw, _SS_RH, "TEST CONNECTION", "ok")
+    # apply_msg / test_msg feedback lines
+    msg_y = _CS_BTN_Y - 28
+    if cs.get("apply_msg"):
+        draw.text((_SS_MX+6, msg_y), cs["apply_msg"], fill=(140,200,140), font=fnt(11))
+    if cs.get("test_msg"):
+        draw.text((W//2+6, msg_y), cs["test_msg"], fill=(140,200,140), font=fnt(11))
+
+    # Two action buttons: [APPLY WIFI]   [TEST AHRS]
+    half = (bw - 10) // 2
+    _action_btn_p(draw, _SS_MX,          _CS_BTN_Y, half, _CS_BTN_H, "APPLY WIFI", "ok")
+    _action_btn_p(draw, _SS_MX+half+10,  _CS_BTN_Y, half, _CS_BTN_H, "TEST AHRS",  "normal")
 
     img.save(filename)
     print(f"Saved {filename}")
@@ -1611,7 +1647,10 @@ draw_ahrs_screen(os.path.join(OUT, "preview_setup_ahrs.png"),
                  ss={"pitch_trim":1.5,"roll_trim":-0.5,"mag_cal":"done","mounting":"normal"})
 draw_connectivity_screen(os.path.join(OUT, "preview_setup_connectivity.png"),
                          cs={"ahrs_url":"http://192.168.4.1","wifi_ssid":"AHRS-Link",
-                             "ahrs_ok":True,"wifi_ok":False})
+                             "wifi_pass":"mypassword",
+                             "ahrs_ok":True,"wifi_ok":False,
+                             "apply_msg":"WiFi config applied — connecting…",
+                             "test_msg": "Reached 192.168.4.1:80 \u2713"})
 draw_system_screen(os.path.join(OUT, "preview_setup_system.png"))
 
 print("Done.")
