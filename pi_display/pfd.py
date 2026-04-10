@@ -109,6 +109,7 @@ disp["ds"] = {                      # display settings
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim": 0.0, "roll_trim": 0.0,
     "mag_cal":    "idle", "mounting": "normal",
+    "hdg_src":    "mag",   # "mag" | "gps"  — heading source (magnetic or GPS track)
 }
 disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
@@ -119,7 +120,8 @@ disp["cs"] = {                      # connectivity settings
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 
 # ── Module-level SSE handle (set in main, restarted by handle_event) ─────────
-_sse_client = None
+_sse_client  = None
+_link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
 
 # ── Connectivity helpers ──────────────────────────────────────────────────────
@@ -957,8 +959,13 @@ _CARDINALS = {0: "N", 45: "NE", 90: "E", 135: "SE",
               180: "S", 225: "SW", 270: "W", 315: "NW"}
 
 
-def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
-    """Bottom heading strip with bug and current-heading box."""
+def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src="mag"):
+    """Bottom heading strip with bug and current-heading box.
+
+    hdg_src="gps" means hdg is already the GPS track value; the magenta track
+    pointer is suppressed (it would just sit at centre) and the readout box
+    shows a small "TRK" sub-label instead of "MAG".
+    """
     hdg_surf = pygame.Surface((DISPLAY_W, HDG_H), pygame.SRCALPHA)
     hdg_surf.fill((0, 8, 22, 210))
     surf.blit(hdg_surf, (0, HDG_Y))
@@ -992,8 +999,9 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
         pygame.gfxdraw.filled_polygon(surf, bug, CYAN)
         pygame.gfxdraw.aapolygon(surf, bug, CYAN)
 
-    # GPS track pointer (magenta, when GPS OK)
-    if gps_ok and track is not None:
+    # GPS track pointer (magenta, when GPS OK and heading source is MAG)
+    # Suppressed in GPS TRK mode — hdg is already the track value.
+    if gps_ok and track is not None and hdg_src != "gps":
         off = ((track - hdg + 180) % 360) - 180
         tx = int(CX + off * PX_PER_DEG)
         if 0 < tx < DISPLAY_W:
@@ -1015,8 +1023,14 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
                       (tx,      by2 + bh),
                       (bx,      by2 + bh)], {0, 1, 2, 6})
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
-    pygame.gfxdraw.aapolygon(surf, pts_h, WHITE)
-    _text(surf, f"{round(hdg) % 360:03d}\u00b0", 17, WHITE, cx=CX, cy=by2 + bh // 2)
+    pygame.gfxdraw.aapolygon(surf, pts_h, WHITE if hdg_src == "mag" else CYAN)
+    if hdg_src == "gps":
+        # Two-line readout: heading value + "TRK" sub-label in cyan
+        _text(surf, f"{round(hdg) % 360:03d}\u00b0", 14, CYAN, bold=True,
+              cx=CX, cy=by2 + 8)
+        _text(surf, "TRK", 8, CYAN, cx=CX, cy=by2 + bh - 4)
+    else:
+        _text(surf, f"{round(hdg) % 360:03d}\u00b0", 17, WHITE, cx=CX, cy=by2 + bh // 2)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────
@@ -1116,13 +1130,15 @@ def draw_terrain_alert(surf):
 
 
 # ── Status badges ─────────────────────────────────────────────────────────────
-def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected):
+def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected,
+                       hdg_src="mag"):
     """
     Badges are shown only when something requires pilot attention.
     Nominal state = clean strip.  Problem state = badge appears.
 
     Left  (from AI_X): AHRS FAIL, NO LINK, NO TER, NO OBS, EXP OBS
-    Right (to ALT_X):  NO GPS, GPS ALT (only when baro absent)
+    Right (to ALT_X):  GPS TRK (info), GPS ALT (only when baro absent),
+                       GPS Xsat (acquiring), NO GPS (absent)
     """
     f10 = _get_font(10)
 
@@ -1160,9 +1176,14 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
         pygame.draw.rect(surf, bg, (rx, 4, w, 15))
         _text(surf, text, 10, fg, x=rx + 5, y=5)
 
+    # GPS-slaved heading mode indicator — dim cyan info badge (rightmost)
+    if hdg_src == "gps" and gps_ok:
+        badge_r("GPS TRK", (0, 60, 90), (80, 190, 220))
+
     # Show GPS ALT only when baro sensor is absent (pilot needs to know alt source)
     if not baro_ok:
         badge_r("GPS ALT", (80, 80, 0), (220, 220, 100))
+
     # GPS state:
     #   fix valid          → no badge (clean)
     #   satellites visible → amber sat-count (acquiring, no fix yet)
@@ -2126,6 +2147,20 @@ def draw_ahrs_setup(surf, ss):
     for i, (v, lbl) in enumerate(opts):
         _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
 
+    # Row 4: Heading source (MAG compass vs GPS track)
+    bx, by, bw, bh = _setting_row(surf, 4, "HEADING SOURCE",
+                                   "Primary heading reference")
+    cur_src = ss.get("hdg_src", "mag")
+    opts_src = [("mag", "MAG"), ("gps", "GPS TRK")]
+    total_src = 2*120 + _DSP_BTN_G
+    rx = bx + bw - total_src - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    for i, (v, lbl) in enumerate(opts_src):
+        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur_src)
+    # Dim note: GPS TRK only available when GPS has a fix
+    _text(surf, "GPS TRK available with valid fix", 9, (80, 100, 125),
+          x=bx + 14, y=by + bh - 14)
+
 
 def ahrs_setup_hit(x, y, ss):
     if 8 <= x <= 80 and 6 <= y <= 37:
@@ -2133,7 +2168,7 @@ def ahrs_setup_hit(x, y, ss):
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(4):
+    for ri in range(5):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
@@ -2158,6 +2193,14 @@ def ahrs_setup_hit(x, y, ss):
                 if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
                     if ry <= y <= ry+_DSP_BTN_H:
                         return f"set:mounting:{v}"
+        elif ri == 4:
+            total_src = 2*120 + _DSP_BTN_G
+            rx = bx + bw - total_src - 14
+            ry = by + (_SS_RH - _DSP_BTN_H) // 2
+            for i, v in enumerate(("mag", "gps")):
+                if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
+                    if ry <= y <= ry+_DSP_BTN_H:
+                        return f"set:hdg_src:{v}"
     return None
 
 
@@ -2985,7 +3028,7 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
 
 
 # ── Main render function ──────────────────────────────────────────────────────
-def render(surf, demo_mode, connected):
+def render(surf, demo_mode, connected, data_stale=False):
     mode = disp.get("mode", "pfd")
 
     # ── Full-screen replacement screens (no PFD behind them) ─────────────────
@@ -3011,7 +3054,6 @@ def render(surf, demo_mode, connected):
 
     roll    = disp["roll"]
     pitch   = disp["pitch"]
-    hdg     = disp["yaw"]
     alt     = disp["alt"]
     speed   = disp["speed"]
     vspeed  = disp["vspeed"]
@@ -3038,6 +3080,19 @@ def render(surf, demo_mode, connected):
     else:
         pitch = pitch + pitch_trim
         roll  = roll  + roll_trim
+
+    # ── Stale-data timeout: no link for > STALE_TIMEOUT_S → treat as AHRS fail
+    if data_stale:
+        ahrs_ok = False
+
+    # ── Heading source selection ──────────────────────────────────────────────
+    # MAG  (default): use magnetometer/gyro yaw from AHRS
+    # GPS TRK:        use GPS ground track as heading reference (requires fix)
+    hdg_src = ss.get("hdg_src", "mag")
+    if hdg_src == "gps" and gps_ok:
+        hdg = disp["track"]
+    else:
+        hdg = disp["yaw"]
 
     # ── Unit conversions ──────────────────────────────────────────────────────
     ds = disp["ds"]
@@ -3085,7 +3140,7 @@ def render(surf, demo_mode, connected):
     draw_alt_tape(surf, alt_d, vspeed, baro_hpa, baro_src, alt_bug_d)
 
     # 5. Heading tape
-    draw_heading_tape(surf, hdg, hdg_bug, track, gps_ok)
+    draw_heading_tape(surf, hdg, hdg_bug, track, gps_ok, hdg_src=hdg_src)
 
     # 6. Roll arc
     draw_roll_arc(surf, roll)
@@ -3097,7 +3152,8 @@ def render(surf, demo_mode, connected):
     draw_slip_ball(surf, ay)
 
     # 9. Status badges
-    draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected)
+    draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected,
+                       hdg_src=hdg_src)
 
     # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
     draw_terrain_alert(surf)
@@ -3215,9 +3271,11 @@ def main():
     pygame.display.set_caption("PFD")
     clock = pygame.time.Clock()
 
-    demo_mode = args.demo
-    demo      = DemoState() if demo_mode else None
-    connected = False
+    demo_mode  = args.demo
+    demo       = DemoState() if demo_mode else None
+    connected  = False
+    data_stale = False
+    global _link_lost_t
 
     if not demo_mode:
         global _sse_client
@@ -3259,6 +3317,14 @@ def main():
         if _sse_client:
             connected = _sse_client.connected
             disp["cs"]["ahrs_ok"] = connected
+            # Stale-data timeout: track when link first dropped
+            if not connected:
+                if _link_lost_t is None:
+                    _link_lost_t = time.monotonic()
+                data_stale = (time.monotonic() - _link_lost_t) > STALE_TIMEOUT_S
+            else:
+                _link_lost_t = None
+                data_stale   = False
 
         # 2-finger hold → enter setup screen (EXIT button returns to PFD)
         if (_multitouch_t0 is not None
@@ -3270,7 +3336,7 @@ def main():
             _multitouch_t0 = None
 
         # Render
-        render(surf, demo_mode, connected)
+        render(surf, demo_mode, connected, data_stale=data_stale)
         pygame.display.flip()
         clock.tick(TARGET_FPS)
 

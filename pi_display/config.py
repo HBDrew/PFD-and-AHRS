@@ -87,7 +87,8 @@ DEMO_ALT = 8500.0   # ft MSL starting altitude
 DEMO_HDG = 133.0    # degrees
 
 # ── Touch / interaction ───────────────────────────────────────────────────────
-LONG_PRESS_MS = 800  # ms for long-press to enter setup
+LONG_PRESS_MS    = 800  # ms for long-press to enter setup
+STALE_TIMEOUT_S  = 3    # seconds after link loss before AHRS is marked failed
 
 # ── Try to import local overrides ─────────────────────────────────────────────
 try:

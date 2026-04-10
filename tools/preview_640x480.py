@@ -240,7 +240,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                hdg_bug, alt_bug, label, filename,
                gs_bug=None, ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
                baro_hpa=1013.25, terrain_alert=0,
-               no_terrain=False, obs_state="ok"):
+               no_terrain=False, obs_state="ok", hdg_src="mag"):
 
     img  = Image.new('RGB', (W, H), (0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -592,15 +592,27 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                       (tx,       by2+bh2),
                       (bx,       by2+bh2)], {0, 1, 2, 6})
     draw.polygon(pts_h, fill=(0, 0, 0))
-    draw.line(pts_h + [pts_h[0]], fill=WHITE, width=2)
-    _hbf  = fnt(17)
+    _hdg_box_col = CYAN if hdg_src == "gps" else WHITE
+    draw.line(pts_h + [pts_h[0]], fill=_hdg_box_col, width=2)
     _hstr = f"{round(hdg)%360:03d}\u00b0"
-    _hbb  = draw.textbbox((0, 0), _hstr, font=_hbf)   # (l, t, r, b)
-    _htw  = _hbb[2] - _hbb[0]
-    _hth  = _hbb[3] - _hbb[1]
-    draw.text((CX - _htw // 2 - _hbb[0],
-               by2 + (bh2 - _hth) // 2 - _hbb[1]),
-              _hstr, fill=WHITE, font=_hbf)
+    if hdg_src == "gps":
+        # Two-line: heading at top half, TRK sub-label at bottom
+        _hbf = fnt(14, bold=True)
+        _hbb = draw.textbbox((0, 0), _hstr, font=_hbf)
+        _htw = _hbb[2] - _hbb[0]
+        draw.text((CX - _htw // 2 - _hbb[0], by2 + 1 - _hbb[1]),
+                  _hstr, fill=CYAN, font=_hbf)
+        _trkf = fnt(8)
+        _trkw = int(draw.textlength("TRK", font=_trkf))
+        draw.text((CX - _trkw // 2, by2 + bh2 - 11), "TRK", fill=CYAN, font=_trkf)
+    else:
+        _hbf  = fnt(17)
+        _hbb  = draw.textbbox((0, 0), _hstr, font=_hbf)
+        _htw  = _hbb[2] - _hbb[0]
+        _hth  = _hbb[3] - _hbb[1]
+        draw.text((CX - _htw // 2 - _hbb[0],
+                   by2 + (bh2 - _hth) // 2 - _hbb[1]),
+                  _hstr, fill=WHITE, font=_hbf)
 
     # ── 6. ROLL ARC (rendered at 2× for anti-aliasing) ───────────────────────
     # Drawing at 2× then scaling down via LANCZOS gives smooth arc and shapes.
@@ -752,6 +764,9 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         draw.rectangle([(bx_r, 4), (bx_r+tw, 19)], fill=bg)
         draw.text((bx_r+5, 5), text, fill=fg, font=_bf)
 
+    # GPS TRK mode info badge (rightmost, dim cyan)
+    if hdg_src == "gps" and gps_ok:
+        badge_r("GPS TRK", (0, 60, 90), (80, 190, 220))
     if not baro_ok:
         badge_r("GPS ALT", (80, 80, 0), (220, 220, 100))
     if not gps_ok:
@@ -1330,7 +1345,8 @@ _SS_MAG_LABELS = {
 
 def draw_ahrs_screen(filename, ss=None):
     if ss is None:
-        ss = {"pitch_trim":0.0,"roll_trim":0.0,"mag_cal":"idle","mounting":"normal"}
+        ss = {"pitch_trim":0.0,"roll_trim":0.0,"mag_cal":"idle","mounting":"normal",
+              "hdg_src":"mag"}
     img  = Image.new('RGB',(W,H),(0,8,22))
     draw = ImageDraw.Draw(img)
     _screen_header_p(draw, "AHRS / SENSORS")
@@ -1378,6 +1394,18 @@ def draw_ahrs_screen(filename, ss=None):
     ry = by + (bh - _DSP_BTN_H) // 2
     for i,(v,lbl) in enumerate(opts):
         _seg_btn_p(draw, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
+
+    # Row 4: heading source
+    bx, by, bw, bh = _setting_row_p(draw, 4, "HEADING SOURCE", "Primary heading reference")
+    cur_src = ss.get("hdg_src", "mag")
+    opts_src = [("mag","MAG"),("gps","GPS TRK")]
+    total_src = 2*120 + _DSP_BTN_G
+    rx = bx + bw - total_src - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    for i,(v,lbl) in enumerate(opts_src):
+        _seg_btn_p(draw, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur_src)
+    draw.text((bx+14, by+bh-14), "GPS TRK available with valid fix",
+              fill=(80,100,125), font=fnt(9))
 
     img.save(filename)
     print(f"Saved {filename}")
@@ -1867,7 +1895,11 @@ draw_obstacle_data_screen(os.path.join(OUT, "preview_obstacle_downloading.png"),
                           dl_status="Downloading\u2026 38%  (7,440 / 19,584 KB)")
 draw_display_screen(os.path.join(OUT, "preview_setup_display.png"))
 draw_ahrs_screen(os.path.join(OUT, "preview_setup_ahrs.png"),
-                 ss={"pitch_trim":1.5,"roll_trim":-0.5,"mag_cal":"done","mounting":"normal"})
+                 ss={"pitch_trim":1.5,"roll_trim":-0.5,"mag_cal":"done","mounting":"normal",
+                     "hdg_src":"mag"})
+draw_ahrs_screen(os.path.join(OUT, "preview_setup_ahrs_gpstrk.png"),
+                 ss={"pitch_trim":0.0,"roll_trim":0.0,"mag_cal":"idle","mounting":"normal",
+                     "hdg_src":"gps"})
 draw_connectivity_screen(os.path.join(OUT, "preview_setup_connectivity.png"),
                          cs={"ahrs_url":"http://192.168.4.1","wifi_ssid":"AHRS-Link",
                              "wifi_pass":"mypassword",
@@ -1894,6 +1926,17 @@ draw_scene(
     filename=os.path.join(OUT, "preview_badges_exp_obs.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
     no_terrain=False, obs_state="expired",
+)
+
+# GPS TRK heading mode
+draw_scene(
+    roll=0, pitch=2, hdg=133, alt=8499.7, speed=114.7,
+    vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
+    gs_bug=115,
+    label="GPS TRK heading mode — track slaved to GPS",
+    filename=os.path.join(OUT, "preview_gps_trk_mode.png"),
+    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+    hdg_src="gps",
 )
 
 print("Done.")
