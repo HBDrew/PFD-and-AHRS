@@ -68,56 +68,103 @@ def fnt(size, bold=False):
     return _fnt_cache[key]
 
 
+def _chamfer(pts, indices, r=3):
+    """Round polygon corners at given indices with smooth arcs (works for 90° corners)."""
+    import math
+    n = len(pts)
+    out = []
+    for i, p in enumerate(pts):
+        if i not in indices:
+            out.append(p)
+            continue
+        prev_p = pts[(i - 1) % n]
+        next_p = pts[(i + 1) % n]
+        dx1 = prev_p[0] - p[0]; dy1 = prev_p[1] - p[1]
+        l1 = (dx1*dx1 + dy1*dy1) ** 0.5
+        if l1: dx1 /= l1; dy1 /= l1
+        dx2 = next_p[0] - p[0]; dy2 = next_p[1] - p[1]
+        l2 = (dx2*dx2 + dy2*dy2) ** 0.5
+        if l2: dx2 /= l2; dy2 /= l2
+        sx = p[0] + dx1*r;  sy = p[1] + dy1*r   # arc start
+        ex = p[0] + dx2*r;  ey = p[1] + dy2*r   # arc end
+        acx = p[0] + dx1*r + dx2*r              # arc centre
+        acy = p[1] + dy1*r + dy2*r
+        a1 = math.atan2(sy - acy, sx - acx)
+        a2 = math.atan2(ey - acy, ex - acx)
+        cross = dx1 * dy2 - dy1 * dx2
+        da = a2 - a1
+        if cross < 0:
+            while da < 0: da += 2 * math.pi
+        else:
+            while da > 0: da -= 2 * math.pi
+        for j in range(5):
+            angle = a1 + da * j / 4
+            out.append((int(round(acx + r * math.cos(angle))),
+                        int(round(acy + r * math.sin(angle)))))
+    return out
+
+
 def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
-                 suppress_leading=False, power_offset=0):
+                 suppress_leading=False, power_offset=0, show_adjacent=False):
     """
-    Veeder-Root style rolling-drum digit readout.
-    Cascading: every digit carries smoothly when the digit below it approaches 9→0.
-    power_offset: the power of the LOWEST digit rendered (0=units, 1=tens, etc.)
+    Veeder-Root rolling-drum digit readout.
+    show_adjacent=True: adjacent digits are ~50% visible above/below (true drum look).
+    Cascading: every digit carries smoothly when the digit below approaches 9→0.
     """
     char_w  = bw // n_digits
     f       = fnt(font_sz, bold=True)
     val_int = int(abs(value))
     try:
-        ref_bbox = f.getbbox("0")
-        ch = ref_bbox[3] - ref_bbox[1]
-        cw_ch = ref_bbox[2] - ref_bbox[0]
+        ref_bbox  = f.getbbox("0")
+        ch        = ref_bbox[3] - ref_bbox[1]
+        cw_ch     = ref_bbox[2] - ref_bbox[0]
+        ch_offset = ref_bbox[1]           # glyph-top offset for precise centering
     except Exception:
-        ch = font_sz; cw_ch = font_sz // 2
+        ch = font_sz; cw_ch = font_sz // 2; ch_offset = 0
 
     col_rgba = color + (255,)
+    slot_h   = bh // 2 if show_adjacent else bh
 
     for col_i in range(n_digits):
-        power = power_offset + n_digits - 1 - col_i   # absolute decimal power of this column
+        power = power_offset + n_digits - 1 - col_i
         if suppress_leading and power > 0 and val_int < 10 ** power:
             continue
 
         if power == 0:
             d_cont = float(value % 10.0)
         else:
-            # Cascade: scroll when the complete lower-order portion approaches rollover
             lower_cont = (value % (10 ** power)) / (10 ** (power - 1))
-            carry_frac = max(0.0, lower_cont - 9.0)   # 0 normally, 0→1 near rollover
+            carry_frac = max(0.0, lower_cont - 9.0)
             d_lo   = (int(value) // (10 ** power)) % 10
             d_cont = float(d_lo) + carry_frac
 
-        d_lo  = int(d_cont)
-        frac  = d_cont - d_lo
-        d_hi  = (d_lo + 1) % 10
-
-        scroll = int(frac * bh)
+        d_lo   = int(d_cont)
+        frac   = d_cont - d_lo
+        d_hi   = (d_lo + 1) % 10
+        scroll = int(frac * slot_h)
         tx     = max(0, (char_w - cw_ch) // 2)
-        ty_lo  = (bh - ch) // 2 - scroll
-        ty_hi  = ty_lo + bh
+        cx_pos = bx + col_i * char_w
 
-        # Render into a 2× tall cell, then crop to bh (auto-clips scrolled digits)
-        cell   = Image.new('RGBA', (char_w, bh * 2), (0, 0, 0, 0))
-        cd     = ImageDraw.Draw(cell)
-        cd.text((tx, ty_lo), str(d_lo), fill=col_rgba, font=f)
-        cd.text((tx, ty_hi), str(d_hi), fill=col_rgba, font=f)
+        if show_adjacent:
+            d_prev  = (d_lo - 1 + 10) % 10
+            ty_lo   = bh // 2 - ch // 2 - ch_offset - scroll
+            ty_prev = ty_lo - slot_h
+            ty_hi   = ty_lo + slot_h
+            cell = Image.new('RGBA', (char_w, bh + 2 * slot_h), (0, 0, 0, 0))
+            cd   = ImageDraw.Draw(cell)
+            cd.text((tx, ty_prev + slot_h), str(d_prev), fill=col_rgba, font=f)
+            cd.text((tx, ty_lo   + slot_h), str(d_lo),   fill=col_rgba, font=f)
+            cd.text((tx, ty_hi   + slot_h), str(d_hi),   fill=col_rgba, font=f)
+            cropped = cell.crop((0, slot_h, char_w, slot_h + bh))
+        else:
+            ty_lo = (bh - ch) // 2 - ch_offset - scroll
+            ty_hi = ty_lo + bh
+            cell  = Image.new('RGBA', (char_w, bh * 2), (0, 0, 0, 0))
+            cd    = ImageDraw.Draw(cell)
+            cd.text((tx, ty_lo), str(d_lo), fill=col_rgba, font=f)
+            cd.text((tx, ty_hi), str(d_hi), fill=col_rgba, font=f)
+            cropped = cell.crop((0, 0, char_w, bh))
 
-        cx_pos  = bx + col_i * char_w
-        cropped = cell.crop((0, 0, char_w, bh))
         img.paste(cropped, (cx_pos, by), cropped)
 
 
@@ -135,49 +182,51 @@ def _drum_shade(img, bx, by, bw, bh):
     img.paste(shaded.convert('RGB'), (bx, by))
 
 
-def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz):
+def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz, show_adjacent=False):
     """
-    Altimeter Veeder-Root drum: rolls in 20-foot steps.
-    Left sub-column scrolls the tens digit (0→2→4→6→8→0).
-    Right sub-column shows a fixed '0' (units always zero in 20 ft resolution).
+    Altimeter Veeder-Root drum: both digits scroll together in 20-foot steps.
+    Labels '00','20','40','60','80' move as a unit so tens AND units roll together.
     """
+    _LABELS = ("00", "20", "40", "60", "80")
     f = fnt(font_sz, bold=True)
     try:
-        ref_bbox = f.getbbox("0")
-        ch  = ref_bbox[3] - ref_bbox[1]
-        cw  = ref_bbox[2] - ref_bbox[0]
+        ref_bbox  = f.getbbox("00")
+        ch        = ref_bbox[3] - ref_bbox[1]
+        cw        = ref_bbox[2] - ref_bbox[0]
+        ch_offset = ref_bbox[1]
     except Exception:
-        ch = font_sz; cw = font_sz // 2
+        ch = font_sz; cw = font_sz; ch_offset = 0
     col_rgba = color + (255,)
+    tx = max(0, (bw - cw) // 2)
 
-    # 5 drum positions per 100 ft (one step every 20 ft)
-    drum_pos = (alt % 100) / 20         # 0.0 – 5.0
-    d_lo_idx = int(drum_pos) % 5        # 0–4
+    drum_pos = (alt % 100) / 20
+    d_lo_idx = int(drum_pos) % 5
     frac     = drum_pos - int(drum_pos)
-    d_lo_dig = d_lo_idx * 2             # 0, 2, 4, 6, 8
-    d_hi_dig = ((d_lo_idx + 1) % 5) * 2  # next even digit (8 wraps → 0)
+    slot_h   = bh // 2 if show_adjacent else bh
+    scroll   = int(frac * slot_h)
 
-    # ── Left sub-column: rolling tens digit ──
-    lcw    = bw - cw - 1               # width for rolling col, leaving room for fixed '0'
-    scroll = int(frac * bh)
-    tx_l   = max(0, (lcw - cw) // 2)
-    ty_lo  = (bh - ch) // 2 - scroll
-    ty_hi  = ty_lo + bh
-    cell_l = Image.new('RGBA', (lcw, bh * 2), (0, 0, 0, 0))
-    cd     = ImageDraw.Draw(cell_l)
-    cd.text((tx_l, ty_lo), str(d_lo_dig), fill=col_rgba, font=f)
-    cd.text((tx_l, ty_hi), str(d_hi_dig), fill=col_rgba, font=f)
-    cropped_l = cell_l.crop((0, 0, lcw, bh))
-    img.paste(cropped_l, (bx, by), cropped_l)
-
-    # ── Right sub-column: fixed units '0' ──
-    rcw   = bw - lcw
-    tx_r  = max(0, (rcw - cw) // 2)
-    ty_r  = (bh - ch) // 2
-    cell_r = Image.new('RGBA', (rcw, bh), (0, 0, 0, 0))
-    cd_r  = ImageDraw.Draw(cell_r)
-    cd_r.text((tx_r, ty_r), "0", fill=col_rgba, font=f)
-    img.paste(cell_r, (bx + lcw, by), cell_r)
+    if show_adjacent:
+        d_prev_idx = (d_lo_idx - 1 + 5) % 5
+        d_hi_idx   = (d_lo_idx + 1) % 5
+        ty_lo   = bh // 2 - ch // 2 - ch_offset - scroll
+        ty_prev = ty_lo - slot_h
+        ty_hi   = ty_lo + slot_h
+        cell = Image.new('RGBA', (bw, bh + 2 * slot_h), (0, 0, 0, 0))
+        cd   = ImageDraw.Draw(cell)
+        cd.text((tx, ty_prev + slot_h), _LABELS[d_prev_idx], fill=col_rgba, font=f)
+        cd.text((tx, ty_lo   + slot_h), _LABELS[d_lo_idx],   fill=col_rgba, font=f)
+        cd.text((tx, ty_hi   + slot_h), _LABELS[d_hi_idx],   fill=col_rgba, font=f)
+        cropped = cell.crop((0, slot_h, bw, slot_h + bh))
+    else:
+        d_hi_idx = (d_lo_idx + 1) % 5
+        ty_lo = (bh - ch) // 2 - ch_offset - scroll
+        ty_hi = ty_lo + bh
+        cell  = Image.new('RGBA', (bw, bh * 2), (0, 0, 0, 0))
+        cd    = ImageDraw.Draw(cell)
+        cd.text((tx, ty_lo), _LABELS[d_lo_idx], fill=col_rgba, font=f)
+        cd.text((tx, ty_hi), _LABELS[d_hi_idx], fill=col_rgba, font=f)
+        cropped = cell.crop((0, 0, bw, bh))
+    img.paste(cropped, (bx, by), cropped)
 
 
 def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
@@ -332,20 +381,20 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Speed readout box — stepped Veeder-Root style (from SVG spec)
     # Layout: pointer(15) → inner section(32) → drum section(19) = 66px total
     # Inner: ±15 from TAPE_MID;  Drum: ±29 from TAPE_MID (taller window)
-    pts_s = [(SPD_X,    TAPE_MID),
-             (SPD_X+15, TAPE_MID-15), (SPD_X+47, TAPE_MID-15),
-             (SPD_X+47, TAPE_MID-29), (SPD_X+66, TAPE_MID-29),
-             (SPD_X+66, TAPE_MID+29),
-             (SPD_X+47, TAPE_MID+29), (SPD_X+47, TAPE_MID+15),
-             (SPD_X+15, TAPE_MID+15)]
+    pts_s = _chamfer([(SPD_X,    TAPE_MID),
+                      (SPD_X+15, TAPE_MID-15), (SPD_X+47, TAPE_MID-15),
+                      (SPD_X+47, TAPE_MID-29), (SPD_X+66, TAPE_MID-29),
+                      (SPD_X+66, TAPE_MID+29),
+                      (SPD_X+47, TAPE_MID+29), (SPD_X+47, TAPE_MID+15),
+                      (SPD_X+15, TAPE_MID+15)], {2, 3, 4, 5, 6, 7})
     draw.polygon(pts_s, fill=(0, 10, 30))
     draw.line(pts_s + [pts_s[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    # Inner section: hundreds + tens, cascade-rolling, clipped to 30px window
-    rolling_drum(img, SPD_X+16, TAPE_MID-14, 30, 28, speed, 2, spd_col, 16, power_offset=1)
-    # Drum section: units digit, full 58px window (shows incoming/outgoing digit)
-    rolling_drum(img, SPD_X+48, TAPE_MID-28, 17, 56, speed, 1, spd_col, 22)
-    _drum_shade(img,   SPD_X+47, TAPE_MID-29, 19, 58)
+    # Inner section: hundreds + tens at same font as drum, cascade-rolling
+    rolling_drum(img, SPD_X+16, TAPE_MID-14, 30, 28, speed, 2, spd_col, 22, power_offset=1)
+    # Drum section: units digit, adjacent digits ~50% visible
+    rolling_drum(img, SPD_X+48, TAPE_MID-28, 17, 56, speed, 1, spd_col, 22, show_adjacent=True)
+    _drum_shade(img,   SPD_X+49, TAPE_MID-27, 15, 54)   # 2px inset from border
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -393,24 +442,31 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Layout: inner section(42) → drum section(24) → pointer(15) = 81px total
     # Inner: ±15;  Drum: ±29  (pointer on the RIGHT, inner on the LEFT)
     R = ALT_X + ALT_W   # right edge = 640
-    pts_a = [(R,    TAPE_MID),
-             (R-15, TAPE_MID-15), (R-15, TAPE_MID-29),
-             (R-39, TAPE_MID-29), (R-39, TAPE_MID-15),
-             (R-81, TAPE_MID-15),
-             (R-81, TAPE_MID+15),
-             (R-39, TAPE_MID+15), (R-39, TAPE_MID+29),
-             (R-15, TAPE_MID+29), (R-15, TAPE_MID+15)]
+    pts_a = _chamfer([(R,    TAPE_MID),
+                      (R-15, TAPE_MID-15), (R-15, TAPE_MID-29),
+                      (R-39, TAPE_MID-29), (R-39, TAPE_MID-15),
+                      (R-81, TAPE_MID-15),
+                      (R-81, TAPE_MID+15),
+                      (R-39, TAPE_MID+15), (R-39, TAPE_MID+29),
+                      (R-15, TAPE_MID+29), (R-15, TAPE_MID+15)], {2, 3, 4, 5, 6, 7, 8, 9})
     draw.polygon(pts_a, fill=(0, 10, 30))
     draw.line(pts_a + [pts_a[0]], fill=WHITE, width=2)
-    # Inner section: alt//100 as 3-digit cascade; carry starts when drum hits its last
-    # 20-ft step (drum_pos > 4.0, i.e. alt%100 > 80 ft) so all digits roll together.
+    # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
-    rolling_drum(img, R-80, TAPE_MID-14, 40, 28, alt_inner, 3, WHITE, 14,
-                 suppress_leading=True)
-    # Drum section: 20 ft steps — tens digit scrolls 0→2→4→6→8→0, units fixed '0'
-    rolling_drum_alt20(img, R-38, TAPE_MID-28, 22, 56, alt, WHITE, 16)
-    _drum_shade(img,   R-39, TAPE_MID-29, 24, 58)
+    inner_int  = int(alt_inner)
+    if inner_int >= 100:                    # alt ≥ 10,000 ft — uniform 3-digit
+        rolling_drum(img, R-80, TAPE_MID-14, 40, 28, alt_inner, 3, WHITE, 13,
+                     suppress_leading=True)
+    elif inner_int < 10:                    # alt < 1,000 ft — hundreds only
+        rolling_drum(img, R-80, TAPE_MID-14, 40, 28, alt_inner, 1, WHITE, 22)
+    else:                                   # 1,000–9,999 ft — thousands large, hundreds small
+        rolling_drum(img, R-80, TAPE_MID-14, 22, 28, alt_inner, 1, WHITE, 22,
+                     power_offset=1, suppress_leading=True)
+        rolling_drum(img, R-58, TAPE_MID-14, 18, 28, alt_inner, 1, WHITE, 12)
+    # Drum: 20-ft labels scroll together, adjacent labels half-visible
+    rolling_drum_alt20(img, R-38, TAPE_MID-28, 22, 56, alt, WHITE, 16, show_adjacent=True)
+    _drum_shade(img,   R-37, TAPE_MID-27, 20, 54)   # 2px inset from border
 
     # VSI
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
@@ -460,13 +516,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     th = bw2 // 3          # triangle base width ≈ 19px
     td = bh2 // 2          # triangle depth = 11px
     tx = CX - th // 2      # triangle left base x
-    pts_h = [(bx,       by2),
-             (bx+bw2,   by2),
-             (bx+bw2,   by2+bh2),
-             (tx+th,    by2+bh2),
-             (CX,       by2+bh2+td),
-             (tx,       by2+bh2),
-             (bx,       by2+bh2)]
+    pts_h = _chamfer([(bx,       by2),
+                      (bx+bw2,   by2),
+                      (bx+bw2,   by2+bh2),
+                      (tx+th,    by2+bh2),
+                      (CX,       by2+bh2+td),
+                      (tx,       by2+bh2),
+                      (bx,       by2+bh2)], {0, 1, 2, 6})
     draw.polygon(pts_h, fill=(0, 0, 0))
     draw.line(pts_h + [pts_h[0]], fill=WHITE, width=2)
     draw.text((CX-22, by2+2), f"{round(hdg)%360:03d}\u00b0",
