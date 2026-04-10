@@ -510,12 +510,18 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                        show_adjacent=True, adj_slot_h=18)
     _drum_shade(img,   R-38, TAPE_MID-28, 22, 56)   # 1px inset from border
 
-    # VSI readout — tiny box in the lower notch of the alt veeder-root box.
-    # The notch is x=ALT_X..R-39 (35px), y=TAPE_MID+15..TAPE_MID+29 (14px).
-    # Format: arrow + X.X (e.g. "▲1.5" = 1500 fpm, "▼0.5" = -500 fpm, "—" = level)
-    _R39 = ALT_X + ALT_W - 39   # = 601
-    _nw, _nh = _R39 - ALT_X, 16   # notch width 35px, box height 16px
-    _ny = TAPE_MID + 15            # top of notch
+    # VSI readout — snug box in the lower notch of the alt veeder-root box.
+    # Notch bounds: x=ALT_X..R-39 (601), y=TAPE_MID+15..TAPE_MID+29.
+    # Alt-box outline (width=2) occupies ±1px around each path edge, so:
+    #   top clear:   y ≥ TAPE_MID+17  (inner-box bottom path at +15, outline bottom at +16)
+    #   right clear: x ≤ R-39-3 = 598 (drum-left path at 601, outline left at 600)
+    #   bot clear:   y ≤ TAPE_MID+27  (drum-bottom path at +29, outline top at +28)
+    # → box: x=ALT_X, y=TAPE_MID+17, w=33, h=11  (right edge 598, bottom 256)
+    _R39  = ALT_X + ALT_W - 39    # 601 = left edge of drum section
+    _nx   = ALT_X                  # 566
+    _ny   = TAPE_MID + 17          # 246
+    _nw   = _R39 - ALT_X - 3      # 32  (right edge 597, 3px clear of drum outline)
+    _nh   = 11                     # bottom at TAPE_MID+28=256, 1px clear of drum-bot outline
     if abs(vspeed) > 30:
         _varr = "\u25b2" if vspeed > 0 else "\u25bc"
         _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
@@ -523,13 +529,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     else:
         _vstr = "\u2014"
         _vcol = LTGREY
-    draw.rounded_rectangle([(ALT_X, _ny), (ALT_X+_nw-1, _ny+_nh-1)],
-                            radius=2, fill=(0, 8, 22), outline=(70, 100, 130), width=1)
-    _fv = fnt(10, bold=True)
+    draw.rounded_rectangle([(_nx, _ny), (_nx+_nw-1, _ny+_nh-1)],
+                            radius=3, fill=(0, 8, 22), outline=(70, 100, 130), width=1)
+    _fv = fnt(9, bold=True)
     _bb = draw.textbbox((0, 0), _vstr, font=_fv)
     _tw, _th = _bb[2]-_bb[0], _bb[3]-_bb[1]
-    draw.text((ALT_X + (_nw-_tw)//2 - _bb[0],
-               _ny  + (_nh-_th)//2 - _bb[1]),
+    draw.text((_nx + (_nw-_tw)//2 - _bb[0],
+               _ny + (_nh-_th)//2 - _bb[1]),
               _vstr, fill=_vcol, font=_fv)
 
     # ── 5. HEADING TAPE CONTENT ───────────────────────────────────────────────
