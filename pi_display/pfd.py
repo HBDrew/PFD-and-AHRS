@@ -628,14 +628,15 @@ def draw_speed_tape(surf, speed, gs_bug=None):
             _text(surf, str(v), 17, (230, 230, 230), bold=True,
                   x=SPD_X + tl + 2, y=vy - 9)
 
-    # GS bug — before speed box so box draws on top (bug goes behind readout)
+    # GS bug — stores half-visible at tape edge when outside visible range.
     if gs_bug is not None:
-        gby = spd_y(gs_bug, speed)
-        if TAPE_TOP < gby < TAPE_BOT:
-            gb = [(SPD_X,      gby - 17),
-                  (SPD_X + 14, gby - 17), (SPD_X + 14, gby - 5), (SPD_X + 7, gby),
-                  (SPD_X + 14, gby + 5),  (SPD_X + 14, gby + 17), (SPD_X, gby + 17)]
-            pygame.draw.polygon(surf, CYAN, gb)
+        gby = max(TAPE_TOP, min(TAPE_BOT, spd_y(gs_bug, speed)))
+        gb = [(SPD_X,      gby - 17),
+              (SPD_X + 14, gby - 17), (SPD_X + 14, gby - 5), (SPD_X + 7, gby),
+              (SPD_X + 14, gby + 5),  (SPD_X + 14, gby + 17), (SPD_X, gby + 17)]
+        surf.set_clip((0, TAPE_TOP, DISPLAY_W, TAPE_BOT - TAPE_TOP))
+        pygame.draw.polygon(surf, CYAN, gb)
+        surf.set_clip(None)
 
     # Speed readout box — stepped Veeder-Root style (from SVG spec)
     # Layout: pointer(15) → inner section(32) → drum section(19) = 66px total
@@ -717,14 +718,15 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
             _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
         pygame.draw.rect(surf, MAGENTA, (ALT_X + ALT_W - 5, _vsy1, 5, _vsy2 - _vsy1))
 
-    # Altitude bug — before readout box so box draws on top (bug goes behind readout)
+    # Altitude bug — stores half-visible at tape edge when outside visible range.
     if alt_bug is not None:
-        aby = ay2(alt_bug)
-        if TAPE_TOP < aby < TAPE_BOT:
-            bug = [(ALT_X + ALT_W,      aby - 17),
-                   (ALT_X + ALT_W - 14, aby - 17), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
-                   (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 17), (ALT_X + ALT_W, aby + 17)]
-            pygame.draw.polygon(surf, CYAN, bug)
+        aby = max(TAPE_TOP, min(TAPE_BOT, ay2(alt_bug)))
+        bug = [(ALT_X + ALT_W,      aby - 17),
+               (ALT_X + ALT_W - 14, aby - 17), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
+               (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 17), (ALT_X + ALT_W, aby + 17)]
+        surf.set_clip((0, TAPE_TOP, DISPLAY_W, TAPE_BOT - TAPE_TOP))
+        pygame.draw.polygon(surf, CYAN, bug)
+        surf.set_clip(None)
 
     # Altitude readout box — stepped Veeder-Root style (from SVG spec)
     # Layout: inner section(42) → drum section(24) → pointer(15) = 81px total
@@ -806,17 +808,16 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
             col = YELLOW if deg in _CARDINALS else (230, 230, 230)
             _text(surf, lbl, 17, col, bold=True, cx=x, y=HDG_Y + HDG_H - 18)
 
-    # Heading bug
+    # Heading bug — stores at button edges when outside visible tape range.
     if hdg_bug is not None:
         off = ((hdg_bug - hdg + 180) % 360) - 180
         hbx = int(CX + off * PX_PER_DEG)
-        if 0 < hbx < DISPLAY_W:
-            # Wide, short bug with V-notch at top matching speed/alt bug style
-            bug = [(hbx - 17, HDG_Y + 14), (hbx - 17, HDG_Y),
-                   (hbx - 5,  HDG_Y), (hbx, HDG_Y + 7), (hbx + 5, HDG_Y),
-                   (hbx + 17, HDG_Y), (hbx + 17, HDG_Y + 14)]
-            pygame.gfxdraw.filled_polygon(surf, bug, CYAN)
-            pygame.gfxdraw.aapolygon(surf, bug, CYAN)
+        hbx = max(SPD_W, min(ALT_X, hbx))   # clamp to inner edges of tap buttons
+        bug = [(hbx - 17, HDG_Y + 14), (hbx - 17, HDG_Y),
+               (hbx - 5,  HDG_Y), (hbx, HDG_Y + 7), (hbx + 5, HDG_Y),
+               (hbx + 17, HDG_Y), (hbx + 17, HDG_Y + 14)]
+        pygame.gfxdraw.filled_polygon(surf, bug, CYAN)
+        pygame.gfxdraw.aapolygon(surf, bug, CYAN)
 
     # GPS track pointer (magenta, when GPS OK)
     if gps_ok and track is not None:
@@ -1048,8 +1049,8 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
     y = HDG_Y + 2
 
     # HDG bug — left side of heading strip, exact speed-tape width
-    _cyan_box(surf, f"{round(hdg_bug) % 360:03d}\u00b0",
-              x=SPD_X, y=y, w=SPD_W, h=22)
+    _hdg_btn = f"{round(hdg_bug) % 360:03d}\u00b0" if hdg_bug is not None else "---\u00b0"
+    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=22)
 
     # Baro — right side of heading strip, exact alt-tape width
     # Show "29.92 IN" (inHg) when pressure sensor active, else "GPS ALT"

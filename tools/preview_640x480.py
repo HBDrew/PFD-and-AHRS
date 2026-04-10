@@ -394,14 +394,25 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         if major:
             draw.text((SPD_X+tl+2, vy-9), str(v), fill=(230,230,230), font=fnt(17, bold=True))
 
+    # Helper: draw a filled polygon clipped to a vertical tape range.
+    def _clipped_poly(pts, fill, y0=TAPE_TOP, y1=TAPE_BOT):
+        _t = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+        _d = ImageDraw.Draw(_t)
+        _d.polygon(pts, fill=fill + (255,))
+        if y0 > 0:
+            _d.rectangle([(0, 0), (W-1, y0-1)], fill=(0, 0, 0, 0))
+        if y1 < H - 1:
+            _d.rectangle([(0, y1+1), (W-1, H-1)], fill=(0, 0, 0, 0))
+        img.paste(_t.convert('RGB'), (0, 0), _t.split()[3])
+
     # GS bug — before speed box so box draws on top (bug goes behind readout)
+    # Stores half-visible at tape edge when outside visible range.
     if gs_bug is not None:
-        gby = spd_y(gs_bug)
-        if TAPE_TOP < gby < TAPE_BOT:
-            gb = [(SPD_X,    gby-17),
-                  (SPD_X+14, gby-17), (SPD_X+14, gby-5), (SPD_X+7, gby),
-                  (SPD_X+14, gby+5),  (SPD_X+14, gby+17), (SPD_X, gby+17)]
-            draw.polygon(gb, fill=CYAN)
+        gby = max(TAPE_TOP, min(TAPE_BOT, spd_y(gs_bug)))
+        gb = [(SPD_X,    gby-17),
+              (SPD_X+14, gby-17), (SPD_X+14, gby-5), (SPD_X+7, gby),
+              (SPD_X+14, gby+5),  (SPD_X+14, gby+17), (SPD_X, gby+17)]
+        _clipped_poly(gb, CYAN)
 
     # Speed readout box — stepped Veeder-Root style (from SVG spec)
     # Layout: pointer(15) → inner section(32) → drum section(19) = 66px total
@@ -430,7 +441,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     def alt_y(ft): return int(TAPE_MID - (ft - alt) * PX_PER_FT)
 
     # ALT bug button — top strip of alt tape
-    cyan_box(f"{round(alt_bug):5d}", ALT_X, 2, bw=ALT_W, bh=22)
+    cyan_box(f"{round(alt_bug):5d}" if alt_bug is not None else "-----",
+             ALT_X, 2, bw=ALT_W, bh=22)
 
     # Tick marks + labels — every 50ft minor, every 100ft major with label
     base_a = round(alt / 50) * 50
@@ -470,13 +482,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
         draw.rectangle([(ALT_X+ALT_W-5, _vsy1), (ALT_X+ALT_W, _vsy2)], fill=MAGENTA)
 
-    # Alt bug — before alt box so box draws on top (bug goes behind readout)
-    aby = alt_y(alt_bug)
-    if TAPE_TOP < aby < TAPE_BOT:
+    # Alt bug — stores half-visible at tape edge when outside visible range.
+    if alt_bug is not None:
+        aby = max(TAPE_TOP, min(TAPE_BOT, alt_y(alt_bug)))
         bug = [(ALT_X+ALT_W,    aby-17),
                (ALT_X+ALT_W-14, aby-17), (ALT_X+ALT_W-14, aby-5), (ALT_X+ALT_W-7, aby),
                (ALT_X+ALT_W-14, aby+5),  (ALT_X+ALT_W-14, aby+17), (ALT_X+ALT_W, aby+17)]
-        draw.polygon(bug, fill=CYAN)
+        _clipped_poly(bug, CYAN)
 
     # Altitude readout box — stepped Veeder-Root style (from SVG spec)
     # Layout: inner section(42) → drum section(24) → pointer(15) = 81px total
@@ -554,10 +566,11 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             tw = int(draw.textlength(lbl, font=_hf))
             draw.text((x - tw // 2, HDG_Y+HDG_H-18), lbl, fill=col, font=_hf)
 
-    # Heading bug — wide, short, V-notch at top matching speed/alt bug style
-    hb_off = ((hdg_bug - hdg + 180) % 360) - 180
-    hb_x   = int(CX + hb_off * PX_PER_DEG)
-    if 0 < hb_x < W:
+    # Heading bug — stores at button edges when outside visible tape range.
+    if hdg_bug is not None:
+        hb_off = ((hdg_bug - hdg + 180) % 360) - 180
+        hb_x   = int(CX + hb_off * PX_PER_DEG)
+        hb_x   = max(SPD_W, min(ALT_X, hb_x))   # clamp to inner edges of tap buttons
         bug = [(hb_x-17, HDG_Y+14), (hb_x-17, HDG_Y),
                (hb_x-5,  HDG_Y), (hb_x, HDG_Y+7), (hb_x+5, HDG_Y),
                (hb_x+17, HDG_Y), (hb_x+17, HDG_Y+14)]
@@ -688,7 +701,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # above in sections 3 and 4).  HDG and BARO sit at the BASE of the heading
     # strip, left and right — keeping the centre clear for the heading readout.
     btn_y = HDG_Y + 2
-    cyan_box(f"{round(hdg_bug)%360:03d}\u00b0",        SPD_X, btn_y, bw=SPD_W, bh=22)
+    cyan_box(f"{round(hdg_bug)%360:03d}\u00b0" if hdg_bug is not None else "---\u00b0",
+             SPD_X, btn_y, bw=SPD_W, bh=22)
     baro_val = f"{baro_hpa/33.8639:.2f} IN" if baro_ok else "GPS ALT"
     baro_fsz = 12 if baro_ok else 14   # "29.92 IN" is wider, use smaller font
     cyan_box(baro_val, ALT_X, btn_y, bw=ALT_W, bh=22, font_sz=baro_fsz)
