@@ -47,6 +47,7 @@ RED        = (220,  30,  30)
 LTGREY     = (180, 180, 190)
 GREEN_ARC  = ( 30, 200,  50)
 YELLOW_ARC = (240, 200,   0)
+MAGENTA    = (220,   0, 220)
 
 def lerp_color(a, b, t):
     t = max(0.0, min(1.0, t))
@@ -455,6 +456,19 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                 tw = int(f_s.getlength(s))
                 draw.text((ALT_X+ALT_W-tl-2-tw, fy-8), s, fill=(230,230,230), font=f_s)
 
+    # VS bar — 5px wide on the outer (left) edge of the alt tape.
+    # 2000 fpm ≡ 200 ft ≡ 200×PX_PER_FT pixels on the tape.
+    _vs_scale = 200 * PX_PER_FT / 2000   # px per fpm
+    _vs_px    = int(abs(vspeed) * _vs_scale)
+    if abs(vspeed) > 30 and _vs_px > 0:
+        if vspeed > 0:
+            _vsy1 = max(TAPE_TOP, TAPE_MID - _vs_px)
+            _vsy2 = TAPE_MID
+        else:
+            _vsy1 = TAPE_MID
+            _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
+        draw.rectangle([(ALT_X, _vsy1), (ALT_X+5, _vsy2)], fill=MAGENTA)
+
     # Alt bug — before alt box so box draws on top (bug goes behind readout)
     aby = alt_y(alt_bug)
     if TAPE_TOP < aby < TAPE_BOT:
@@ -496,25 +510,27 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                        show_adjacent=True, adj_slot_h=18)
     _drum_shade(img,   R-38, TAPE_MID-28, 22, 56)   # 1px inset from border
 
-    # VSI box — small readout below alt veeder-root box
-    vsi_y = TAPE_MID + 32
-    vsi_h = 30
-    arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
-    vcol  = (0, 220, 0) if vspeed > 50 else ((255, 140, 0) if vspeed < -50 else LTGREY)
-    vsi_str = f"{arrow}{abs(round(vspeed / 10) * 10):4d}"
-    draw.rounded_rectangle([(ALT_X, vsi_y), (ALT_X+ALT_W-1, vsi_y+vsi_h-1)],
-                            radius=3, fill=(0, 8, 22), outline=(90, 120, 150), width=1)
-    _fv = fnt(12, bold=True)
-    bb  = draw.textbbox((0, 0), vsi_str, font=_fv)
-    tw, th = bb[2]-bb[0], bb[3]-bb[1]
-    draw.text((ALT_X + (ALT_W-tw)//2 - bb[0],
-               vsi_y + (vsi_h-th)//2 - bb[1]),
-              vsi_str, fill=vcol, font=_fv)
-    _ff  = fnt(9)
-    fbb  = draw.textbbox((0, 0), "fpm", font=_ff)
-    draw.text((ALT_X + ALT_W - (fbb[2]-fbb[0]) - 3,
-               vsi_y + vsi_h - (fbb[3]-fbb[1]) - 2),
-              "fpm", fill=(120, 160, 200), font=_ff)
+    # VSI readout — tiny box in the lower notch of the alt veeder-root box.
+    # The notch is x=ALT_X..R-39 (35px), y=TAPE_MID+15..TAPE_MID+29 (14px).
+    # Format: arrow + X.X (e.g. "▲1.5" = 1500 fpm, "▼0.5" = -500 fpm, "—" = level)
+    _R39 = ALT_X + ALT_W - 39   # = 601
+    _nw, _nh = _R39 - ALT_X, 16   # notch width 35px, box height 16px
+    _ny = TAPE_MID + 15            # top of notch
+    if abs(vspeed) > 30:
+        _varr = "\u25b2" if vspeed > 0 else "\u25bc"
+        _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
+        _vcol = (0, 220, 0) if vspeed > 0 else (255, 140, 0)
+    else:
+        _vstr = "\u2014"
+        _vcol = LTGREY
+    draw.rounded_rectangle([(ALT_X, _ny), (ALT_X+_nw-1, _ny+_nh-1)],
+                            radius=2, fill=(0, 8, 22), outline=(70, 100, 130), width=1)
+    _fv = fnt(10, bold=True)
+    _bb = draw.textbbox((0, 0), _vstr, font=_fv)
+    _tw, _th = _bb[2]-_bb[0], _bb[3]-_bb[1]
+    draw.text((ALT_X + (_nw-_tw)//2 - _bb[0],
+               _ny  + (_nh-_th)//2 - _bb[1]),
+              _vstr, fill=_vcol, font=_fv)
 
     # ── 5. HEADING TAPE CONTENT ───────────────────────────────────────────────
     CARDS = {0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'}
@@ -646,9 +662,10 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # Outer strip = leading-edge side (lighter/top); Inner strip = trailing-edge side (darker/bottom)
     BLK = (0, 0, 0)
     # Fills — no outline so the inner colour-split edge stays clean
-    draw.polygon([(CX, CY), (CX-81, CY+44), (CX-69, CY+44)], fill=AMBER_DARK)  # L inner
+    # Inner edge moved from ±69 → ±57 (50% wider base; outer edge ±93 unchanged)
+    draw.polygon([(CX, CY), (CX-81, CY+44), (CX-57, CY+44)], fill=AMBER_DARK)  # L inner
     draw.polygon([(CX, CY), (CX-93, CY+44), (CX-81, CY+44)], fill=AMBER)       # L outer
-    draw.polygon([(CX, CY), (CX+69, CY+44), (CX+81, CY+44)], fill=AMBER_DARK)  # R inner
+    draw.polygon([(CX, CY), (CX+57, CY+44), (CX+81, CY+44)], fill=AMBER_DARK)  # R inner
     draw.polygon([(CX, CY), (CX+81, CY+44), (CX+93, CY+44)], fill=AMBER)       # R outer
     # Engine nacelles — fills
     draw.polygon([(CX-93, CY), (CX-99, CY-6), (CX-138, CY-6), (CX-138, CY)],   fill=AMBER)       # L upper
@@ -656,8 +673,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     draw.polygon([(CX+93, CY), (CX+99, CY-6), (CX+138, CY-6), (CX+138, CY)],   fill=AMBER)       # R upper
     draw.polygon([(CX+93, CY), (CX+138, CY),  (CX+138, CY+6), (CX+99, CY+6)],  fill=AMBER_DARK)  # R lower
     # Outer perimeter outlines only (no line across the inner colour split)
-    draw.polygon([(CX, CY), (CX-93, CY+44), (CX-69, CY+44)], outline=BLK)  # L wing
-    draw.polygon([(CX, CY), (CX+69, CY+44), (CX+93, CY+44)], outline=BLK)  # R wing
+    draw.polygon([(CX, CY), (CX-93, CY+44), (CX-57, CY+44)], outline=BLK)  # L wing
+    draw.polygon([(CX, CY), (CX+57, CY+44), (CX+93, CY+44)], outline=BLK)  # R wing
     draw.polygon([(CX-93, CY), (CX-99, CY-6), (CX-138, CY-6), (CX-138, CY+6), (CX-99, CY+6)], outline=BLK)  # L nacelle
     draw.polygon([(CX+93, CY), (CX+99, CY-6), (CX+138, CY-6), (CX+138, CY+6), (CX+99, CY+6)], outline=BLK)  # R nacelle
 

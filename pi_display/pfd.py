@@ -41,6 +41,7 @@ YELLOW_ARC = (240, 200,   0)
 TAPE_BG    = (  0,   8,  22, 195)
 DIMGREY    = ( 80,  80,  90)
 LTGREY     = (180, 180, 190)
+MAGENTA    = (220,   0, 220)
 
 # ── Shared state ─────────────────────────────────────────────────────────────
 _state_lock = threading.Lock()
@@ -519,9 +520,10 @@ def draw_aircraft_symbol(surf):
     # Wing panels — apex at (CX, CY), trailing edge at CY+44 (1.5× original 29)
     # Outer strip = leading-edge side (lighter/top); Inner strip = trailing-edge side (darker/bottom)
     # Fills — inner/outer strips, no outline so colour-split edge stays clean
-    li = [(CX, CY), (CX - 81, CY + 44), (CX - 69, CY + 44)]   # L inner (darker)
+    # Inner edge moved ±69 → ±57 (50% wider base; outer edge ±93 unchanged)
+    li = [(CX, CY), (CX - 81, CY + 44), (CX - 57, CY + 44)]   # L inner (darker)
     lo = [(CX, CY), (CX - 93, CY + 44), (CX - 81, CY + 44)]   # L outer (lighter)
-    ri = [(CX, CY), (CX + 69, CY + 44), (CX + 81, CY + 44)]   # R inner (darker)
+    ri = [(CX, CY), (CX + 57, CY + 44), (CX + 81, CY + 44)]   # R inner (darker)
     ro = [(CX, CY), (CX + 81, CY + 44), (CX + 93, CY + 44)]   # R outer (lighter)
     pygame.gfxdraw.filled_polygon(surf, li, AMBER_DARK)
     pygame.gfxdraw.aapolygon(surf, li, AMBER_DARK)
@@ -548,8 +550,8 @@ def draw_aircraft_symbol(surf):
 
     # Outer perimeter outlines — no line across the inner colour-split edge
     BLK = (0, 0, 0)
-    lw = [(CX, CY), (CX - 93, CY + 44), (CX - 69, CY + 44)]
-    rw = [(CX, CY), (CX + 69, CY + 44), (CX + 93, CY + 44)]
+    lw = [(CX, CY), (CX - 93, CY + 44), (CX - 57, CY + 44)]
+    rw = [(CX, CY), (CX + 57, CY + 44), (CX + 93, CY + 44)]
     ln = [(CX - 93, CY), (CX - 99, CY - 6), (CX - 138, CY - 6), (CX - 138, CY + 6), (CX - 99, CY + 6)]
     rn = [(CX + 93, CY), (CX + 99, CY - 6), (CX + 138, CY - 6), (CX + 138, CY + 6), (CX + 99, CY + 6)]
     pygame.gfxdraw.aapolygon(surf, lw, BLK)
@@ -700,6 +702,19 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     _cyan_box(surf, alt_str, x=ALT_X, y=2, w=ALT_W, h=22)
 
+    # VS bar — 5px wide on the outer (left) edge of the alt tape.
+    # 2000 fpm ≡ 200 ft on the tape scale.
+    _vs_scale = 200 * PX_PER_FT / 2000   # px per fpm
+    _vs_px    = int(abs(vspeed) * _vs_scale)
+    if abs(vspeed) > 30 and _vs_px > 0:
+        if vspeed > 0:
+            _vsy1 = max(TAPE_TOP, TAPE_MID - _vs_px)
+            _vsy2 = TAPE_MID
+        else:
+            _vsy1 = TAPE_MID
+            _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
+        pygame.draw.rect(surf, MAGENTA, (ALT_X, _vsy1, 5, _vsy2 - _vsy1))
+
     # Altitude bug — before readout box so box draws on top (bug goes behind readout)
     if alt_bug is not None:
         aby = ay2(alt_bug)
@@ -741,16 +756,22 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                         show_adjacent=True, adj_slot_h=18)
     _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)   # 1px inset from border
 
-    # VSI box — small readout below alt veeder-root box
-    vsi_y = TAPE_MID + 32
-    vsi_h = 30
-    arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")
-    vcol  = (0, 220, 0) if vspeed > 50 else ((255, 140, 0) if vspeed < -50 else LTGREY)
-    vsi_str = f"{arrow}{abs(round(vspeed / 10) * 10):4d}"
-    pygame.draw.rect(surf, (0, 8, 22), (ALT_X, vsi_y, ALT_W, vsi_h), border_radius=3)
-    pygame.draw.rect(surf, (90, 120, 150), (ALT_X, vsi_y, ALT_W, vsi_h), width=1, border_radius=3)
-    _text(surf, vsi_str, 12, vcol, bold=True, cx=ALT_X + ALT_W // 2, cy=vsi_y + vsi_h // 2 - 3)
-    _text(surf, "fpm", 9, (120, 160, 200), x=ALT_X + ALT_W - 20, y=vsi_y + vsi_h - 12)
+    # VSI readout — tiny box in the lower notch of the alt veeder-root box.
+    # The notch is x=ALT_X..R-39 (35px wide), y=TAPE_MID+15..TAPE_MID+29 (14px).
+    # Format: arrow + X.X (e.g. "▲1.5" = 1500 fpm, "▼0.5" = -500 fpm, "—" = level)
+    _R39 = ALT_X + ALT_W - 39   # x=601, left edge of drum section
+    _nw, _nh = _R39 - ALT_X, 16
+    _ny = TAPE_MID + 15
+    if abs(vspeed) > 30:
+        _varr = "▲" if vspeed > 0 else "▼"
+        _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
+        _vcol = (0, 220, 0) if vspeed > 0 else (255, 140, 0)
+    else:
+        _vstr = "—"
+        _vcol = LTGREY
+    pygame.draw.rect(surf, (0, 8, 22), (ALT_X, _ny, _nw, _nh), border_radius=2)
+    pygame.draw.rect(surf, (70, 100, 130), (ALT_X, _ny, _nw, _nh), width=1, border_radius=2)
+    _text(surf, _vstr, 10, _vcol, bold=True, cx=ALT_X + _nw // 2, cy=_ny + _nh // 2)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
