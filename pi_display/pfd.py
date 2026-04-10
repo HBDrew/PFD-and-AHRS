@@ -75,6 +75,7 @@ disp["fp"] = {                      # flight-profile values
     "vno":    VNO,  "vne": VNE,  "va":  VA,
     "vy":     VY,   "vx":  VX,
 }
+disp["display_mode"]  = "pfd"       # "pfd" | "mfd" (MFD not yet implemented)
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
@@ -1183,8 +1184,7 @@ def handle_event(event, demo_mode):
                 lbl, sty = hit
                 target = disp["numpad_target"]
                 if sty == 'n':                # digit
-                    max_digits = 5 if target == "alt_bug" else 3
-                    if len(disp["numpad_buf"]) < max_digits:
+                    if len(disp["numpad_buf"]) < 3:   # all targets max 3 digits
                         disp["numpad_buf"] += lbl
                 elif sty == 'x':              # CANCEL
                     disp["mode"] = disp["numpad_prev"]
@@ -1194,7 +1194,7 @@ def handle_event(event, demo_mode):
                     if buf:
                         val = int(buf)
                         if target == "alt_bug":
-                            disp["alt_bug"] = float(round(val / 100) * 100)
+                            disp["alt_bug"] = float(val * 100)   # input is hundreds of ft
                         elif target == "hdg_bug":
                             disp["hdg_bug"] = float(val % 360)
                         elif target == "spd_bug":
@@ -1323,18 +1323,31 @@ def _numpad_key(surf, col, row, label, style, r=8):
     _text(surf, label, 20, tc, bold=True, cx=bx+_NP_PW//2, cy=by+_NP_PH//2)
 
 
-def draw_numpad(surf, title, current_val, entered=""):
-    """Full-screen numeric entry pad."""
+def draw_numpad(surf, title, current_val, entered="", suffix=""):
+    """Full-screen numeric entry pad.
+    suffix: appended to the entered value in the display box (e.g. '00' for alt_bug).
+    """
     surf.fill((0, 8, 22))
     pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
     _text(surf, title, 18, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
-    # Value display
-    disp_str = entered if entered else str(current_val)
+    # Value display — show entered digits then dim suffix (if any)
+    base_str = entered if entered else str(current_val)
     pygame.draw.rect(surf, (0,15,38), (80, 50, DISPLAY_W-161, 50), border_radius=6)
     pygame.draw.rect(surf, WHITE,     (80, 50, DISPLAY_W-161, 50), width=1, border_radius=6)
-    _text(surf, disp_str, 32, CYAN, bold=True, cx=DISPLAY_W//2, cy=75)
-    _text(surf, f"Current: {current_val}", 10, (110,120,140), cx=DISPLAY_W//2, cy=108)
+    if suffix:
+        # Draw base centred, then the suffix in dim cyan immediately after
+        f32 = _get_font(32, bold=True)
+        bw  = f32.size(base_str)[0]
+        sw  = f32.size(suffix)[0]
+        total = bw + sw
+        bx_str = DISPLAY_W//2 - total//2
+        surf.blit(f32.render(base_str, True, CYAN), (bx_str, 59))
+        surf.blit(f32.render(suffix,   True, (0,100,100)), (bx_str + bw, 59))
+    else:
+        _text(surf, base_str, 32, CYAN, bold=True, cx=DISPLAY_W//2, cy=75)
+    cur_display = f"{current_val}{suffix}" if suffix else str(current_val)
+    _text(surf, f"Current: {cur_display}", 10, (110,120,140), cx=DISPLAY_W//2, cy=108)
     for ri, row in enumerate(_NP_KEYS):
         for ci, (lbl, sty) in enumerate(row):
             _numpad_key(surf, ci, ri, lbl, sty)
@@ -1544,9 +1557,9 @@ def _screen_header(surf, title):
     _text(surf, title, 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
 
 
-def _setting_row(surf, row_i, label, sub=""):
+def _setting_row(surf, row_i, label, sub="", _y_override=None):
     """Draw settings row background + label. Returns (bx, by, bw, bh)."""
-    bx = _SS_MX; by = _ss_row_y(row_i)
+    bx = _SS_MX; by = _y_override if _y_override is not None else _ss_row_y(row_i)
     bw = DISPLAY_W - 2*_SS_MX; bh = _SS_RH
     pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=6)
     gh = bh // 6
@@ -1848,6 +1861,13 @@ _SYS_INFO_Y  = 56
 _SYS_INFO_LH = 28
 
 
+_SYS_N_LINES = 5
+_SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
+_SYS_MODE_Y  = _SYS_INFO_Y + _SYS_IH + 8    # DISPLAY MODE row top
+_SYS_BTN_Y   = _SYS_MODE_Y + _SS_RH + 10    # action buttons top
+_SYS_BTN_H   = 54
+
+
 def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
@@ -1858,29 +1878,38 @@ def draw_system_setup(surf):
         ("Hardware",          "Pi Zero 2W + Pico W"),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
-    ih = len(lines)*_SYS_INFO_LH + 16
-    pygame.draw.rect(surf, (0,12,32), (bx, _SYS_INFO_Y, bw, ih), border_radius=6)
-    pygame.draw.rect(surf, (55,75,105), (bx, _SYS_INFO_Y, bw, ih), width=1, border_radius=6)
+    pygame.draw.rect(surf, (0,12,32), (bx, _SYS_INFO_Y, bw, _SYS_IH), border_radius=6)
+    pygame.draw.rect(surf, (55,75,105), (bx, _SYS_INFO_Y, bw, _SYS_IH), width=1, border_radius=6)
     for i, (k, v) in enumerate(lines):
         ty = _SYS_INFO_Y + 10 + i*_SYS_INFO_LH
         _text(surf, k, 12, (120,140,165), x=bx+14, y=ty)
         _text(surf, v, 13, WHITE, bold=True, x=bx+310, y=ty)
-    btn_y = _SYS_INFO_Y + ih + 16
-    btn_h = 54
+
+    # DISPLAY MODE row
+    _setting_row(surf, 0, "DISPLAY MODE", "Primary Flight Display or Multi-Function Display",
+                 _y_override=_SYS_MODE_Y)
+    cur = disp.get("display_mode", "pfd")
+    btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
+    rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
+    ry = _SYS_MODE_Y + (_SS_RH - btn_h_m) // 2
+    _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "PFD", cur == "pfd")
+    # MFD — disabled placeholder
+    pygame.draw.rect(surf, (0,8,18), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), border_radius=5)
+    pygame.draw.rect(surf, (35,45,60), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), width=2, border_radius=5)
+    _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
+    _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
+
     half_w = (bw - 10) // 2
-    _action_btn(surf, bx,            btn_y, half_w, btn_h, "DIAGNOSTICS", "normal")
-    _action_btn(surf, bx+half_w+10,  btn_y, half_w, btn_h, "RESET DEFAULTS", "danger")
+    _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "DIAGNOSTICS", "normal")
+    _action_btn(surf, bx+half_w+10,  _SYS_BTN_Y, half_w, _SYS_BTN_H, "RESET DEFAULTS", "danger")
 
 
 def system_setup_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
-    n = 5
-    ih = n*_SYS_INFO_LH + 16
-    btn_y = _SYS_INFO_Y + ih + 16; btn_h = 54
     half_w = (bw - 10) // 2
-    if btn_y <= y <= btn_y+btn_h:
+    if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
         if bx <= x <= bx+half_w:
             return "diagnostics"
         if bx+half_w+10 <= x <= bx+half_w+10+half_w:
@@ -1947,10 +1976,10 @@ def render(surf, demo_mode, connected):
     if mode == "numpad":
         target  = disp.get("numpad_target", "")
         buf     = disp.get("numpad_buf", "")
-        titles  = {"alt_bug": "SET ALTITUDE BUG",
+        titles  = {"alt_bug": "SET ALTITUDE BUG  (\u00d7100 ft)",
                    "hdg_bug": "SET HEADING BUG",
                    "spd_bug": "SET GS BUG"}
-        curvals = {"alt_bug": int(disp.get("alt_bug", 0)),
+        curvals = {"alt_bug": int(disp.get("alt_bug", 0)) // 100,   # show hundreds
                    "hdg_bug": int(disp.get("hdg_bug", 0)),
                    "spd_bug": int(disp.get("spd_bug", 0))}
         # Add V-speed fields from flight profile
@@ -1959,7 +1988,8 @@ def render(surf, demo_mode, connected):
                 titles[fkey]  = f"SET {flabel}"
                 curvals[fkey] = int(disp["fp"].get(fkey, 0))
         draw_numpad(surf, titles.get(target, "ENTER VALUE"),
-                    curvals.get(target, 0), buf)
+                    curvals.get(target, 0), buf,
+                    suffix="00" if target == "alt_bug" else "")
         return
 
     if mode == "flight_profile":

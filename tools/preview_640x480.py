@@ -861,8 +861,10 @@ def _numpad_btn(draw, col, row, label, style, r=8):
     draw.text((bx + (_NP_PW-lw)//2, by + (_NP_PH-22)//2), label, fill=tc, font=lf)
 
 
-def draw_numpad_screen(title, current_val, filename, entered=""):
-    """Render a full-screen numeric-entry pad (alt bug, hdg bug, GS bug, etc.)."""
+def draw_numpad_screen(title, current_val, filename, entered="", suffix=""):
+    """Render a full-screen numeric-entry pad (alt bug, hdg bug, GS bug, etc.).
+    suffix: appended in dim cyan after the entered digits (e.g. '00' for alt bug).
+    """
     img  = Image.new('RGB', (W, H), (0, 8, 22))
     draw = ImageDraw.Draw(img)
 
@@ -874,14 +876,22 @@ def draw_numpad_screen(title, current_val, filename, entered=""):
               title, fill=WHITE, font=tf)
 
     # Value display box
-    disp_str = entered if entered else str(current_val)
+    base_str = entered if entered else str(current_val)
     draw.rounded_rectangle([(80, 50), (W-81, 100)], radius=6, fill=(0, 15, 38))
     draw.rounded_rectangle([(80, 50), (W-81, 100)], radius=6, outline=WHITE, width=1)
     vf = fnt(32, bold=True)
-    vw = int(draw.textlength(disp_str, font=vf))
-    draw.text(((W-vw)//2, 55), disp_str, fill=CYAN, font=vf)
+    if suffix:
+        bw = int(draw.textlength(base_str, font=vf))
+        sw = int(draw.textlength(suffix,   font=vf))
+        bx_str = (W - bw - sw) // 2
+        draw.text((bx_str,      55), base_str, fill=CYAN,         font=vf)
+        draw.text((bx_str + bw, 55), suffix,   fill=(0, 100, 100), font=vf)
+    else:
+        vw = int(draw.textlength(base_str, font=vf))
+        draw.text(((W-vw)//2, 55), base_str, fill=CYAN, font=vf)
     hf = fnt(10)
-    hint = f"Current: {current_val}"
+    cur_display = f"{current_val}{suffix}" if suffix else str(current_val)
+    hint = f"Current: {cur_display}"
     hw = int(draw.textlength(hint, font=hf))
     draw.text(((W-hw)//2, 104), hint, fill=(110, 120, 140), font=hf)
 
@@ -1127,8 +1137,8 @@ def _screen_header_p(draw, title):
     draw.text(((W-int(draw.textlength(title,font=tf)))//2, 10), title, fill=WHITE, font=tf)
 
 
-def _setting_row_p(draw, row_i, label, sub=""):
-    bx = _SS_MX; by = _ss_row_y(row_i)
+def _setting_row_p(draw, row_i, label, sub="", _y_override=None):
+    bx = _SS_MX; by = _y_override if _y_override is not None else _ss_row_y(row_i)
     bw = W - 2*_SS_MX; bh = _SS_RH
     draw.rounded_rectangle([(bx,by),(bx+bw-1,by+bh-1)], radius=6, fill=(0,12,32))
     gh = bh // 6
@@ -1365,7 +1375,7 @@ _SYS_BUILD   = "2026-04-10"
 _SYS_INFO_LH = 28
 
 
-def draw_system_screen(filename):
+def draw_system_screen(filename, display_mode="pfd"):
     img  = Image.new('RGB',(W,H),(0,8,22))
     draw = ImageDraw.Draw(img)
     _screen_header_p(draw, "SYSTEM")
@@ -1387,7 +1397,31 @@ def draw_system_screen(filename):
         draw.text((bx+14, ty), k, fill=(120,140,165), font=fnt(12))
         draw.text((bx+310, ty), v, fill=WHITE, font=fnt(13,bold=True))
 
-    btn_y = INFO_Y + ih + 16; btn_h = 54
+    # DISPLAY MODE row
+    mode_y = INFO_Y + ih + 8
+    _setting_row_p(draw, 0, "DISPLAY MODE",
+                   "Primary Flight Display or Multi-Function Display",
+                   _y_override=mode_y)
+    btn_w_m = 110; gap_m = _DSP_BTN_G; btn_h_m = _DSP_BTN_H
+    rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
+    ry = mode_y + (_SS_RH - btn_h_m) // 2
+    _seg_btn_p(draw, rx, ry, btn_w_m, btn_h_m, "PFD", display_mode == "pfd")
+    # MFD — disabled placeholder
+    draw.rounded_rectangle([(rx+btn_w_m+gap_m, ry),
+                             (rx+btn_w_m+gap_m+btn_w_m-1, ry+btn_h_m-1)],
+                            radius=5, fill=(0,8,18))
+    draw.rounded_rectangle([(rx+btn_w_m+gap_m, ry),
+                             (rx+btn_w_m+gap_m+btn_w_m-1, ry+btn_h_m-1)],
+                            radius=5, outline=(35,45,60), width=2)
+    mx = rx+btn_w_m+gap_m+btn_w_m//2
+    lf_m = fnt(14)
+    draw.text((mx - int(draw.textlength("MFD",font=lf_m))//2, ry+4),
+              "MFD", fill=(50,60,75), font=lf_m)
+    sf_m = fnt(9)
+    draw.text((mx - int(draw.textlength("coming soon",font=sf_m))//2, ry+btn_h_m-17),
+              "coming soon", fill=(45,55,70), font=sf_m)
+
+    btn_y = mode_y + _SS_RH + 10; btn_h = 54
     half_w = (bw - 10) // 2
     _action_btn_p(draw, bx,           btn_y, half_w, btn_h, "DIAGNOSTICS",   "normal")
     _action_btn_p(draw, bx+half_w+10, btn_y, half_w, btn_h, "RESET DEFAULTS","danger")
@@ -1442,9 +1476,9 @@ draw_keyboard_screen("ENTER TAIL NUMBER", "N12345",
                      os.path.join(OUT, "preview_keyboard.png"),
                      entered="N1234")
 
-draw_numpad_screen("SET ALTITUDE BUG", 8500,
+draw_numpad_screen("SET ALTITUDE BUG  (\u00d7100 ft)", 85,
                    os.path.join(OUT, "preview_numpad_alt.png"),
-                   entered="95")
+                   entered="95", suffix="00")
 
 draw_numpad_screen("SET HEADING BUG", 133,
                    os.path.join(OUT, "preview_numpad_hdg.png"),
