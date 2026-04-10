@@ -69,11 +69,11 @@ def fnt(size, bold=False):
 
 
 def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
-                 suppress_leading=False):
+                 suppress_leading=False, power_offset=0):
     """
     Veeder-Root style rolling-drum digit readout.
-    Only the units digit animates continuously; higher digits snap.
-    suppress_leading: skip leading-zero digit cells (e.g. altitude).
+    Cascading: every digit carries smoothly when the digit below it approaches 9→0.
+    power_offset: the power of the LOWEST digit rendered (0=units, 1=tens, etc.)
     """
     char_w  = bw // n_digits
     f       = fnt(font_sz, bold=True)
@@ -88,14 +88,20 @@ def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
     col_rgba = color + (255,)
 
     for col_i in range(n_digits):
-        power = n_digits - 1 - col_i   # 0 = units, 1 = tens, …
+        power = power_offset + n_digits - 1 - col_i   # absolute decimal power of this column
         if suppress_leading and power > 0 and val_int < 10 ** power:
             continue
+
         if power == 0:
             d_cont = float(value % 10.0)
         else:
-            d_cont = float((int(value) // (10 ** power)) % 10)
-        d_lo = int(d_cont)
+            # Cascade: scroll when the complete lower-order portion approaches rollover
+            lower_cont = (value % (10 ** power)) / (10 ** (power - 1))
+            carry_frac = max(0.0, lower_cont - 9.0)   # 0 normally, 0→1 near rollover
+            d_lo   = (int(value) // (10 ** power)) % 10
+            d_cont = float(d_lo) + carry_frac
+
+        d_lo  = int(d_cont)
         frac  = d_cont - d_lo
         d_hi  = (d_lo + 1) % 10
 
@@ -113,6 +119,65 @@ def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
         cx_pos  = bx + col_i * char_w
         cropped = cell.crop((0, 0, char_w, bh))
         img.paste(cropped, (cx_pos, by), cropped)
+
+
+def _drum_shade(img, bx, by, bw, bh):
+    """Overlay a top-and-bottom fade-to-dark gradient on the drum window."""
+    shade = Image.new('RGBA', (bw, bh), (0, 0, 0, 0))
+    sd    = ImageDraw.Draw(shade)
+    fade  = bh // 3
+    for i in range(fade):
+        a = int(210 * (fade - i) / fade)
+        sd.line([(0, i),       (bw-1, i)],       fill=(0, 5, 15, a))
+        sd.line([(0, bh-1-i),  (bw-1, bh-1-i)],  fill=(0, 5, 15, a))
+    bg     = img.convert('RGBA').crop((bx, by, bx+bw, by+bh))
+    shaded = Image.alpha_composite(bg, shade)
+    img.paste(shaded.convert('RGB'), (bx, by))
+
+
+def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz):
+    """
+    Altimeter Veeder-Root drum: rolls in 20-foot steps.
+    Left sub-column scrolls the tens digit (0→2→4→6→8→0).
+    Right sub-column shows a fixed '0' (units always zero in 20 ft resolution).
+    """
+    f = fnt(font_sz, bold=True)
+    try:
+        ref_bbox = f.getbbox("0")
+        ch  = ref_bbox[3] - ref_bbox[1]
+        cw  = ref_bbox[2] - ref_bbox[0]
+    except Exception:
+        ch = font_sz; cw = font_sz // 2
+    col_rgba = color + (255,)
+
+    # 5 drum positions per 100 ft (one step every 20 ft)
+    drum_pos = (alt % 100) / 20         # 0.0 – 5.0
+    d_lo_idx = int(drum_pos) % 5        # 0–4
+    frac     = drum_pos - int(drum_pos)
+    d_lo_dig = d_lo_idx * 2             # 0, 2, 4, 6, 8
+    d_hi_dig = ((d_lo_idx + 1) % 5) * 2  # next even digit (8 wraps → 0)
+
+    # ── Left sub-column: rolling tens digit ──
+    lcw    = bw - cw - 1               # width for rolling col, leaving room for fixed '0'
+    scroll = int(frac * bh)
+    tx_l   = max(0, (lcw - cw) // 2)
+    ty_lo  = (bh - ch) // 2 - scroll
+    ty_hi  = ty_lo + bh
+    cell_l = Image.new('RGBA', (lcw, bh * 2), (0, 0, 0, 0))
+    cd     = ImageDraw.Draw(cell_l)
+    cd.text((tx_l, ty_lo), str(d_lo_dig), fill=col_rgba, font=f)
+    cd.text((tx_l, ty_hi), str(d_hi_dig), fill=col_rgba, font=f)
+    cropped_l = cell_l.crop((0, 0, lcw, bh))
+    img.paste(cropped_l, (bx, by), cropped_l)
+
+    # ── Right sub-column: fixed units '0' ──
+    rcw   = bw - lcw
+    tx_r  = max(0, (rcw - cw) // 2)
+    ty_r  = (bh - ch) // 2
+    cell_r = Image.new('RGBA', (rcw, bh), (0, 0, 0, 0))
+    cd_r  = ImageDraw.Draw(cell_r)
+    cd_r.text((tx_r, ty_r), "0", fill=col_rgba, font=f)
+    img.paste(cell_r, (bx + lcw, by), cell_r)
 
 
 def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
@@ -264,16 +329,23 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                   (SPD_X+14, gby+5),  (SPD_X+14, gby+17), (SPD_X, gby+17)]
             draw.polygon(gb, fill=CYAN)
 
-    # Speed box — convex point on outer (left/screen-edge) side, 90° tip
-    bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
-    pts = [(SPD_X+SPD_W, by), (SPD_X+pd, by),
-           (SPD_X, TAPE_MID),                    # point at outer edge
-           (SPD_X+pd, by+bh), (SPD_X+SPD_W, by+bh)]
-    draw.polygon(pts, fill=(0, 10, 30))
-    draw.line(pts + [pts[0]], fill=WHITE, width=2)
+    # Speed readout box — stepped Veeder-Root style (from SVG spec)
+    # Layout: pointer(15) → inner section(32) → drum section(19) = 66px total
+    # Inner: ±15 from TAPE_MID;  Drum: ±29 from TAPE_MID (taller window)
+    pts_s = [(SPD_X,    TAPE_MID),
+             (SPD_X+15, TAPE_MID-15), (SPD_X+47, TAPE_MID-15),
+             (SPD_X+47, TAPE_MID-29), (SPD_X+66, TAPE_MID-29),
+             (SPD_X+66, TAPE_MID+29),
+             (SPD_X+47, TAPE_MID+29), (SPD_X+47, TAPE_MID+15),
+             (SPD_X+15, TAPE_MID+15)]
+    draw.polygon(pts_s, fill=(0, 10, 30))
+    draw.line(pts_s + [pts_s[0]], fill=WHITE, width=2)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
-    rolling_drum(img, SPD_X+pd+2, TAPE_MID-17, SPD_W-pd-4, 34, speed, 3, spd_col, 20)
+    # Inner section: hundreds + tens, cascade-rolling, clipped to 30px window
+    rolling_drum(img, SPD_X+16, TAPE_MID-14, 30, 28, speed, 2, spd_col, 16, power_offset=1)
+    # Drum section: units digit, full 58px window (shows incoming/outgoing digit)
+    rolling_drum(img, SPD_X+48, TAPE_MID-28, 17, 56, speed, 1, spd_col, 22)
+    _drum_shade(img,   SPD_X+47, TAPE_MID-29, 19, 58)
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -317,16 +389,28 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                (ALT_X+ALT_W-14, aby+5),  (ALT_X+ALT_W-14, aby+17), (ALT_X+ALT_W, aby+17)]
         draw.polygon(bug, fill=CYAN)
 
-    # Alt box — convex point on outer (right/screen-edge) side, 90° tip
-    bh = 44; by = TAPE_MID - bh//2; pd = bh//2  # pd=22 → 135° corners, 90° tip
-    pts = [(ALT_X, by), (ALT_X+ALT_W-pd, by),
-           (ALT_X+ALT_W, TAPE_MID),              # point at outer edge
-           (ALT_X+ALT_W-pd, by+bh), (ALT_X, by+bh)]
-    draw.polygon(pts, fill=(0, 10, 30))
-    draw.line(pts + [pts[0]], fill=WHITE, width=2)
-    # Rolling drum: 4 digits, fits in flat part of box, same font_sz as speed
-    rolling_drum(img, ALT_X+2, TAPE_MID-17, ALT_W-pd-4, 34, alt, 4, WHITE, 20,
+    # Altitude readout box — stepped Veeder-Root style (from SVG spec)
+    # Layout: inner section(42) → drum section(24) → pointer(15) = 81px total
+    # Inner: ±15;  Drum: ±29  (pointer on the RIGHT, inner on the LEFT)
+    R = ALT_X + ALT_W   # right edge = 640
+    pts_a = [(R,    TAPE_MID),
+             (R-15, TAPE_MID-15), (R-15, TAPE_MID-29),
+             (R-39, TAPE_MID-29), (R-39, TAPE_MID-15),
+             (R-81, TAPE_MID-15),
+             (R-81, TAPE_MID+15),
+             (R-39, TAPE_MID+15), (R-39, TAPE_MID+29),
+             (R-15, TAPE_MID+29), (R-15, TAPE_MID+15)]
+    draw.polygon(pts_a, fill=(0, 10, 30))
+    draw.line(pts_a + [pts_a[0]], fill=WHITE, width=2)
+    # Inner section: alt//100 as 3-digit cascade; carry starts when drum hits its last
+    # 20-ft step (drum_pos > 4.0, i.e. alt%100 > 80 ft) so all digits roll together.
+    carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
+    alt_inner  = float(alt // 100) + carry_frac
+    rolling_drum(img, R-80, TAPE_MID-14, 40, 28, alt_inner, 3, WHITE, 14,
                  suppress_leading=True)
+    # Drum section: 20 ft steps — tens digit scrolls 0→2→4→6→8→0, units fixed '0'
+    rolling_drum_alt20(img, R-38, TAPE_MID-28, 22, 56, alt, WHITE, 16)
+    _drum_shade(img,   R-39, TAPE_MID-29, 24, 58)
 
     # VSI
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
@@ -529,11 +613,21 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 OUT = os.path.dirname(os.path.abspath(__file__))
 
 draw_scene(
-    roll=0, pitch=2, hdg=133, alt=8500, speed=115,
+    roll=0, pitch=2, hdg=133, alt=8499.7, speed=114.7,
     vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
     gs_bug=115,
     label="Sedona Valley — Level cruise SE at 8,500 ft",
     filename=os.path.join(OUT, "preview_sedona_level.png"),
+    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+)
+
+# Cascade demo: all drum digits mid-transition (4999.7 ft → 5000, 119.7 kt → 120)
+draw_scene(
+    roll=0, pitch=0, hdg=270, alt=4999.7, speed=119.7,
+    vspeed=0, ay=0.0, hdg_bug=270, alt_bug=5000,
+    gs_bug=120,
+    label="Veeder-Root cascade demo — all digits mid-roll",
+    filename=os.path.join(OUT, "preview_vr_cascade.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
 )
 

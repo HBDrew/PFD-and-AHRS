@@ -129,31 +129,35 @@ def _text(surf, txt, size, colour, cx=None, cy=None, x=None, y=None, bold=False)
 
 
 def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz,
-                  suppress_leading=False):
+                  suppress_leading=False, power_offset=0):
     """
     Veeder-Root style rolling-drum digit readout for pygame.
-    Only the units digit animates continuously; higher digits snap.
-    suppress_leading: skip leading-zero digit cells (e.g. for altitude).
+    Cascading: every digit carries smoothly when the digit below approaches 9→0.
+    power_offset: the power of the LOWEST digit rendered (0=units, 1=tens, etc.)
     """
     char_w  = bw // n_digits
     f       = _get_font(font_sz, bold=True)
     val_int = int(abs(value))
 
     for col_i in range(n_digits):
-        power = n_digits - 1 - col_i   # 0 = units, 1 = tens, …
-        # Suppress leading zeros: skip cell if all higher digits are zero
+        power = power_offset + n_digits - 1 - col_i   # absolute decimal power of this column
         if suppress_leading and power > 0 and val_int < 10 ** power:
             continue
+
         if power == 0:
             d_cont = float(value % 10.0)
         else:
-            d_cont = float((int(value) // (10 ** power)) % 10)
-        d_lo = int(d_cont)
+            # Cascade: scroll when the complete lower-order portion approaches rollover
+            lower_cont = (value % (10 ** power)) / (10 ** (power - 1))
+            carry_frac = max(0.0, lower_cont - 9.0)   # 0 normally, 0→1 near rollover
+            d_lo   = (int(value) // (10 ** power)) % 10
+            d_cont = float(d_lo) + carry_frac
+
+        d_lo  = int(d_cont)
         frac  = d_cont - d_lo
         d_hi  = (d_lo + 1) % 10
 
         cx = bx + col_i * char_w
-        # Cell surface — pygame clips blit content to bounds automatically
         cell = pygame.Surface((char_w, bh), pygame.SRCALPHA)
 
         img_lo = f.render(str(d_lo), True, color)
@@ -167,6 +171,58 @@ def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz,
         cell.blit(img_hi, (max(0, (char_w - img_hi.get_width()) // 2),
                             ty_base - scroll + bh))
         surf.blit(cell, (cx, by))
+
+
+def _drum_shade(surf, bx, by, bw, bh):
+    """Overlay a top-and-bottom fade-to-dark gradient on the drum window."""
+    shade = pygame.Surface((bw, bh), pygame.SRCALPHA)
+    shade.fill((0, 0, 0, 0))
+    fade = bh // 3
+    for i in range(fade):
+        a = int(210 * (fade - i) / fade)
+        pygame.draw.line(shade, (0, 5, 15, a), (0, i),      (bw-1, i))
+        pygame.draw.line(shade, (0, 5, 15, a), (0, bh-1-i), (bw-1, bh-1-i))
+    surf.blit(shade, (bx, by))
+
+
+def _rolling_drum_alt20(surf, bx, by, bw, bh, alt, color, font_sz):
+    """
+    Altimeter Veeder-Root drum: rolls in 20-foot steps.
+    Left sub-column scrolls the tens digit (0→2→4→6→8→0).
+    Right sub-column shows a fixed '0' (units always zero in 20 ft resolution).
+    """
+    f = _get_font(font_sz, bold=True)
+
+    # 5 drum positions per 100 ft (one step every 20 ft)
+    drum_pos = (alt % 100) / 20         # 0.0 – 5.0
+    d_lo_idx = int(drum_pos) % 5        # 0–4
+    frac     = drum_pos - int(drum_pos)
+    d_lo_dig = d_lo_idx * 2             # 0, 2, 4, 6, 8
+    d_hi_dig = ((d_lo_idx + 1) % 5) * 2  # next even digit (8 wraps → 0)
+
+    img_lo = f.render(str(d_lo_dig), True, color)
+    img_hi = f.render(str(d_hi_dig), True, color)
+    cw     = img_lo.get_width()
+    ch     = img_lo.get_height()
+
+    # ── Left sub-column: rolling tens digit ──
+    lcw    = bw - cw - 1
+    scroll = int(frac * bh)
+    tx_l   = max(0, (lcw - cw) // 2)
+    ty_base = max(0, (bh - ch) // 2)
+    cell_l = pygame.Surface((lcw, bh), pygame.SRCALPHA)
+    cell_l.blit(img_lo, (tx_l, ty_base - scroll))
+    cell_l.blit(img_hi, (tx_l, ty_base - scroll + bh))
+    surf.blit(cell_l, (bx, by))
+
+    # ── Right sub-column: fixed units '0' ──
+    rcw   = bw - lcw
+    img_zero = f.render("0", True, color)
+    tx_r  = max(0, (rcw - img_zero.get_width()) // 2)
+    ty_r  = max(0, (bh  - img_zero.get_height()) // 2)
+    cell_r = pygame.Surface((rcw, bh), pygame.SRCALPHA)
+    cell_r.blit(img_zero, (tx_r, ty_r))
+    surf.blit(cell_r, (bx + lcw, by))
 
 
 def lerp(a, b, t):
@@ -528,18 +584,22 @@ def draw_speed_tape(surf, speed, gs_bug=None):
                   (SPD_X + 14, gby + 5),  (SPD_X + 14, gby + 17), (SPD_X, gby + 17)]
             pygame.draw.polygon(surf, CYAN, gb)
 
-    # Speed readout box — convex point on outer (left) edge, 90° tip
-    bh = 44
-    by = TAPE_MID - bh // 2
-    pd = bh // 2  # 22px → 135° corners, 90° tip
-    pts = [(SPD_X + SPD_W, by), (SPD_X + pd, by),
-           (SPD_X, TAPE_MID),                        # point at outer/left edge
-           (SPD_X + pd, by + bh), (SPD_X + SPD_W, by + bh)]
-    pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
-    pygame.gfxdraw.aapolygon(surf, pts, WHITE)
+    # Speed readout box — stepped Veeder-Root style (from SVG spec)
+    # Layout: pointer(15) → inner section(32) → drum section(19) = 66px total
+    pts_s = [(SPD_X,      TAPE_MID),
+             (SPD_X + 15, TAPE_MID - 15), (SPD_X + 47, TAPE_MID - 15),
+             (SPD_X + 47, TAPE_MID - 29), (SPD_X + 66, TAPE_MID - 29),
+             (SPD_X + 66, TAPE_MID + 29),
+             (SPD_X + 47, TAPE_MID + 29), (SPD_X + 47, TAPE_MID + 15),
+             (SPD_X + 15, TAPE_MID + 15)]
+    pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
+    pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
     spd_col = RED if speed > VNE else (YELLOW if speed > VNO else WHITE)
-    # Drum starts at flat part of box (SPD_X+pd), same font_sz as alt
-    _rolling_drum(surf, SPD_X + pd + 2, TAPE_MID - 17, SPD_W - pd - 4, 34, speed, 3, spd_col, 20)
+    # Inner: hundreds + tens (cascade), clipped to 30px window
+    _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 16, power_offset=1)
+    # Drum: units digit, full 58px window
+    _rolling_drum(surf, SPD_X + 48, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 22)
+    _drum_shade(surf,   SPD_X + 47, TAPE_MID - 29, 19, 58)
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -598,18 +658,27 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                    (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 17), (ALT_X + ALT_W, aby + 17)]
             pygame.draw.polygon(surf, CYAN, bug)
 
-    # Altitude readout box — convex point on outer (right) edge, 90° tip
-    bh = 44
-    by = TAPE_MID - bh // 2
-    pd = bh // 2  # 22px → 135° corners, 90° tip
-    pts = [(ALT_X, by), (ALT_X + ALT_W - pd, by),
-           (ALT_X + ALT_W, TAPE_MID),            # point at outer/right edge
-           (ALT_X + ALT_W - pd, by + bh), (ALT_X, by + bh)]
-    pygame.gfxdraw.filled_polygon(surf, pts, (0, 10, 30))
-    pygame.gfxdraw.aapolygon(surf, pts, WHITE)
-    # Rolling drum: 4 digits, fits in flat part of box, same font_sz as speed
-    _rolling_drum(surf, ALT_X + 2, TAPE_MID - 17, ALT_W - pd - 4, 34, alt, 4, WHITE, 20,
+    # Altitude readout box — stepped Veeder-Root style (from SVG spec)
+    # Layout: inner section(42) → drum section(24) → pointer(15) = 81px total
+    R = ALT_X + ALT_W   # right edge = 640
+    pts_a = [(R,      TAPE_MID),
+             (R - 15, TAPE_MID - 15), (R - 15, TAPE_MID - 29),
+             (R - 39, TAPE_MID - 29), (R - 39, TAPE_MID - 15),
+             (R - 81, TAPE_MID - 15),
+             (R - 81, TAPE_MID + 15),
+             (R - 39, TAPE_MID + 15), (R - 39, TAPE_MID + 29),
+             (R - 15, TAPE_MID + 29), (R - 15, TAPE_MID + 15)]
+    pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
+    pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
+    # Inner: alt//100 as 3-digit cascade; carry starts when drum hits its last
+    # 20-ft step (drum_pos > 4.0, i.e. alt%100 > 80 ft) so all digits roll together.
+    carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
+    alt_inner  = float(alt // 100) + carry_frac
+    _rolling_drum(surf, R - 80, TAPE_MID - 14, 40, 28, alt_inner, 3, WHITE, 14,
                   suppress_leading=True)
+    # Drum: 20 ft steps — tens digit scrolls 0→2→4→6→8→0, units fixed '0'
+    _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 16)
+    _drum_shade(surf,   R - 39, TAPE_MID - 29, 24, 58)
 
     # VSI (vertical speed)
     arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")
