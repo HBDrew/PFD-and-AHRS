@@ -120,6 +120,17 @@ An amber swept-delta wing symbol sits fixed at the AI centre, always pointing to
 
 A white ball in the slip/skid indicator sits at the bottom of the AI.  Ball centred = coordinated flight.  Ball displaced = rudder correction needed.
 
+### Terrain / obstacle proximity alert
+
+A banner appears centred at the top of the display whenever terrain or an obstacle is within a critical clearance margin:
+
+| Banner | Colour | Trigger |
+|--------|--------|---------|
+| ![Terrain caution](../tools/preview_terrain_caution.png) | Amber — **TERRAIN CAUTION** | Terrain or obstacle MSL within 500 ft below aircraft |
+| ![Terrain warning](../tools/preview_terrain_warning.png) | Red — **PULL UP  TERRAIN** | Terrain or obstacle MSL within 100 ft below aircraft |
+
+The WARNING banner flashes at 1 Hz.  Requires a valid GPS fix and either SRTM terrain tiles (Section 14) or obstacle data (Section 15) to be loaded.
+
 ---
 
 ## 5. Heading Tape

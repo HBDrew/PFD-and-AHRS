@@ -1016,6 +1016,91 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
     _text(surf, f"{round(hdg) % 360:03d}\u00b0", 17, WHITE, cx=CX, cy=by2 + bh // 2)
 
 
+# ── Terrain / obstacle proximity alert ───────────────────────────────────────
+# alert_level: 0 = none, 1 = caution (amber), 2 = warning (red flash)
+_terrain_alert_level = 0
+
+
+def _update_terrain_alert(lat, lon, alt_ft, gps_ok):
+    """
+    Compute the current terrain/obstacle alert level and store it globally.
+    Called once per render frame with current aircraft position.
+      0 — no alert
+      1 — CAUTION  (clearance < TERRAIN_CAUTION_FT or obstacle < OBSTACLE_CAUTION_FT)
+      2 — WARNING  (clearance < TERRAIN_WARNING_FT or obstacle < OBSTACLE_WARNING_FT)
+    """
+    global _terrain_alert_level
+    if not gps_ok:
+        _terrain_alert_level = 0
+        return
+
+    level = 0
+
+    # ── Terrain clearance ────────────────────────────────────────────────────
+    if _has_terrain:
+        elev = get_elevation_ft(SRTM_DIR, lat, lon)
+        clearance = alt_ft - elev
+        if clearance < TERRAIN_WARNING_FT:
+            level = max(level, 2)
+        elif clearance < TERRAIN_CAUTION_FT:
+            level = max(level, 1)
+
+    # ── Obstacle clearance ───────────────────────────────────────────────────
+    if _obstacles is not None:
+        nearby = obs_mod.query_nearby(_obstacles, lat, lon,
+                                      radius_nm=3.0,    # tighter radius for alerts
+                                      alt_ft=alt_ft,
+                                      window_ft=OBSTACLE_CAUTION_FT)
+        for ob in nearby:
+            clearance = alt_ft - ob.msl_ft
+            if clearance < OBSTACLE_WARNING_FT:
+                level = max(level, 2)
+                break
+            elif clearance < OBSTACLE_CAUTION_FT:
+                level = max(level, 1)
+
+    _terrain_alert_level = level
+
+
+def draw_terrain_alert(surf):
+    """
+    Draw the TERRAIN / PULL UP alert banner in the centre of the badge strip
+    (y = 0..22, same row as the status badges).  Level 2 flashes at 1 Hz.
+    """
+    level = _terrain_alert_level
+    if level == 0:
+        return
+
+    # Flash at 1 Hz for WARNING (level 2): on for 500 ms, off for 500 ms
+    if level == 2:
+        if (pygame.time.get_ticks() // 500) % 2 == 1:
+            return  # off phase — nothing drawn
+
+    # Banner dimensions — centred in the AI strip, above pitch ladder
+    bw = 140; bh = 16
+    bx = CX - bw // 2
+    by = 3
+
+    if level == 2:
+        bg  = (180, 0, 0)
+        fg  = (255, 255, 255)
+        lbl = "PULL UP"
+        sub = "TERRAIN"
+    else:
+        bg  = (160, 110, 0)
+        fg  = (255, 235, 0)
+        lbl = "TERRAIN"
+        sub = "CAUTION"
+
+    # Filled rounded rectangle
+    pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=3)
+    pygame.draw.rect(surf, fg, (bx, by, bw, bh), width=1, border_radius=3)
+
+    # Two-word label: primary left, secondary right
+    _text(surf, lbl, 11, fg, bold=True, x=bx + 6, y=by + 2)
+    _text(surf, sub, 9,  fg, bold=False, x=bx + bw - 52, y=by + 4)
+
+
 # ── Status badges ─────────────────────────────────────────────────────────────
 def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected):
     """
@@ -2922,6 +3007,9 @@ def render(surf, demo_mode, connected):
 
     ai_rect = (AI_X, AI_Y, AI_W, AI_H)
 
+    # 0. Compute terrain/obstacle alert level for this frame
+    _update_terrain_alert(lat, lon, alt, gps_ok)
+
     # 1. SVT / AI background
     if _has_terrain:
         draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon)
@@ -2956,6 +3044,9 @@ def render(surf, demo_mode, connected):
 
     # 9. Status badges
     draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected)
+
+    # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
+    draw_terrain_alert(surf)
 
     # 10. Failure overlays
     draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok)
