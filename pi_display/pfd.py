@@ -2078,6 +2078,28 @@ _SYS_BTN_Y     = _SYS_TERRAIN_Y + _SS_RH + 8      # action buttons top
 _SYS_BTN_H     = 54
 
 
+def _sys_data_tile(surf, bx, by, bw, bh, label, sub, active=True):
+    """Half-width tappable tile for data download rows (terrain / obstacle)."""
+    # Background gradient
+    for i in range(bh):
+        t = 1.0 - i / bh
+        if active:
+            c = (int(t*8), int(12+t*18), int(28+t*35))
+        else:
+            c = (int(t*5), int(t*7), int(t*12))
+        pygame.draw.line(surf, c, (bx, by+i), (bx+bw, by+i))
+    bc = (55,75,105) if active else (28,35,48)
+    pygame.draw.rect(surf, bc, (bx, by, bw, bh), width=1, border_radius=4)
+    lc = WHITE if active else (55,62,72)
+    sc = (100,120,145) if active else (42,48,58)
+    _text(surf, label, 13, lc, bold=True, x=bx+12, y=by+10)
+    _text(surf, sub,   11, sc,             x=bx+12, y=by+28)
+    if active:
+        _text(surf, "\u25b6", 16, (60,80,110), x=bx+bw-22, y=by+(bh-18)//2)
+    else:
+        _text(surf, "future", 10, (48,55,65), x=bx+bw-50, y=by+bh-18)
+
+
 def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
@@ -2109,14 +2131,17 @@ def draw_system_setup(surf):
     _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
     _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
 
-    # TERRAIN DATA row
+    # Data download tiles: TERRAIN DATA (left, active) | OBSTACLE DATA (right, future)
+    half = (bw - 8) // 2
     n_tiles, used_mb = _td_disk_stats()
-    _setting_row(surf, 0, "TERRAIN DATA",
-                 f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB used",
-                 _y_override=_SYS_TERRAIN_Y)
-    # Right-side arrow hint
-    _text(surf, "\u25b6", 16, (60,80,110), bold=False,
-          x=bx+bw-28, y=_SYS_TERRAIN_Y+(_SS_RH-18)//2)
+    _sys_data_tile(surf, bx,          _SYS_TERRAIN_Y, half, _SS_RH,
+                   "TERRAIN DATA",
+                   f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB",
+                   active=True)
+    _sys_data_tile(surf, bx+half+8,   _SYS_TERRAIN_Y, half, _SS_RH,
+                   "OBSTACLE DATA",
+                   "FAA digital obstacle file",
+                   active=False)
 
     half_w = (bw - 10) // 2
     _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "DIAGNOSTICS", "normal")
@@ -2128,7 +2153,10 @@ def system_setup_hit(x, y):
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
-        return "terrain_data"
+        half = (bw - 8) // 2
+        if bx <= x <= bx+half:
+            return "terrain_data"
+        # right tile (obstacle) is a future placeholder — no action
     half_w = (bw - 10) // 2
     if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
         if bx <= x <= bx+half_w:

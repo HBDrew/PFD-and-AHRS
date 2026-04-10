@@ -1458,13 +1458,32 @@ def draw_system_screen(filename, display_mode="pfd"):
               "coming soon", fill=(45,55,70), font=sf_m)
 
     terrain_y = mode_y + _SS_RH + 8
-    _setting_row_p(draw, 0, "TERRAIN DATA",
-                   "12 tiles on disk  \u00b7  11.8 MB used",
-                   _y_override=terrain_y)
-    # Right-side arrow hint (tappable row → opens terrain download screen)
-    arrow_f = fnt(16)
-    draw.text((bx+bw-28, terrain_y+(_SS_RH-18)//2), "\u25b6",
-              fill=(60,80,110), font=arrow_f)
+    half = (bw - 8) // 2
+
+    def _data_tile_p(tx, label, sub, active=True):
+        for i in range(_SS_RH):
+            t = 1.0 - i/_SS_RH
+            if active:
+                c = (int(t*8), int(12+t*18), int(28+t*35))
+            else:
+                c = (int(t*5), int(t*7), int(t*12))
+            draw.line([(tx, terrain_y+i),(tx+half-1, terrain_y+i)], fill=c)
+        bc = (55,75,105) if active else (28,35,48)
+        draw.rounded_rectangle([(tx,terrain_y),(tx+half-1,terrain_y+_SS_RH-1)],
+                                radius=4, outline=bc, width=1)
+        lc = WHITE if active else (55,62,72)
+        sc = (100,120,145) if active else (42,48,58)
+        draw.text((tx+12, terrain_y+10), label, fill=lc, font=fnt(13,bold=True))
+        draw.text((tx+12, terrain_y+28), sub,   fill=sc, font=fnt(11))
+        if active:
+            draw.text((tx+half-22, terrain_y+(_SS_RH-18)//2), "\u25b6",
+                      fill=(60,80,110), font=fnt(16))
+        else:
+            draw.text((tx+half-50, terrain_y+_SS_RH-18), "future",
+                      fill=(48,55,65), font=fnt(10))
+
+    _data_tile_p(bx,        "TERRAIN DATA",  "12 tiles on disk  \u00b7  11.8 MB", active=True)
+    _data_tile_p(bx+half+8, "OBSTACLE DATA", "FAA digital obstacle file",         active=False)
 
     btn_y = terrain_y + _SS_RH + 8; btn_h = 54
     half_w = (bw - 10) // 2

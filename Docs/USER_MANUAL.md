@@ -332,9 +332,14 @@ Shows firmware version, build date, display resolution, hardware platform, and t
 
 Switch between **PFD** (Primary Flight Display) and **MFD** (Multi-Function Display).  MFD is a planned future mode — the button is shown but not yet active.
 
-### Terrain data
+### Terrain data / Obstacle data
 
-Opens the terrain tile downloader.  See [Section 14](#14-terrain-data-download).
+Two side-by-side tiles in the data row:
+
+| Tile | Status | Action |
+|------|--------|--------|
+| **TERRAIN DATA** | Shows tile count and disk usage | Tap to open the terrain downloader (Section 14) |
+| **OBSTACLE DATA** | *future* | FAA digital obstacle file — placeholder for a future update |
 
 ### Buttons
 
