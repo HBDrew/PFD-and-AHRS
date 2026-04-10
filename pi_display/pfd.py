@@ -61,10 +61,18 @@ disp["hdg_bug"]       = 0.0
 disp["alt_bug"]       = 0.0
 disp["baro_hpa"]      = BARO_DEFAULT_HPA
 disp["show_demo"]     = False
-disp["mode"]          = "pfd"       # "pfd" | "setup" | "numpad"
-disp["numpad_target"] = ""          # "alt_bug" | "hdg_bug" | "spd_bug"
+disp["mode"]          = "pfd"       # "pfd"|"setup"|"flight_profile"|"numpad"|"keyboard"
+disp["numpad_target"] = ""          # "alt_bug"|"hdg_bug"|"spd_bug"|fp key
 disp["numpad_buf"]    = ""          # digits entered so far
 disp["numpad_prev"]   = "pfd"       # mode to return to on cancel/enter
+disp["kbd_target"]    = ""          # flight-profile field being edited
+disp["kbd_buf"]       = ""          # text entered so far
+disp["fp"] = {                      # flight-profile values
+    "tail":   "N12345", "actype": "C172S",
+    "vs0":    VS0,  "vs1": VS1,  "vfe": VFE,
+    "vno":    VNO,  "vne": VNE,  "va":  VA,
+    "vy":     VY,   "vx":  VX,
+}
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 
@@ -1048,7 +1056,51 @@ def handle_event(event, demo_mode):
             idx = setup_hit(x, y)
             if idx == 5:                      # EXIT button
                 disp["mode"] = "pfd"
+            elif idx == 0:                    # FLIGHT PROFILE
+                disp["mode"] = "flight_profile"
             # Other buttons: sub-screens (future — placeholder)
+            return True
+
+        # ── Flight Profile screen taps ────────────────────────────────────
+        if mode == "flight_profile":
+            key = flight_profile_hit(x, y, disp["fp"])
+            if key == "__back__":
+                disp["mode"] = "setup"
+            elif key is not None:
+                ftype = next((f[4] for f in _FP_FIELDS if f[0]==key), "num")
+                if ftype == "kbd":
+                    disp["kbd_target"] = key
+                    disp["kbd_buf"]    = ""
+                    disp["mode"]       = "keyboard"
+                else:
+                    disp["numpad_target"] = key
+                    disp["numpad_buf"]    = ""
+                    disp["numpad_prev"]   = "flight_profile"
+                    disp["mode"]          = "numpad"
+            return True
+
+        # ── Keyboard taps ─────────────────────────────────────────────────
+        if mode == "keyboard":
+            hit = keyboard_hit(x, y)
+            if hit:
+                lbl, sty = hit
+                target  = disp["kbd_target"]
+                max_len = next((f[3] for f in _FP_FIELDS if f[0]==target), 16)
+                if sty == 'n':                # character / space
+                    ch = ' ' if lbl == 'SPACE' else lbl
+                    if len(disp["kbd_buf"]) < max_len:
+                        disp["kbd_buf"] += ch
+                elif sty == 'del':            # backspace
+                    disp["kbd_buf"] = disp["kbd_buf"][:-1]
+                elif sty == 'x':              # CANCEL
+                    disp["kbd_buf"] = ""
+                    disp["mode"] = "flight_profile"
+                elif sty == 'ok':             # DONE
+                    buf = disp["kbd_buf"].strip()
+                    if buf:
+                        disp["fp"][target] = buf
+                    disp["kbd_buf"] = ""
+                    disp["mode"] = "flight_profile"
             return True
 
         # ── Numpad taps ───────────────────────────────────────────────────
@@ -1074,6 +1126,8 @@ def handle_event(event, demo_mode):
                             disp["hdg_bug"] = float(val % 360)
                         elif target == "spd_bug":
                             disp["spd_bug"] = float(val)
+                        elif target in disp["fp"]:   # V-speed field
+                            disp["fp"][target] = val
                     disp["mode"] = disp["numpad_prev"]
                     disp["numpad_buf"] = ""
             return True
@@ -1224,6 +1278,179 @@ def numpad_hit(x, y):
     return None
 
 
+# ── Flight Profile screen ────────────────────────────────────────────────────
+
+_FP_FIELDS = [
+    ("tail",  "TAIL NUMBER",          "",   8, "kbd"),
+    ("actype","AIRCRAFT TYPE",        "",   8, "kbd"),
+    ("vs0",   "VS0 \u2014 Stall flaps",  "kt", 3, "num"),
+    ("vs1",   "VS1 \u2014 Stall clean",  "kt", 3, "num"),
+    ("vfe",   "VFE \u2014 Max flaps",    "kt", 3, "num"),
+    ("vno",   "VNO \u2014 Max cruise",   "kt", 3, "num"),
+    ("vne",   "VNE \u2014 Never exceed", "kt", 3, "num"),
+    ("va",    "VA  \u2014 Manoeuvre",    "kt", 3, "num"),
+    ("vy",    "VY  \u2014 Best rate",    "kt", 3, "num"),
+    ("vx",    "VX  \u2014 Best angle",   "kt", 3, "num"),
+]
+
+_FP_MX=12; _FP_GAP=8; _FP_H1=58; _FP_H2=48; _FP_Y0=50
+
+
+def _fp_field(surf, bx, by, bw, bh, label, value, units="", r=6):
+    pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=r)
+    glow_h = bh // 5
+    for i in range(glow_h):
+        t = 1.0 - i / glow_h
+        gc = (int(15+t*35), int(20+t*50), int(40+t*80))
+        pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
+    pygame.draw.rect(surf, WHITE, (bx, by, bw, bh), width=2, border_radius=r)
+    _text(surf, label, 11, (155,170,190), x=bx+10, y=by+6)
+    val_str = str(value) if value not in (None, "", 0) else "---"
+    if units and val_str != "---":
+        val_str = f"{val_str} {units}"
+    _text(surf, val_str, 18, WHITE, bold=True,
+          cx=bx+bw - _get_font(18,bold=True).size(val_str)[0]//2 - 12,
+          cy=by+bh//2)
+
+
+def draw_flight_profile(surf, fp_vals):
+    """Full-screen Flight Profile setup screen."""
+    surf.fill((0, 8, 22))
+    pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
+    pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
+    _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
+    _text(surf, "FLIGHT PROFILE", 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+
+    MX=_FP_MX; GAP=_FP_GAP
+    FW = DISPLAY_W - 2*MX
+
+    # Aircraft info (full-width)
+    y = _FP_Y0
+    for key in ("tail", "actype"):
+        _, label, units, _, _ = next(f for f in _FP_FIELDS if f[0]==key)
+        _fp_field(surf, MX, y, FW, _FP_H1, label, fp_vals.get(key,"---"), units)
+        y += _FP_H1 + GAP
+
+    # Section divider
+    y += 2
+    pygame.draw.line(surf, (40,60,90), (MX, y), (DISPLAY_W-MX, y), 1)
+    y += 4
+    _text(surf, "V-SPEEDS  (knots) \u2014 tap to edit", 11, (120,140,165), x=MX, y=y)
+    y += 18
+
+    # V-speed grid: 4 rows × 2 cols
+    V_KEYS = [k for k,*_ in _FP_FIELDS if k not in ("tail","actype")]
+    BW = (FW - GAP) // 2
+    BH = (DISPLAY_H - y - GAP*3 - 4) // 4
+    COLS = [MX, MX+BW+GAP]
+    for i, key in enumerate(V_KEYS):
+        _, label, units, _, _ = next(f for f in _FP_FIELDS if f[0]==key)
+        bx = COLS[i%2]; by = y + (i//2)*(BH+GAP)
+        _fp_field(surf, bx, by, BW, BH, label, fp_vals.get(key,"---"), units)
+
+
+def flight_profile_hit(x, y, fp_vals):
+    """Return the field key tapped, or None."""
+    MX=_FP_MX; GAP=_FP_GAP; FW=DISPLAY_W-2*MX
+    # BACK button
+    if 8<=x<=80 and 6<=y<=37:
+        return "__back__"
+    # Aircraft fields
+    fy = _FP_Y0
+    for key in ("tail","actype"):
+        if MX<=x<=MX+FW and fy<=y<=fy+_FP_H1:
+            return key
+        fy += _FP_H1+GAP
+    # V-speed grid
+    fy += 26   # divider + label
+    V_KEYS = [k for k,*_ in _FP_FIELDS if k not in ("tail","actype")]
+    BW = (FW-GAP)//2; BH = (DISPLAY_H-fy-GAP*3-4)//4
+    COLS = [MX, MX+BW+GAP]
+    for i, key in enumerate(V_KEYS):
+        bx=COLS[i%2]; by=fy+(i//2)*(BH+GAP)
+        if bx<=x<=bx+BW and by<=y<=by+BH:
+            return key
+    return None
+
+
+# ── Keyboard screen ────────────────────────────────────────────────────────────
+
+_KB_ROWS = [
+    [('1',60,'n'),('2',60,'n'),('3',60,'n'),('4',60,'n'),('5',60,'n'),
+     ('6',60,'n'),('7',60,'n'),('8',60,'n'),('9',60,'n'),('0',60,'n')],
+    [('Q',60,'n'),('W',60,'n'),('E',60,'n'),('R',60,'n'),('T',60,'n'),
+     ('Y',60,'n'),('U',60,'n'),('I',60,'n'),('O',60,'n'),('P',60,'n')],
+    [('A',60,'n'),('S',60,'n'),('D',60,'n'),('F',60,'n'),('G',60,'n'),
+     ('H',60,'n'),('J',60,'n'),('K',60,'n'),('L',60,'n')],
+    [('Z',60,'n'),('X',60,'n'),('C',60,'n'),('V',60,'n'),('B',60,'n'),
+     ('N',60,'n'),('M',60,'n'),('-',60,'n'),('\u232b',88,'del')],
+    [('CANCEL',108,'x'),('SPACE',292,'n'),('DONE',108,'ok')],
+]
+_KB_ROW_H=66; _KB_GAP_Y=6; _KB_GAP_X=4; _KB_Y0=112
+
+
+def _kb_row_x0(row):
+    total = sum(w for _,w,_ in row) + _KB_GAP_X*(len(row)-1)
+    return (DISPLAY_W - total) // 2
+
+
+def _kb_key(surf, bx, by, bw, bh, label, style, r=6):
+    if style=='x':
+        bg=(28,6,6);  oc=(200,55,55); tc=(220,80,80)
+    elif style=='ok':
+        bg=(5,25,10); oc=(50,200,80); tc=(60,220,90)
+    elif style=='del':
+        bg=(30,18,5); oc=(200,140,40);tc=(220,160,50)
+    else:
+        bg=(0,12,32); oc=WHITE;       tc=WHITE
+    pygame.draw.rect(surf, bg, (bx,by,bw,bh), border_radius=r)
+    glow_h = bh//5
+    for i in range(glow_h):
+        t = 1.0-i/glow_h
+        gc=((int(45+t*55),int(8+t*12),int(8+t*12))  if style=='x'  else
+            (int(5+t*15),int(40+t*60),int(10+t*20)) if style=='ok' else
+            (int(40+t*50),int(25+t*35),int(5+t*10)) if style=='del'else
+            (int(15+t*30),int(20+t*45),int(40+t*75)))
+        pygame.draw.line(surf, gc, (bx+r,by+1+i),(bx+bw-r,by+1+i))
+    pygame.draw.rect(surf, oc, (bx,by,bw,bh), width=2, border_radius=r)
+    fs = 13 if len(label)>2 else 18
+    _text(surf, label, fs, tc, bold=True, cx=bx+bw//2, cy=by+bh//2)
+
+
+def draw_keyboard(surf, title, current_val, entered=""):
+    """Full-screen QWERTY keyboard for text entry."""
+    surf.fill((0,8,22))
+    pygame.draw.rect(surf,(0,18,45),(0,0,DISPLAY_W,44))
+    pygame.draw.line(surf,WHITE,(0,43),(DISPLAY_W-1,43),1)
+    _text(surf,title,17,WHITE,bold=True,cx=DISPLAY_W//2,cy=22)
+    disp_str = (entered if entered else str(current_val)) + "\u2502"
+    pygame.draw.rect(surf,(0,15,38),(10,50,DISPLAY_W-21,50),border_radius=6)
+    pygame.draw.rect(surf,WHITE,(10,50,DISPLAY_W-21,50),width=1,border_radius=6)
+    _text(surf,disp_str,28,CYAN,bold=True,cx=DISPLAY_W//2,cy=75)
+    _text(surf,f"Current: {current_val}",10,(110,120,140),cx=DISPLAY_W//2,cy=104)
+    y = _KB_Y0
+    for row in _KB_ROWS:
+        x = _kb_row_x0(row)
+        for label,kw,style in row:
+            _kb_key(surf,x,y,kw,_KB_ROW_H,label,style)
+            x += kw+_KB_GAP_X
+        y += _KB_ROW_H+_KB_GAP_Y
+
+
+def keyboard_hit(x, y):
+    """Return (label, style) of the tapped key, or None."""
+    ky = _KB_Y0
+    for row in _KB_ROWS:
+        if ky <= y <= ky+_KB_ROW_H:
+            kx = _kb_row_x0(row)
+            for label,kw,style in row:
+                if kx <= x <= kx+kw:
+                    return (label, style)
+                kx += kw+_KB_GAP_X
+        ky += _KB_ROW_H+_KB_GAP_Y
+    return None
+
+
 # ── Cyan tap-buttons (HDG bug, BARO, ALT bug) ────────────────────────────────
 # These sit just below the heading tape and below each tape's bottom edge,
 # styled as cyan-bordered dark boxes matching the GI-275 blue label style.
@@ -1289,8 +1516,25 @@ def render(surf, demo_mode, connected):
         curvals = {"alt_bug": int(disp.get("alt_bug", 0)),
                    "hdg_bug": int(disp.get("hdg_bug", 0)),
                    "spd_bug": int(disp.get("spd_bug", 0))}
+        # Add V-speed fields from flight profile
+        for fkey, flabel, *_ in _FP_FIELDS:
+            if fkey not in titles:
+                titles[fkey]  = f"SET {flabel}"
+                curvals[fkey] = int(disp["fp"].get(fkey, 0))
         draw_numpad(surf, titles.get(target, "ENTER VALUE"),
                     curvals.get(target, 0), buf)
+        return
+
+    if mode == "flight_profile":
+        draw_flight_profile(surf, disp["fp"])
+        return
+
+    if mode == "keyboard":
+        target = disp.get("kbd_target", "")
+        buf    = disp.get("kbd_buf", "")
+        cur    = disp["fp"].get(target, "")
+        title  = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
+        draw_keyboard(surf, f"ENTER {title}", cur, buf)
         return
 
     surf.fill((0, 0, 0))
