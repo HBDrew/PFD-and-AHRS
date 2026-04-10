@@ -237,7 +237,8 @@ def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz, show_adjacent=F
 
 def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                hdg_bug, alt_bug, label, filename,
-               gs_bug=None, ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8):
+               gs_bug=None, ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+               baro_hpa=1013.25):
 
     img  = Image.new('RGB', (W, H), (0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -337,12 +338,29 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     img = Image.alpha_composite(img.convert('RGBA'), ov).convert('RGB')
     draw = ImageDraw.Draw(img)
 
-    def cyan_box(label, value_str, bx, by, bw=84, bh=20):
-        draw.rectangle([(bx, by), (bx+bw, by+bh)], fill=(0, 20, 35))
-        draw.rectangle([(bx, by), (bx+bw, by+bh)], outline=CYAN, width=1)
-        txt = f"{label} {value_str}"
-        draw.text((bx + bw//2 - len(txt)*4, by + 4), txt,
-                  fill=CYAN, font=fnt(13, bold=True))
+    def cyan_box(value_str, bx, by, bw=74, bh=22, font_sz=14):
+        """Illuminated tap button: r=3 corners, 2px cyan border, top glow, no label."""
+        # Background fill
+        draw.rounded_rectangle([(bx, by), (bx+bw-1, by+bh-1)], radius=3,
+                                fill=(0, 20, 35))
+        # Top glow — simulates illuminated button face
+        glow_h = max(4, bh // 3)
+        for i in range(glow_h):
+            t = 1.0 - i / glow_h
+            r = min(255, int(t * 60))
+            g = min(255, int(20 + t * 100))
+            b = min(255, int(35 + t * 120))
+            draw.line([(bx+2, by+1+i), (bx+bw-3, by+1+i)], fill=(r, g, b))
+        # 2px cyan border (matching veeder-root outline width)
+        draw.rounded_rectangle([(bx, by), (bx+bw-1, by+bh-1)], radius=3,
+                                outline=CYAN, width=2)
+        # Value text — centred H+V
+        f = fnt(font_sz, bold=True)
+        bb = draw.textbbox((0, 0), value_str, font=f)
+        tw, th = bb[2]-bb[0], bb[3]-bb[1]
+        draw.text((bx + (bw-tw)//2 - bb[0],
+                   by + (bh-th)//2 - bb[1]),
+                  value_str, fill=CYAN, font=f)
 
     # ── 3. SPEED TAPE CONTENT ─────────────────────────────────────────────────
     def spd_y(v): return int(TAPE_MID - (v - speed) * PX_PER_KT)
@@ -405,13 +423,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
-    cyan_box("GS", gs_str, SPD_X, 2, bw=SPD_W, bh=18)
+    cyan_box(gs_str, SPD_X, 2, bw=SPD_W, bh=22)
 
     # ── 4. ALT TAPE CONTENT ───────────────────────────────────────────────────
     def alt_y(ft): return int(TAPE_MID - (ft - alt) * PX_PER_FT)
 
     # ALT bug button — top strip of alt tape
-    cyan_box("ALT", f"{round(alt_bug):5d}", ALT_X, 2, bw=ALT_W, bh=18)
+    cyan_box(f"{round(alt_bug):5d}", ALT_X, 2, bw=ALT_W, bh=22)
 
     # Tick marks + labels — every 50ft minor, every 100ft major with label
     base_a = round(alt / 50) * 50
@@ -478,21 +496,25 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                        show_adjacent=True, adj_slot_h=18)
     _drum_shade(img,   R-38, TAPE_MID-28, 22, 56)   # 1px inset from border
 
-    # VSI
+    # VSI box — small readout below alt veeder-root box
+    vsi_y = TAPE_MID + 32
+    vsi_h = 30
     arrow = "\u25b2" if vspeed > 30 else ("\u25bc" if vspeed < -30 else "\u2014")
-    vcol  = (0,220,0) if vspeed > 50 else ((255,140,0) if vspeed < -50 else LTGREY)
-    draw.text((ALT_X+4, TAPE_MID+20),
-              f"{arrow}{abs(round(vspeed/10)*10):4d}", fill=vcol, font=fnt(13))
-    draw.text((ALT_X+18, TAPE_MID+36), "fpm", fill=(120,160,200), font=fnt(10))
-
-    # Baro
-    baro_str = "GPS ALT" if not baro_ok else "1013.25"
-    baro_col = CYAN if baro_ok else (180, 180, 100)
-    draw.text((ALT_X+4, TAPE_MID+52), baro_str, fill=baro_col, font=fnt(11))
-    if baro_ok:
-        draw.text((ALT_X+14, TAPE_MID+65), "hPa", fill=(100,160,200), font=fnt(10))
-
-    # (ALT FT label replaced by ALT bug button at top)
+    vcol  = (0, 220, 0) if vspeed > 50 else ((255, 140, 0) if vspeed < -50 else LTGREY)
+    vsi_str = f"{arrow}{abs(round(vspeed / 10) * 10):4d}"
+    draw.rounded_rectangle([(ALT_X, vsi_y), (ALT_X+ALT_W-1, vsi_y+vsi_h-1)],
+                            radius=3, fill=(0, 8, 22), outline=(90, 120, 150), width=1)
+    _fv = fnt(12, bold=True)
+    bb  = draw.textbbox((0, 0), vsi_str, font=_fv)
+    tw, th = bb[2]-bb[0], bb[3]-bb[1]
+    draw.text((ALT_X + (ALT_W-tw)//2 - bb[0],
+               vsi_y + (vsi_h-th)//2 - bb[1]),
+              vsi_str, fill=vcol, font=_fv)
+    _ff  = fnt(9)
+    fbb  = draw.textbbox((0, 0), "fpm", font=_ff)
+    draw.text((ALT_X + ALT_W - (fbb[2]-fbb[0]) - 3,
+               vsi_y + vsi_h - (fbb[3]-fbb[1]) - 2),
+              "fpm", fill=(120, 160, 200), font=_ff)
 
     # ── 5. HEADING TAPE CONTENT ───────────────────────────────────────────────
     CARDS = {0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'}
@@ -641,11 +663,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
 
     # ── 8. CYAN TAP-BUTTONS ──────────────────────────────────────────────────
     # IAS and ALT bug buttons sit at the TOP of their respective tapes (drawn
-    # above in sections 3 and 4).  HDG and QNH sit at the BASE of the heading
+    # above in sections 3 and 4).  HDG and BARO sit at the BASE of the heading
     # strip, left and right — keeping the centre clear for the heading readout.
     btn_y = HDG_Y + 2
-    cyan_box("HDG", f"{round(hdg_bug):03d}\u00b0", SPD_X,    btn_y, bw=SPD_W+10)   # left
-    cyan_box("QNH", "GPS ALT",                      ALT_X-10, btn_y, bw=ALT_W+10)  # right
+    cyan_box(f"{round(hdg_bug)%360:03d}\u00b0",        SPD_X, btn_y, bw=SPD_W, bh=22)
+    baro_val = f"{baro_hpa/33.8639:.2f} IN" if baro_ok else "GPS ALT"
+    baro_fsz = 12 if baro_ok else 14   # "29.92 IN" is wider, use smaller font
+    cyan_box(baro_val, ALT_X, btn_y, bw=ALT_W, bh=22, font_sz=baro_fsz)
 
     # ── 9. SLIP INDICATOR — thin bar below zero-bank triangle pointer ─────────
     # Slides ±12 px under the fixed doghouse, same width as its base (16 px)
@@ -655,23 +679,37 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     draw.rectangle([(CX + defl - 8, slip_y),
                     (CX + defl + 8, slip_y + 4)], fill=WHITE)
 
-    # ── 10. STATUS BADGES (top-right, AHRS / BARO / GPS / LINK) ──────────────
-    bx_r = W - 4
-    def badge(text, bg, fg=WHITE):
+    # ── 10. STATUS BADGES ─────────────────────────────────────────────────────
+    # Left badges (AHRS, LINK) — just right of speed tape, clear of tape area
+    # Right badges (GPS sats, ALT mode) — just left of alt tape
+    _bf = fnt(10)
+
+    bx_l = AI_X + 4
+    def badge_l(text, bg, fg=WHITE):
+        nonlocal bx_l
+        tw = int(draw.textlength(text, font=_bf)) + 10
+        draw.rectangle([(bx_l, 4), (bx_l+tw, 19)], fill=bg)
+        draw.text((bx_l+5, 5), text, fill=fg, font=_bf)
+        bx_l += tw + 2
+
+    badge_l("AHRS" if ahrs_ok else "AHRS FAIL",
+            (0, 100, 80) if ahrs_ok else (150, 0, 0))
+    badge_l("LINK", (0, 130, 0))
+
+    bx_r = ALT_X - 4
+    def badge_r(text, bg, fg=WHITE):
         nonlocal bx_r
-        tw = len(text)*6 + 10
+        tw = int(draw.textlength(text, font=_bf)) + 10
         bx_r -= tw + 2
         draw.rectangle([(bx_r, 4), (bx_r+tw, 19)], fill=bg)
-        draw.text((bx_r+5, 5), text, fill=fg, font=fnt(10))
+        draw.text((bx_r+5, 5), text, fill=fg, font=_bf)
 
-    badge("LINK",            (0, 130, 0))
-    badge(f"GPS {sats}sat" if gps_ok else "NO GPS",
-          (0, 150, 0) if gps_ok else (100, 100, 0))
-    badge("BARO" if baro_ok else "GPS ALT",
-          (0, 80, 120) if baro_ok else (80, 80, 0),
-          WHITE if baro_ok else (220, 220, 100))
-    badge("AHRS" if ahrs_ok else "AHRS FAIL",
-          (0, 100, 80) if ahrs_ok else (150, 0, 0))
+    alt_lbl = "BARO ALT" if baro_ok else "GPS ALT"
+    badge_r(alt_lbl,
+            (0, 80, 120) if baro_ok else (80, 80, 0),
+            WHITE if baro_ok else (220, 220, 100))
+    badge_r(f"GPS {sats}sat" if gps_ok else "NO GPS",
+            (0, 150, 0) if gps_ok else (100, 100, 0))
 
     # ── 11. SCENARIO LABEL ────────────────────────────────────────────────────
     lw = len(label)*6 + 16

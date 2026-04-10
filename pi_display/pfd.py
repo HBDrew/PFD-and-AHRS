@@ -654,7 +654,7 @@ def draw_speed_tape(surf, speed, gs_bug=None):
 
     # GS bug button — top strip of speed tape
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
-    _cyan_box(surf, "GS", gs_str, x=SPD_X, y=2, w=SPD_W, h=18)
+    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=22)
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
@@ -698,7 +698,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
 
     # ALT bug button — top strip of alt tape
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
-    _cyan_box(surf, "ALT", alt_str, x=ALT_X, y=2, w=ALT_W, h=18)
+    _cyan_box(surf, alt_str, x=ALT_X, y=2, w=ALT_W, h=22)
 
     # Altitude bug — before readout box so box draws on top (bug goes behind readout)
     if alt_bug is not None:
@@ -741,21 +741,16 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                         show_adjacent=True, adj_slot_h=18)
     _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)   # 1px inset from border
 
-    # VSI (vertical speed)
+    # VSI box — small readout below alt veeder-root box
+    vsi_y = TAPE_MID + 32
+    vsi_h = 30
     arrow = "▲" if vspeed > 30 else ("▼" if vspeed < -30 else "—")
     vcol  = (0, 220, 0) if vspeed > 50 else ((255, 140, 0) if vspeed < -50 else LTGREY)
-    vs_txt = f"{arrow}{abs(round(vspeed / 10) * 10):4d}"
-    _text(surf, vs_txt, 13, vcol, x=ALT_X + 4, y=TAPE_MID + 20)
-    _text(surf, "fpm", 10, (120, 160, 200), x=ALT_X + 18, y=TAPE_MID + 36)
-
-    # Baro setting
-    baro_str = f"{baro_hpa:.2f}" if baro_src == "bme280" else "GPS ALT"
-    baro_col = CYAN if baro_src == "bme280" else (180, 180, 100)
-    _text(surf, baro_str, 11, baro_col, x=ALT_X + 4, y=TAPE_MID + 52)
-    if baro_src == "bme280":
-        _text(surf, "hPa", 10, (100, 160, 200), x=ALT_X + 18, y=TAPE_MID + 65)
-
-    # (ALT FT label replaced by ALT bug button at top)
+    vsi_str = f"{arrow}{abs(round(vspeed / 10) * 10):4d}"
+    pygame.draw.rect(surf, (0, 8, 22), (ALT_X, vsi_y, ALT_W, vsi_h), border_radius=3)
+    pygame.draw.rect(surf, (90, 120, 150), (ALT_X, vsi_y, ALT_W, vsi_h), width=1, border_radius=3)
+    _text(surf, vsi_str, 12, vcol, bold=True, cx=ALT_X + ALT_W // 2, cy=vsi_y + vsi_h // 2 - 3)
+    _text(surf, "fpm", 9, (120, 160, 200), x=ALT_X + ALT_W - 20, y=vsi_y + vsi_h - 12)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
@@ -828,31 +823,44 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False):
 
 # ── Status badges ─────────────────────────────────────────────────────────────
 def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected):
-    """Top-right status badges."""
-    x = DISPLAY_W - 4
-    fnt = _get_font(10)
+    """
+    Status badges split left/right to stay clear of the tape areas.
+    Left  (from AI_X): AHRS, LINK
+    Right (to ALT_X):  GPS sats, ALT mode (GPS ALT / BARO ALT)
+    """
+    f10 = _get_font(10)
 
-    def badge(text, bg, fg=(255, 255, 255)):
-        nonlocal x
-        w = fnt.size(text)[0] + 10
-        x -= w + 2
-        pygame.draw.rect(surf, bg, (x, 4, w, 15))
-        _text(surf, text, 10, fg, x=x + 5, y=5)
-        return x
-
-    link_col = (0, 130, 0) if connected else (130, 0, 0)
-    badge("LINK" if connected else "NO LINK", link_col)
-
-    gps_col = (0, 150, 0) if gps_ok else (130, 130, 0)
-    badge(f"GPS {sats}sat" if gps_ok else "NO GPS", gps_col)
-
-    if baro_ok:
-        badge("BARO", (0, 80, 120))
-    else:
-        badge("GPS ALT", (80, 80, 0), (220, 220, 100))
+    # ── Left badges: AHRS + LINK ──
+    bx = AI_X + 4
+    def badge_l(text, bg, fg=(255, 255, 255)):
+        nonlocal bx
+        w = f10.size(text)[0] + 10
+        pygame.draw.rect(surf, bg, (bx, 4, w, 15))
+        _text(surf, text, 10, fg, x=bx + 5, y=5)
+        bx += w + 2
 
     ahrs_col = (0, 100, 80) if ahrs_ok else (150, 0, 0)
-    badge("AHRS" if ahrs_ok else "AHRS FAIL", ahrs_col)
+    badge_l("AHRS" if ahrs_ok else "AHRS FAIL", ahrs_col)
+
+    link_col = (0, 130, 0) if connected else (130, 0, 0)
+    badge_l("LINK" if connected else "NO LINK", link_col)
+
+    # ── Right badges: GPS sats + ALT mode ──
+    rx = ALT_X - 4
+    def badge_r(text, bg, fg=(255, 255, 255)):
+        nonlocal rx
+        w = f10.size(text)[0] + 10
+        rx -= w + 2
+        pygame.draw.rect(surf, bg, (rx, 4, w, 15))
+        _text(surf, text, 10, fg, x=rx + 5, y=5)
+
+    alt_lbl = "BARO ALT" if baro_ok else "GPS ALT"
+    alt_bg  = (0, 80, 120) if baro_ok else (80, 80, 0)
+    alt_fg  = (255, 255, 255) if baro_ok else (220, 220, 100)
+    badge_r(alt_lbl, alt_bg, alt_fg)
+
+    gps_col = (0, 150, 0) if gps_ok else (130, 130, 0)
+    badge_r(f"GPS {sats}sat" if gps_ok else "NO GPS", gps_col)
 
 
 # ── Red-X failure overlays ────────────────────────────────────────────────────
@@ -987,32 +995,48 @@ def handle_event(event, demo_mode):
 # These sit just below the heading tape and below each tape's bottom edge,
 # styled as cyan-bordered dark boxes matching the GI-275 blue label style.
 
-def _cyan_box(surf, label, value_str, x, y, w=80, h=22):
-    """Draw a dark box with cyan border and label:value text."""
-    pygame.draw.rect(surf, (0, 20, 35), (x, y, w, h))
-    pygame.draw.rect(surf, CYAN, (x, y, w, h), 1)
-    full = f"{label} {value_str}"
-    _text(surf, full, 13, CYAN, cx=x + w // 2, cy=y + h // 2)
+def _cyan_box(surf, value_str, x, y, w=74, h=22, font_sz=14):
+    """Illuminated tap button: r=3 corners, 2px cyan border, top glow, no label."""
+    # Background fill
+    pygame.draw.rect(surf, (0, 20, 35), (x, y, w, h), border_radius=3)
+    # Top glow — simulates illuminated button face
+    glow_h = max(4, h // 3)
+    for i in range(glow_h):
+        t = 1.0 - i / glow_h
+        r = min(255, int(t * 60))
+        g = min(255, int(20 + t * 100))
+        b = min(255, int(35 + t * 120))
+        pygame.draw.line(surf, (r, g, b), (x + 2, y + 1 + i), (x + w - 3, y + 1 + i))
+    # 2px cyan border (matching veeder-root outline width)
+    pygame.draw.rect(surf, CYAN, (x, y, w, h), width=2, border_radius=3)
+    # Value text — centred H+V
+    _text(surf, value_str, font_sz, CYAN, bold=True, cx=x + w // 2, cy=y + h // 2)
 
 
 def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
     """
-    Cyan tap zones in the heading strip — left and right only so the centre
+    Cyan tap buttons in the heading strip — left and right only so the centre
     heading readout remains unobstructed:
       • Left  (under speed tape) : HDG bug
-      • Right (under alt tape)   : QNH / BARO
+      • Right (under alt tape)   : Baro setting
     IAS and ALT bug buttons are drawn at the tops of their own tapes.
     """
     y = HDG_Y + 2
 
-    # HDG bug — left side of heading strip, under speed tape
-    _cyan_box(surf, "HDG", f"{round(hdg_bug):03d}\u00b0",
-              x=SPD_X, y=y, w=SPD_W + 10, h=20)
+    # HDG bug — left side of heading strip, exact speed-tape width
+    _cyan_box(surf, f"{round(hdg_bug) % 360:03d}\u00b0",
+              x=SPD_X, y=y, w=SPD_W, h=22)
 
-    # QNH / BARO — right side of heading strip, under alt tape
-    baro_lbl = f"{baro_hpa:.2f}hP" if baro_src == "bme280" else "GPS ALT"
-    _cyan_box(surf, "QNH", baro_lbl,
-              x=ALT_X - 10, y=y, w=ALT_W + 10, h=20)
+    # Baro — right side of heading strip, exact alt-tape width
+    # Show "29.92 IN" (inHg) when pressure sensor active, else "GPS ALT"
+    if baro_src == "bme280":
+        baro_lbl = f"{baro_hpa / 33.8639:.2f} IN"
+        baro_fsz = 12   # wider string needs slightly smaller font
+    else:
+        baro_lbl = "GPS ALT"
+        baro_fsz = 14
+    _cyan_box(surf, baro_lbl,
+              x=ALT_X, y=y, w=ALT_W, h=22, font_sz=baro_fsz)
 
 
 # ── Main render function ──────────────────────────────────────────────────────
