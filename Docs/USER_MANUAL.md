@@ -154,7 +154,7 @@ The PFD has three settable bugs — altitude, heading, and ground-speed.
 
 ![Altitude bug numpad](../tools/preview_numpad_alt.png)
 
-Tap the cyan readout button for the bug you want to change.  The **numpad** opens full-screen.
+Tap the cyan readout button for the bug you want to change.  The **numpad** overlays the live PFD so you can watch the tapes while you type.
 
 | Key | Action |
 |-----|--------|
