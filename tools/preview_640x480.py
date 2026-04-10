@@ -1502,7 +1502,7 @@ def draw_system_screen(filename, display_mode="pfd"):
                       fill=(48,55,65), font=fnt(10))
 
     _data_tile_p(bx,        "TERRAIN DATA",  "12 tiles on disk  \u00b7  11.8 MB", active=True)
-    _data_tile_p(bx+half+8, "OBSTACLE DATA", "FAA digital obstacle file",         active=False)
+    _data_tile_p(bx+half+8, "OBSTACLE DATA", "Tap to download FAA DOF",           active=True)
 
     btn_y = terrain_y + _SS_RH + 8; btn_h = 54
     half_w = (bw - 10) // 2
@@ -1695,11 +1695,111 @@ draw_numpad_screen("SET BARO  (hPa)", 1013,
                    os.path.join(OUT, "preview_numpad_baro_hpa.png"),
                    entered="102")
 
+def draw_obstacle_data_screen(filename, cnt=0, used_mb=0.0,
+                              downloading=False, dl_status=""):
+    img  = Image.new('RGB', (W, H), (0, 8, 22))
+    draw = ImageDraw.Draw(img)
+    _screen_header_p(draw, "OBSTACLE DATA")
+    bx = 12; bw = W - 24
+
+    # Status strip
+    draw.rounded_rectangle([(bx,52),(bx+bw-1,79)], radius=4, fill=(0,12,32))
+    draw.rounded_rectangle([(bx,52),(bx+bw-1,79)], radius=4, outline=(40,60,90), width=1)
+    if cnt:
+        stat_str = f"{cnt:,} obstacles  \u00b7  {used_mb:.1f} MB on disk"
+        stat_col = (60, 220, 80)
+    else:
+        stat_str = "No obstacle data on disk"
+        stat_col = YELLOW
+    sf = fnt(12, bold=True)
+    sw = int(draw.textlength(stat_str, font=sf))
+    draw.text(((W-sw)//2, 57), stat_str, fill=stat_col, font=sf)
+
+    # Info panel
+    info_y = 92; info_h = 90
+    draw.rounded_rectangle([(bx,info_y),(bx+bw-1,info_y+info_h-1)], radius=6, fill=(0,10,26))
+    draw.rounded_rectangle([(bx,info_y),(bx+bw-1,info_y+info_h-1)], radius=6,
+                            outline=(40,55,80), width=1)
+    tf = fnt(13, bold=True)
+    tw = int(draw.textlength("FAA Digital Obstacle File (DOF)", font=tf))
+    draw.text(((W-tw)//2, info_y+7), "FAA Digital Obstacle File (DOF)", fill=WHITE, font=tf)
+    for dy, txt, col in [
+        (25, "Covers all US obstacles > 200 ft AGL (towers, antennas, wind turbines\u2026)", (140,160,185)),
+        (39, "Single file \u2248 15\u201320 MB \u00b7 Updated every 28 days by the FAA",      (120,140,165)),
+        (53, "Displayed on AI as red/amber symbols within 10 nm and \u00b12000 ft",            (120,140,165)),
+        (67, "WiFi (home network) required for download",                                      (160,130,60)),
+    ]:
+        sf2 = fnt(10)
+        w2 = int(draw.textlength(txt, font=sf2))
+        draw.text(((W-w2)//2, info_y+dy), txt, fill=col, font=sf2)
+
+    # Download button
+    btn_y = info_y + info_h + 14; btn_h = 54
+    draw.rounded_rectangle([(bx,btn_y),(bx+bw-1,btn_y+btn_h-1)], radius=6, fill=(0,18,45))
+    gh = btn_h // 5
+    for i in range(gh):
+        t2 = 1.0 - i/gh
+        draw.line([(bx+6,btn_y+1+i),(bx+bw-6,btn_y+1+i)],
+                  fill=(int(15+t2*25),int(20+t2*40),int(40+t2*65)))
+    draw.rounded_rectangle([(bx,btn_y),(bx+bw-1,btn_y+btn_h-1)],
+                            radius=6, outline=WHITE, width=2)
+    btn_label = "UPDATE" if cnt else "DOWNLOAD"
+    lf = fnt(15, bold=True)
+    lw = int(draw.textlength(btn_label, font=lf))
+    draw.text(((W-lw)//2, btn_y+8), btn_label, fill=WHITE, font=lf)
+    sub = "DAILY_DOF_DAT.ZIP  from  aeronav.faa.gov"
+    sf3 = fnt(10)
+    sw3 = int(draw.textlength(sub, font=sf3))
+    draw.text(((W-sw3)//2, btn_y+30), sub, fill=(100,120,140), font=sf3)
+
+    # Progress / status
+    prog_y = btn_y + btn_h + 10; prog_h = 48
+    draw.rounded_rectangle([(bx,prog_y),(bx+bw-1,prog_y+prog_h-1)], radius=6, fill=(0,10,24))
+    draw.rounded_rectangle([(bx,prog_y),(bx+bw-1,prog_y+prog_h-1)], radius=6,
+                            outline=(35,50,75), width=1)
+    if downloading:
+        pct = 38
+        bar_w = int((bw-20)*pct/100)
+        draw.rounded_rectangle([(bx+10,prog_y+28),(bx+bw-10,prog_y+38)],
+                                radius=3, fill=(0,22,12))
+        if bar_w:
+            draw.rounded_rectangle([(bx+10,prog_y+28),(bx+10+bar_w,prog_y+38)],
+                                    radius=3, fill=(40,180,60))
+        sm = fnt(10)
+        mw = int(draw.textlength(dl_status, font=sm))
+        draw.text(((W-mw)//2, prog_y+12), dl_status, fill=(140,160,180), font=sm)
+    elif dl_status:
+        col = (60,220,80) if dl_status.startswith("Done") else (160,160,170)
+        sm = fnt(10)
+        sw4 = int(draw.textlength(dl_status, font=sm))
+        draw.text(((W-sw4)//2, prog_y+18), dl_status, fill=col, font=sm)
+
+    # Legend
+    leg_y = prog_y + prog_h + 12; leg_h = 34
+    draw.rounded_rectangle([(bx,leg_y),(bx+bw-1,leg_y+leg_h-1)], radius=4, fill=(0,8,20))
+    draw.text((bx+10, leg_y+8), "Clearance legend:", fill=(120,140,165), font=fnt(10))
+    for dx, col, lbl in [(120, RED, "< 100 ft  WARNING"),
+                          (270, YELLOW, "< 500 ft  CAUTION"),
+                          (430, (80,200,80), "> 500 ft  CLEAR")]:
+        draw.rectangle([(bx+dx, leg_y+8),(bx+dx+10, leg_y+18)], fill=col)
+        draw.text((bx+dx+14, leg_y+8), lbl, fill=(160,170,180), font=fnt(9))
+
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
 draw_terrain_data_screen(os.path.join(OUT, "preview_terrain_idle.png"), n_tiles=0)
 draw_terrain_data_screen(os.path.join(OUT, "preview_terrain_downloading.png"),
                          n_tiles=12, downloading=True, dl_region="US Southwest",
                          dl_current=47, dl_total=132,
                          dl_status="Downloading N35W111.hgt\u2026")
+draw_obstacle_data_screen(os.path.join(OUT, "preview_obstacle_idle.png"))
+draw_obstacle_data_screen(os.path.join(OUT, "preview_obstacle_loaded.png"),
+                          cnt=76_842, used_mb=19.4,
+                          dl_status="Done \u2713  76,842 obstacles loaded")
+draw_obstacle_data_screen(os.path.join(OUT, "preview_obstacle_downloading.png"),
+                          downloading=True,
+                          dl_status="Downloading\u2026 38%  (7,440 / 19,584 KB)")
 draw_display_screen(os.path.join(OUT, "preview_setup_display.png"))
 draw_ahrs_screen(os.path.join(OUT, "preview_setup_ahrs.png"),
                  ss={"pitch_trim":1.5,"roll_trim":-0.5,"mag_cal":"done","mounting":"normal"})

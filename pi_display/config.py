@@ -59,6 +59,13 @@ SRTM_DIR      = os.path.join(_HERE, "data", "srtm")
 TERRAIN_CAUTION_FT = 500    # terrain within 500 ft → yellow
 TERRAIN_WARNING_FT = 100    # terrain within 100 ft → red
 
+# ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
+OBSTACLE_DIR        = os.path.join(_HERE, "data", "obstacles")
+OBSTACLE_RADIUS_NM  = 10.0    # query radius around aircraft
+OBSTACLE_WINDOW_FT  = 2000.0  # only show obstacles within ±2000 ft of alt
+OBSTACLE_CAUTION_FT = 500     # amber below this clearance
+OBSTACLE_WARNING_FT = 100     # red below this clearance
+
 # ── Demo mode ─────────────────────────────────────────────────────────────────
 DEMO_LAT = 34.8697
 DEMO_LON = -111.7610

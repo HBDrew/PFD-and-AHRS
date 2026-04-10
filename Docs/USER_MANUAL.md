@@ -20,7 +20,8 @@
 12. [Connectivity](#12-connectivity)
 13. [System](#13-system)
 14. [Terrain Data Download](#14-terrain-data-download)
-15. [Demo Mode](#15-demo-mode)
+15. [Obstacle Data Download](#15-obstacle-data-download)
+16. [Demo Mode](#16-demo-mode)
 
 ---
 
@@ -359,8 +360,8 @@ Two side-by-side tiles in the data row:
 
 | Tile | Status | Action |
 |------|--------|--------|
-| **TERRAIN DATA** | Shows tile count and disk usage | Tap to open the terrain downloader (Section 14) |
-| **OBSTACLE DATA** | *future* | FAA digital obstacle file — placeholder for a future update |
+| **TERRAIN DATA** | Tile count and disk usage | Tap to open the terrain downloader (Section 14) |
+| **OBSTACLE DATA** | Obstacle count and disk usage | Tap to open the obstacle downloader (Section 15) |
 
 ### Buttons
 
@@ -413,7 +414,53 @@ The Pi must be connected to an internet-reachable network (not the Pico W AP) to
 
 ---
 
-## 15. Demo Mode
+## 15. Obstacle Data Download
+
+![Obstacle data screen — idle](../tools/preview_obstacle_idle.png)
+
+The FAA Digital Obstacle File (DOF) adds tower, antenna, and wind-turbine symbols to the synthetic vision display.  Obstacles within **10 nm** of the aircraft and within **±2000 ft** of current altitude are shown.
+
+Data is stored in `pi_display/data/obstacles/` as `DAILY_DOF_DAT.DAT` (~15–20 MB) plus a parsed binary cache.
+
+### Downloading
+
+Tap **OBSTACLE DATA** on the System screen to open this screen.  The information panel summarises coverage, file size, and update frequency.
+
+Tap **DOWNLOAD** (or **UPDATE** if data is already present) to fetch `DAILY_DOF_DAT.ZIP` from `aeronav.faa.gov`.
+
+![Obstacle data screen — downloading](../tools/preview_obstacle_downloading.png)
+
+The progress bar updates as the file downloads.  After the download completes the file is extracted and parsed automatically — this takes a few seconds and is shown as a "Parsing…" status.
+
+Tap **CANCEL** to abort the download.  No partial data is written to disk.
+
+![Obstacle data screen — loaded](../tools/preview_obstacle_loaded.png)
+
+When complete the status strip shows the record count and disk usage.
+
+### On the AI display
+
+Once data is loaded, obstacles appear as coloured tower symbols on the attitude indicator:
+
+| Symbol colour | Meaning |
+|--------------|---------|
+| Red | MSL height within **100 ft** below aircraft altitude |
+| Amber / yellow | MSL height within **500 ft** below aircraft altitude |
+| Green | Cleared by more than 500 ft |
+
+A small red dot above the symbol indicates the obstacle is **lit** (has aviation lighting).  The MSL height is shown in hundreds of feet for obstacles above 500 ft AGL or within 3 nm.
+
+### WiFi requirement
+
+The Pi must be on an internet-reachable network to download.  Use the Connectivity screen to switch to home WiFi, download here, then switch back to the Pico W AP for flight.
+
+### Update schedule
+
+The FAA publishes a new DOF every 28 days.  Tap **UPDATE** on this screen to refresh.
+
+---
+
+## 16. Demo Mode
 
 Demo mode animates a scripted flight over **Sedona, Arizona (KSEZ)** without any Pico W hardware.  It is useful for screen testing and getting familiar with the display.
 

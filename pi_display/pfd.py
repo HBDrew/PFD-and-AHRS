@@ -28,6 +28,7 @@ import pygame.gfxdraw
 from config import *   # noqa: F403
 from sse_client import SSEClient
 from terrain import render_svt, get_elevation_ft
+import obstacles as obs_mod
 
 DEG = math.pi / 180
 
@@ -89,6 +90,15 @@ disp["td"] = {                      # terrain download state
     "dl_status":   "",
     "dl_cancel":   False,
 }
+disp["od"] = {                      # obstacle download/parse state
+    "downloading": False,
+    "dl_status":   "",
+    "dl_cancel":   False,
+    "parsing":     False,
+    "records":     0,       # record count after successful load
+    "used_mb":     0.0,
+}
+_obstacles = None           # loaded obstacle array (module-level)
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
@@ -1274,6 +1284,8 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "setup"
             elif action == "terrain_data":
                 disp["mode"] = "terrain_data"
+            elif action == "obstacle_data":
+                disp["mode"] = "obstacle_data"
             elif action == "reset_defaults":
                 for k,v in [("vs0",VS0),("vs1",VS1),("vfe",VFE),("vno",VNO),
                              ("vne",VNE),("va",VA),("vy",VY),("vx",VX)]:
@@ -1281,6 +1293,18 @@ def handle_event(event, demo_mode):
                 disp["ds"].update(spd_unit="kt", alt_unit="ft", baro_unit="inhg",
                                    brightness=8, night_mode=False)
                 disp["ss"].update(pitch_trim=0.0, roll_trim=0.0)
+            return True
+
+        # ── Obstacle data screen taps ─────────────────────────────────────
+        if mode == "obstacle_data":
+            action = obstacle_data_hit(x, y, disp["od"])
+            if action == "back":
+                disp["mode"] = "system_setup"
+            elif action == "cancel":
+                disp["od"]["dl_cancel"] = True
+            elif action == "download":
+                if not disp["od"]["downloading"]:
+                    _od_start_download()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -2166,17 +2190,19 @@ def draw_system_setup(surf):
     _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
     _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
 
-    # Data download tiles: TERRAIN DATA (left, active) | OBSTACLE DATA (right, future)
+    # Data download tiles: TERRAIN DATA (left) | OBSTACLE DATA (right)
     half = (bw - 8) // 2
     n_tiles, used_mb = _td_disk_stats()
     _sys_data_tile(surf, bx,          _SYS_TERRAIN_Y, half, _SS_RH,
                    "TERRAIN DATA",
                    f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB",
                    active=True)
+    od_cnt  = disp["od"].get("records", 0)
+    od_mb   = disp["od"].get("used_mb", 0.0)
+    od_sub  = (f"{od_cnt:,} obstacles  \u00b7  {od_mb:.1f} MB"
+               if od_cnt else "Tap to download FAA DOF")
     _sys_data_tile(surf, bx+half+8,   _SYS_TERRAIN_Y, half, _SS_RH,
-                   "OBSTACLE DATA",
-                   "FAA digital obstacle file",
-                   active=False)
+                   "OBSTACLE DATA", od_sub, active=True)
 
     half_w = (bw - 10) // 2
     _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "DIAGNOSTICS", "normal")
@@ -2191,7 +2217,8 @@ def system_setup_hit(x, y):
         half = (bw - 8) // 2
         if bx <= x <= bx+half:
             return "terrain_data"
-        # right tile (obstacle) is a future placeholder — no action
+        if bx+half+8 <= x <= bx+half+8+half:
+            return "obstacle_data"
     half_w = (bw - 10) // 2
     if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
         if bx <= x <= bx+half_w:
@@ -2325,6 +2352,218 @@ def _td_start_current_area():
     t = threading.Thread(target=_td_download_thread,
                          args=(tiles, "Current Area"), daemon=True)
     t.start()
+
+
+# ── Obstacle data download ─────────────────────────────────────────────────────
+
+def _od_load_obstacles():
+    """(Re-)load the obstacle cache into module-level _obstacles."""
+    global _obstacles
+    os.makedirs(OBSTACLE_DIR, exist_ok=True)
+    arr = obs_mod.load(OBSTACLE_DIR)
+    _obstacles = arr
+    cnt, mb = obs_mod.disk_stats(OBSTACLE_DIR)
+    disp["od"]["records"] = cnt
+    disp["od"]["used_mb"] = mb
+
+
+def _od_download_thread():
+    """Background thread: download DOF ZIP, extract DAT, parse cache."""
+    import zipfile
+    import tempfile
+
+    od = disp["od"]
+    od["downloading"] = True
+    od["dl_cancel"]   = False
+    od["dl_status"]   = "Connecting to FAA\u2026"
+
+    os.makedirs(OBSTACLE_DIR, exist_ok=True)
+    dat_path   = os.path.join(OBSTACLE_DIR, obs_mod.DOF_FILENAME)
+    cache_path = os.path.join(OBSTACLE_DIR, obs_mod.CACHE_FILENAME)
+
+    try:
+        # ── Download ZIP ──────────────────────────────────────────────────────
+        od["dl_status"] = "Downloading DAILY_DOF_DAT.ZIP\u2026"
+        req = urllib.request.Request(
+            obs_mod.DOF_ZIP_URL,
+            headers={"User-Agent": "PFD-AHRS/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size  = 65536
+            buf = io.BytesIO()
+            while True:
+                if od["dl_cancel"]:
+                    od["dl_status"]   = "Cancelled"
+                    od["downloading"] = False
+                    return
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                buf.write(chunk)
+                downloaded += len(chunk)
+                if total:
+                    pct = int(downloaded * 100 / total)
+                    od["dl_status"] = f"Downloading\u2026 {pct}%  ({downloaded//1024} / {total//1024} KB)"
+                else:
+                    od["dl_status"] = f"Downloading\u2026 {downloaded//1024} KB"
+
+        # ── Extract DAT ───────────────────────────────────────────────────────
+        od["dl_status"] = "Extracting\u2026"
+        buf.seek(0)
+        with zipfile.ZipFile(buf) as zf:
+            dat_name = next((n for n in zf.namelist()
+                             if n.upper().endswith(".DAT")), None)
+            if dat_name is None:
+                od["dl_status"]   = "Error: no DAT in ZIP"
+                od["downloading"] = False
+                return
+            with zf.open(dat_name) as src, open(dat_path, "wb") as dst:
+                dst.write(src.read())
+
+        # ── Parse and cache ───────────────────────────────────────────────────
+        od["dl_status"] = "Parsing obstacle records\u2026"
+        od["parsing"]   = True
+        _od_load_obstacles()
+        od["parsing"]   = False
+
+        cnt = disp["od"]["records"]
+        od["dl_status"] = f"Done \u2713  {cnt:,} obstacles loaded"
+
+    except Exception as exc:
+        od["dl_status"] = f"Error: {exc}"
+    finally:
+        od["downloading"] = False
+
+
+def _od_start_download():
+    t = threading.Thread(target=_od_download_thread, daemon=True,
+                         name="ObstacleDownload")
+    t.start()
+
+
+# ── Obstacle data screen ──────────────────────────────────────────────────────
+
+_OD_MX = 12   # horizontal margin
+
+def draw_obstacle_data(surf, od):
+    """Full-screen obstacle data management screen."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "OBSTACLE DATA")
+    bx = _OD_MX; bw = DISPLAY_W - 2*_OD_MX
+
+    cnt      = od.get("records", 0)
+    used_mb  = od.get("used_mb", 0.0)
+
+    # ── Status strip ─────────────────────────────────────────────────────────
+    pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, 28), border_radius=4)
+    pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, 28), width=1, border_radius=4)
+    if cnt:
+        stat_str = f"{cnt:,} obstacles  \u00b7  {used_mb:.1f} MB on disk"
+        stat_col = (60, 220, 80)
+    else:
+        stat_str = "No obstacle data on disk"
+        stat_col = YELLOW
+    _text(surf, stat_str, 12, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+
+    downloading = od.get("downloading", False)
+    parsing     = od.get("parsing", False)
+
+    # ── Info panel ────────────────────────────────────────────────────────────
+    info_y = 92
+    info_h = 90
+    pygame.draw.rect(surf, (0,10,26), (bx, info_y, bw, info_h), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, info_y, bw, info_h), width=1, border_radius=6)
+    _text(surf, "FAA Digital Obstacle File (DOF)", 13, WHITE, bold=True,
+          cx=DISPLAY_W//2, cy=info_y+16)
+    _text(surf, "Covers all US obstacles > 200 ft AGL (towers, antennas, wind turbines\u2026)",
+          10, (140,160,185), cx=DISPLAY_W//2, cy=info_y+34)
+    _text(surf, "Single file \u2248 15\u201320 MB \u00b7 Updated every 28 days by the FAA",
+          10, (120,140,165), cx=DISPLAY_W//2, cy=info_y+50)
+    _text(surf, "Displayed on AI as red/amber symbols within 10 nm and \u00b12000 ft",
+          10, (120,140,165), cx=DISPLAY_W//2, cy=info_y+66)
+    _text(surf, "WiFi (home network) required for download",
+          10, (160,130,60), cx=DISPLAY_W//2, cy=info_y+80)
+
+    # ── Download / Update button ──────────────────────────────────────────────
+    btn_y = info_y + info_h + 14
+    btn_h = 54
+    if downloading or parsing:
+        bg = (0,20,10); oc = (40,140,60)
+    else:
+        bg = (0,18,45); oc = WHITE
+    pygame.draw.rect(surf, bg, (bx, btn_y, bw, btn_h), border_radius=6)
+    gh = btn_h // 5
+    if not (downloading or parsing):
+        for i in range(gh):
+            t2 = 1.0 - i/gh
+            gc = (int(15+t2*25), int(20+t2*40), int(40+t2*65))
+            pygame.draw.line(surf, gc, (bx+6, btn_y+1+i), (bx+bw-6, btn_y+1+i))
+    pygame.draw.rect(surf, oc, (bx, btn_y, bw, btn_h), width=2, border_radius=6)
+    btn_label = "UPDATE" if cnt else "DOWNLOAD"
+    tc = (70,80,90) if (downloading or parsing) else WHITE
+    _text(surf, btn_label, 15, tc, bold=True, cx=DISPLAY_W//2, cy=btn_y+btn_h//2-8)
+    sub = "DAILY_DOF_DAT.ZIP  from  aeronav.faa.gov"
+    _text(surf, sub, 10, (100,120,140) if not (downloading or parsing) else (60,80,70),
+          cx=DISPLAY_W//2, cy=btn_y+btn_h//2+10)
+
+    # ── Progress / status area ────────────────────────────────────────────────
+    prog_y = btn_y + btn_h + 10
+    prog_h = 48
+    pygame.draw.rect(surf, (0,10,24), (bx, prog_y, bw, prog_h), border_radius=6)
+    pygame.draw.rect(surf, (35,50,75), (bx, prog_y, bw, prog_h), width=1, border_radius=6)
+
+    status_msg = od.get("dl_status", "")
+    if downloading:
+        # Parse percentage out of status message for progress bar
+        pct = 0
+        try:
+            if "%" in status_msg:
+                pct = int(status_msg.split("%")[0].split()[-1])
+        except (ValueError, IndexError):
+            pct = 0
+        bar_w = int((bw - 20) * pct / 100)
+        pygame.draw.rect(surf, (0,22,12), (bx+10, prog_y+28, bw-20, 10), border_radius=3)
+        if bar_w > 0:
+            pygame.draw.rect(surf, (40,180,60), (bx+10, prog_y+28, bar_w, 10), border_radius=3)
+        _text(surf, status_msg, 10, (140,160,180), cx=DISPLAY_W//2, cy=prog_y+16)
+        # CANCEL
+        _action_btn(surf, bw-80, prog_y+6, 72, 32, "CANCEL", "danger", r=5)
+    elif parsing:
+        _text(surf, status_msg, 10, (140,180,140), cx=DISPLAY_W//2, cy=prog_y+24)
+    else:
+        col = (60,220,80) if status_msg.startswith("Done") else (160,160,170)
+        _text(surf, status_msg, 10, col, cx=DISPLAY_W//2, cy=prog_y+24)
+
+    # ── Clearance legend ──────────────────────────────────────────────────────
+    leg_y = prog_y + prog_h + 12
+    leg_h = 34
+    pygame.draw.rect(surf, (0,8,20), (bx, leg_y, bw, leg_h), border_radius=4)
+    _text(surf, "Clearance legend:", 10, (120,140,165), x=bx+10, y=leg_y+8)
+    for dx, col, lbl in [(120, RED, "< 100 ft  WARNING"),
+                          (270, YELLOW, "< 500 ft  CAUTION"),
+                          (430, (80,200,80), "> 500 ft  CLEAR")]:
+        pygame.draw.rect(surf, col, (bx+dx, leg_y+8, 10, 10))
+        _text(surf, lbl, 9, (160,170,180), x=bx+dx+14, y=leg_y+8)
+
+
+def obstacle_data_hit(x, y, od):
+    """Return action string or None."""
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _OD_MX; bw = DISPLAY_W - 2*_OD_MX
+    btn_y = 92 + 90 + 14   # info_y + info_h + 14
+    btn_h = 54
+    # Cancel during download
+    if od.get("downloading"):
+        prog_y = btn_y + btn_h + 10
+        if (bx+bw-80 <= x <= bx+bw and prog_y+6 <= y <= prog_y+38):
+            return "cancel"
+    # Download/Update button
+    if bx <= x <= bx+bw and btn_y <= y <= btn_y+btn_h:
+        return "download"
+    return None
 
 
 def draw_terrain_data(surf, td):
@@ -2517,6 +2756,95 @@ def _draw_veil(surf):
     surf.blit(_veil_surf, (0, 0))
 
 
+# ── Obstacle symbol renderer ──────────────────────────────────────────────────
+
+_OBS_RADIUS_NM  = OBSTACLE_RADIUS_NM
+_OBS_WINDOW_FT  = OBSTACLE_WINDOW_FT
+_OBS_CAUTION_FT = OBSTACLE_CAUTION_FT
+_OBS_WARNING_FT = OBSTACLE_WARNING_FT
+
+def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
+                          hdg_deg, pitch_deg, roll_deg):
+    """
+    Project nearby obstacles onto the AI viewport as red/amber tower symbols.
+
+    Each obstacle is placed at its bearing/distance from the aircraft.
+    We compute a synthetic azimuth and elevation angle, then rotate it
+    by roll and translate by pitch — the same coordinate system as the
+    pitch ladder — to get pixel position.
+    """
+    nearby = obs_mod.query_nearby(_obstacles, lat, lon,
+                                  radius_nm=_OBS_RADIUS_NM,
+                                  alt_ft=alt_ft,
+                                  window_ft=_OBS_WINDOW_FT)
+    if not nearby:
+        return
+
+    ax, ay_r, aw, ah = ai_rect
+    cx = ax + aw // 2
+    cy = ay_r + ah // 2
+
+    # Pixels per degree (same scale as pitch ladder: 8px/deg at default)
+    PX_PER_DEG = 8.0
+
+    nm_per_deg_lat = 60.0
+    nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
+
+    for ob in nearby:
+        # Bearing from aircraft to obstacle (degrees true)
+        dlat_nm = (ob.lat - lat) * nm_per_deg_lat
+        dlon_nm = (ob.lon - lon) * nm_per_deg_lon
+        dist_nm = math.hypot(dlat_nm, dlon_nm)
+        if dist_nm < 0.01:
+            continue
+        bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
+
+        # Relative bearing (from nose)
+        rel_brg = (bearing - hdg_deg + 180) % 360 - 180   # −180…+180
+
+        # Vertical angle: atan of altitude difference over distance
+        # distance in ft (1 nm ≈ 6076 ft)
+        dist_ft = dist_nm * 6076.0
+        alt_diff_ft = ob.msl_ft - alt_ft          # positive = obstacle above
+        vert_deg = math.degrees(math.atan2(alt_diff_ft, dist_ft))
+
+        # Apply roll rotation to (rel_brg, -vert) screen coords
+        # (similar to how pitch ladder handles roll)
+        cos_r = math.cos(math.radians(roll_deg))
+        sin_r = math.sin(math.radians(roll_deg))
+        screen_x_raw = rel_brg * PX_PER_DEG
+        screen_y_raw = -(vert_deg + pitch_deg) * PX_PER_DEG  # flip: up = negative y
+
+        sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
+        sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
+
+        # Clip to AI rect (with small margin)
+        if not (ax + 4 <= sx <= ax + aw - 4 and ay_r + 4 <= sy <= ay_r + ah - 4):
+            continue
+
+        # Colour by clearance
+        clearance = alt_ft - ob.msl_ft
+        if clearance < _OBS_WARNING_FT:
+            col = RED
+        elif clearance < _OBS_CAUTION_FT:
+            col = YELLOW
+        else:
+            col = (80, 200, 80)
+
+        # Draw tower symbol: vertical line + horizontal cap
+        h = 10; w = 6
+        pygame.draw.line(surf, col, (sx, sy), (sx, sy - h), 2)
+        pygame.draw.line(surf, col, (sx - w//2, sy - h), (sx + w//2, sy - h), 2)
+        # Lit indicator: small dot at top
+        if ob.lit:
+            pygame.draw.circle(surf, (255, 80, 80), (sx, sy - h - 3), 2)
+
+        # Height label for tall/close obstacles
+        if ob.agl_ft >= 500 or dist_nm < 3.0:
+            lbl = f"{int(ob.msl_ft//100)*100}"
+            _text(surf, lbl, 8, col, cx=sx, cy=sy - h - 14)
+
+
 # ── Main render function ──────────────────────────────────────────────────────
 def render(surf, demo_mode, connected):
     mode = disp.get("mode", "pfd")
@@ -2536,6 +2864,8 @@ def render(surf, demo_mode, connected):
         draw_system_setup(surf); return
     if mode == "terrain_data":
         draw_terrain_data(surf, disp["td"]); return
+    if mode == "obstacle_data":
+        draw_obstacle_data(surf, disp["od"]); return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
     surf.fill((0, 0, 0))
@@ -2597,6 +2927,10 @@ def render(surf, demo_mode, connected):
         draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon)
     else:
         draw_simple_ai_background(surf, ai_rect, pitch, roll)
+
+    # 1b. Obstacle symbols projected onto AI
+    if _obstacles is not None and gps_ok:
+        draw_obstacle_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
@@ -2691,6 +3025,16 @@ def _check_terrain():
 _has_terrain = _check_terrain()
 
 
+def _startup_load_obstacles():
+    """Background thread: load obstacle cache at startup without blocking."""
+    _od_load_obstacles()
+    cnt = disp["od"]["records"]
+    if cnt:
+        print(f"[PFD] Obstacles: {cnt:,} records loaded")
+    else:
+        print("[PFD] Obstacles: no data on disk")
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="PFD Display")
@@ -2707,6 +3051,10 @@ def main():
 
     _init_backlight()
     _set_backlight(disp["ds"].get("brightness", 8))
+
+    # Load obstacle database in background (non-blocking)
+    threading.Thread(target=_startup_load_obstacles, daemon=True,
+                     name="ObstacleLoad").start()
 
     pygame.init()
     pygame.mouse.set_visible(False)

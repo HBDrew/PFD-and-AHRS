@@ -56,6 +56,7 @@ fi
 
 echo "[5/8] Creating data directories…"
 mkdir -p "$DISPLAY_DIR/data/srtm"
+mkdir -p "$DISPLAY_DIR/data/obstacles"
 chown -R "$RUN_USER:" "$DISPLAY_DIR/data"
 
 echo "[6/8] Installing systemd service…"
