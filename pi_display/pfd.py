@@ -756,17 +756,13 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                         show_adjacent=True, adj_slot_h=18)
     _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)   # 1px inset from border
 
-    # VSI readout — snug box in the lower notch of the alt veeder-root box.
-    # Alt-box outline (width=2) occupies ±1px around each path edge, so:
-    #   top clear:   y ≥ TAPE_MID+17  (inner-box bottom path at +15, outline bottom at +16)
-    #   right clear: x ≤ R-39-3 = 598 (drum-left path at 601, outline left at 600)
-    #   bot clear:   y ≤ TAPE_MID+27  (drum-bottom path at +29, outline top at +28)
-    # → box: x=ALT_X, y=TAPE_MID+17, w=32, h=11
+    # VSI readout — box aligned to the left & top of the lower notch, extending
+    # below the outer veeder-root bottom so the font stays readable.
     _R39  = ALT_X + ALT_W - 39    # 601 = left edge of drum section
-    _nx   = ALT_X                  # 566
-    _ny   = TAPE_MID + 17          # 246
-    _nw   = _R39 - ALT_X - 3      # 32 (right edge 597, 3px clear of drum outline)
-    _nh   = 11                     # bottom at y=256, 1px clear of drum-bottom outline
+    _nx   = ALT_X                  # 566 — flush with tape left edge
+    _ny   = TAPE_MID + 15          # 244 — flush with inner-box bottom path
+    _nw   = _R39 - ALT_X          # 35  — flush with drum-section left path
+    _nh   = 22                     # extends to y=265 (7px below outer box bottom)
     if abs(vspeed) > 30:
         _varr = "▲" if vspeed > 0 else "▼"
         _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
@@ -776,7 +772,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
         _vcol = LTGREY
     pygame.draw.rect(surf, (0, 8, 22), (_nx, _ny, _nw, _nh), border_radius=3)
     pygame.draw.rect(surf, (70, 100, 130), (_nx, _ny, _nw, _nh), width=1, border_radius=3)
-    _text(surf, _vstr, 9, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
+    _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
