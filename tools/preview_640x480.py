@@ -797,7 +797,7 @@ def draw_setup_screen(filename):
     draw.text(((W - int(draw.textlength("SETUP", font=tf)))//2, 8),
               "SETUP", fill=WHITE, font=tf)
     hf = fnt(10)
-    hint = "Hold 2 fingers to return to PFD"
+    hint = "2-finger hold to enter  ·  EXIT to return"
     draw.text((W - int(draw.textlength(hint, font=hf)) - 6, 15),
               hint, fill=(110, 120, 140), font=hf)
 

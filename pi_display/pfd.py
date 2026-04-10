@@ -1145,8 +1145,8 @@ def draw_setup_screen(surf):
     pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
     _text(surf, "SETUP", 22, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
-    _text(surf, "Hold 2 fingers to return", 10, (110,120,140),
-          x=DISPLAY_W-215, y=15)
+    _text(surf, "2-finger hold to enter  ·  EXIT to return", 10, (110,120,140),
+          x=DISPLAY_W-340, y=15)
     for col, row, lbl, sub in _SETUP_ITEMS:
         exit_btn = (lbl == "EXIT")
         _setup_button(surf, _S_COLS[col], _S_ROWS[row], _S_BW, _S_BH,
@@ -1436,11 +1436,12 @@ def main():
         if sse:
             connected = sse.connected
 
-        # 2-finger hold → toggle setup screen
+        # 2-finger hold → enter setup screen (EXIT button returns to PFD)
         if (_multitouch_t0 is not None
                 and len(_active_fingers) >= 2
-                and pygame.time.get_ticks() - _multitouch_t0 >= LONG_PRESS_MS):
-            disp["mode"] = "pfd" if disp["mode"] != "pfd" else "setup"
+                and pygame.time.get_ticks() - _multitouch_t0 >= LONG_PRESS_MS
+                and disp["mode"] == "pfd"):
+            disp["mode"] = "setup"
             _active_fingers.clear()
             _multitouch_t0 = None
 
