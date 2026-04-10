@@ -13,6 +13,9 @@ import time
 import threading
 import argparse
 import os
+import io
+import gzip
+import urllib.request
 
 os.environ.setdefault("SDL_FBDEV", "/dev/fb0")
 os.environ.setdefault("SDL_VIDEODRIVER", "fbcon")   # overridden by --sim
@@ -76,6 +79,14 @@ disp["fp"] = {                      # flight-profile values
     "vy":     VY,   "vx":  VX,
 }
 disp["display_mode"]  = "pfd"       # "pfd" | "mfd" (MFD not yet implemented)
+disp["td"] = {                      # terrain download state
+    "downloading": False,
+    "dl_region":   "",
+    "dl_current":  0,
+    "dl_total":    0,
+    "dl_status":   "",
+    "dl_cancel":   False,
+}
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
@@ -1123,6 +1134,8 @@ def handle_event(event, demo_mode):
             action = system_setup_hit(x, y)
             if action == "back":
                 disp["mode"] = "setup"
+            elif action == "terrain_data":
+                disp["mode"] = "terrain_data"
             elif action == "reset_defaults":
                 for k,v in [("vs0",VS0),("vs1",VS1),("vfe",VFE),("vno",VNO),
                              ("vne",VNE),("va",VA),("vy",VY),("vx",VX)]:
@@ -1130,6 +1143,22 @@ def handle_event(event, demo_mode):
                 disp["ds"].update(spd_unit="kt", alt_unit="ft", baro_unit="inhg",
                                    brightness=8, night_mode=False)
                 disp["ss"].update(pitch_trim=0.0, roll_trim=0.0)
+            return True
+
+        # ── Terrain data screen taps ──────────────────────────────────────
+        if mode == "terrain_data":
+            action = terrain_data_hit(x, y, disp["td"])
+            if action == "back":
+                disp["mode"] = "system_setup"
+            elif action == "cancel":
+                disp["td"]["dl_cancel"] = True
+            elif action == "current_area":
+                if not disp["td"]["downloading"]:
+                    _td_start_current_area()
+            elif action and action.startswith("region:"):
+                if not disp["td"]["downloading"]:
+                    idx = int(action.split(":")[1])
+                    _td_start_download(_TD_REGIONS[idx])
             return True
 
         # ── Flight Profile screen taps ────────────────────────────────────
@@ -1863,9 +1892,10 @@ _SYS_INFO_LH = 28
 
 _SYS_N_LINES = 5
 _SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
-_SYS_MODE_Y  = _SYS_INFO_Y + _SYS_IH + 8    # DISPLAY MODE row top
-_SYS_BTN_Y   = _SYS_MODE_Y + _SS_RH + 10    # action buttons top
-_SYS_BTN_H   = 54
+_SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # DISPLAY MODE row top
+_SYS_TERRAIN_Y = _SYS_MODE_Y + _SS_RH + 8         # TERRAIN DATA row top
+_SYS_BTN_Y     = _SYS_TERRAIN_Y + _SS_RH + 8      # action buttons top
+_SYS_BTN_H     = 54
 
 
 def draw_system_setup(surf):
@@ -1899,6 +1929,15 @@ def draw_system_setup(surf):
     _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
     _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
 
+    # TERRAIN DATA row
+    n_tiles, used_mb = _td_disk_stats()
+    _setting_row(surf, 0, "TERRAIN DATA",
+                 f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB used",
+                 _y_override=_SYS_TERRAIN_Y)
+    # Right-side arrow hint
+    _text(surf, "\u25b6", 16, (60,80,110), bold=False,
+          x=bx+bw-28, y=_SYS_TERRAIN_Y+(_SS_RH-18)//2)
+
     half_w = (bw - 10) // 2
     _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "DIAGNOSTICS", "normal")
     _action_btn(surf, bx+half_w+10,  _SYS_BTN_Y, half_w, _SYS_BTN_H, "RESET DEFAULTS", "danger")
@@ -1908,12 +1947,265 @@ def system_setup_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
+        return "terrain_data"
     half_w = (bw - 10) // 2
     if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
         if bx <= x <= bx+half_w:
             return "diagnostics"
         if bx+half_w+10 <= x <= bx+half_w+10+half_w:
             return "reset_defaults"
+    return None
+
+
+# ── Terrain data screen ──────────────────────────────────────────────────────
+
+# Download source: Mapzen/Nextzen AWS public bucket — .hgt.gz, no auth required
+_SRTM_BASE = "https://elevation-tiles-prod.s3.amazonaws.com/skadi"
+
+# Preset download regions: (label, subtitle, lat_min, lat_max, lon_min, lon_max)
+_TD_REGIONS = [
+    ("US Southwest", "AZ \u00b7 NM \u00b7 NV \u00b7 UT \u00b7 CO",   31, 42, -115, -103),
+    ("US Pacific",   "CA \u00b7 OR \u00b7 WA",                         32, 49, -125, -114),
+    ("US Southeast", "FL \u00b7 GA \u00b7 AL \u00b7 NC \u00b7 SC",    24, 37,  -92,  -74),
+    ("US Northeast", "NY \u00b7 PA \u00b7 NE states",                  37, 48,  -80,  -66),
+    ("Alaska",       "Southern AK corridor",                            55, 64, -165, -131),
+    ("Europe West",  "UK \u00b7 FR \u00b7 DE \u00b7 ES \u00b7 IT",    36, 58,   -9,   15),
+]
+
+_TD_COLS = 2
+_TD_MX   = 12
+_TD_MY   = 84      # top of region grid (below title bar + status strip)
+_TD_GAP  = 8
+
+
+def _td_tile_name(lat, lon):
+    """Return the standard HGT filename for a 1°×1° tile by its SW corner."""
+    ns = "N" if lat >= 0 else "S"
+    ew = "W" if lon < 0 else "E"
+    return f"{ns}{abs(lat):02d}{ew}{abs(lon):03d}.hgt"
+
+
+def _td_tile_url(lat, lon):
+    """Return (url, local_filename) for a tile."""
+    ns = "N" if lat >= 0 else "S"
+    fname_gz = _td_tile_name(lat, lon) + ".gz"
+    folder   = f"{ns}{abs(lat):02d}"
+    return f"{_SRTM_BASE}/{folder}/{fname_gz}"
+
+
+def _td_tiles_for_region(lat_min, lat_max, lon_min, lon_max):
+    """Enumerate all 1°×1° tile SW-corner coords for a lat/lon bounding box."""
+    tiles = []
+    for lat in range(lat_min, lat_max):
+        for lon in range(lon_min, lon_max):
+            tiles.append((lat, lon))
+    return tiles
+
+
+def _td_disk_stats():
+    """Return (tile_count, total_mb) of HGT files in SRTM_DIR."""
+    if not os.path.isdir(SRTM_DIR):
+        return 0, 0.0
+    total = 0
+    for f in os.listdir(SRTM_DIR):
+        if f.endswith(".hgt"):
+            total += os.path.getsize(os.path.join(SRTM_DIR, f))
+    count = sum(1 for f in os.listdir(SRTM_DIR) if f.endswith(".hgt"))
+    return count, total / 1_048_576
+
+
+def _td_region_tile_count(region):
+    """Return number of tiles for a preset region."""
+    _, _, lat_min, lat_max, lon_min, lon_max = region
+    return (lat_max - lat_min) * (lon_max - lon_min)
+
+
+def _td_download_thread(tiles, region_name):
+    """Background download of a list of (lat, lon) tiles."""
+    td = disp["td"]
+    td["downloading"] = True
+    td["dl_region"]   = region_name
+    td["dl_total"]    = len(tiles)
+    td["dl_current"]  = 0
+    td["dl_cancel"]   = False
+    os.makedirs(SRTM_DIR, exist_ok=True)
+    ok = skip = err = 0
+    for i, (lat, lon) in enumerate(tiles):
+        if td["dl_cancel"]:
+            td["dl_status"] = f"Cancelled  ({ok} new, {skip} skipped)"
+            td["downloading"] = False
+            return
+        td["dl_current"] = i
+        fname = _td_tile_name(lat, lon)
+        dest  = os.path.join(SRTM_DIR, fname)
+        if os.path.exists(dest):
+            skip += 1
+            td["dl_status"] = f"Skipping {fname}"
+            continue
+        url = _td_tile_url(lat, lon)
+        td["dl_status"] = f"Downloading {fname}\u2026"
+        try:
+            with urllib.request.urlopen(url, timeout=20) as resp:
+                gz_data = resp.read()
+            with gzip.open(io.BytesIO(gz_data)) as gz_f:
+                hgt_data = gz_f.read()
+            with open(dest, "wb") as f:
+                f.write(hgt_data)
+            ok += 1
+        except Exception as exc:
+            td["dl_status"] = f"Error {fname}: {exc}"
+            err += 1
+    td["dl_current"] = len(tiles)
+    td["dl_status"]  = (f"Done \u2713  {ok} downloaded"
+                        + (f", {skip} skipped" if skip else "")
+                        + (f", {err} errors"   if err  else ""))
+    td["downloading"] = False
+    global _has_terrain
+    _has_terrain = _check_terrain()
+
+
+def _td_start_download(region):
+    """Kick off a background download for a preset region."""
+    label, sub, lat_min, lat_max, lon_min, lon_max = region
+    tiles = _td_tiles_for_region(lat_min, lat_max, lon_min, lon_max)
+    t = threading.Thread(target=_td_download_thread,
+                         args=(tiles, label), daemon=True)
+    t.start()
+
+
+def _td_start_current_area():
+    """Download tiles around the current GPS position (±2° box)."""
+    lat = int(disp.get("lat", DEMO_LAT))
+    lon = int(disp.get("lon", DEMO_LON))
+    tiles = _td_tiles_for_region(lat-2, lat+3, lon-2, lon+3)
+    t = threading.Thread(target=_td_download_thread,
+                         args=(tiles, "Current Area"), daemon=True)
+    t.start()
+
+
+def draw_terrain_data(surf, td):
+    """Full-screen terrain data management screen."""
+    _screen_header(surf, "TERRAIN DATA")
+    bx = _TD_MX; bw = DISPLAY_W - 2*_TD_MX
+    n_tiles, used_mb = _td_disk_stats()
+
+    # Status strip
+    pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, 28), border_radius=4)
+    pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, 28), width=1, border_radius=4)
+    stat_str = (f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB used"
+                if n_tiles else "No tiles on disk  \u00b7  SVT uses flat terrain")
+    stat_col = (60,220,80) if n_tiles else YELLOW
+    _text(surf, stat_str, 12, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+
+    downloading = td.get("downloading", False)
+    rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
+    available_h = DISPLAY_H - _TD_MY - _TD_GAP*(rows-1) - 8
+    bh = available_h // (rows + 1)   # +1 row for the "Current Area" button
+
+    # ── Current Area button (full width) ─────────────────────────────────────
+    cur_col = (50,50,70) if downloading else (0,18,45)
+    cur_oc  = (70,70,95)  if downloading else WHITE
+    pygame.draw.rect(surf, cur_col, (bx, _TD_MY, bw, bh), border_radius=6)
+    gh = bh // 5
+    for i in range(gh):
+        t = 1.0 - i/gh
+        gc = (int(15+t*25), int(20+t*40), int(40+t*65)) if not downloading else (int(20+t*20),int(20+t*20),int(30+t*30))
+        pygame.draw.line(surf, gc, (bx+6, _TD_MY+1+i), (bx+bw-6, _TD_MY+1+i))
+    pygame.draw.rect(surf, cur_oc, (bx, _TD_MY, bw, bh), width=2, border_radius=6)
+    _text(surf, "DOWNLOAD CURRENT AREA", 15, cur_oc, bold=True,
+          cx=DISPLAY_W//2, cy=_TD_MY+bh//2-8)
+    lat_i = int(disp.get("lat", DEMO_LAT)); lon_i = int(disp.get("lon", DEMO_LON))
+    area_str = f"25 tiles around {lat_i}\u00b0{'N' if lat_i>=0 else 'S'}  {abs(lon_i)}\u00b0{'W' if lon_i<0 else 'E'}  \u2248 35 MB"
+    _text(surf, area_str, 10, (120,140,165), cx=DISPLAY_W//2, cy=_TD_MY+bh//2+10)
+
+    # ── Preset region grid ────────────────────────────────────────────────────
+    grid_y = _TD_MY + bh + _TD_GAP
+    btn_w = (bw - _TD_GAP) // 2
+    for idx, region in enumerate(_TD_REGIONS):
+        col = idx % _TD_COLS; row = idx // _TD_COLS
+        rx = bx + col*(btn_w+_TD_GAP)
+        ry = grid_y + row*(bh+_TD_GAP)
+        label, sub, *_ = region
+        n = _td_region_tile_count(region)
+        mb = n * 1.5
+        is_active = downloading and td.get("dl_region","") == label
+
+        if is_active:
+            bg=(0,28,18); oc=(40,180,60)
+        elif downloading:
+            bg=(0,8,18); oc=(35,45,60)
+        else:
+            bg=(0,12,32); oc=(55,75,105)
+
+        pygame.draw.rect(surf, bg, (rx, ry, btn_w, bh), border_radius=6)
+        if not downloading:
+            gh2 = bh // 6
+            for i in range(gh2):
+                t2 = 1.0-i/gh2
+                gc2=(int(15+t2*20),int(20+t2*35),int(40+t2*60))
+                pygame.draw.line(surf, gc2, (rx+6, ry+1+i), (rx+btn_w-6, ry+1+i))
+        pygame.draw.rect(surf, oc, (rx, ry, btn_w, bh), width=2, border_radius=6)
+        tc = (40,180,60) if is_active else ((70,80,90) if downloading else WHITE)
+        _text(surf, label, 14, tc, bold=True, cx=rx+btn_w//2, cy=ry+bh//2-12)
+        _text(surf, sub,   10, (100,120,140) if not is_active else (60,180,80),
+              cx=rx+btn_w//2, cy=ry+bh//2+4)
+        _text(surf, f"\u223c{n} tiles  {mb:.0f} MB", 9, (70,85,105),
+              cx=rx+btn_w//2, cy=ry+bh//2+18)
+
+    # ── Download progress overlay ─────────────────────────────────────────────
+    if downloading:
+        prog_y = DISPLAY_H - 58
+        cur = td.get("dl_current", 0); total = max(1, td.get("dl_total", 1))
+        frac = cur / total
+        pygame.draw.rect(surf, (0,12,32), (bx, prog_y, bw, 50), border_radius=6)
+        pygame.draw.rect(surf, (55,75,105), (bx, prog_y, bw, 50), width=1, border_radius=6)
+        bar_w = int((bw - 20) * frac)
+        pygame.draw.rect(surf, (0,25,12), (bx+10, prog_y+28, bw-20, 12), border_radius=3)
+        if bar_w > 0:
+            pygame.draw.rect(surf, (40,180,60), (bx+10, prog_y+28, bar_w, 12), border_radius=3)
+        _text(surf, td.get("dl_status",""), 10, (140,160,180),
+              cx=DISPLAY_W//2, cy=prog_y+14)
+        pct = f"{int(frac*100)}%  ({cur}/{total})"
+        _text(surf, pct, 10, (60,220,80), cx=DISPLAY_W//2, cy=prog_y+43)
+        # CANCEL button
+        _action_btn(surf, DISPLAY_W-100-bx, prog_y+6, 92, 36, "CANCEL", "danger", r=5)
+    else:
+        # Show last status message if any
+        last = td.get("dl_status", "")
+        if last:
+            _text(surf, last, 11, (80,160,100), cx=DISPLAY_W//2, cy=DISPLAY_H-12)
+
+
+def terrain_data_hit(x, y, td):
+    """Return action string or None."""
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _TD_MX; bw = DISPLAY_W - 2*_TD_MX
+    rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
+    available_h = DISPLAY_H - _TD_MY - _TD_GAP*(rows-1) - 8
+    bh = available_h // (rows + 1)
+
+    # Cancel button during download
+    if td.get("downloading"):
+        prog_y = DISPLAY_H - 58
+        if (DISPLAY_W-100-bx <= x <= DISPLAY_W-bx and
+                prog_y+6 <= y <= prog_y+42):
+            return "cancel"
+
+    # Current Area button
+    if bx <= x <= bx+bw and _TD_MY <= y <= _TD_MY+bh:
+        return "current_area"
+
+    # Region grid
+    grid_y = _TD_MY + bh + _TD_GAP
+    btn_w = (bw - _TD_GAP) // 2
+    for idx, region in enumerate(_TD_REGIONS):
+        col = idx % _TD_COLS; row = idx // _TD_COLS
+        rx = bx + col*(btn_w+_TD_GAP)
+        ry = grid_y + row*(bh+_TD_GAP)
+        if rx <= x <= rx+btn_w and ry <= y <= ry+bh:
+            return f"region:{idx}"
     return None
 
 
@@ -2010,6 +2302,10 @@ def render(surf, demo_mode, connected):
 
     if mode == "system_setup":
         draw_system_setup(surf)
+        return
+
+    if mode == "terrain_data":
+        draw_terrain_data(surf, disp["td"])
         return
 
     if mode == "keyboard":

@@ -1430,6 +1430,123 @@ def draw_system_screen(filename, display_mode="pfd"):
     print(f"Saved {filename}")
 
 
+# ── Terrain data screen ───────────────────────────────────────────────────────
+
+_TD_REGIONS_P = [
+    ("US Southwest", "AZ \u00b7 NM \u00b7 NV \u00b7 UT \u00b7 CO",   31, 42, -115, -103),
+    ("US Pacific",   "CA \u00b7 OR \u00b7 WA",                         32, 49, -125, -114),
+    ("US Southeast", "FL \u00b7 GA \u00b7 AL \u00b7 NC \u00b7 SC",    24, 37,  -92,  -74),
+    ("US Northeast", "NY \u00b7 PA \u00b7 NE states",                  37, 48,  -80,  -66),
+    ("Alaska",       "Southern AK corridor",                            55, 64, -165, -131),
+    ("Europe West",  "UK \u00b7 FR \u00b7 DE \u00b7 ES \u00b7 IT",    36, 58,   -9,   15),
+]
+_TD_COLS_P = 2
+_TD_MX_P   = 12
+_TD_MY_P   = 84
+_TD_GAP_P  = 8
+
+
+def draw_terrain_data_screen(filename, n_tiles=0, downloading=False,
+                              dl_region="", dl_current=0, dl_total=1, dl_status=""):
+    img  = Image.new('RGB', (W, H), (0, 8, 22))
+    draw = ImageDraw.Draw(img)
+    _screen_header_p(draw, "TERRAIN DATA")
+    bx = _TD_MX_P; bw = W - 2*_TD_MX_P
+    used_mb = n_tiles * 2.8   # approx
+
+    # Status strip
+    draw.rounded_rectangle([(bx,52),(bx+bw-1,79)], radius=4, fill=(0,12,32))
+    draw.rounded_rectangle([(bx,52),(bx+bw-1,79)], radius=4, outline=(40,60,90), width=1)
+    stat_str = (f"{n_tiles} tiles on disk  \u00b7  {used_mb:.0f} MB used"
+                if n_tiles else "No tiles on disk  \u00b7  SVT uses flat terrain")
+    stat_col = (60,220,80) if n_tiles else YELLOW
+    sf = fnt(12, bold=True)
+    sw = int(draw.textlength(stat_str, font=sf))
+    draw.text(((W-sw)//2, 57), stat_str, fill=stat_col, font=sf)
+
+    rows = (len(_TD_REGIONS_P) + _TD_COLS_P - 1) // _TD_COLS_P
+    available_h = H - _TD_MY_P - _TD_GAP_P*(rows-1) - 8
+    bh = available_h // (rows + 1)
+
+    # Current area button (full width)
+    draw.rounded_rectangle([(bx,_TD_MY_P),(bx+bw-1,_TD_MY_P+bh-1)],
+                            radius=6, fill=(0,18,45))
+    gh = bh // 5
+    for i in range(gh):
+        t = 1.0 - i/gh
+        draw.line([(bx+6,_TD_MY_P+1+i),(bx+bw-6,_TD_MY_P+1+i)],
+                  fill=(int(15+t*25),int(20+t*40),int(40+t*65)))
+    draw.rounded_rectangle([(bx,_TD_MY_P),(bx+bw-1,_TD_MY_P+bh-1)],
+                            radius=6, outline=WHITE, width=2)
+    lf = fnt(15, bold=True)
+    lw = int(draw.textlength("DOWNLOAD CURRENT AREA", font=lf))
+    draw.text(((W-lw)//2, _TD_MY_P+bh//2-18), "DOWNLOAD CURRENT AREA",
+              fill=WHITE, font=lf)
+    sf2 = fnt(10)
+    area_str = "\u223c25 tiles around current GPS position  \u2248 35 MB"
+    aw = int(draw.textlength(area_str, font=sf2))
+    draw.text(((W-aw)//2, _TD_MY_P+bh//2+4), area_str, fill=(120,140,165), font=sf2)
+
+    # Preset region grid
+    grid_y = _TD_MY_P + bh + _TD_GAP_P
+    btn_w  = (bw - _TD_GAP_P) // 2
+    for idx, region in enumerate(_TD_REGIONS_P):
+        col = idx % _TD_COLS_P; row = idx // _TD_COLS_P
+        rx = bx + col*(btn_w+_TD_GAP_P)
+        ry = grid_y + row*(bh+_TD_GAP_P)
+        label, sub, lat_min, lat_max, lon_min, lon_max = region
+        n = (lat_max-lat_min)*(lon_max-lon_min)
+        mb = n * 1.5
+        is_active = downloading and dl_region == label
+        if is_active:
+            bg=(0,28,18); oc=(40,180,60); tc=(40,180,60)
+        elif downloading:
+            bg=(0,8,18); oc=(35,45,60); tc=(70,80,90)
+        else:
+            bg=(0,12,32); oc=(55,75,105); tc=WHITE
+        draw.rounded_rectangle([(rx,ry),(rx+btn_w-1,ry+bh-1)], radius=6, fill=bg)
+        if not downloading:
+            gh2 = bh // 6
+            for i in range(gh2):
+                t2 = 1.0-i/gh2
+                draw.line([(rx+6,ry+1+i),(rx+btn_w-6,ry+1+i)],
+                          fill=(int(15+t2*20),int(20+t2*35),int(40+t2*60)))
+        draw.rounded_rectangle([(rx,ry),(rx+btn_w-1,ry+bh-1)], radius=6, outline=oc, width=2)
+        lf2 = fnt(14, bold=True)
+        lw2 = int(draw.textlength(label, font=lf2))
+        draw.text((rx+(btn_w-lw2)//2, ry+bh//2-18), label, fill=tc, font=lf2)
+        sf3 = fnt(10); sw3 = int(draw.textlength(sub, font=sf3))
+        draw.text((rx+(btn_w-sw3)//2, ry+bh//2-2), sub, fill=(100,120,140), font=sf3)
+        cnt_str = f"\u223c{n} tiles  {mb:.0f} MB"
+        sf4 = fnt(9); sw4 = int(draw.textlength(cnt_str, font=sf4))
+        draw.text((rx+(btn_w-sw4)//2, ry+bh//2+12), cnt_str, fill=(70,85,105), font=sf4)
+
+    # Progress overlay if downloading
+    if downloading:
+        frac = dl_current / max(1, dl_total)
+        prog_y = H - 58
+        draw.rounded_rectangle([(bx,prog_y),(bx+bw-1,prog_y+49)],
+                                radius=6, fill=(0,12,32))
+        draw.rounded_rectangle([(bx,prog_y),(bx+bw-1,prog_y+49)],
+                                radius=6, outline=(55,75,105), width=1)
+        bar_w = int((bw-20)*frac)
+        draw.rounded_rectangle([(bx+10,prog_y+28),(bx+bw-11,prog_y+39)],
+                                radius=3, fill=(0,25,12))
+        if bar_w:
+            draw.rounded_rectangle([(bx+10,prog_y+28),(bx+10+bar_w,prog_y+39)],
+                                    radius=3, fill=(40,180,60))
+        sf5 = fnt(10)
+        draw.text(((W-int(draw.textlength(dl_status,font=sf5)))//2, prog_y+10),
+                  dl_status, fill=(140,160,180), font=sf5)
+        pct = f"{int(frac*100)}%  ({dl_current}/{dl_total})"
+        draw.text(((W-int(draw.textlength(pct,font=sf5)))//2, prog_y+40),
+                  pct, fill=(60,220,80), font=sf5)
+        _action_btn_p(draw, W-100-bx, prog_y+6, 92, 36, "CANCEL", "danger", r=5)
+
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
 # ── Render 3 Sedona scenarios ─────────────────────────────────────────────────
 OUT = os.path.dirname(os.path.abspath(__file__))
 
@@ -1484,6 +1601,11 @@ draw_numpad_screen("SET HEADING BUG", 133,
                    os.path.join(OUT, "preview_numpad_hdg.png"),
                    entered="250")
 
+draw_terrain_data_screen(os.path.join(OUT, "preview_terrain_idle.png"), n_tiles=0)
+draw_terrain_data_screen(os.path.join(OUT, "preview_terrain_downloading.png"),
+                         n_tiles=12, downloading=True, dl_region="US Southwest",
+                         dl_current=47, dl_total=132,
+                         dl_status="Downloading N35W111.hgt\u2026")
 draw_display_screen(os.path.join(OUT, "preview_setup_display.png"))
 draw_ahrs_screen(os.path.join(OUT, "preview_setup_ahrs.png"),
                  ss={"pitch_trim":1.5,"roll_trim":-0.5,"mag_cal":"done","mounting":"normal"})
