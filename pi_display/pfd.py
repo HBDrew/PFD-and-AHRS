@@ -521,10 +521,11 @@ def draw_aircraft_symbol(surf):
     # Outer strip = leading-edge side (lighter/top); Inner strip = trailing-edge side (darker/bottom)
     # Fills — inner/outer strips, no outline so colour-split edge stays clean
     # Inner edge moved ±69 → ±57 (50% wider base; outer edge ±93 unchanged)
-    li = [(CX, CY), (CX - 81, CY + 44), (CX - 57, CY + 44)]   # L inner (darker)
-    lo = [(CX, CY), (CX - 93, CY + 44), (CX - 81, CY + 44)]   # L outer (lighter)
-    ri = [(CX, CY), (CX + 57, CY + 44), (CX + 81, CY + 44)]   # R inner (darker)
-    ro = [(CX, CY), (CX + 81, CY + 44), (CX + 93, CY + 44)]   # R outer (lighter)
+    # Bisect at ±75 = midpoint of ±57..±93, giving equal-width inner/outer strips
+    li = [(CX, CY), (CX - 75, CY + 44), (CX - 57, CY + 44)]   # L inner (darker)
+    lo = [(CX, CY), (CX - 93, CY + 44), (CX - 75, CY + 44)]   # L outer (lighter)
+    ri = [(CX, CY), (CX + 57, CY + 44), (CX + 75, CY + 44)]   # R inner (darker)
+    ro = [(CX, CY), (CX + 75, CY + 44), (CX + 93, CY + 44)]   # R outer (lighter)
     pygame.gfxdraw.filled_polygon(surf, li, AMBER_DARK)
     pygame.gfxdraw.aapolygon(surf, li, AMBER_DARK)
     pygame.gfxdraw.filled_polygon(surf, lo, AMBER)
@@ -702,7 +703,8 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     _cyan_box(surf, alt_str, x=ALT_X, y=2, w=ALT_W, h=22)
 
-    # VS bar — 5px wide on the outer (left) edge of the alt tape.
+    # VS bar — 5px wide on the outer (right) edge of the alt tape.
+    # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
     # 2000 fpm ≡ 200 ft on the tape scale.
     _vs_scale = 200 * PX_PER_FT / 2000   # px per fpm
     _vs_px    = int(abs(vspeed) * _vs_scale)
@@ -713,7 +715,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
         else:
             _vsy1 = TAPE_MID
             _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
-        pygame.draw.rect(surf, MAGENTA, (ALT_X, _vsy1, 5, _vsy2 - _vsy1))
+        pygame.draw.rect(surf, MAGENTA, (ALT_X + ALT_W - 5, _vsy1, 5, _vsy2 - _vsy1))
 
     # Altitude bug — before readout box so box draws on top (bug goes behind readout)
     if alt_bug is not None:
@@ -735,6 +737,24 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
                       (R - 39, TAPE_MID + 15), (R - 39, TAPE_MID + 29),
                       (R - 15, TAPE_MID + 29), (R - 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7, 8, 9})
     pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
+
+    # VSI readout — drawn BEFORE the outline so the 2px white line frames shared edges
+    _R39  = ALT_X + ALT_W - 39    # 601 = left edge of drum section
+    _nx   = ALT_X                  # 566 — flush with tape left edge
+    _ny   = TAPE_MID + 15          # 244 — flush with inner-box bottom path
+    _nw   = _R39 - ALT_X          # 35  — flush with drum-section left path
+    _nh   = 22                     # extends 7px below outer box bottom for readability
+    if abs(vspeed) > 30:
+        _varr = "▲" if vspeed > 0 else "▼"
+        _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
+        _vcol = (0, 220, 0) if vspeed > 0 else (255, 140, 0)
+    else:
+        _vstr = "—"
+        _vcol = LTGREY
+    pygame.draw.rect(surf, (0, 8, 22), (_nx, _ny, _nw, _nh), border_radius=3)
+    pygame.draw.rect(surf, (70, 100, 130), (_nx, _ny, _nw, _nh), width=1, border_radius=3)
+    _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
+
     pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
     # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
@@ -755,24 +775,6 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
     _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 18,
                         show_adjacent=True, adj_slot_h=18)
     _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)   # 1px inset from border
-
-    # VSI readout — box aligned to the left & top of the lower notch, extending
-    # below the outer veeder-root bottom so the font stays readable.
-    _R39  = ALT_X + ALT_W - 39    # 601 = left edge of drum section
-    _nx   = ALT_X                  # 566 — flush with tape left edge
-    _ny   = TAPE_MID + 15          # 244 — flush with inner-box bottom path
-    _nw   = _R39 - ALT_X          # 35  — flush with drum-section left path
-    _nh   = 22                     # extends to y=265 (7px below outer box bottom)
-    if abs(vspeed) > 30:
-        _varr = "▲" if vspeed > 0 else "▼"
-        _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
-        _vcol = (0, 220, 0) if vspeed > 0 else (255, 140, 0)
-    else:
-        _vstr = "—"
-        _vcol = LTGREY
-    pygame.draw.rect(surf, (0, 8, 22), (_nx, _ny, _nw, _nh), border_radius=3)
-    pygame.draw.rect(surf, (70, 100, 130), (_nx, _ny, _nw, _nh), width=1, border_radius=3)
-    _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────

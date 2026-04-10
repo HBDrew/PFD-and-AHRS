@@ -456,7 +456,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                 tw = int(f_s.getlength(s))
                 draw.text((ALT_X+ALT_W-tl-2-tw, fy-8), s, fill=(230,230,230), font=f_s)
 
-    # VS bar — 5px wide on the outer (left) edge of the alt tape.
+    # VS bar — 5px wide on the outer (right) edge of the alt tape.
+    # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
     # 2000 fpm ≡ 200 ft ≡ 200×PX_PER_FT pixels on the tape.
     _vs_scale = 200 * PX_PER_FT / 2000   # px per fpm
     _vs_px    = int(abs(vspeed) * _vs_scale)
@@ -467,7 +468,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         else:
             _vsy1 = TAPE_MID
             _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
-        draw.rectangle([(ALT_X, _vsy1), (ALT_X+5, _vsy2)], fill=MAGENTA)
+        draw.rectangle([(ALT_X+ALT_W-5, _vsy1), (ALT_X+ALT_W, _vsy2)], fill=MAGENTA)
 
     # Alt bug — before alt box so box draws on top (bug goes behind readout)
     aby = alt_y(alt_bug)
@@ -489,30 +490,9 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                       (R-39, TAPE_MID+15), (R-39, TAPE_MID+29),
                       (R-15, TAPE_MID+29), (R-15, TAPE_MID+15)], {2, 3, 4, 5, 6, 7, 8, 9})
     draw.polygon(pts_a, fill=(0, 10, 30))
-    draw.line(pts_a + [pts_a[0]], fill=WHITE, width=2)
-    # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
-    carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
-    alt_inner  = float(alt // 100) + carry_frac
-    inner_int  = int(alt_inner)
-    if inner_int < 10:                      # alt < 1,000 ft — hundreds only
-        rolling_drum(img, R-80, TAPE_MID-14, 41, 28, alt_inner, 1, WHITE, 24)
-    elif inner_int < 100:                   # 1,000–9,999 ft — thousands (24pt) + hundreds (22pt)
-        # Thousands in right cell of 28px slot (R-66..R-52); ten-thousands slot left empty
-        rolling_drum(img, R-66, TAPE_MID-14, 14, 28, alt_inner, 1, WHITE, 24,
-                     power_offset=1)
-        rolling_drum(img, R-52, TAPE_MID-14, 12, 28, alt_inner, 1, WHITE, 22)
-    else:                                   # alt ≥ 10,000 ft — ten-thou+thou (22pt) + hundreds
-        rolling_drum(img, R-80, TAPE_MID-14, 28, 28, alt_inner, 2, WHITE, 22,
-                     suppress_leading=True, power_offset=1)
-        rolling_drum(img, R-52, TAPE_MID-14, 12, 28, alt_inner, 1, WHITE, 22)
-    # Drum: 20-ft labels scroll together, adjacent labels half-visible
-    rolling_drum_alt20(img, R-38, TAPE_MID-28, 22, 56, alt, WHITE, 18,
-                       show_adjacent=True, adj_slot_h=18)
-    _drum_shade(img,   R-38, TAPE_MID-28, 22, 56)   # 1px inset from border
 
-    # VSI readout — box aligned to the left & top of the lower notch, extending
-    # below the outer veeder-root bottom so the font stays readable.
-    # Shared edges (top, right) are framed by the alt-box's 2px white outline.
+    # VSI box — drawn BEFORE the outline so the 2px white line draws on top,
+    # framing the shared top and right edges cleanly.
     _R39  = ALT_X + ALT_W - 39    # 601 = left edge of drum section
     _nx   = ALT_X                  # 566 — flush with tape left edge
     _ny   = TAPE_MID + 15          # 244 — flush with inner-box bottom path
@@ -533,6 +513,28 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     draw.text((_nx + (_nw-_tw)//2 - _bb[0],
                _ny + (_nh-_th)//2 - _bb[1]),
               _vstr, fill=_vcol, font=_fv)
+
+    # Alt box outline — drawn AFTER VSI box so it frames the shared edges
+    draw.line(pts_a + [pts_a[0]], fill=WHITE, width=2)
+    # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
+    carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
+    alt_inner  = float(alt // 100) + carry_frac
+    inner_int  = int(alt_inner)
+    if inner_int < 10:                      # alt < 1,000 ft — hundreds only
+        rolling_drum(img, R-80, TAPE_MID-14, 41, 28, alt_inner, 1, WHITE, 24)
+    elif inner_int < 100:                   # 1,000–9,999 ft — thousands (24pt) + hundreds (22pt)
+        # Thousands in right cell of 28px slot (R-66..R-52); ten-thousands slot left empty
+        rolling_drum(img, R-66, TAPE_MID-14, 14, 28, alt_inner, 1, WHITE, 24,
+                     power_offset=1)
+        rolling_drum(img, R-52, TAPE_MID-14, 12, 28, alt_inner, 1, WHITE, 22)
+    else:                                   # alt ≥ 10,000 ft — ten-thou+thou (22pt) + hundreds
+        rolling_drum(img, R-80, TAPE_MID-14, 28, 28, alt_inner, 2, WHITE, 22,
+                     suppress_leading=True, power_offset=1)
+        rolling_drum(img, R-52, TAPE_MID-14, 12, 28, alt_inner, 1, WHITE, 22)
+    # Drum: 20-ft labels scroll together, adjacent labels half-visible
+    rolling_drum_alt20(img, R-38, TAPE_MID-28, 22, 56, alt, WHITE, 18,
+                       show_adjacent=True, adj_slot_h=18)
+    _drum_shade(img,   R-38, TAPE_MID-28, 22, 56)   # 1px inset from border
 
     # ── 5. HEADING TAPE CONTENT ───────────────────────────────────────────────
     CARDS = {0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'}
@@ -665,10 +667,11 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     BLK = (0, 0, 0)
     # Fills — no outline so the inner colour-split edge stays clean
     # Inner edge moved from ±69 → ±57 (50% wider base; outer edge ±93 unchanged)
-    draw.polygon([(CX, CY), (CX-81, CY+44), (CX-57, CY+44)], fill=AMBER_DARK)  # L inner
-    draw.polygon([(CX, CY), (CX-93, CY+44), (CX-81, CY+44)], fill=AMBER)       # L outer
-    draw.polygon([(CX, CY), (CX+57, CY+44), (CX+81, CY+44)], fill=AMBER_DARK)  # R inner
-    draw.polygon([(CX, CY), (CX+81, CY+44), (CX+93, CY+44)], fill=AMBER)       # R outer
+    # Bisect at ±75 = midpoint of ±57..±93, giving equal-width inner/outer strips
+    draw.polygon([(CX, CY), (CX-75, CY+44), (CX-57, CY+44)], fill=AMBER_DARK)  # L inner
+    draw.polygon([(CX, CY), (CX-93, CY+44), (CX-75, CY+44)], fill=AMBER)       # L outer
+    draw.polygon([(CX, CY), (CX+57, CY+44), (CX+75, CY+44)], fill=AMBER_DARK)  # R inner
+    draw.polygon([(CX, CY), (CX+75, CY+44), (CX+93, CY+44)], fill=AMBER)       # R outer
     # Engine nacelles — fills
     draw.polygon([(CX-93, CY), (CX-99, CY-6), (CX-138, CY-6), (CX-138, CY)],   fill=AMBER)       # L upper
     draw.polygon([(CX-93, CY), (CX-138, CY),  (CX-138, CY+6), (CX-99, CY+6)],  fill=AMBER_DARK)  # L lower
