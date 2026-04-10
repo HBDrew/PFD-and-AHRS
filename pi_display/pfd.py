@@ -207,14 +207,14 @@ def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz,
         if show_adjacent:
             d_prev   = (d_lo - 1 + 10) % 10
             img_prev = f.render(str(d_prev), True, color)
-            ty_lo    = bh // 2 - gh // 2 - scroll
-            cell.blit(img_prev, (tx, ty_lo - slot_h))
+            ty_lo    = bh // 2 - gh // 2 + scroll   # reversed: lo scrolls down
+            cell.blit(img_hi,   (tx, ty_lo - slot_h))   # hi  (higher) above
             cell.blit(img_lo,   (tx, ty_lo))
-            cell.blit(img_hi,   (tx, ty_lo + slot_h))
+            cell.blit(img_prev, (tx, ty_lo + slot_h))   # prev (lower) below
         else:
-            ty_lo = (bh - gh) // 2 - scroll
+            ty_lo = (bh - gh) // 2 + scroll   # reversed: lo scrolls down
+            cell.blit(img_hi, (tx, ty_lo - bh))   # hi (higher) one slot above
             cell.blit(img_lo, (tx, ty_lo))
-            cell.blit(img_hi, (tx, ty_lo + bh))
 
         surf.blit(cell, (cx, by))
 
@@ -256,18 +256,21 @@ def _rolling_drum_alt20(surf, bx, by, bw, bh, alt, color, font_sz, show_adjacent
     if show_adjacent:
         d_prev_idx = (d_lo_idx - 1 + 5) % 5
         d_hi_idx   = (d_lo_idx + 1) % 5
+        d_hi2_idx  = (d_lo_idx + 2) % 5
         img_prev = f.render(_LABELS[d_prev_idx], True, color)
         img_hi   = f.render(_LABELS[d_hi_idx],   True, color)
-        ty_lo    = bh // 2 - gh // 2 - scroll
-        cell.blit(img_prev, (tx, ty_lo - slot_h))
+        img_hi2  = f.render(_LABELS[d_hi2_idx],  True, color)
+        ty_lo    = bh // 2 - gh // 2 + scroll   # reversed: lo scrolls down
+        cell.blit(img_hi2,  (tx, ty_lo - 2 * slot_h))  # two steps above
+        cell.blit(img_hi,   (tx, ty_lo - slot_h))       # hi  (higher) above
         cell.blit(img_lo,   (tx, ty_lo))
-        cell.blit(img_hi,   (tx, ty_lo + slot_h))
+        cell.blit(img_prev, (tx, ty_lo + slot_h))       # prev (lower) below
     else:
         d_hi_idx = (d_lo_idx + 1) % 5
         img_hi = f.render(_LABELS[d_hi_idx], True, color)
-        ty_lo = (bh - gh) // 2 - scroll
+        ty_lo = (bh - gh) // 2 + scroll   # reversed: lo scrolls down
+        cell.blit(img_hi, (tx, ty_lo - bh))   # hi (higher) one slot above
         cell.blit(img_lo, (tx, ty_lo))
-        cell.blit(img_hi, (tx, ty_lo + bh))
 
     surf.blit(cell, (bx, by))
 

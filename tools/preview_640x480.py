@@ -149,9 +149,9 @@ def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
 
         if show_adjacent:
             d_prev  = (d_lo - 1 + 10) % 10
-            ty_lo   = bh // 2 - ch // 2 - ch_offset - scroll
-            ty_prev = ty_lo - slot_h
-            ty_hi   = ty_lo + slot_h
+            ty_lo   = bh // 2 - ch // 2 - ch_offset + scroll   # reversed: lo scrolls down
+            ty_prev = ty_lo + slot_h                             # prev (lower) below
+            ty_hi   = ty_lo - slot_h                             # hi  (higher) above
             cell = Image.new('RGBA', (char_w, bh + 2 * slot_h), (0, 0, 0, 0))
             cd   = ImageDraw.Draw(cell)
             cd.text((tx, ty_prev + slot_h), str(d_prev), fill=col_rgba, font=f)
@@ -159,13 +159,13 @@ def rolling_drum(img, bx, by, bw, bh, value, n_digits, color, font_sz,
             cd.text((tx, ty_hi   + slot_h), str(d_hi),   fill=col_rgba, font=f)
             cropped = cell.crop((0, slot_h, char_w, slot_h + bh))
         else:
-            ty_lo = (bh - ch) // 2 - ch_offset - scroll
-            ty_hi = ty_lo + bh
+            ty_lo = (bh - ch) // 2 - ch_offset + scroll   # reversed: lo scrolls down
+            ty_hi = ty_lo - bh                              # hi (higher) is one slot above
             cell  = Image.new('RGBA', (char_w, bh * 2), (0, 0, 0, 0))
             cd    = ImageDraw.Draw(cell)
-            cd.text((tx, ty_lo), str(d_lo), fill=col_rgba, font=f)
-            cd.text((tx, ty_hi), str(d_hi), fill=col_rgba, font=f)
-            cropped = cell.crop((0, 0, char_w, bh))
+            cd.text((tx, ty_hi + bh), str(d_hi), fill=col_rgba, font=f)
+            cd.text((tx, ty_lo + bh), str(d_lo), fill=col_rgba, font=f)
+            cropped = cell.crop((0, bh, char_w, bh * 2))
 
         img.paste(cropped, (cx_pos, by), cropped)
 
@@ -212,24 +212,26 @@ def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz, show_adjacent=F
     if show_adjacent:
         d_prev_idx = (d_lo_idx - 1 + 5) % 5
         d_hi_idx   = (d_lo_idx + 1) % 5
-        ty_lo   = bh // 2 - ch // 2 - ch_offset - scroll
-        ty_prev = ty_lo - slot_h
-        ty_hi   = ty_lo + slot_h
+        d_hi2_idx  = (d_lo_idx + 2) % 5
+        ty_lo   = bh // 2 - ch // 2 - ch_offset + scroll   # reversed: lo scrolls down
+        ty_prev = ty_lo + slot_h                             # prev (lower) below
+        ty_hi   = ty_lo - slot_h                             # hi  (higher) above
         cell = Image.new('RGBA', (bw, bh + 2 * slot_h), (0, 0, 0, 0))
         cd   = ImageDraw.Draw(cell)
+        cd.text((tx, ty_lo - slot_h),  _LABELS[d_hi2_idx],  fill=col_rgba, font=f)
         cd.text((tx, ty_prev + slot_h), _LABELS[d_prev_idx], fill=col_rgba, font=f)
         cd.text((tx, ty_lo   + slot_h), _LABELS[d_lo_idx],   fill=col_rgba, font=f)
         cd.text((tx, ty_hi   + slot_h), _LABELS[d_hi_idx],   fill=col_rgba, font=f)
         cropped = cell.crop((0, slot_h, bw, slot_h + bh))
     else:
         d_hi_idx = (d_lo_idx + 1) % 5
-        ty_lo = (bh - ch) // 2 - ch_offset - scroll
-        ty_hi = ty_lo + bh
+        ty_lo = (bh - ch) // 2 - ch_offset + scroll   # reversed: lo scrolls down
+        ty_hi = ty_lo - bh                              # hi (higher) is one slot above
         cell  = Image.new('RGBA', (bw, bh * 2), (0, 0, 0, 0))
         cd    = ImageDraw.Draw(cell)
-        cd.text((tx, ty_lo), _LABELS[d_lo_idx], fill=col_rgba, font=f)
-        cd.text((tx, ty_hi), _LABELS[d_hi_idx], fill=col_rgba, font=f)
-        cropped = cell.crop((0, 0, bw, bh))
+        cd.text((tx, ty_hi + bh), _LABELS[d_hi_idx],  fill=col_rgba, font=f)
+        cd.text((tx, ty_lo + bh), _LABELS[d_lo_idx],  fill=col_rgba, font=f)
+        cropped = cell.crop((0, bh, bw, 2 * bh))
     img.paste(cropped, (bx, by), cropped)
 
 
