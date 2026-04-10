@@ -86,6 +86,23 @@ DEMO_LON = -111.7610
 DEMO_ALT = 8500.0   # ft MSL starting altitude
 DEMO_HDG = 133.0    # degrees
 
+# ── Flight simulator presets ─────────────────────────────────────────────────
+# Each entry: (icao, city_label, lat, lon, field_elev_ft)
+SIM_PRESETS = [
+    ("KSEZ", "Sedona AZ",        34.8486, -111.7884, 4830),
+    ("KPHX", "Phoenix AZ",       33.4373, -112.0078, 1135),
+    ("KDEN", "Denver CO",        39.8561, -104.6737, 5431),
+    ("KLAX", "Los Angeles CA",   33.9425, -118.4081,  125),
+    ("KSFO", "San Francisco CA", 37.6213, -122.3790,   13),
+    ("KLAS", "Las Vegas NV",     36.0840, -115.1537, 2141),
+    ("KSEA", "Seattle WA",       47.4502, -122.3088,  433),
+    ("KATL", "Atlanta GA",       33.6407,  -84.4277, 1026),
+    ("KJFK", "New York NY",      40.6413,  -73.7781,   13),
+    ("KORD", "Chicago IL",       41.9742,  -87.9073,  668),
+    ("KDFW", "Dallas TX",        32.8998,  -97.0403,  603),
+    ("KMIA", "Miami FL",         25.7959,  -80.2870,    8),
+]
+
 # ── Touch / interaction ───────────────────────────────────────────────────────
 LONG_PRESS_MS    = 800  # ms for long-press to enter setup
 STALE_TIMEOUT_S  = 3    # seconds after link loss before AHRS is marked failed

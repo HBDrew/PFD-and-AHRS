@@ -69,6 +69,7 @@ disp["baro_hpa"]      = BARO_DEFAULT_HPA
 disp["show_demo"]     = False
 disp["mode"]          = "pfd"       # "pfd"|"setup"|"flight_profile"|"numpad"|"keyboard"
                                      # |"display_setup"|"ahrs_setup"|"connectivity_setup"|"system_setup"
+                                     # |"sim_setup"|"sim_controls"
 disp["numpad_target"] = ""          # "alt_bug"|"hdg_bug"|"spd_bug"|fp key
 disp["numpad_buf"]    = ""          # digits entered so far
 disp["numpad_prev"]   = "pfd"       # mode to return to on cancel/enter
@@ -116,11 +117,21 @@ disp["cs"] = {                      # connectivity settings
     "wifi_pass": "",        "wifi_ok":  False,
     "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
 }
+disp["sim"] = {                     # flight simulator state
+    "preset_idx": 0,    # index into SIM_PRESETS
+    "init_alt":   5000.0,
+    "init_hdg":   0.0,
+    "init_spd":   90.0,
+    "gps_fail":   False,
+    "baro_fail":  False,
+    "ahrs_fail":  False,
+}
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 
 # ── Module-level SSE handle (set in main, restarted by handle_event) ─────────
 _sse_client  = None
+_sim_state   = None   # SimFlyState instance when sim is running, else None
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
 # ── GPS-slaved heading complementary filter ───────────────────────────────────
@@ -1324,6 +1335,99 @@ class DemoState:
         # Apply bug positions directly to disp (they're not in state)
         disp["hdg_bug"] = self._target.get("hdg_bug", disp["hdg_bug"])
         disp["alt_bug"] = self._target.get("alt_bug", disp["alt_bug"])
+
+
+# ── Flight simulator ─────────────────────────────────────────────────────────
+class SimFlyState:
+    """Interactive flight simulator. Bugs (hdg_bug, alt_bug, spd_bug) are
+    autopilot targets; sensor failure flags in disp['sim'] control which
+    instruments are serviceable."""
+
+    def __init__(self):
+        sim = disp["sim"]
+        preset = SIM_PRESETS[sim["preset_idx"]]
+        self._last_t = time.monotonic()
+        with _state_lock:
+            state["lat"]     = preset[2]
+            state["lon"]     = preset[3]
+            state["alt"]     = sim["init_alt"]
+            state["gps_alt"] = sim["init_alt"]
+            state["yaw"]     = sim["init_hdg"]
+            state["track"]   = sim["init_hdg"]
+            state["speed"]   = sim["init_spd"]
+            state["pitch"]   = 0.0
+            state["roll"]    = 0.0
+            state["vspeed"]  = 0.0
+            state["ay"]      = 0.0
+            state["fix"]     = 1
+            state["sats"]    = 8
+            state["ahrs_ok"] = True
+            state["gps_ok"]  = True
+            state["baro_ok"] = False
+            state["baro_src"] = "gps"
+        # Seed bugs so the aircraft holds its initial state
+        disp["hdg_bug"] = sim["init_hdg"]
+        disp["alt_bug"] = sim["init_alt"]
+        if disp.get("spd_bug") is None:
+            disp["spd_bug"] = sim["init_spd"]
+
+    def tick(self):
+        now = time.monotonic()
+        dt  = min(now - self._last_t, 0.1)
+        self._last_t = now
+
+        sim = disp["sim"]
+        gps_fail  = sim.get("gps_fail",  False)
+        ahrs_fail = sim.get("ahrs_fail", False)
+        baro_fail = sim.get("baro_fail", False)
+
+        with _state_lock:
+            # ── Targets from bugs ──────────────────────────────────────────────
+            tgt_hdg = disp.get("hdg_bug", state["yaw"])  or state["yaw"]
+            tgt_alt = disp.get("alt_bug", state["alt"])  or state["alt"]
+            tgt_spd = disp.get("spd_bug") or 90.0
+
+            # ── Heading / bank ─────────────────────────────────────────────────
+            hdg     = state["yaw"]
+            hdg_err = ((tgt_hdg - hdg + 180) % 360) - 180
+            turn_rate = 3.0  # standard rate deg/s
+            d_hdg = max(-turn_rate * dt, min(turn_rate * dt, hdg_err * 0.4))
+            state["yaw"]  = (hdg + d_hdg) % 360
+            bank          = max(-25.0, min(25.0, hdg_err * 1.8))
+            state["roll"] = bank if not ahrs_fail else 0.0
+            state["ay"]   = -bank / 600.0  # slip ball
+
+            # ── Altitude / VS / pitch ──────────────────────────────────────────
+            alt     = state["alt"]
+            alt_err = tgt_alt - alt
+            vs_fpm  = max(-1000.0, min(1000.0, alt_err * 0.5))
+            state["alt"]     = alt + vs_fpm / 60.0 * dt
+            state["gps_alt"] = state["alt"]
+            state["vspeed"]  = vs_fpm
+            state["pitch"]   = max(-10.0, min(10.0, vs_fpm / 100.0)) if not ahrs_fail else 0.0
+
+            # ── Speed / acceleration ───────────────────────────────────────────
+            spd     = state["speed"]
+            spd_err = tgt_spd - spd
+            d_spd   = max(-2.0 * dt, min(2.0 * dt, spd_err * 0.5))
+            state["speed"] = max(0.0, spd + d_spd)
+
+            # ── Position ───────────────────────────────────────────────────────
+            nm_s           = state["speed"] / 3600.0
+            hdg_rad        = math.radians(state["yaw"])
+            nm_per_deg_lat = 60.0
+            nm_per_deg_lon = max(1.0, 60.0 * math.cos(math.radians(state["lat"])))
+            state["lat"]  += nm_s * dt * math.cos(hdg_rad) / nm_per_deg_lat
+            state["lon"]  += nm_s * dt * math.sin(hdg_rad) / nm_per_deg_lon
+            state["track"] = state["yaw"]
+
+            # ── Sensor failure simulation ──────────────────────────────────────
+            state["gps_ok"]  = not gps_fail
+            state["fix"]     = 0 if gps_fail else 1
+            state["sats"]    = 0 if gps_fail else 8
+            state["ahrs_ok"] = not ahrs_fail
+            state["baro_ok"] = not baro_fail
+            state["baro_src"] = "baro" if (not baro_fail) else "gps"
 
 
 # ── Touch handler ─────────────────────────────────────────────────────────────
