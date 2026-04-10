@@ -1687,27 +1687,40 @@ draw_scene(
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
 )
 
-# Terrain alert — CAUTION (amber banner)
-draw_scene(
-    roll=0, pitch=-3, hdg=19, alt=5300, speed=90,
-    vspeed=-800, ay=0.0, hdg_bug=19, alt_bug=4900,
-    gs_bug=90,
-    label="TERRAIN CAUTION — clearance < 500 ft",
-    filename=os.path.join(OUT, "preview_terrain_caution.png"),
-    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
-    terrain_alert=1,
-)
+def draw_terrain_alert_preview(filename, level):
+    """
+    Overlay a terrain alert banner on the standard approach screenshot.
+    level 1 = CAUTION (amber), level 2 = WARNING (red PULL UP).
+    No veil — the PFD is shown clean so the banner placement is clear.
+    """
+    bg_path = os.path.join(OUT, "preview_sedona_approach.png")
+    if os.path.exists(bg_path):
+        img = Image.open(bg_path).convert("RGB")
+    else:
+        img = Image.new("RGB", (W, H), (0, 8, 22))
+    draw = ImageDraw.Draw(img)
 
-# Terrain alert — WARNING (red PULL UP banner)
-draw_scene(
-    roll=0, pitch=-3, hdg=19, alt=5050, speed=90,
-    vspeed=-800, ay=0.0, hdg_bug=19, alt_bug=4900,
-    gs_bug=90,
-    label="TERRAIN WARNING — clearance < 100 ft  PULL UP",
-    filename=os.path.join(OUT, "preview_terrain_warning.png"),
-    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
-    terrain_alert=2,
-)
+    bw_a = 140; bh_a = 16
+    bx_a = CX - bw_a // 2; by_a = 3
+    if level == 2:
+        bg_a = (180, 0, 0); fg_a = (255, 255, 255)
+        lbl_a = "PULL UP"; sub_a = "TERRAIN"
+    else:
+        bg_a = (160, 110, 0); fg_a = (255, 235, 0)
+        lbl_a = "TERRAIN"; sub_a = "CAUTION"
+    draw.rounded_rectangle([(bx_a, by_a), (bx_a+bw_a, by_a+bh_a)],
+                            radius=3, fill=bg_a)
+    draw.rounded_rectangle([(bx_a, by_a), (bx_a+bw_a, by_a+bh_a)],
+                            radius=3, outline=fg_a, width=1)
+    draw.text((bx_a+6, by_a+2), lbl_a, fill=fg_a, font=fnt(11, bold=True))
+    draw.text((bx_a+bw_a-52, by_a+4), sub_a, fill=fg_a, font=fnt(9))
+
+    img.save(filename)
+    print(f"Saved {filename}")
+
+
+draw_terrain_alert_preview(os.path.join(OUT, "preview_terrain_caution.png"), level=1)
+draw_terrain_alert_preview(os.path.join(OUT, "preview_terrain_warning.png"), level=2)
 
 draw_setup_screen(os.path.join(OUT, "preview_setup_main.png"))
 draw_flight_profile_screen(os.path.join(OUT, "preview_setup_flight_profile.png"))

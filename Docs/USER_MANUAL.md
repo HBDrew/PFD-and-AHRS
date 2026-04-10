@@ -122,14 +122,17 @@ A white ball in the slip/skid indicator sits at the bottom of the AI.  Ball cent
 
 ### Terrain / obstacle proximity alert
 
-A banner appears centred at the top of the display whenever terrain or an obstacle is within a critical clearance margin:
+A banner appears centred at the top of the display whenever terrain or an obstacle is within a critical clearance margin.
 
-| Banner | Colour | Trigger |
-|--------|--------|---------|
-| ![Terrain caution](../tools/preview_terrain_caution.png) | Amber — **TERRAIN CAUTION** | Terrain or obstacle MSL within 500 ft below aircraft |
-| ![Terrain warning](../tools/preview_terrain_warning.png) | Red — **PULL UP  TERRAIN** | Terrain or obstacle MSL within 100 ft below aircraft |
+![Terrain caution banner](../tools/preview_terrain_caution.png)
 
-The WARNING banner flashes at 1 Hz.  Requires a valid GPS fix and either SRTM terrain tiles (Section 14) or obstacle data (Section 15) to be loaded.
+**TERRAIN  CAUTION** (amber, steady) — terrain or obstacle MSL height is within **500 ft** below aircraft altitude.
+
+![Terrain warning banner](../tools/preview_terrain_warning.png)
+
+**PULL UP  TERRAIN** (red, 1 Hz flash) — terrain or obstacle MSL height is within **100 ft** below aircraft altitude.
+
+Requires a valid GPS fix and either SRTM terrain tiles (Section 14) or obstacle data (Section 15) to be loaded.  Obstacle alerts trigger within **3 nm** of the aircraft.
 
 ---
 
