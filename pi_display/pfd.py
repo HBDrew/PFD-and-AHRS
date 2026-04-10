@@ -409,26 +409,27 @@ AMBER      = (255, 190,  30)   # slightly warmer than YELLOW for symbol fill
 AMBER_DARK = (180, 120,   0)   # shadow/outline
 
 def draw_aircraft_symbol(surf):
-    """Swept delta wing aircraft reference with engine nacelles."""
-    # Wing panels — apex at (CX, CY), trailing edge at CY+29
-    li = [(CX, CY), (CX - 54, CY + 29), (CX - 46, CY + 29)]
-    lo = [(CX, CY), (CX - 62, CY + 29), (CX - 54, CY + 29)]
-    ri = [(CX, CY), (CX + 46, CY + 29), (CX + 54, CY + 29)]
-    ro = [(CX, CY), (CX + 54, CY + 29), (CX + 62, CY + 29)]
-    pygame.gfxdraw.filled_polygon(surf, li, AMBER)
-    pygame.gfxdraw.aapolygon(surf, li, AMBER)
-    pygame.gfxdraw.filled_polygon(surf, lo, AMBER_DARK)
-    pygame.gfxdraw.aapolygon(surf, lo, AMBER_DARK)
-    pygame.gfxdraw.filled_polygon(surf, ri, AMBER)
-    pygame.gfxdraw.aapolygon(surf, ri, AMBER)
-    pygame.gfxdraw.filled_polygon(surf, ro, AMBER_DARK)
-    pygame.gfxdraw.aapolygon(surf, ro, AMBER_DARK)
+    """Swept delta wing aircraft reference with engine nacelles, 1.5× scale."""
+    # Wing panels — apex at (CX, CY), trailing edge at CY+44 (1.5× original 29)
+    # Outer strip = leading-edge side (lighter/top); Inner strip = trailing-edge side (darker/bottom)
+    li = [(CX, CY), (CX - 81, CY + 44), (CX - 69, CY + 44)]   # L inner (darker)
+    lo = [(CX, CY), (CX - 93, CY + 44), (CX - 81, CY + 44)]   # L outer (lighter)
+    ri = [(CX, CY), (CX + 69, CY + 44), (CX + 81, CY + 44)]   # R inner (darker)
+    ro = [(CX, CY), (CX + 81, CY + 44), (CX + 93, CY + 44)]   # R outer (lighter)
+    pygame.gfxdraw.filled_polygon(surf, li, AMBER_DARK)
+    pygame.gfxdraw.aapolygon(surf, li, AMBER_DARK)
+    pygame.gfxdraw.filled_polygon(surf, lo, AMBER)
+    pygame.gfxdraw.aapolygon(surf, lo, AMBER)
+    pygame.gfxdraw.filled_polygon(surf, ri, AMBER_DARK)
+    pygame.gfxdraw.aapolygon(surf, ri, AMBER_DARK)
+    pygame.gfxdraw.filled_polygon(surf, ro, AMBER)
+    pygame.gfxdraw.aapolygon(surf, ro, AMBER)
 
-    # Engine nacelles — at wing-tip x, centered on CY
-    lu = [(CX - 62, CY), (CX - 66, CY - 4), (CX - 92, CY - 4), (CX - 92, CY)]
-    ll = [(CX - 62, CY), (CX - 92, CY),     (CX - 92, CY + 4), (CX - 66, CY + 4)]
-    ru = [(CX + 62, CY), (CX + 66, CY - 4), (CX + 92, CY - 4), (CX + 92, CY)]
-    rl = [(CX + 62, CY), (CX + 92, CY),     (CX + 92, CY + 4), (CX + 66, CY + 4)]
+    # Engine nacelles — at wing-tip x (±93), centered on CY, ±6 tall
+    lu = [(CX - 93, CY), (CX - 99, CY - 6), (CX - 138, CY - 6), (CX - 138, CY)]
+    ll = [(CX - 93, CY), (CX - 138, CY),    (CX - 138, CY + 6), (CX - 99, CY + 6)]
+    ru = [(CX + 93, CY), (CX + 99, CY - 6), (CX + 138, CY - 6), (CX + 138, CY)]
+    rl = [(CX + 93, CY), (CX + 138, CY),    (CX + 138, CY + 6), (CX + 99, CY + 6)]
     pygame.gfxdraw.filled_polygon(surf, lu, AMBER)
     pygame.gfxdraw.aapolygon(surf, lu, AMBER)
     pygame.gfxdraw.filled_polygon(surf, ll, AMBER_DARK)

@@ -459,19 +459,20 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     img = Image.alpha_composite(img.convert('RGBA'), arc_1x).convert('RGB')
     draw = ImageDraw.Draw(img)
 
-    # ── 7. AIRCRAFT SYMBOL — swept delta wings + engine nacelles ─────────────
+    # ── 7. AIRCRAFT SYMBOL — swept delta wings + engine nacelles (1.5× scale) ──
     AMBER = (255, 190, 30)
     AMBER_DARK = (180, 120, 0)
-    # Wing panels — apex at (CX, CY), trailing edge at CY+29
-    draw.polygon([(CX, CY), (CX-54, CY+29), (CX-46, CY+29)], fill=AMBER)       # L inner
-    draw.polygon([(CX, CY), (CX-62, CY+29), (CX-54, CY+29)], fill=AMBER_DARK)  # L outer
-    draw.polygon([(CX, CY), (CX+46, CY+29), (CX+54, CY+29)], fill=AMBER)       # R inner
-    draw.polygon([(CX, CY), (CX+54, CY+29), (CX+62, CY+29)], fill=AMBER_DARK)  # R outer
-    # Engine nacelles — at wing-tip x, centered on CY
-    draw.polygon([(CX-62, CY), (CX-66, CY-4), (CX-92, CY-4), (CX-92, CY)],   fill=AMBER)       # L upper
-    draw.polygon([(CX-62, CY), (CX-92, CY),   (CX-92, CY+4), (CX-66, CY+4)], fill=AMBER_DARK)  # L lower
-    draw.polygon([(CX+62, CY), (CX+66, CY-4), (CX+92, CY-4), (CX+92, CY)],   fill=AMBER)       # R upper
-    draw.polygon([(CX+62, CY), (CX+92, CY),   (CX+92, CY+4), (CX+66, CY+4)], fill=AMBER_DARK)  # R lower
+    # Wing panels — apex at (CX, CY), trailing edge at CY+44 (1.5× original 29)
+    # Outer strip = leading-edge side (lighter/top); Inner strip = trailing-edge side (darker/bottom)
+    draw.polygon([(CX, CY), (CX-81, CY+44), (CX-69, CY+44)], fill=AMBER_DARK)  # L inner
+    draw.polygon([(CX, CY), (CX-93, CY+44), (CX-81, CY+44)], fill=AMBER)       # L outer
+    draw.polygon([(CX, CY), (CX+69, CY+44), (CX+81, CY+44)], fill=AMBER_DARK)  # R inner
+    draw.polygon([(CX, CY), (CX+81, CY+44), (CX+93, CY+44)], fill=AMBER)       # R outer
+    # Engine nacelles — at wing-tip x (±93), centered on CY, ±6 tall
+    draw.polygon([(CX-93, CY), (CX-99, CY-6), (CX-138, CY-6), (CX-138, CY)],   fill=AMBER)       # L upper
+    draw.polygon([(CX-93, CY), (CX-138, CY),  (CX-138, CY+6), (CX-99, CY+6)],  fill=AMBER_DARK)  # L lower
+    draw.polygon([(CX+93, CY), (CX+99, CY-6), (CX+138, CY-6), (CX+138, CY)],   fill=AMBER)       # R upper
+    draw.polygon([(CX+93, CY), (CX+138, CY),  (CX+138, CY+6), (CX+99, CY+6)],  fill=AMBER_DARK)  # R lower
 
     # ── 8. CYAN TAP-BUTTONS ──────────────────────────────────────────────────
     # IAS and ALT bug buttons sit at the TOP of their respective tapes (drawn
