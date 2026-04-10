@@ -872,23 +872,30 @@ def _pfd_bg():
     return Image.blend(bg, veil, alpha=180/255)
 
 
-def draw_numpad_screen(title, current_val, filename, entered="", suffix=""):
-    """Render numpad overlaid on a live-PFD background (transparent effect)."""
-    img  = _pfd_bg()
-    draw = ImageDraw.Draw(img)
+def _fmt_decimal_p(digits: str, decimal_after: int) -> str:
+    if decimal_after and len(digits) > decimal_after:
+        return digits[:decimal_after] + "." + digits[decimal_after:]
+    return digits
 
-    # Title bar — semi-opaque panel matching transparent=True in pfd.py
-    hdr = Image.new("RGBA", (W, 44), (0, 18, 45, 220))
+
+def draw_numpad_screen(title, current_val, filename, entered="", suffix="",
+                       decimal_after=0):
+    """Render numpad overlaid on a live-PFD background (transparent effect).
+    decimal_after: auto-insert '.' after this many digits (0 = none).
+    current_val should be the integer form when decimal_after is set.
+    """
+    img  = _pfd_bg()
     img.paste(Image.new("RGB", (W, 44), (0, 18, 45)),
               mask=Image.new("L", (W, 44), 220))
-    draw = ImageDraw.Draw(img)   # re-acquire after paste
+    draw = ImageDraw.Draw(img)
     draw.line([(0, 43), (W-1, 43)], fill=WHITE, width=1)
     tf = fnt(18, bold=True)
     draw.text(((W - int(draw.textlength(title, font=tf)))//2, 12),
               title, fill=WHITE, font=tf)
 
     # Value display box
-    base_str = entered if entered else str(current_val)
+    raw_str  = entered if entered else str(current_val)
+    base_str = _fmt_decimal_p(raw_str, decimal_after) if decimal_after else raw_str
     draw.rounded_rectangle([(80, 50), (W-81, 100)], radius=6, fill=(0, 15, 38))
     draw.rounded_rectangle([(80, 50), (W-81, 100)], radius=6, outline=WHITE, width=1)
     vf = fnt(32, bold=True)
@@ -896,13 +903,14 @@ def draw_numpad_screen(title, current_val, filename, entered="", suffix=""):
         bw = int(draw.textlength(base_str, font=vf))
         sw = int(draw.textlength(suffix,   font=vf))
         bx_str = (W - bw - sw) // 2
-        draw.text((bx_str,      55), base_str, fill=CYAN,         font=vf)
+        draw.text((bx_str,      55), base_str, fill=CYAN,          font=vf)
         draw.text((bx_str + bw, 55), suffix,   fill=(0, 100, 100), font=vf)
     else:
         vw = int(draw.textlength(base_str, font=vf))
         draw.text(((W-vw)//2, 55), base_str, fill=CYAN, font=vf)
     hf = fnt(10)
-    cur_display = f"{current_val}{suffix}" if suffix else str(current_val)
+    cur_raw     = _fmt_decimal_p(str(current_val), decimal_after) if decimal_after else str(current_val)
+    cur_display = f"{cur_raw}{suffix}" if suffix else cur_raw
     hint = f"Current: {cur_display}"
     hw = int(draw.textlength(hint, font=hf))
     draw.text(((W-hw)//2, 104), hint, fill=(110, 120, 140), font=hf)
@@ -1675,6 +1683,17 @@ draw_numpad_screen("SET ALTITUDE BUG  (\u00d7100 ft)", 85,
 draw_numpad_screen("SET HEADING BUG", 133,
                    os.path.join(OUT, "preview_numpad_hdg.png"),
                    entered="250")
+
+# Baro numpad — inHg (4-digit, auto-decimal after 2nd digit)
+# current 29.92 inHg → stored as integer 2992; entering "2985"
+draw_numpad_screen("SET BARO  (in Hg)", 2992,
+                   os.path.join(OUT, "preview_numpad_baro_inhg.png"),
+                   entered="2985", decimal_after=2)
+
+# Baro numpad — hPa (4-digit integer, no decimal)
+draw_numpad_screen("SET BARO  (hPa)", 1013,
+                   os.path.join(OUT, "preview_numpad_baro_hpa.png"),
+                   entered="102")
 
 draw_terrain_data_screen(os.path.join(OUT, "preview_terrain_idle.png"), n_tiles=0)
 draw_terrain_data_screen(os.path.join(OUT, "preview_terrain_downloading.png"),

@@ -85,7 +85,7 @@ The cyan box at the **bottom-right** of the heading strip shows the current baro
 - **`1013 hPa`** — when the baro unit is set to hPa in Display Settings
 - **`GPS ALT`** — when no baro sensor is present; GPS altitude is used directly
 
-Tap the box to adjust the baro setting with the numpad.
+Tap the box to adjust the baro setting with the numpad.  See [Section 7 — Adjusting Baro](#adjusting-baro) for entry details.
 
 ### VSI (vertical speed indicator)
 
@@ -169,7 +169,28 @@ Tap the cyan readout button for the bug you want to change.  The **numpad** over
 
 **Heading bug** is entered as a three-digit value (`0–360`).  Type `133` for 133°.
 
-**GS bug** is entered as a knot value.  Type `090` for 90 kt.
+**GS bug** is entered as a whole-number knot value.  Type `090` for 90 kt.  Sub-knot precision is not needed for a speed bug, so no decimal is inserted.
+
+### Adjusting baro
+
+![Baro numpad — inHg](../tools/preview_numpad_baro_inhg.png)
+
+Tap the **cyan baro box** at the bottom-right of the heading strip to open the baro numpad.  Entry format depends on the pressure unit selected in Display Settings:
+
+**inHg mode** — type four digits; the decimal is inserted automatically after the second digit:
+
+| Typed | Displayed | Stored |
+|-------|-----------|--------|
+| `2` | `2` | — |
+| `29` | `29` | — |
+| `299` | `29.9` | — |
+| `2992` | `29.92` | 1013.2 hPa |
+
+Press `ENTER` to accept.  The altimeter corrects immediately.
+
+![Baro numpad — hPa](../tools/preview_numpad_baro_hpa.png)
+
+**hPa mode** — type up to four digits as a plain integer (e.g. `1013`).  No decimal is inserted.
 
 ### Tapping the tape directly
 

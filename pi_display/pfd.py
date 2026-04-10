@@ -1353,8 +1353,10 @@ def handle_event(event, demo_mode):
             if hit:
                 lbl, sty = hit
                 target = disp["numpad_target"]
+                _NP_MAX = {"baro_hpa": 4}   # targets needing >3 digits
+                max_digits = _NP_MAX.get(target, 3)
                 if sty == 'n':                # digit
-                    if len(disp["numpad_buf"]) < 3:   # all targets max 3 digits
+                    if len(disp["numpad_buf"]) < max_digits:
                         disp["numpad_buf"] += lbl
                 elif sty == 'x':              # CANCEL
                     disp["mode"] = disp["numpad_prev"]
@@ -1369,6 +1371,12 @@ def handle_event(event, demo_mode):
                             disp["hdg_bug"] = float(val % 360)
                         elif target == "spd_bug":
                             disp["spd_bug"] = float(val)
+                        elif target == "baro_hpa":
+                            baro_unit = disp["ds"].get("baro_unit", "inhg")
+                            if baro_unit == "hpa":
+                                disp["baro_hpa"] = float(val)
+                            else:   # inHg: 4 digits → insert decimal after 2
+                                disp["baro_hpa"] = round(val / 100.0 * 33.8639, 2)
                         elif target in disp["fp"]:   # V-speed field
                             disp["fp"][target] = val
                     disp["mode"] = disp["numpad_prev"]
@@ -1387,6 +1395,10 @@ def handle_event(event, demo_mode):
         # Tap on hdg bug button → open numpad
         if SPD_X <= x <= SPD_X + SPD_W and HDG_Y + 2 <= y <= HDG_Y + 24:
             _open_numpad("hdg_bug")
+            return True
+        # Tap on baro button → open numpad
+        if ALT_X <= x <= DISPLAY_W and HDG_Y + 2 <= y <= HDG_Y + 24:
+            _open_numpad("baro_hpa")
             return True
         # Tap on alt tape → adjust alt bug by position
         if ALT_X <= x <= DISPLAY_W and TAPE_TOP <= y <= TAPE_BOT:
@@ -1493,10 +1505,23 @@ def _numpad_key(surf, col, row, label, style, r=8):
     _text(surf, label, 20, tc, bold=True, cx=bx+_NP_PW//2, cy=by+_NP_PH//2)
 
 
-def draw_numpad(surf, title, current_val, entered="", suffix="", transparent=False):
+def _fmt_decimal(digits: str, decimal_after: int) -> str:
+    """Insert a decimal point into a digit string.
+    '2992', decimal_after=2 → '29.92'
+    '29',   decimal_after=2 → '29'   (still typing)
+    """
+    if decimal_after and len(digits) > decimal_after:
+        return digits[:decimal_after] + "." + digits[decimal_after:]
+    return digits
+
+
+def draw_numpad(surf, title, current_val, entered="", suffix="",
+                transparent=False, decimal_after=0):
     """Full-screen numeric entry pad.
-    suffix:      appended in display box (e.g. '00' for alt_bug).
-    transparent: skip background fill; header is semi-opaque panel over live PFD.
+    suffix:        appended in dim cyan (e.g. '00' for alt_bug).
+    transparent:   skip background fill; semi-opaque header over live PFD.
+    decimal_after: auto-insert '.' after this many digits (0 = no decimal).
+                   current_val should be the integer form (e.g. 2992 for 29.92).
     """
     if not transparent:
         surf.fill((0, 8, 22))
@@ -1505,22 +1530,25 @@ def draw_numpad(surf, title, current_val, entered="", suffix="", transparent=Fal
     surf.blit(hdr, (0, 0))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
     _text(surf, title, 18, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
-    # Value display — show entered digits then dim suffix (if any)
-    base_str = entered if entered else str(current_val)
+
+    # Value display box
+    raw_str  = entered if entered else str(current_val)
+    base_str = _fmt_decimal(raw_str, decimal_after) if decimal_after else raw_str
     pygame.draw.rect(surf, (0,15,38), (80, 50, DISPLAY_W-161, 50), border_radius=6)
     pygame.draw.rect(surf, WHITE,     (80, 50, DISPLAY_W-161, 50), width=1, border_radius=6)
     if suffix:
-        # Draw base centred, then the suffix in dim cyan immediately after
         f32 = _get_font(32, bold=True)
         bw  = f32.size(base_str)[0]
         sw  = f32.size(suffix)[0]
-        total = bw + sw
-        bx_str = DISPLAY_W//2 - total//2
+        bx_str = DISPLAY_W//2 - (bw + sw)//2
         surf.blit(f32.render(base_str, True, CYAN), (bx_str, 59))
         surf.blit(f32.render(suffix,   True, (0,100,100)), (bx_str + bw, 59))
     else:
         _text(surf, base_str, 32, CYAN, bold=True, cx=DISPLAY_W//2, cy=75)
-    cur_display = f"{current_val}{suffix}" if suffix else str(current_val)
+
+    # "Current:" hint — format with decimal too
+    cur_raw = _fmt_decimal(str(current_val), decimal_after) if decimal_after else str(current_val)
+    cur_display = f"{cur_raw}{suffix}" if suffix else cur_raw
     _text(surf, f"Current: {cur_display}", 10, (110,120,140), cx=DISPLAY_W//2, cy=108)
     for ri, row in enumerate(_NP_KEYS):
         for ci, (lbl, sty) in enumerate(row):
@@ -2610,20 +2638,34 @@ def render(surf, demo_mode, connected):
         _draw_veil(surf)
         target  = disp.get("numpad_target", "")
         buf     = disp.get("numpad_buf", "")
-        titles  = {"alt_bug": "SET ALTITUDE BUG  (\u00d7100 ft)",
-                   "hdg_bug": "SET HEADING BUG",
-                   "spd_bug": "SET GS BUG"}
-        curvals = {"alt_bug": int(disp.get("alt_bug", 0)) // 100,
-                   "hdg_bug": int(disp.get("hdg_bug", 0)),
-                   "spd_bug": int(disp.get("spd_bug", 0))}
+        baro_unit = disp["ds"].get("baro_unit", "inhg")
+        # Build baro current value in integer entry form
+        if baro_unit == "hpa":
+            baro_cur  = int(round(disp["baro_hpa"]))
+            baro_title = "SET BARO  (hPa)"
+            baro_dec   = 0
+        else:
+            baro_cur  = int(round(disp["baro_hpa"] / 33.8639 * 100))  # e.g. 2992
+            baro_title = "SET BARO  (in Hg)"
+            baro_dec   = 2
+        titles  = {"alt_bug":  "SET ALTITUDE BUG  (\u00d7100 ft)",
+                   "hdg_bug":  "SET HEADING BUG",
+                   "spd_bug":  "SET GS BUG",
+                   "baro_hpa": baro_title}
+        curvals = {"alt_bug":  int(disp.get("alt_bug", 0)) // 100,
+                   "hdg_bug":  int(disp.get("hdg_bug", 0)),
+                   "spd_bug":  int(disp.get("spd_bug", 0)),
+                   "baro_hpa": baro_cur}
         for fkey, flabel, *_ in _FP_FIELDS:
             if fkey not in titles:
                 titles[fkey]  = f"SET {flabel}"
                 curvals[fkey] = int(disp["fp"].get(fkey, 0))
+        dec = baro_dec if target == "baro_hpa" else 0
         draw_numpad(surf, titles.get(target, "ENTER VALUE"),
                     curvals.get(target, 0), buf,
                     suffix="00" if target == "alt_bug" else "",
-                    transparent=True)
+                    transparent=True,
+                    decimal_after=dec)
 
     elif mode == "keyboard":
         _draw_veil(surf)
