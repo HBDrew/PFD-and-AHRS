@@ -489,7 +489,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         bug = [(ALT_X+ALT_W,    aby-17),
                (ALT_X+ALT_W-14, aby-17), (ALT_X+ALT_W-14, aby-5), (ALT_X+ALT_W-7, aby),
                (ALT_X+ALT_W-14, aby+5),  (ALT_X+ALT_W-14, aby+17), (ALT_X+ALT_W, aby+17)]
-        alt_bug_col = CYAN if baro_ok else YELLOW
+        alt_bug_col = CYAN if baro_ok else MAGENTA
         _clipped_poly(bug, alt_bug_col)
 
     # Altitude readout box — stepped Veeder-Root style (from SVG spec)
@@ -579,13 +579,13 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         hdg_bug_col = MAGENTA if hdg_src == "gps" else CYAN
         draw.polygon(bug, fill=hdg_bug_col)
 
-    # Heading box — 28px box; subscript sits in the empty descender zone of the number.
+    # Heading box — 66×28px: wider to give G/M outboard room to the right of °.
     # GPS TRK → magenta (matches track-pointer colour). MAG → white.
     _HDG_MAG = (220, 60, 220)  # slightly lighter magenta for text readability
     _hdg_col = _HDG_MAG if hdg_src == "gps" else WHITE
-    bw2, bh2 = 58, 28
+    bw2, bh2 = 66, 28
     bx = CX - bw2//2; by2 = HDG_Y - bh2 - 2
-    th = bw2 // 3          # triangle base width ≈ 19px
+    th = bw2 // 3          # triangle base width ≈ 22px
     td = 14                # fixed triangle depth
     tx = CX - th // 2      # triangle left base x
     pts_h = _chamfer([(bx,       by2),
@@ -597,25 +597,22 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                       (bx,       by2+bh2)], {0, 1, 2, 6})
     draw.polygon(pts_h, fill=(0, 0, 0))
     draw.line(pts_h + [pts_h[0]], fill=_hdg_col, width=2)
-    # Three-digit readout — tight-bounded, placed 2px from box top
+    # Three-digit readout — perfectly centred in the box
     _num_str = f"{round(hdg)%360:03d}"
     _hstr    = _num_str + "\u00b0"
     _hbf     = fnt(17)
-    _hbb     = draw.textbbox((0, 0), _hstr, font=_hbf)  # tight glyph bounds
-    _htw     = _hbb[2] - _hbb[0]
-    _tx      = CX - _htw // 2 - _hbb[0]           # anchor x (centres glyphs)
-    _ty      = by2 + 2 - _hbb[1]                  # anchor y (glyph top at by2+2)
+    _hbb     = draw.textbbox((0, 0), _hstr, font=_hbf)
+    _htw     = _hbb[2] - _hbb[0]; _hth = _hbb[3] - _hbb[1]
+    _tx      = CX - _htw // 2 - _hbb[0]
+    _ty      = by2 + (bh2 - _hth) // 2 - _hbb[1]
     draw.text((_tx, _ty), _hstr, fill=_hdg_col, font=_hbf)
-    # G/M subscript — directly under the ° glyph, just below number glyph bottom
-    _src_lbl   = "G" if hdg_src == "gps" else "M"
-    _sf        = fnt(8)
-    _num_adv   = int(draw.textlength(_num_str, font=_hbf))  # advance width of "133"
-    _deg_adv   = int(draw.textlength("\u00b0",  font=_hbf))  # advance width of "°"
-    _deg_cx    = _tx + _hbb[0] + _num_adv + _deg_adv // 2   # centre-x of ° glyph
-    _sub_adv   = int(draw.textlength(_src_lbl,  font=_sf))
-    _sub_bb    = draw.textbbox((0, 0), _src_lbl, font=_sf)
-    _sub_y     = _ty + _hbb[3] + 1                           # just below number glyph bottom
-    draw.text((_deg_cx - _sub_adv // 2 - _sub_bb[0], _sub_y - _sub_bb[1]),
+    # G/M subscript — outboard of the ° glyph, lower-right area of box
+    _src_lbl = "G" if hdg_src == "gps" else "M"
+    _sf      = fnt(8)
+    _str_adv = int(draw.textlength(_hstr, font=_hbf))        # full advance width
+    _deg_right = CX + _str_adv // 2 + 2                      # 2px outboard of ° right edge
+    _sub_bb  = draw.textbbox((0, 0), _src_lbl, font=_sf)
+    draw.text((_deg_right - _sub_bb[0], by2 + bh2 - 10 - _sub_bb[1]),
               _src_lbl, fill=_hdg_col, font=_sf)
 
     # ── 6. ROLL ARC (rendered at 2× for anti-aliasing) ───────────────────────

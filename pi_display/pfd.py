@@ -951,13 +951,13 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
             _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
         pygame.draw.rect(surf, MAGENTA, (ALT_X + ALT_W - 5, _vsy1, 5, _vsy2 - _vsy1))
 
-    # Altitude bug — color reflects source: cyan=baro, yellow=GPS alt (baro failed).
+    # Altitude bug — color reflects source: cyan=baro/pressure transducer, magenta=GPS alt (baro failed).
     if alt_bug is not None:
         aby = max(TAPE_TOP, min(TAPE_BOT, ay2(alt_bug)))
         bug = [(ALT_X + ALT_W,      aby - 17),
                (ALT_X + ALT_W - 14, aby - 17), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
                (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 17), (ALT_X + ALT_W, aby + 17)]
-        alt_bug_col = CYAN if baro_ok else YELLOW
+        alt_bug_col = CYAN if baro_ok else MAGENTA
         surf.set_clip((0, TAPE_TOP, DISPLAY_W, TAPE_BOT - TAPE_TOP))
         pygame.draw.polygon(surf, alt_bug_col, bug)
         surf.set_clip(None)
@@ -1068,12 +1068,12 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
             pygame.draw.polygon(surf, (220, 60, 220),
                 [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
-    # Heading box — 28px box; subscript sits in the empty descender zone of the number.
+    # Heading box — 66×28px: wider to give G/M outboard room to the right of °.
     # GPS TRK mode → magenta (matches track-pointer colour). MAG mode → white.
     hdg_col = MAGENTA if hdg_src == "gps" else WHITE
-    bw, bh = 58, 28
+    bw, bh = 66, 28
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
-    th = bw // 3           # triangle base width ≈ 19px
+    th = bw // 3           # triangle base width ≈ 22px
     td = 14                # fixed triangle depth
     tx = CX - th // 2      # triangle left base x
     pts_h = _chamfer([(bx,      by2),
@@ -1085,24 +1085,16 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                       (bx,      by2 + bh)], {0, 1, 2, 6})
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
     pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
-    # Three-digit readout — shifted up 3px so the subscript fits in the descender zone
+    # Three-digit readout — perfectly centred in the box
     num_str  = f"{round(hdg) % 360:03d}"
     full_str = num_str + "\u00b0"
     f17      = _get_font(17)
-    img_h    = f17.size(full_str)[1]   # full line height (includes empty descender padding)
-    asc      = f17.get_ascent()         # pixels from image top to text baseline
-    num_cy   = by2 + bh // 2 - 3       # = by2+11; digits end at baseline, no descenders
-    _text(surf, full_str, 17, hdg_col, cx=CX, cy=num_cy)
-    # G/M subscript — directly under the ° glyph at the number baseline (descender area)
-    full_w      = f17.size(full_str)[0]
-    num_w       = f17.size(num_str)[0]
-    deg_w       = f17.size("\u00b0")[0]
-    deg_cx      = (CX - full_w // 2) + num_w + deg_w // 2   # centre-x of ° character
-    baseline_y  = (num_cy - img_h // 2) + asc               # pixel y of number baseline
-    src_lbl     = "G" if hdg_src == "gps" else "M"
-    f8          = _get_font(8)
-    sub_w       = f8.size(src_lbl)[0]
-    _text(surf, src_lbl, 8, hdg_col, x=deg_cx - sub_w // 2, y=baseline_y + 1)
+    _text(surf, full_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)
+    # G/M subscript — outboard of the ° glyph, lower-right area of box
+    full_w   = f17.size(full_str)[0]
+    deg_right = CX + full_w // 2 + 2      # 2px outboard of ° right edge
+    src_lbl  = "G" if hdg_src == "gps" else "M"
+    _text(surf, src_lbl, 8, hdg_col, x=deg_right, y=by2 + bh - 10)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────
@@ -3787,6 +3779,26 @@ def main():
                         help="Run Sedona demo (no Pico W needed)")
     parser.add_argument("--sim",  action="store_true",
                         help="Windowed mode for desktop testing")
+    # Screenshot mode: render one frame to a PNG then exit.
+    # Useful for capturing SVT terrain renders with real SRTM tiles on hardware.
+    parser.add_argument("--screenshot", metavar="FILE",
+                        help="Render one PFD frame to FILE (.png) and exit")
+    parser.add_argument("--ss-lat",    type=float, default=DEMO_LAT, metavar="DEG",
+                        help="Screenshot latitude  (default: Sedona)")
+    parser.add_argument("--ss-lon",    type=float, default=DEMO_LON, metavar="DEG",
+                        help="Screenshot longitude (default: Sedona)")
+    parser.add_argument("--ss-alt",    type=float, default=DEMO_ALT, metavar="FT",
+                        help="Screenshot altitude ft MSL")
+    parser.add_argument("--ss-hdg",    type=float, default=DEMO_HDG, metavar="DEG",
+                        help="Screenshot heading degrees")
+    parser.add_argument("--ss-pitch",  type=float, default=2.0,      metavar="DEG",
+                        help="Screenshot pitch degrees (nose-up positive)")
+    parser.add_argument("--ss-roll",   type=float, default=0.0,      metavar="DEG",
+                        help="Screenshot roll degrees (right-wing-down positive)")
+    parser.add_argument("--ss-speed",  type=float, default=115.0,    metavar="KT",
+                        help="Screenshot groundspeed kt")
+    parser.add_argument("--ss-vspeed", type=float, default=0.0,      metavar="FPM",
+                        help="Screenshot vertical speed fpm")
     args = parser.parse_args()
 
     if args.sim or not FULLSCREEN:
@@ -3814,6 +3826,39 @@ def main():
 
     pygame.display.set_caption("PFD")
     clock = pygame.time.Clock()
+
+    # ── Screenshot mode ───────────────────────────────────────────────────────
+    # Seed state directly (bypasses IIR smoothing), render one frame, save PNG.
+    # Run on the Pi with SRTM tiles installed to capture real SVT renders.
+    #   python3 pfd.py --screenshot ~/ss/sedona_cruise.png
+    #   python3 pfd.py --screenshot ~/ss/custom.png --ss-lat 34.87 --ss-lon -111.76 \
+    #                  --ss-alt 8500 --ss-hdg 133 --ss-pitch 5 --ss-roll -18
+    if args.screenshot:
+        snap = {
+            "lat": args.ss_lat, "lon": args.ss_lon,
+            "alt": args.ss_alt, "yaw": args.ss_hdg,
+            "track": args.ss_hdg, "pitch": args.ss_pitch,
+            "roll": args.ss_roll, "speed": args.ss_speed,
+            "vspeed": args.ss_vspeed, "ay": 0.0,
+            "gps_ok": True, "baro_ok": True, "ahrs_ok": True,
+            "sats": 8, "gps_alt": args.ss_alt,
+            "baro_hpa": BARO_DEFAULT_HPA, "baro_src": "baro",
+            "fix": True, "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
+        }
+        with _state_lock:
+            state.update(snap)
+        disp.update(snap)           # bypass IIR: seed disp directly from snap
+        disp["hdg_bug"] = args.ss_hdg
+        disp["alt_bug"] = args.ss_alt
+        smooth_state()              # now a no-op (disp already matches state)
+        render(surf, demo_mode=False, connected=True, data_stale=False)
+        pygame.display.flip()
+        outpath = os.path.abspath(args.screenshot)
+        os.makedirs(os.path.dirname(outpath) or ".", exist_ok=True)
+        pygame.image.save(surf, outpath)
+        print(f"[PFD] Screenshot → {outpath}")
+        pygame.quit()
+        return
 
     demo_mode  = args.demo
     demo       = DemoState() if demo_mode else None
