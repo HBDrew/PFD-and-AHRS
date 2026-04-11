@@ -37,9 +37,27 @@ static inline struct ws35e *to_ws35e(struct drm_panel *panel)
 
 static int ws_write(struct mipi_dsi_device *dsi, const u8 *buf, size_t len)
 {
-	ssize_t ret = mipi_dsi_dcs_write_buffer(dsi, buf, len);
+	struct mipi_dsi_msg msg;
+	ssize_t ret;
+	u8 type;
+
+	switch (len) {
+	case 0:  return -EINVAL;
+	case 1:  type = MIPI_DSI_DCS_SHORT_WRITE; break;
+	case 2:  type = MIPI_DSI_DCS_SHORT_WRITE_PARAM; break;
+	default: type = MIPI_DSI_DCS_LONG_WRITE; break;
+	}
+
+	memset(&msg, 0, sizeof(msg));
+	msg.channel = dsi->channel;
+	msg.type    = type;
+	msg.flags   = MIPI_DSI_MSG_USE_LPM;
+	msg.tx_buf  = buf;
+	msg.tx_len  = len;
+
+	ret = dsi->host->ops->transfer(dsi->host, &msg);
 	if (ret < 0) {
-		dev_warn(&dsi->dev, "DSI write failed (%zd)\n", ret);
+		dev_warn(&dsi->dev, "DSI LP write failed (%zd)\n", ret);
 		return (int)ret;
 	}
 	return 0;
@@ -128,22 +146,28 @@ static int ws35e_init(struct ws35e *ctx)
 	/* ── Return to CMD1 ───────────────────────────────────────── */
 	ret |= WS_SEQ(dsi, 0xFF, 0x77, 0x01, 0x00, 0x00, 0x00);
 
-	if (ret) {
-		dev_err(&dsi->dev, "ws35e: DCS write error during init\n");
-		return ret;
-	}
+	if (ret)
+		dev_warn(&dsi->dev, "ws35e: CMD2 writes had errors (%d), continuing\n", ret);
 
-	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
-	if (ret < 0)
-		return ret;
+	/* Always attempt sleep_out and display_on regardless of CMD2 errors.
+	 * Use ws_write so these also go via LP mode. */
+	{
+		const u8 sl = MIPI_DCS_EXIT_SLEEP_MODE;
+		int r = ws_write(dsi, &sl, 1);
+		if (r)
+			dev_warn(&dsi->dev, "ws35e: sleep_out failed: %d\n", r);
+	}
 	msleep(120);
 
-	ret = mipi_dsi_dcs_set_display_on(dsi);
-	if (ret < 0)
-		return ret;
+	{
+		const u8 don = MIPI_DCS_SET_DISPLAY_ON;
+		int r = ws_write(dsi, &don, 1);
+		if (r)
+			dev_warn(&dsi->dev, "ws35e: display_on failed: %d\n", r);
+	}
 	msleep(20);
 
-	dev_info(&dsi->dev, "ws35e: ST7701S init complete\n");
+	dev_info(&dsi->dev, "ws35e: ST7701S init complete (CMD2 errors: %d)\n", ret);
 	return 0;
 }
 
