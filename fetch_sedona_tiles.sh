@@ -6,12 +6,14 @@
 # Size: ~2.8 MB each, ~11 MB total (unzipped .hgt files)
 # Output: pi_display/data/srtm/
 #
-# Usage: bash fetch_sedona_tiles.sh
+# Usage:
+#   bash fetch_sedona_tiles.sh
 #
 # Sources tried in order:
-#   1. NASA SRTM via USGS (most reliable, no login needed for these tiles)
-#   2. ESA STEP auxiliary data mirror
-#   3. CGIAR-CSI mirror (SRTM 90m)
+#   1. Mapzen/Nextzen AWS public bucket (same source as in-app downloader)
+#   2. USGS SRTM3 direct
+#   3. ESA STEP auxiliary data mirror
+#   4. NASA EarthData via ~/.netrc credentials (if configured)
 
 set -e
 
@@ -34,34 +36,78 @@ fetch_tile() {
 
     echo -n "  Fetching ${TILE}.hgt … "
 
-    # Source 1: USGS EarthExplorer direct (version 2.1, North America)
-    local URL1="https://dds.cr.usgs.gov/srtm/version2_1/SRTM3/North_America/${TILE}.hgt.zip"
-    # Source 2: ESA STEP (no auth needed for SRTM3)
-    local URL2="https://step.esa.int/auxdata/dem/SRTM90/hgt/${TILE}.hgt.zip"
-    # Source 3: OpenTopography via direct HGT zip
-    local URL3="https://srtm.csi.cgiar.org/wp-content/uploads/files/srtm_5x5/TIFF/${TILE}.zip"
+    # Source 1: Mapzen/Nextzen AWS public bucket (.hgt.gz, no auth)
+    # Same source used by the in-app terrain downloader
+    local LAT_FOLDER="${TILE:0:3}"   # e.g. N34
+    local URL1="https://elevation-tiles-prod.s3.amazonaws.com/skadi/${LAT_FOLDER}/${TILE}.hgt.gz"
 
-    local TMPZIP
-    TMPZIP="$(mktemp /tmp/srtm_XXXXXX.zip)"
+    # Source 2: USGS SRTM3 North America (.hgt.zip, no auth)
+    local URL2="https://dds.cr.usgs.gov/srtm/version2_1/SRTM3/North_America/${TILE}.hgt.zip"
 
-    for URL in "$URL1" "$URL2"; do
-        if curl -fsSL --retry 3 --retry-delay 2 -o "$TMPZIP" "$URL" 2>/dev/null; then
-            # Extract .hgt from zip
-            HGT=$(unzip -Z1 "$TMPZIP" 2>/dev/null | grep -i '\.hgt$' | head -1)
+    # Source 3: ESA STEP mirror (.hgt.zip, no auth)
+    local URL3="https://step.esa.int/auxdata/dem/SRTM90/hgt/${TILE}.hgt.zip"
+
+    # Source 4: NASA EarthData SRTM3 (.hgt.zip, requires ~/.netrc credentials)
+    # To set up: echo "machine urs.earthdata.nasa.gov login YOUR_USER password YOUR_PASS" >> ~/.netrc
+    #            chmod 600 ~/.netrc
+    local URL4="https://e4ftl01.cr.usgs.gov/MEASURES/SRTMGL3.003/2000.02.11/${TILE}.SRTMGL3.hgt.zip"
+
+    local TMPFILE
+    TMPFILE="$(mktemp /tmp/srtm_XXXXXX)"
+
+    # Try Mapzen first (.hgt.gz — gunzip directly to destination)
+    if curl -fsSL --retry 3 --retry-delay 2 -o "${TMPFILE}.gz" "$URL1" 2>/dev/null; then
+        if gunzip -c "${TMPFILE}.gz" > "$DEST" 2>/dev/null; then
+            rm -f "${TMPFILE}.gz"
+            echo "OK — Mapzen AWS ($(du -h "$DEST" | cut -f1))"
+            return 0
+        fi
+        rm -f "${TMPFILE}.gz" "$DEST"
+    fi
+
+    # Try USGS and ESA (.hgt.zip — extract from zip)
+    for URL in "$URL2" "$URL3"; do
+        if curl -fsSL --retry 3 --retry-delay 2 -o "${TMPFILE}.zip" "$URL" 2>/dev/null; then
+            HGT=$(unzip -Z1 "${TMPFILE}.zip" 2>/dev/null | grep -i '\.hgt$' | head -1)
             if [ -n "$HGT" ]; then
-                unzip -p "$TMPZIP" "$HGT" > "$DEST"
-                rm -f "$TMPZIP"
-                echo "OK ($(du -h "$DEST" | cut -f1))"
+                unzip -p "${TMPFILE}.zip" "$HGT" > "$DEST"
+                rm -f "${TMPFILE}.zip"
+                echo "OK — USGS/ESA ($(du -h "$DEST" | cut -f1))"
                 return 0
             fi
+            rm -f "${TMPFILE}.zip"
         fi
     done
 
-    rm -f "$TMPZIP"
-    echo "FAILED"
-    echo "    Could not download ${TILE}.hgt from any source."
-    echo "    Manual download: https://dwtkns.com/srtm30m/ (free NASA EarthData account)"
-    echo "    Place the .hgt file in: $SRTM_DIR/"
+    # Try NASA EarthData (requires ~/.netrc)
+    if [ -f ~/.netrc ] && grep -q "earthdata.nasa.gov" ~/.netrc 2>/dev/null; then
+        if curl -fsSL --netrc --location --retry 3 --retry-delay 2 \
+                -o "${TMPFILE}.zip" "$URL4" 2>/dev/null; then
+            HGT=$(unzip -Z1 "${TMPFILE}.zip" 2>/dev/null | grep -i '\.hgt$' | head -1)
+            if [ -n "$HGT" ]; then
+                unzip -p "${TMPFILE}.zip" "$HGT" > "$DEST"
+                rm -f "${TMPFILE}.zip"
+                echo "OK — NASA EarthData ($(du -h "$DEST" | cut -f1))"
+                return 0
+            fi
+            rm -f "${TMPFILE}.zip"
+        fi
+    fi
+
+    rm -f "${TMPFILE}" "${TMPFILE}.gz" "${TMPFILE}.zip"
+    echo "FAILED — all sources unavailable"
+    echo ""
+    echo "    Manual download options:"
+    echo "    A) NASA EarthData (free account):"
+    echo "       1. Add credentials to ~/.netrc:"
+    echo "          echo \"machine urs.earthdata.nasa.gov login YOUR_USER password YOUR_PASS\" >> ~/.netrc"
+    echo "          chmod 600 ~/.netrc"
+    echo "       2. Re-run this script"
+    echo ""
+    echo "    B) Download manually from https://dwtkns.com/srtm30m/"
+    echo "       Search for ${TILE}, download the .zip, extract the .hgt file,"
+    echo "       and copy it to: $SRTM_DIR/"
+    echo ""
     return 1
 }
 
@@ -76,7 +122,10 @@ if [ "$FAILED" -eq 0 ]; then
     echo "Demo mode will now show real terrain. Run:"
     echo "  python3 pi_display/pfd.py --demo --sim"
 else
-    echo "$FAILED tile(s) failed. Demo will use gradient sky/ground fallback."
-    echo "Manual source: https://dwtkns.com/srtm30m/"
-    echo "  (free NASA EarthData account, search for N34W112 etc.)"
+    echo "$FAILED tile(s) failed."
+    echo ""
+    echo "To use your NASA EarthData account for future downloads:"
+    echo "  echo \"machine urs.earthdata.nasa.gov login YOUR_USER password YOUR_PASS\" >> ~/.netrc"
+    echo "  chmod 600 ~/.netrc"
+    echo "  bash fetch_sedona_tiles.sh"
 fi
