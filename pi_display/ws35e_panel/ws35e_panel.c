@@ -284,7 +284,7 @@ static int ws35e_probe(struct mipi_dsi_device *dsi)
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
 
-	dsi->lanes      = 2;
+	dsi->lanes      = 1;
 	dsi->format     = MIPI_DSI_FMT_RGB888;
 	/*
 	 * VIDEO_BURST + LPM: without NON_CONTINUOUS the byte-clock stays up
