@@ -3874,7 +3874,7 @@ def main():
     demo       = DemoState() if demo_mode else None
     connected  = False
     data_stale = False
-    global _link_lost_t
+    global _link_lost_t, _multitouch_t0, _active_fingers
 
     if not demo_mode:
         global _sse_client
