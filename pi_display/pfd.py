@@ -1068,14 +1068,13 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
             pygame.draw.polygon(surf, (220, 60, 220),
                 [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
-    # Heading box — rectangle with triangle tab pointing into the heading strip.
-    # bh=34 gives room for 17pt number (top half) + 8pt subscript (bottom half).
+    # Heading box — 28px box; subscript sits in the empty descender zone of the number.
     # GPS TRK mode → magenta (matches track-pointer colour). MAG mode → white.
     hdg_col = MAGENTA if hdg_src == "gps" else WHITE
-    bw, bh = 58, 34
+    bw, bh = 58, 28
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
     th = bw // 3           # triangle base width ≈ 19px
-    td = 14                # fixed triangle depth (keeps same visual shape)
+    td = 14                # fixed triangle depth
     tx = CX - th // 2      # triangle left base x
     pts_h = _chamfer([(bx,      by2),
                       (bx + bw, by2),
@@ -1086,18 +1085,24 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                       (bx,      by2 + bh)], {0, 1, 2, 6})
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
     pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
-    # Three-digit readout — centered in upper portion of box
+    # Three-digit readout — shifted up 3px so the subscript fits in the descender zone
     num_str  = f"{round(hdg) % 360:03d}"
     full_str = num_str + "\u00b0"
-    _text(surf, full_str, 17, hdg_col, cx=CX, cy=by2 + 13)
-    # T/M subscript: directly under the ° glyph, not centred on the full string
-    f17    = _get_font(17)
-    full_w = f17.size(full_str)[0]
-    num_w  = f17.size(num_str)[0]
-    deg_w  = f17.size("\u00b0")[0]
-    deg_cx = (CX - full_w // 2) + num_w + deg_w // 2   # centre-x of ° character
-    src_lbl = "T" if hdg_src == "gps" else "M"
-    _text(surf, src_lbl, 8, hdg_col, cx=deg_cx, cy=by2 + 27)
+    f17      = _get_font(17)
+    img_h    = f17.size(full_str)[1]   # full line height (includes empty descender padding)
+    asc      = f17.get_ascent()         # pixels from image top to text baseline
+    num_cy   = by2 + bh // 2 - 3       # = by2+11; digits end at baseline, no descenders
+    _text(surf, full_str, 17, hdg_col, cx=CX, cy=num_cy)
+    # G/M subscript — directly under the ° glyph at the number baseline (descender area)
+    full_w      = f17.size(full_str)[0]
+    num_w       = f17.size(num_str)[0]
+    deg_w       = f17.size("\u00b0")[0]
+    deg_cx      = (CX - full_w // 2) + num_w + deg_w // 2   # centre-x of ° character
+    baseline_y  = (num_cy - img_h // 2) + asc               # pixel y of number baseline
+    src_lbl     = "G" if hdg_src == "gps" else "M"
+    f8          = _get_font(8)
+    sub_w       = f8.size(src_lbl)[0]
+    _text(surf, src_lbl, 8, hdg_col, x=deg_cx - sub_w // 2, y=baseline_y + 1)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────

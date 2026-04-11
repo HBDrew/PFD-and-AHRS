@@ -237,7 +237,7 @@ def rolling_drum_alt20(img, bx, by, bw, bh, alt, color, font_sz, show_adjacent=F
 
 
 def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
-               hdg_bug, alt_bug, label, filename,
+               hdg_bug, alt_bug, filename,
                gs_bug=None, ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
                baro_hpa=1013.25, terrain_alert=0,
                no_terrain=False, obs_state="ok", hdg_src="mag", airspeed_src="gps"):
@@ -579,11 +579,11 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         hdg_bug_col = MAGENTA if hdg_src == "gps" else CYAN
         draw.polygon(bug, fill=hdg_bug_col)
 
-    # Heading box — bh=34 gives room for 17pt number + 8pt subscript without collision.
+    # Heading box — 28px box; subscript sits in the empty descender zone of the number.
     # GPS TRK → magenta (matches track-pointer colour). MAG → white.
     _HDG_MAG = (220, 60, 220)  # slightly lighter magenta for text readability
     _hdg_col = _HDG_MAG if hdg_src == "gps" else WHITE
-    bw2, bh2 = 58, 34
+    bw2, bh2 = 58, 28
     bx = CX - bw2//2; by2 = HDG_Y - bh2 - 2
     th = bw2 // 3          # triangle base width ≈ 19px
     td = 14                # fixed triangle depth
@@ -597,27 +597,26 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                       (bx,       by2+bh2)], {0, 1, 2, 6})
     draw.polygon(pts_h, fill=(0, 0, 0))
     draw.line(pts_h + [pts_h[0]], fill=_hdg_col, width=2)
-    # Three-digit readout — centered in upper portion of box
+    # Three-digit readout — tight-bounded, placed 2px from box top
     _num_str = f"{round(hdg)%360:03d}"
     _hstr    = _num_str + "\u00b0"
     _hbf     = fnt(17)
-    _hbb     = draw.textbbox((0, 0), _hstr, font=_hbf)
+    _hbb     = draw.textbbox((0, 0), _hstr, font=_hbf)  # tight glyph bounds
     _htw     = _hbb[2] - _hbb[0]
-    _hth     = _hbb[3] - _hbb[1]
-    draw.text((CX - _htw // 2 - _hbb[0], by2 + (bh2 // 2) - _hth // 2 - 4 - _hbb[1]),
-              _hstr, fill=_hdg_col, font=_hbf)
-    # T/M subscript — directly under the ° glyph, not centred on the full string
-    _src_lbl = "T" if hdg_src == "gps" else "M"
-    _sf      = fnt(8)
-    _num_bb  = draw.textbbox((0, 0), _num_str, font=_hbf)
-    _deg_bb  = draw.textbbox((0, 0), "\u00b0",  font=_hbf)
-    _num_w   = _num_bb[2] - _num_bb[0]
-    _deg_w   = _deg_bb[2] - _deg_bb[0]
-    _deg_cx  = (CX - _htw // 2) + _num_w + _deg_w // 2    # centre-x of ° glyph
-    _sw      = int(draw.textlength(_src_lbl, font=_sf))
-    _sub_bb  = draw.textbbox((0, 0), _src_lbl, font=_sf)
-    _sub_h   = _sub_bb[3] - _sub_bb[1]
-    draw.text((_deg_cx - _sw // 2, by2 + bh2 - _sub_h - 4), _src_lbl, fill=_hdg_col, font=_sf)
+    _tx      = CX - _htw // 2 - _hbb[0]           # anchor x (centres glyphs)
+    _ty      = by2 + 2 - _hbb[1]                  # anchor y (glyph top at by2+2)
+    draw.text((_tx, _ty), _hstr, fill=_hdg_col, font=_hbf)
+    # G/M subscript — directly under the ° glyph, just below number glyph bottom
+    _src_lbl   = "G" if hdg_src == "gps" else "M"
+    _sf        = fnt(8)
+    _num_adv   = int(draw.textlength(_num_str, font=_hbf))  # advance width of "133"
+    _deg_adv   = int(draw.textlength("\u00b0",  font=_hbf))  # advance width of "°"
+    _deg_cx    = _tx + _hbb[0] + _num_adv + _deg_adv // 2   # centre-x of ° glyph
+    _sub_adv   = int(draw.textlength(_src_lbl,  font=_sf))
+    _sub_bb    = draw.textbbox((0, 0), _src_lbl, font=_sf)
+    _sub_y     = _ty + _hbb[3] + 1                           # just below number glyph bottom
+    draw.text((_deg_cx - _sub_adv // 2 - _sub_bb[0], _sub_y - _sub_bb[1]),
+              _src_lbl, fill=_hdg_col, font=_sf)
 
     # ── 6. ROLL ARC (rendered at 2× for anti-aliasing) ───────────────────────
     # Drawing at 2× then scaling down via LANCZOS gives smooth arc and shapes.
@@ -796,12 +795,6 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                                 radius=3, outline=fg_a, width=1)
         draw.text((bx_a+6, by_a+2), lbl_a, fill=fg_a, font=fnt(11, bold=True))
         draw.text((bx_a+bw_a-52, by_a+4), sub_a, fill=fg_a, font=fnt(9))
-
-    # ── 11. SCENARIO LABEL ────────────────────────────────────────────────────
-    lw = len(label)*6 + 16
-    draw.rectangle([(CX-lw//2, HDG_Y-50),(CX+lw//2, HDG_Y-32)],
-                   fill=(0,0,0))
-    draw.text((CX-lw//2+8, HDG_Y-48), label, fill=(255,210,60), font=fnt(10))
 
     img.save(filename)
     print(f"Saved {filename}")
@@ -1708,14 +1701,13 @@ def draw_terrain_data_screen(filename, n_tiles=0, downloading=False,
     print(f"Saved {filename}")
 
 
-# ── Render 3 Sedona scenarios ─────────────────────────────────────────────────
+# ── PFD preview scenarios ─────────────────────────────────────────────────────
 OUT = os.path.dirname(os.path.abspath(__file__))
 
 draw_scene(
     roll=0, pitch=2, hdg=133, alt=8499.7, speed=114.7,
     vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
     gs_bug=115,
-    label="Sedona Valley — Level cruise SE at 8,500 ft",
     filename=os.path.join(OUT, "preview_sedona_level.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
 )
@@ -1725,7 +1717,6 @@ draw_scene(
     roll=0, pitch=0, hdg=270, alt=4999.7, speed=119.7,
     vspeed=0, ay=0.0, hdg_bug=270, alt_bug=5000,
     gs_bug=120,
-    label="Veeder-Root cascade demo — all digits mid-roll",
     filename=os.path.join(OUT, "preview_vr_cascade.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
 )
@@ -1734,7 +1725,6 @@ draw_scene(
     roll=-18, pitch=4, hdg=218, alt=7200, speed=108,
     vspeed=650, ay=-0.08, hdg_bug=250, alt_bug=9500,
     gs_bug=115,
-    label="Sedona — Climbing left turn, departing NW",
     filename=os.path.join(OUT, "preview_sedona_climb_turn.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
 )
@@ -1743,7 +1733,6 @@ draw_scene(
     roll=0, pitch=-3, hdg=19, alt=6200, speed=90,
     vspeed=-500, ay=0.0, hdg_bug=19, alt_bug=4900,
     gs_bug=90,
-    label="Sedona (KSEZ) — Descending final Rwy 03",
     filename=os.path.join(OUT, "preview_sedona_approach.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
 )
@@ -1932,7 +1921,6 @@ draw_system_screen(os.path.join(OUT, "preview_setup_system.png"))
 draw_scene(
     roll=0, pitch=0, hdg=133, alt=8500, speed=115,
     vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
-    label="Level cruise — no terrain or obstacle data loaded",
     filename=os.path.join(OUT, "preview_badges_no_data.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
     no_terrain=True, obs_state="none",
@@ -1942,7 +1930,6 @@ draw_scene(
 draw_scene(
     roll=0, pitch=0, hdg=133, alt=8500, speed=115,
     vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
-    label="Level cruise — obstacle data expired",
     filename=os.path.join(OUT, "preview_badges_exp_obs.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
     no_terrain=False, obs_state="expired",
@@ -1953,7 +1940,6 @@ draw_scene(
     roll=0, pitch=2, hdg=133, alt=8499.7, speed=114.7,
     vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
     gs_bug=115,
-    label="GPS TRK heading mode — track slaved to GPS",
     filename=os.path.join(OUT, "preview_gps_trk_mode.png"),
     ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
     hdg_src="gps",
