@@ -73,6 +73,9 @@ static int ws35e_init(struct ws35e *ctx)
 	struct mipi_dsi_device *dsi = ctx->dsi;
 	int ret = 0;
 
+	/* Allow panel power rails and oscillator to settle */
+	msleep(20);
+
 	/* ── CMD2 BK0 – basic display config ─────────────────────── */
 	ret |= WS_SEQ(dsi, 0xFF, 0x77, 0x01, 0x00, 0x00, 0x10);
 
@@ -302,7 +305,7 @@ static int ws35e_probe(struct mipi_dsi_device *dsi)
 	dsi->format    = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
 			  MIPI_DSI_MODE_VIDEO_BURST |
-			  MIPI_DSI_CLOCK_NON_CONTINUOUS;
+			  MIPI_DSI_MODE_LPM;
 
 	drm_panel_init(&ctx->panel, dev, &ws35e_funcs,
 		       DRM_MODE_CONNECTOR_DSI);
