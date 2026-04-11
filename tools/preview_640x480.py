@@ -340,29 +340,31 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     img = Image.alpha_composite(img.convert('RGBA'), ov).convert('RGB')
     draw = ImageDraw.Draw(img)
 
-    def cyan_box(value_str, bx, by, bw=74, bh=22, font_sz=14):
-        """Illuminated tap button: r=3 corners, 2px cyan border, top glow, no label."""
+    def cyan_box(value_str, bx, by, bw=74, bh=22, font_sz=14, col=CYAN):
+        """Illuminated tap button: r=3 corners, 2px border, top glow, no label.
+        col defaults to CYAN; pass MAGENTA for GPS-sourced values."""
+        cr, cg, cb = col
         # Background fill
         draw.rounded_rectangle([(bx, by), (bx+bw-1, by+bh-1)], radius=3,
                                 fill=(0, 20, 35))
-        # Top glow — simulates illuminated button face
+        # Top glow — tinted to border colour
         glow_h = max(4, bh // 3)
         for i in range(glow_h):
             t = 1.0 - i / glow_h
-            r = min(255, int(t * 60))
-            g = min(255, int(20 + t * 100))
-            b = min(255, int(35 + t * 120))
-            draw.line([(bx+2, by+1+i), (bx+bw-3, by+1+i)], fill=(r, g, b))
-        # 2px cyan border (matching veeder-root outline width)
+            gr = min(255, int(cr * t * 0.35))
+            gg = min(255, int(20 + cg * t * 0.45))
+            gb = min(255, int(35 + cb * t * 0.50))
+            draw.line([(bx+2, by+1+i), (bx+bw-3, by+1+i)], fill=(gr, gg, gb))
+        # 2px border
         draw.rounded_rectangle([(bx, by), (bx+bw-1, by+bh-1)], radius=3,
-                                outline=CYAN, width=2)
+                                outline=col, width=2)
         # Value text — centred H+V
         f = fnt(font_sz, bold=True)
         bb = draw.textbbox((0, 0), value_str, font=f)
         tw, th = bb[2]-bb[0], bb[3]-bb[1]
         draw.text((bx + (bw-tw)//2 - bb[0],
                    by + (bh-th)//2 - bb[1]),
-                  value_str, fill=CYAN, font=f)
+                  value_str, fill=col, font=f)
 
     # ── 3. SPEED TAPE CONTENT ─────────────────────────────────────────────────
     def spd_y(v): return int(TAPE_MID - (v - speed) * PX_PER_KT)
@@ -434,16 +436,18 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                  show_adjacent=True, adj_slot_h=23)
     _drum_shade(img,   SPD_X+48, TAPE_MID-28, 17, 56)   # 1px inset from border
 
-    # GS bug button — top strip of speed tape
+    # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
-    cyan_box(gs_str, SPD_X, 2, bw=SPD_W, bh=22)
+    spd_box_col = MAGENTA if airspeed_src == "gps" else CYAN
+    cyan_box(gs_str, SPD_X, 2, bw=SPD_W, bh=22, col=spd_box_col)
 
     # ── 4. ALT TAPE CONTENT ───────────────────────────────────────────────────
     def alt_y(ft): return int(TAPE_MID - (ft - alt) * PX_PER_FT)
 
-    # ALT bug button — top strip of alt tape
+    # ALT bug button — top strip of alt tape; color matches bug triangle
+    alt_box_col = CYAN if baro_ok else MAGENTA
     cyan_box(f"{round(alt_bug):5d}" if alt_bug is not None else "-----",
-             ALT_X, 2, bw=ALT_W, bh=22)
+             ALT_X, 2, bw=ALT_W, bh=22, col=alt_box_col)
 
     # Tick marks + labels — every 50ft minor, every 100ft major with label
     base_a = round(alt / 50) * 50
@@ -715,11 +719,20 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
     # above in sections 3 and 4).  HDG and BARO sit at the BASE of the heading
     # strip, left and right — keeping the centre clear for the heading readout.
     btn_y = HDG_Y + 2
+    # HDG bug box — MAGENTA for GPS TRK, CYAN for MAG
+    hdg_box_col = MAGENTA if hdg_src == "gps" else CYAN
     cyan_box(f"{round(hdg_bug)%360:03d}\u00b0" if hdg_bug is not None else "---\u00b0",
-             SPD_X, btn_y, bw=SPD_W, bh=22)
-    baro_val = f"{baro_hpa/33.8639:.2f} IN" if baro_ok else "GPS ALT"
-    baro_fsz = 12 if baro_ok else 14   # "29.92 IN" is wider, use smaller font
-    cyan_box(baro_val, ALT_X, btn_y, bw=ALT_W, bh=22, font_sz=baro_fsz)
+             SPD_X, btn_y, bw=SPD_W, bh=22, col=hdg_box_col)
+    # Baro box — CYAN for baro sensor, MAGENTA for GPS ALT fallback
+    if baro_ok:
+        baro_val = f"{baro_hpa/33.8639:.2f} IN"
+        baro_fsz = 12
+        baro_box_col = CYAN
+    else:
+        baro_val = "GPS ALT"
+        baro_fsz = 14
+        baro_box_col = MAGENTA
+    cyan_box(baro_val, ALT_X, btn_y, bw=ALT_W, bh=22, font_sz=baro_fsz, col=baro_box_col)
 
     # ── 9. SLIP INDICATOR — thin bar below zero-bank triangle pointer ─────────
     # Slides ±12 px under the fixed doghouse, same width as its base (16 px)
@@ -1706,7 +1719,8 @@ draw_scene(
     vspeed=0, ay=0.0, hdg_bug=133, alt_bug=8500,
     gs_bug=115,
     filename=os.path.join(OUT, "preview_sedona_level.png"),
-    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+    ahrs_ok=True, gps_ok=True, baro_ok=True, sats=8,
+    baro_hpa=1013.25,
 )
 
 # Cascade demo: all drum digits mid-transition (4999.7 ft → 5000, 119.7 kt → 120)
@@ -1715,7 +1729,8 @@ draw_scene(
     vspeed=0, ay=0.0, hdg_bug=270, alt_bug=5000,
     gs_bug=120,
     filename=os.path.join(OUT, "preview_vr_cascade.png"),
-    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+    ahrs_ok=True, gps_ok=True, baro_ok=True, sats=8,
+    baro_hpa=1013.25,
 )
 
 draw_scene(
@@ -1723,7 +1738,8 @@ draw_scene(
     vspeed=650, ay=-0.08, hdg_bug=250, alt_bug=9500,
     gs_bug=115,
     filename=os.path.join(OUT, "preview_sedona_climb_turn.png"),
-    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+    ahrs_ok=True, gps_ok=True, baro_ok=True, sats=8,
+    baro_hpa=1013.25,
 )
 
 draw_scene(
@@ -1731,7 +1747,8 @@ draw_scene(
     vspeed=-500, ay=0.0, hdg_bug=19, alt_bug=4900,
     gs_bug=90,
     filename=os.path.join(OUT, "preview_sedona_approach.png"),
-    ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
+    ahrs_ok=True, gps_ok=True, baro_ok=True, sats=8,
+    baro_hpa=1013.25,
 )
 
 def draw_terrain_alert_preview(filename, level):

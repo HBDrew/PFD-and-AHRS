@@ -889,9 +889,10 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                   show_adjacent=True, adj_slot_h=23)
     _drum_shade(surf,   SPD_X + 48, TAPE_MID - 28, 17, 56)   # 1px inset from border
 
-    # GS bug button — top strip of speed tape
+    # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
-    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=22)
+    spd_box_col = MAGENTA if airspeed_src == "gps" else CYAN
+    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=22, col=spd_box_col)
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
@@ -933,9 +934,10 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                 _text(surf, s, 13, (230, 230, 230), bold=True,
                       x=ALT_X + ALT_W - tl - 2 - lw, y=fy - 8)
 
-    # ALT bug button — top strip of alt tape
+    # ALT bug button — top strip of alt tape; color matches bug triangle
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
-    _cyan_box(surf, alt_str, x=ALT_X, y=2, w=ALT_W, h=22)
+    alt_box_col = CYAN if baro_ok else MAGENTA
+    _cyan_box(surf, alt_str, x=ALT_X, y=2, w=ALT_W, h=22, col=alt_box_col)
 
     # VS bar — 5px wide on the outer (right) edge of the alt tape.
     # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
@@ -3386,41 +3388,46 @@ def terrain_data_hit(x, y, td):
 # These sit just below the heading tape and below each tape's bottom edge,
 # styled as cyan-bordered dark boxes matching the GI-275 blue label style.
 
-def _cyan_box(surf, value_str, x, y, w=74, h=22, font_sz=14):
-    """Illuminated tap button: r=3 corners, 2px cyan border, top glow, no label."""
+def _cyan_box(surf, value_str, x, y, w=74, h=22, font_sz=14, col=None):
+    """Illuminated tap button: r=3 corners, 2px border, top glow, no label.
+    col defaults to CYAN; pass MAGENTA for GPS-sourced values."""
+    if col is None:
+        col = CYAN
+    cr, cg, cb = col
     # Background fill
     pygame.draw.rect(surf, (0, 20, 35), (x, y, w, h), border_radius=3)
-    # Top glow — simulates illuminated button face
+    # Top glow — tinted to border colour
     glow_h = max(4, h // 3)
     for i in range(glow_h):
         t = 1.0 - i / glow_h
-        r = min(255, int(t * 60))
-        g = min(255, int(20 + t * 100))
-        b = min(255, int(35 + t * 120))
-        pygame.draw.line(surf, (r, g, b), (x + 2, y + 1 + i), (x + w - 3, y + 1 + i))
-    # 2px cyan border (matching veeder-root outline width)
-    pygame.draw.rect(surf, CYAN, (x, y, w, h), width=2, border_radius=3)
+        gr = min(255, int(cr * t * 0.35))
+        gg = min(255, int(20 + cg * t * 0.45))
+        gb = min(255, int(35 + cb * t * 0.50))
+        pygame.draw.line(surf, (gr, gg, gb), (x + 2, y + 1 + i), (x + w - 3, y + 1 + i))
+    # 2px border (matching veeder-root outline width)
+    pygame.draw.rect(surf, col, (x, y, w, h), width=2, border_radius=3)
     # Value text — centred H+V
-    _text(surf, value_str, font_sz, CYAN, bold=True, cx=x + w // 2, cy=y + h // 2)
+    _text(surf, value_str, font_sz, col, bold=True, cx=x + w // 2, cy=y + h // 2)
 
 
-def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
+def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
+                     hdg_src="mag", baro_ok=True):
     """
-    Cyan tap buttons in the heading strip — left and right only so the centre
+    Tap buttons in the heading strip — left and right only so the centre
     heading readout remains unobstructed:
-      • Left  (under speed tape) : HDG bug
-      • Right (under alt tape)   : Baro setting
+      • Left  (under speed tape) : HDG bug  — MAGENTA=GPS TRK, CYAN=MAG
+      • Right (under alt tape)   : Baro setting — CYAN=baro sensor, MAGENTA=GPS ALT
     IAS and ALT bug buttons are drawn at the tops of their own tapes.
     """
     y = HDG_Y + 2
 
-    # HDG bug — left side of heading strip, exact speed-tape width
+    # HDG bug — left side of heading strip; color matches heading bug triangle
     _hdg_btn = f"{round(hdg_bug) % 360:03d}\u00b0" if hdg_bug is not None else "---\u00b0"
-    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=22)
+    hdg_box_col = MAGENTA if hdg_src == "gps" else CYAN
+    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=22, col=hdg_box_col)
 
-    # Baro — right side of heading strip, exact alt-tape width
-    # Show baro setting in user-selected units when pressure sensor active
-    if baro_src == "bme280":
+    # Baro — right side of heading strip; CYAN when baro sensor active, MAGENTA when GPS ALT
+    if baro_ok and baro_src == "bme280":
         baro_unit = disp["ds"].get("baro_unit", "inhg")
         if baro_unit == "hpa":
             baro_lbl = f"{baro_hpa:.0f} hPa"
@@ -3428,11 +3435,13 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug):
         else:
             baro_lbl = f"{baro_hpa / 33.8639:.2f} IN"
             baro_fsz = 12   # wider string needs slightly smaller font
+        baro_col = CYAN
     else:
         baro_lbl = "GPS ALT"
         baro_fsz = 14
+        baro_col = MAGENTA
     _cyan_box(surf, baro_lbl,
-              x=ALT_X, y=y, w=ALT_W, h=22, font_sz=baro_fsz)
+              x=ALT_X, y=y, w=ALT_W, h=22, font_sz=baro_fsz, col=baro_col)
 
 
 # ── Veil surface for transparent overlay modes (allocated once) ───────────────
@@ -3683,8 +3692,9 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 10. Failure overlays
     draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok, sats)
 
-    # 11. Cyan tap-buttons for heading bug, baro, and alt bug
-    draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug)
+    # 11. Tap-buttons for heading bug, baro, and alt bug (color = data source)
+    draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
+                     hdg_src=hdg_src, baro_ok=baro_ok)
 
     # 12. Demo / SIM watermark
     if demo_mode:
