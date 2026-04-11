@@ -161,14 +161,12 @@ static int ws35e_prepare(struct drm_panel *panel)
 		return 0;
 
 	if (ctx->reset) {
-		gpiod_set_value_cansleep(ctx->reset, 1);
+		/* Assert reset, then DEASSERT and leave deasserted */
+		gpiod_set_value_cansleep(ctx->reset, 1);  /* assert   */
 		msleep(10);
-		gpiod_set_value_cansleep(ctx->reset, 0);
-		msleep(20);
-		gpiod_set_value_cansleep(ctx->reset, 1);
-		msleep(50);
+		gpiod_set_value_cansleep(ctx->reset, 0);  /* deassert */
+		msleep(120); /* panel startup; stays deasserted into enable() */
 	} else {
-		/* No reset GPIO – just wait for power-on settle */
 		msleep(50);
 	}
 
@@ -289,17 +287,12 @@ static int ws35e_probe(struct mipi_dsi_device *dsi)
 	dsi->lanes      = 2;
 	dsi->format     = MIPI_DSI_FMT_RGB888;
 	/*
-	 * Match the flags used by panel-raspberrypi-touchscreen (the only
-	 * other panel driver known to work with vc4 DSI):
-	 *   VIDEO_HSE            – horizontal-sync-event packets
-	 *   CLOCK_NON_CONTINUOUS – clock drops to LP between frames,
-	 *                          creating the LP gaps that allow our
-	 *                          DCS init commands to be accepted
-	 *   LPM                  – send DCS writes in LP escape mode
+	 * VIDEO_BURST + LPM: without NON_CONTINUOUS the byte-clock stays up
+	 * (stat bit 11 = TX done confirmed), LP escape commands are interleaved
+	 * by the vc4 driver during blanking.  NON_CONTINUOUS broke TX completion.
 	 */
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO_HSE |
-			  MIPI_DSI_MODE_VIDEO |
-			  MIPI_DSI_CLOCK_NON_CONTINUOUS |
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
+			  MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_LPM;
 
 	drm_panel_init(&ctx->panel, dev, &ws35e_funcs,
