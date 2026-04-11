@@ -22,6 +22,7 @@
 14. [Terrain Data Download](#14-terrain-data-download)
 15. [Obstacle Data Download](#15-obstacle-data-download)
 16. [Demo Mode](#16-demo-mode)
+17. [Flight Simulator](#17-flight-simulator)
 
 ---
 
@@ -62,9 +63,18 @@ The tape scrolls so that current airspeed is always at the centred Veeder-Root d
 
 The drum numerals turn **yellow** above VNO and **red** above VNE to reinforce the overspeed warning.
 
-### GS bug (ground-speed target)
+### Speed bug
 
-A cyan chevron marker on the tape tracks the GS bug.  The button at the **top** of the airspeed tape shows the bug value (`090` kt, etc.) or `---` when not set.  Tap it to enter a new value with the numpad.
+A chevron marker on the tape tracks the speed bug.  The button at the **top** of the airspeed tape shows the bug value (`090` kt, etc.) or `---` when not set.  Tap it to enter a new value with the numpad.
+
+The bug and its readout button are **colour-coded by data source**:
+
+| Colour | Source |
+|--------|--------|
+| Magenta | GPS groundspeed (GS) — current hardware default |
+| Cyan | IAS sensor — when a pitot/static airspeed transducer is fitted and selected in AHRS / Sensors |
+
+Until an airspeed sensor is installed, the speed bug tracks GPS groundspeed and both the chevron and the readout button appear magenta.
 
 ---
 
@@ -76,17 +86,26 @@ A cyan chevron marker on the tape tracks the GS bug.  The button at the **top** 
 
 Current altitude is shown in the Veeder-Root drum on the right side.  The tape scrolls in 50 ft increments (minor ticks) with labels every 100 ft.
 
-The **altitude bug** chevron (magenta) marks the selected target altitude.  Tap the bug button at the **top** of the alt tape to change it.  Entry is in hundreds of feet — type `85` and the display shows `8500 ft`.
+The **altitude bug** chevron marks the selected target altitude.  Tap the bug button at the **top** of the alt tape to change it.  Entry is in hundreds of feet — type `85` and the display shows `8500 ft`.
+
+The bug and its readout button are **colour-coded by altitude source**:
+
+| Colour | Source |
+|--------|--------|
+| Cyan | Barometric altitude (BME280 pressure sensor active) — primary |
+| Magenta | GPS altitude (baro sensor failed or absent) — degraded fallback |
 
 ### Baro setting
 
-The cyan box at the **bottom-right** of the heading strip shows the current baro setting:
+The button at the **bottom-right** of the heading strip shows the current baro setting.  Its colour indicates the altitude source:
 
-- **`29.92 IN`** — when the BME280 pressure sensor is active, in inHg (default)
-- **`1013 hPa`** — when the baro unit is set to hPa in Display Settings
-- **`GPS ALT`** — when no baro sensor is present; GPS altitude is used directly
+| Display | Colour | Meaning |
+|---------|--------|---------|
+| `29.92 IN` | Cyan | BME280 pressure sensor active; inHg (default) |
+| `1013 hPa` | Cyan | BME280 active; hPa unit selected in Display Settings |
+| `GPS ALT` | Magenta | No baro sensor present; GPS altitude is used directly |
 
-Tap the box to adjust the baro setting with the numpad.  See [Section 7 — Adjusting Baro](#adjusting-baro) for entry details.
+Tap the box to adjust the baro setting with the numpad when the sensor is active.  See [Section 7 — Adjusting Baro](#adjusting-baro) for entry details.
 
 ### VSI (vertical speed indicator)
 
@@ -138,11 +157,38 @@ Requires a valid GPS fix and either SRTM terrain tiles (Section 14) or obstacle 
 
 ## 5. Heading Tape
 
-The heading tape runs across the bottom of the screen.  Current magnetic heading is shown in a white box at centre.
+The heading tape runs across the bottom of the screen.
 
-**Track pointer** — when GPS fix is valid, a cyan tick mark on the tape shows GPS ground track.  Drift between the heading pointer and the track tick indicates wind or crab angle.
+### Heading source modes
 
-**Heading bug** — a cyan marker on the tape tracks the HDG bug.  The button at the **bottom-left** of the heading strip shows the selected heading (`133°`) or `---°`.  Tap it to enter a new heading.
+The display supports two heading source modes, selectable in AHRS / Sensors (Section 11).
+
+**MAG mode (default)**
+Heading is derived from the Pico W magnetometer.  The central heading box has a dim border, and a small `M` subscript appears to the lower-right of the degree symbol.
+
+![Heading tape — MAG mode (baro active)](../tools/preview_sedona_level.png)
+
+**GPS TRK mode**
+The display continuously slews the gyro-propagated heading toward GPS ground track using a complementary filter.  The central heading box border turns **magenta** and the subscript changes to `G`.  The `GPS TRK` status badge appears in the top strip.
+
+![Heading tape — GPS TRK mode](../tools/preview_gps_trk_mode.png)
+
+GPS TRK mode requires a valid GPS fix.  If GPS is lost the display retains the last known heading; the badge remains visible as a reminder.
+
+### Track pointer
+
+When GPS fix is valid and in MAG mode, a **cyan** tick mark on the tape shows GPS ground track.  Drift between the heading pointer and the track tick indicates wind or crab angle.
+
+### Heading bug
+
+A chevron marker on the tape tracks the HDG bug.  The button at the **bottom-left** of the heading strip shows the selected heading (`133°`) or `---°`.  Tap it to enter a new heading.
+
+The bug and its readout button are **colour-coded by heading source**:
+
+| Colour | Source |
+|--------|--------|
+| Cyan | Magnetometer (MAG mode) |
+| Magenta | GPS ground track (GPS TRK mode) |
 
 ---
 
@@ -157,7 +203,8 @@ Badges appear **only when something requires attention** — the strip is blank 
 | `NO TER` | Amber | No SRTM terrain tiles loaded — SVT shows flat ground |
 | `NO OBS` | Amber | No FAA obstacle data loaded |
 | `EXP OBS` | Orange | Obstacle data is more than 28 days old — update recommended |
-| `GPS ALT` | Dim yellow | No barometric sensor; altitude derived from GPS |
+| `GPS TRK` | Magenta | Heading source is GPS ground track (GPS TRK mode active) |
+| `GPS ALT` | Amber | No barometric sensor; altitude derived from GPS |
 | `GPS` *N*`sat` | Amber | GPS hardware visible but no position fix yet — *N* satellites in view |
 | `NO GPS` | Red | No GPS signal or hardware — speed tape unreliable |
 
@@ -171,7 +218,7 @@ The PFD has three settable bugs — altitude, heading, and ground-speed.
 
 ![Altitude bug numpad](../tools/preview_numpad_alt.png)
 
-Tap the cyan readout button for the bug you want to change.  The **numpad** overlays the live PFD so you can watch the tapes while you type.
+Tap the readout button for the bug you want to change.  The **numpad** overlays the live PFD so you can watch the tapes while you type.
 
 | Key | Action |
 |-----|--------|
@@ -192,7 +239,7 @@ Tap the cyan readout button for the bug you want to change.  The **numpad** over
 
 ![Baro numpad — inHg](../tools/preview_numpad_baro_inhg.png)
 
-Tap the **cyan baro box** at the bottom-right of the heading strip to open the baro numpad.  Entry format depends on the pressure unit selected in Display Settings:
+Tap the **baro button** at the bottom-right of the heading strip to open the baro numpad.  Entry format depends on the pressure unit selected in Display Settings:
 
 **inHg mode** — type four digits; the decimal is inserted automatically after the second digit:
 
@@ -324,6 +371,26 @@ Corrects a horizon that is tilted (wings-not-level) while the aircraft is statio
 ### Mounting orientation
 
 If the Pico W sensor board is mounted with the **label facing down**, select **INVERTED**.  The display will flip pitch and roll signs to compensate.  Select **NORMAL** for upright mounting (label facing up or toward you).
+
+### Heading source
+
+![AHRS setup — GPS TRK selected](../tools/preview_setup_ahrs_gpstrk.png)
+
+| Option | Behaviour |
+|--------|-----------|
+| **MAG** | Heading derived from the on-board magnetometer. Gyro integration drifts are corrected by mag. `M` subscript in heading box. |
+| **GPS TRK** | The gyro-propagated heading is continuously slaved to GPS ground track. Accurate in cruise without a magnetometer calibration. `G` subscript; heading box border turns magenta. |
+
+GPS TRK mode requires a valid GPS fix. If GPS is lost while GPS TRK is active the display retains the last known heading; the `GPS TRK` badge remains as a reminder.
+
+### Airspeed source
+
+| Option | Behaviour |
+|--------|-----------|
+| **GPS GS** | Speed bug and tape track GPS groundspeed. Readout button and bug chevron are magenta. |
+| **IAS SENSOR** | Speed bug and tape track a connected pitot/static airspeed transducer. Readout and bug are cyan. *(Hardware not yet fitted — greyed out.)* |
+
+Until an IAS sensor is installed and selected, GPS groundspeed is used.
 
 ---
 
@@ -509,6 +576,58 @@ Press **D** on a connected keyboard to toggle demo mode while the PFD is running
 
 ---
 
+## 17. Flight Simulator
+
+The flight simulator runs a physics-based autopilot that holds heading, altitude, and speed bugs — allowing realistic PFD behaviour without an aircraft or Pico W hardware.  Unlike Demo mode, the simulator responds to bug inputs in real time.
+
+### Starting the simulator
+
+Open **Setup → System → FLIGHT SIMULATOR** to reach the setup screen.
+
+### Airport presets
+
+Twelve US airports are available.  Selecting one sets the aircraft's initial GPS position and field elevation:
+
+| Code | Location | Elev |
+|------|----------|------|
+| KSEZ | Sedona, AZ | 4830 ft |
+| KPHX | Phoenix, AZ | 1135 ft |
+| KDEN | Denver, CO | 5431 ft |
+| KLAX | Los Angeles, CA | 125 ft |
+| KSFO | San Francisco, CA | 13 ft |
+| KLAS | Las Vegas, NV | 2141 ft |
+| KSEA | Seattle, WA | 433 ft |
+| KATL | Atlanta, GA | 1026 ft |
+| KJFK | New York, NY | 13 ft |
+| KORD | Chicago, IL | 668 ft |
+| KDFW | Dallas, TX | 603 ft |
+| KMIA | Miami, FL | 8 ft |
+
+### Initial conditions
+
+Set the starting altitude (ft), heading (°), and airspeed (kt) using the tap boxes beneath the airport grid before pressing **START**.
+
+### Sensor failure simulation
+
+Three failure toggles let you test degraded-sensor behaviour before pressing START:
+
+| Toggle | Effect when FAIL |
+|--------|-----------------|
+| GPS | GPS fix lost — speed tape goes `NO GPS`, altitude falls back to baro only |
+| BARO | Baro sensor fails — altitude source switches to GPS; alt bug, baro button, and alt box turn magenta; `GPS ALT` badge appears |
+| AHRS | IMU fails — pitch/roll freeze; `AHRS FAIL` badge appears |
+
+### SIM watermark and in-flight controls
+
+While the simulator is running the word **SIM** appears in amber at the centre of the AI.  Tap it to open the **SIM CONTROLS** overlay without leaving the PFD:
+
+- Toggle any sensor between **ON** and **FAIL** at any time
+- Tap **EXIT SIM** to stop the simulator and return to standby
+
+Heading, altitude, and speed bugs are fully active — the autopilot model flies to the selected targets using standard-rate turns and ±1000 fpm climbs/descents.
+
+---
+
 ## Quick-Reference Card
 
 | Action | How |
@@ -522,6 +641,10 @@ Press **D** on a connected keyboard to toggle demo mode while the PFD is running
 | Tap heading tape | Jumps HDG bug to tapped heading |
 | Adjust baro | Tap bottom-right of heading strip → numpad |
 | Adjust brightness | Setup → Display → − / + |
+| Start flight simulator | Setup → System → FLIGHT SIMULATOR → START |
+| SIM controls overlay | Tap SIM watermark on AI |
+| Toggle sensor failure | SIM controls → GPS / BARO / AHRS |
+| Exit simulator | SIM controls → EXIT SIM |
 
 ---
 
