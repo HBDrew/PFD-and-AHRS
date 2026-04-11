@@ -1,18 +1,18 @@
 # AHRS Unit — High-Level Requirements
 
-| Field          | Value                        |
-|----------------|------------------------------|
-| Document No.   | HLR-AHRS-001                 |
+| Field          | Value                               |
+|----------------|-------------------------------------|
+| Document No.   | HLR-AHRS-001                        |
 | Title          | AHRS Unit — High-Level Requirements |
-| Project        | Pico-AHRS / PFD              |
-| Date           | 2026-04-11                   |
-| Version        | 0.1                          |
+| Project        | Pico-AHRS / PFD                     |
+| Date           | 2026-04-11                          |
+| Version        | 0.1                                 |
 
 ---
 
 ## 1. Overview
 
-The AHRS unit is the airborne sensor node of the Pico-AHRS / PFD system. It runs on a Raspberry Pi Pico W and is responsible for acquiring raw inertial, barometric, and GPS data; fusing that data into a real-time attitude solution; and broadcasting the resulting flight-state information over a Wi-Fi Server-Sent Events (SSE) stream to one or more display units. The AHRS unit operates autonomously once powered and requires no operator interaction during normal flight. All pilot-adjustable parameters — mounting orientation, baro reference, Wi-Fi credentials — are set from the display unit or from a configuration file without reflashing firmware.
+The AHRS unit is the airborne sensor node of the Pico-AHRS / PFD system. It runs on a Raspberry Pi Pico W and is responsible for acquiring raw inertial, barometric, and GPS data; fusing that data into a real-time attitude solution; and broadcasting the resulting flight-state information over a Wi-Fi Server-Sent Events (SSE) stream to one or more display units. The AHRS unit operates autonomously once powered and requires no operator interaction during normal flight. All pilot-adjustable parameters — mounting orientation, baro reference, and Wi-Fi credentials — are set from the display unit or from a configuration file without reflashing firmware.
 
 ---
 
@@ -58,7 +58,7 @@ The barometric subsystem converts raw pressure readings from the pressure sensor
 
 > **REQ-AHRS-BARO-002** Altitude shall be computed from measured pressure using the International Standard Atmosphere (ISA) formula, with a pilot-adjustable barometric reference setting (QNH) applied to the calculation.
 
-> **REQ-AHRS-BARO-003** When the pressure sensor is absent or returns readings that are outside valid range or flagged as invalid, the firmware shall set `baro_ok = false` and report `baro_src = "gps"` in the outbound data stream, indicating that GPS altitude is being used as the fallback source.
+> **REQ-AHRS-BARO-003** When the pressure sensor is absent or returns readings that are outside the valid range or otherwise flagged as invalid, the firmware shall set `baro_ok = false` and report `baro_src = "gps"` in the outbound data stream, indicating that GPS altitude is being used as the fallback source.
 
 > **REQ-AHRS-BARO-004** The computed altitude shall have a resolution better than 5 ft across the operational altitude range.
 
@@ -104,7 +104,7 @@ Because the AHRS unit may be installed in different physical orientations depend
 
 > **REQ-AHRS-CAL-002** The display unit shall apply pilot-configurable pitch and roll trim offsets, each in the range ±20°, in software to compensate for imperfect physical mounting alignment.
 
-> **REQ-AHRS-CAL-003** A magnetometer hard-iron and soft-iron calibration procedure is planned and the corresponding calibration data structure shall be reserved in firmware for future implementation. This requirement is marked as deferred pending magnetometer hardware integration.
+> **REQ-AHRS-CAL-003** A magnetometer hard-iron and soft-iron calibration procedure is planned, and the corresponding calibration data structure shall be reserved in firmware for future implementation. This requirement is marked as deferred pending magnetometer hardware integration.
 
 ---
 
