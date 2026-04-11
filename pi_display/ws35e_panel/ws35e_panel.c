@@ -5,24 +5,12 @@
  * Controller : ST7701S (2-lane MIPI DSI, 640×480 @ 60 Hz)
  * Compatible : "waveshare,ws35dsi-e"
  *
- * Kernel headers: /usr/src/linux-headers-$(uname -r)
- * Build        : make  (see Makefile)
- * Install      : sudo insmod ws35e_panel.ko
+ * Build  : make
+ * Load   : sudo insmod ws35e_panel.ko
+ * Verify : dmesg | grep ws35e
  *
- * The Waveshare overlay (Waveshare_35DSI.dtbo) uses
- * compatible = "Generic,panel-dsi" which binds panel-simple-dsi.
- * That driver sends only sleep_out + display_on — no ST7701S init.
- *
- * To use this driver:
- *   1. Decompile the overlay, change compatible to "waveshare,ws35dsi-e"
- *   2. Recompile and place back in /boot/firmware/overlays/
- *   3. sudo make && sudo insmod ws35e_panel.ko
- *   4. Reboot  (or: echo waveshare,ws35dsi-e > bind path if hotplug works)
- *
- * Alternatively if panel-simple is a loadable module:
- *   sudo modprobe -r panel-simple
- *   Change compatible in this file to "Generic,panel-dsi"
- *   sudo insmod ws35e_panel.ko
+ * DCS init is deferred to enable() so the vc4 DSI DPHY/PLL
+ * is fully active before any lane traffic is attempted.
  */
 
 #include <linux/delay.h>
@@ -39,6 +27,7 @@ struct ws35e {
 	struct mipi_dsi_device *dsi;
 	struct gpio_desc *reset;
 	bool prepared;
+	bool enabled;
 };
 
 static inline struct ws35e *to_ws35e(struct drm_panel *panel)
@@ -46,12 +35,13 @@ static inline struct ws35e *to_ws35e(struct drm_panel *panel)
 	return container_of(panel, struct ws35e, panel);
 }
 
-/* Write a raw byte sequence as a DCS command */
 static int ws_write(struct mipi_dsi_device *dsi, const u8 *buf, size_t len)
 {
 	ssize_t ret = mipi_dsi_dcs_write_buffer(dsi, buf, len);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_warn(&dsi->dev, "DSI write failed (%zd)\n", ret);
 		return (int)ret;
+	}
 	return 0;
 }
 
@@ -62,42 +52,28 @@ static int ws_write(struct mipi_dsi_device *dsi, const u8 *buf, size_t len)
 })
 
 /*
- * ST7701S initialisation sequence for 640×480, 2-lane, 24 MHz pixel clock.
- *
- * NOTE: gamma register values below are reasonable defaults.
- * If the panel shows wrong colours after init, the gamma tables
- * (B0/B1 under BK0, and E0-EC under BK1) may need tuning.
+ * ST7701S initialisation – called from enable() after the vc4 DSI
+ * encoder has set up the DPHY and started the pixel clock.
  */
 static int ws35e_init(struct ws35e *ctx)
 {
 	struct mipi_dsi_device *dsi = ctx->dsi;
 	int ret = 0;
 
-	/* Allow panel power rails and oscillator to settle */
-	msleep(20);
-
 	/* ── CMD2 BK0 – basic display config ─────────────────────── */
 	ret |= WS_SEQ(dsi, 0xFF, 0x77, 0x01, 0x00, 0x00, 0x10);
+	ret |= WS_SEQ(dsi, 0xC0, 0x3B, 0x00);   /* LNESET  480 lines   */
+	ret |= WS_SEQ(dsi, 0xC1, 0x0D, 0x02);   /* PORCTRL VBP/VFP     */
+	ret |= WS_SEQ(dsi, 0xC2, 0x21, 0x08);   /* INVSEL  col-inv 60Hz*/
+	ret |= WS_SEQ(dsi, 0xCC, 0x10);         /* GPC     RGB order   */
 
-	/* LNESET: 480 active lines (0x3C → (0x3C+1)×8 = 496; use 0x3B for 480) */
-	ret |= WS_SEQ(dsi, 0xC0, 0x3B, 0x00);
-
-	/* PORCTRL: VBP=13, VFP=3 */
-	ret |= WS_SEQ(dsi, 0xC1, 0x0D, 0x02);
-
-	/* INVSEL: column inversion, 60 Hz frame rate */
-	ret |= WS_SEQ(dsi, 0xC2, 0x21, 0x08);
-
-	/* GPC: RGB order */
-	ret |= WS_SEQ(dsi, 0xCC, 0x10);
-
-	/* Positive gamma (B0) */
+	/* Positive gamma */
 	ret |= WS_SEQ(dsi, 0xB0,
 		0x00, 0x0E, 0x15, 0x0F, 0x11, 0x08,
 		0x08, 0x08, 0x08, 0x23, 0x04, 0x13,
 		0x12, 0x2B, 0x34, 0x1F);
 
-	/* Negative gamma (B1) */
+	/* Negative gamma */
 	ret |= WS_SEQ(dsi, 0xB1,
 		0x00, 0x0E, 0x15, 0x0F, 0x11, 0x08,
 		0x08, 0x08, 0x08, 0x23, 0x04, 0x13,
@@ -105,64 +81,44 @@ static int ws35e_init(struct ws35e *ctx)
 
 	/* ── CMD2 BK1 – power / MIPI settings ────────────────────── */
 	ret |= WS_SEQ(dsi, 0xFF, 0x77, 0x01, 0x00, 0x00, 0x11);
-
-	ret |= WS_SEQ(dsi, 0xB0, 0x4D);   /* VRHS  */
-	ret |= WS_SEQ(dsi, 0xB1, 0x2B);   /* VCOMS */
-	ret |= WS_SEQ(dsi, 0xB2, 0x07);   /* VGHSS */
-	ret |= WS_SEQ(dsi, 0xB3, 0x80);   /* TESTCMD */
-	ret |= WS_SEQ(dsi, 0xB5, 0x47);   /* VGLS  */
-	ret |= WS_SEQ(dsi, 0xB7, 0x85);   /* PWCTLR1 */
-	ret |= WS_SEQ(dsi, 0xB8, 0x21);   /* PWCTLR2 */
-	ret |= WS_SEQ(dsi, 0xC1, 0x78);   /* SPD1   */
-	ret |= WS_SEQ(dsi, 0xC2, 0x78);   /* SPD2   */
-	ret |= WS_SEQ(dsi, 0xD0, 0x88);   /* MIPISET1 */
+	ret |= WS_SEQ(dsi, 0xB0, 0x4D);   /* VRHS      */
+	ret |= WS_SEQ(dsi, 0xB1, 0x2B);   /* VCOMS     */
+	ret |= WS_SEQ(dsi, 0xB2, 0x07);   /* VGHSS     */
+	ret |= WS_SEQ(dsi, 0xB3, 0x80);   /* TESTCMD   */
+	ret |= WS_SEQ(dsi, 0xB5, 0x47);   /* VGLS      */
+	ret |= WS_SEQ(dsi, 0xB7, 0x85);   /* PWCTLR1   */
+	ret |= WS_SEQ(dsi, 0xB8, 0x21);   /* PWCTLR2   */
+	ret |= WS_SEQ(dsi, 0xC1, 0x78);   /* SPD1      */
+	ret |= WS_SEQ(dsi, 0xC2, 0x78);   /* SPD2      */
+	ret |= WS_SEQ(dsi, 0xD0, 0x88);   /* MIPISET1  */
 
 	msleep(100);
 
-	/* Gate timing control */
 	ret |= WS_SEQ(dsi, 0xE0, 0x00, 0x00, 0x02);
-
-	/* Source timing 1 */
 	ret |= WS_SEQ(dsi, 0xE1,
 		0x06, 0x00, 0x08, 0x00,
 		0x05, 0x00, 0x07, 0x00,
 		0x00, 0x33, 0x33);
-
-	/* Source timing 2 */
 	ret |= WS_SEQ(dsi, 0xE2,
 		0x30, 0x30, 0x33, 0x33,
 		0x34, 0x00, 0x00, 0x00,
 		0x34, 0x00, 0x00, 0x00);
-
-	/* Gate EQ */
 	ret |= WS_SEQ(dsi, 0xE3, 0x00, 0x00, 0x33, 0x33);
 	ret |= WS_SEQ(dsi, 0xE4, 0x44, 0x44);
-
-	/* Source EQ 1 */
 	ret |= WS_SEQ(dsi, 0xE5,
 		0x0D, 0x31, 0xC8, 0xAF,
 		0x0F, 0x33, 0xC8, 0xAF,
 		0x09, 0x2D, 0xC8, 0xAF,
 		0x0B, 0x2F, 0xC8, 0xAF);
-
 	ret |= WS_SEQ(dsi, 0xE6, 0x00, 0x00, 0x33, 0x33);
 	ret |= WS_SEQ(dsi, 0xE7, 0x44, 0x44);
-
-	/* Source EQ 2 */
 	ret |= WS_SEQ(dsi, 0xE8,
 		0x0E, 0x32, 0xC8, 0xAF,
 		0x10, 0x34, 0xC8, 0xAF,
 		0x0A, 0x2E, 0xC8, 0xAF,
 		0x0C, 0x30, 0xC8, 0xAF);
-
-	/* Digital GMA */
-	ret |= WS_SEQ(dsi, 0xEB,
-		0x02, 0x00, 0xE4, 0xE4,
-		0x44, 0x00, 0x40);
-
+	ret |= WS_SEQ(dsi, 0xEB, 0x02, 0x00, 0xE4, 0xE4, 0x44, 0x00, 0x40);
 	ret |= WS_SEQ(dsi, 0xEC, 0x3C, 0x00);
-
-	/* Source output select */
 	ret |= WS_SEQ(dsi, 0xED,
 		0xAB, 0x89, 0x76, 0x54,
 		0x01, 0xFF, 0xFF, 0x10,
@@ -173,30 +129,30 @@ static int ws35e_init(struct ws35e *ctx)
 	ret |= WS_SEQ(dsi, 0xFF, 0x77, 0x01, 0x00, 0x00, 0x00);
 
 	if (ret) {
-		dev_err(&dsi->dev, "ws35e: DSI write error during init\n");
+		dev_err(&dsi->dev, "ws35e: DCS write error during init\n");
 		return ret;
 	}
 
-	/* Sleep-out then display-on */
 	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
-	if (ret < 0) {
-		dev_err(&dsi->dev, "ws35e: sleep_out failed: %d\n", ret);
+	if (ret < 0)
 		return ret;
-	}
 	msleep(120);
 
 	ret = mipi_dsi_dcs_set_display_on(dsi);
-	if (ret < 0) {
-		dev_err(&dsi->dev, "ws35e: display_on failed: %d\n", ret);
+	if (ret < 0)
 		return ret;
-	}
 	msleep(20);
 
+	dev_info(&dsi->dev, "ws35e: ST7701S init complete\n");
 	return 0;
 }
 
-/* ── drm_panel callbacks ──────────────────────────────────────────────────── */
+/* ── drm_panel callbacks ──────────────────────────────────────────── */
 
+/*
+ * prepare() – power rails + hardware reset only.
+ * No DCS here: the vc4 DPHY isn't running yet at this point.
+ */
 static int ws35e_prepare(struct drm_panel *panel)
 {
 	struct ws35e *ctx = to_ws35e(panel);
@@ -211,12 +167,49 @@ static int ws35e_prepare(struct drm_panel *panel)
 		msleep(20);
 		gpiod_set_value_cansleep(ctx->reset, 1);
 		msleep(50);
+	} else {
+		/* No reset GPIO – just wait for power-on settle */
+		msleep(50);
 	}
 
-	if (ws35e_init(ctx))
-		return -EIO;
-
 	ctx->prepared = true;
+	dev_dbg(&ctx->dsi->dev, "ws35e: prepared (DPHY not yet active)\n");
+	return 0;
+}
+
+/*
+ * enable() – called after vc4_dsi encoder_enable(), so HS clock is live.
+ * Send the full ST7701S init sequence here.
+ */
+static int ws35e_enable(struct drm_panel *panel)
+{
+	struct ws35e *ctx = to_ws35e(panel);
+	int ret;
+
+	if (ctx->enabled)
+		return 0;
+
+	ret = ws35e_init(ctx);
+	if (ret) {
+		dev_err(&ctx->dsi->dev,
+			"ws35e: panel init failed: %d\n", ret);
+		return ret;
+	}
+
+	ctx->enabled = true;
+	return 0;
+}
+
+static int ws35e_disable(struct drm_panel *panel)
+{
+	struct ws35e *ctx = to_ws35e(panel);
+
+	if (!ctx->enabled)
+		return 0;
+
+	mipi_dsi_dcs_set_display_off(ctx->dsi);
+	msleep(20);
+	ctx->enabled = false;
 	return 0;
 }
 
@@ -227,7 +220,6 @@ static int ws35e_unprepare(struct drm_panel *panel)
 	if (!ctx->prepared)
 		return 0;
 
-	mipi_dsi_dcs_set_display_off(ctx->dsi);
 	mipi_dsi_dcs_enter_sleep_mode(ctx->dsi);
 	msleep(100);
 
@@ -247,12 +239,6 @@ static int ws35e_get_modes(struct drm_panel *panel,
 	if (!mode)
 		return -ENOMEM;
 
-	/*
-	 * Timing taken from Waveshare_35DSI.dtbo:
-	 *   hactive=640  hbp=80  hfp=48  hsync=32
-	 *   vactive=480  vbp=13  vfp=3   vsync=4
-	 *   pixelclk=24 MHz
-	 */
 	mode->clock       = 24000;
 	mode->hdisplay    = 640;
 	mode->hsync_start = 640 + 48;
@@ -275,11 +261,13 @@ static int ws35e_get_modes(struct drm_panel *panel,
 
 static const struct drm_panel_funcs ws35e_funcs = {
 	.prepare   = ws35e_prepare,
+	.enable    = ws35e_enable,
+	.disable   = ws35e_disable,
 	.unprepare = ws35e_unprepare,
 	.get_modes = ws35e_get_modes,
 };
 
-/* ── MIPI DSI driver ────────────────────────────────────────────────────── */
+/* ── MIPI DSI driver ──────────────────────────────────────────────── */
 
 static int ws35e_probe(struct mipi_dsi_device *dsi)
 {
@@ -292,17 +280,14 @@ static int ws35e_probe(struct mipi_dsi_device *dsi)
 		return -ENOMEM;
 
 	ctx->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(ctx->reset)) {
-		dev_err(dev, "failed to get reset GPIO: %ld\n",
-			PTR_ERR(ctx->reset));
+	if (IS_ERR(ctx->reset))
 		return PTR_ERR(ctx->reset);
-	}
 
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
 
-	dsi->lanes     = 2;
-	dsi->format    = MIPI_DSI_FMT_RGB888;
+	dsi->lanes      = 2;
+	dsi->format     = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
 			  MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_LPM;
@@ -318,7 +303,7 @@ static int ws35e_probe(struct mipi_dsi_device *dsi)
 
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
-		dev_err(dev, "failed to attach to DSI host: %d\n", ret);
+		dev_err(dev, "failed to attach DSI: %d\n", ret);
 		drm_panel_remove(&ctx->panel);
 		return ret;
 	}
@@ -337,7 +322,7 @@ static void ws35e_remove(struct mipi_dsi_device *dsi)
 
 static const struct of_device_id ws35e_of_match[] = {
 	{ .compatible = "waveshare,ws35dsi-e" },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ws35e_of_match);
 
@@ -352,5 +337,5 @@ static struct mipi_dsi_driver ws35e_driver = {
 module_mipi_dsi_driver(ws35e_driver);
 
 MODULE_AUTHOR("PFD-AHRS Project");
-MODULE_DESCRIPTION("Waveshare 3.5-inch DSI (E) panel — ST7701S");
+MODULE_DESCRIPTION("Waveshare 3.5-inch DSI (E) — ST7701S, init deferred to enable()");
 MODULE_LICENSE("GPL");
