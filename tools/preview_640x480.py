@@ -577,12 +577,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                (hb_x+17, HDG_Y), (hb_x+17, HDG_Y+14)]
         draw.polygon(bug, fill=CYAN)
 
-    # Heading box — rectangle with small centered triangle tab on bottom
-    # Tab is 1/3 of box width, starts 1/3 of the way along the bottom edge
-    bw2, bh2 = 58, 22
+    # Heading box — 28 px tall to accommodate T/M source subscript.
+    # GPS TRK → magenta (matches track-pointer colour). MAG → white.
+    _HDG_MAG = (220, 60, 220)  # slightly lighter magenta for text readability
+    _hdg_col = _HDG_MAG if hdg_src == "gps" else WHITE
+    bw2, bh2 = 58, 28
     bx = CX - bw2//2; by2 = HDG_Y - bh2 - 2
     th = bw2 // 3          # triangle base width ≈ 19px
-    td = bh2 // 2          # triangle depth = 11px
+    td = bh2 // 2          # triangle depth = 14px
     tx = CX - th // 2      # triangle left base x
     pts_h = _chamfer([(bx,       by2),
                       (bx+bw2,   by2),
@@ -592,27 +594,19 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                       (tx,       by2+bh2),
                       (bx,       by2+bh2)], {0, 1, 2, 6})
     draw.polygon(pts_h, fill=(0, 0, 0))
-    _hdg_box_col = CYAN if hdg_src == "gps" else WHITE
-    draw.line(pts_h + [pts_h[0]], fill=_hdg_box_col, width=2)
+    draw.line(pts_h + [pts_h[0]], fill=_hdg_col, width=2)
+    # Three-digit readout — full size, upper portion
     _hstr = f"{round(hdg)%360:03d}\u00b0"
-    if hdg_src == "gps":
-        # Two-line: heading at top half, TRK sub-label at bottom
-        _hbf = fnt(14, bold=True)
-        _hbb = draw.textbbox((0, 0), _hstr, font=_hbf)
-        _htw = _hbb[2] - _hbb[0]
-        draw.text((CX - _htw // 2 - _hbb[0], by2 + 1 - _hbb[1]),
-                  _hstr, fill=CYAN, font=_hbf)
-        _trkf = fnt(8)
-        _trkw = int(draw.textlength("TRK", font=_trkf))
-        draw.text((CX - _trkw // 2, by2 + bh2 - 11), "TRK", fill=CYAN, font=_trkf)
-    else:
-        _hbf  = fnt(17)
-        _hbb  = draw.textbbox((0, 0), _hstr, font=_hbf)
-        _htw  = _hbb[2] - _hbb[0]
-        _hth  = _hbb[3] - _hbb[1]
-        draw.text((CX - _htw // 2 - _hbb[0],
-                   by2 + (bh2 - _hth) // 2 - _hbb[1]),
-                  _hstr, fill=WHITE, font=_hbf)
+    _hbf  = fnt(17)
+    _hbb  = draw.textbbox((0, 0), _hstr, font=_hbf)
+    _htw  = _hbb[2] - _hbb[0]
+    draw.text((CX - _htw // 2 - _hbb[0], by2 + 2 - _hbb[1]),
+              _hstr, fill=_hdg_col, font=_hbf)
+    # Source subscript: T = GPS-track, M = Magnetic
+    _src_lbl = "T" if hdg_src == "gps" else "M"
+    _sf = fnt(8)
+    _sw = int(draw.textlength(_src_lbl, font=_sf))
+    draw.text((CX - _sw // 2, by2 + bh2 - 11), _src_lbl, fill=_hdg_col, font=_sf)
 
     # ── 6. ROLL ARC (rendered at 2× for anti-aliasing) ───────────────────────
     # Drawing at 2× then scaling down via LANCZOS gives smooth arc and shapes.
@@ -764,9 +758,9 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         draw.rectangle([(bx_r, 4), (bx_r+tw, 19)], fill=bg)
         draw.text((bx_r+5, 5), text, fill=fg, font=_bf)
 
-    # GPS TRK mode info badge (rightmost, dim cyan)
+    # GPS TRK mode badge — magenta (matches track-pointer and heading-box colour)
     if hdg_src == "gps" and gps_ok:
-        badge_r("GPS TRK", (0, 60, 90), (80, 190, 220))
+        badge_r("GPS TRK", (70, 0, 70), (220, 80, 220))
     if not baro_ok:
         badge_r("GPS ALT", (80, 80, 0), (220, 220, 100))
     if not gps_ok:

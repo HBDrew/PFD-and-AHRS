@@ -1063,12 +1063,15 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
             pygame.draw.polygon(surf, (220, 60, 220),
                 [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
-    # Heading box — rectangle with small centered triangle tab on bottom
-    # Tab is 1/3 of box width, starts 1/3 of the way along the bottom edge
-    bw, bh = 58, 22
+    # Heading box — rectangle with small centered triangle tab on bottom.
+    # Box is 28 px tall to accommodate the source subscript (T / M).
+    # GPS TRK mode → magenta (matches track-pointer colour).
+    # MAG mode      → white.
+    hdg_col = MAGENTA if hdg_src == "gps" else WHITE
+    bw, bh = 58, 28
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
     th = bw // 3           # triangle base width ≈ 19px
-    td = bh // 2           # triangle depth = 11px
+    td = bh // 2           # triangle depth = 14px
     tx = CX - th // 2      # triangle left base x
     pts_h = _chamfer([(bx,      by2),
                       (bx + bw, by2),
@@ -1078,14 +1081,12 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                       (tx,      by2 + bh),
                       (bx,      by2 + bh)], {0, 1, 2, 6})
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
-    pygame.gfxdraw.aapolygon(surf, pts_h, WHITE if hdg_src == "mag" else CYAN)
-    if hdg_src == "gps":
-        # Two-line readout: heading value + "TRK" sub-label in cyan
-        _text(surf, f"{round(hdg) % 360:03d}\u00b0", 14, CYAN, bold=True,
-              cx=CX, cy=by2 + 8)
-        _text(surf, "TRK", 8, CYAN, cx=CX, cy=by2 + bh - 4)
-    else:
-        _text(surf, f"{round(hdg) % 360:03d}\u00b0", 17, WHITE, cx=CX, cy=by2 + bh // 2)
+    pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
+    # Three-digit readout — full size, upper portion of box
+    _text(surf, f"{round(hdg) % 360:03d}\u00b0", 17, hdg_col, cx=CX, cy=by2 + 12)
+    # Source subscript: T = True/GPS-track, M = Magnetic
+    src_lbl = "T" if hdg_src == "gps" else "M"
+    _text(surf, src_lbl, 8, hdg_col, cx=CX, cy=by2 + bh - 6)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────
@@ -1231,9 +1232,9 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
         pygame.draw.rect(surf, bg, (rx, 4, w, 15))
         _text(surf, text, 10, fg, x=rx + 5, y=5)
 
-    # GPS-slaved heading mode indicator — dim cyan info badge (rightmost)
+    # GPS-slaved heading mode indicator — magenta badge (matches track-pointer colour)
     if hdg_src == "gps" and gps_ok:
-        badge_r("GPS TRK", (0, 60, 90), (80, 190, 220))
+        badge_r("GPS TRK", (70, 0, 70), (220, 80, 220))
 
     # Show GPS ALT only when baro sensor is absent (pilot needs to know alt source)
     if not baro_ok:
@@ -1430,6 +1431,273 @@ class SimFlyState:
             state["baro_src"] = "baro" if (not baro_fail) else "gps"
 
 
+# ── Sim setup screen ─────────────────────────────────────────────────────────
+
+# Airport grid: 4 cols × 3 rows, 8px gap, y starts at 52 (below header)
+_SIM_COLS      = 4
+_SIM_ROWS_     = 3        # number of preset rows (underscore to avoid shadowing)
+_SIM_BTN_W    = 148
+_SIM_BTN_H    = 54
+_SIM_GAP      = 8
+_SIM_GRID_X0  = (DISPLAY_W - _SIM_COLS * _SIM_BTN_W - (_SIM_COLS - 1) * _SIM_GAP) // 2
+_SIM_GRID_Y0  = 52
+
+# Condition boxes row
+_SIM_COND_Y   = _SIM_GRID_Y0 + _SIM_ROWS_ * _SIM_BTN_H + (_SIM_ROWS_ - 1) * _SIM_GAP + _SIM_GAP + 8
+_SIM_COND_H   = 44
+_SIM_COND_W   = (DISPLAY_W - 2 * 12) // 3     # ~205 px each
+
+# Sensor-failure toggles row
+_SIM_FAIL_Y   = _SIM_COND_Y + _SIM_COND_H + 8
+_SIM_FAIL_H   = 40
+_SIM_FAIL_BW  = 70    # ON / FAIL button width each
+_SIM_FAIL_GAP = 4     # gap between ON / FAIL pair
+
+# START / CANCEL
+_SIM_ACT_Y    = _SIM_FAIL_Y + _SIM_FAIL_H + 10
+_SIM_ACT_H    = 54
+
+
+def _sim_preset_rect(idx):
+    """Return (x, y, w, h) for a preset button by index."""
+    col = idx % _SIM_COLS
+    row = idx // _SIM_COLS
+    x = _SIM_GRID_X0 + col * (_SIM_BTN_W + _SIM_GAP)
+    y = _SIM_GRID_Y0 + row * (_SIM_BTN_H + _SIM_GAP)
+    return x, y, _SIM_BTN_W, _SIM_BTN_H
+
+
+def _sim_cond_rect(idx):
+    """Return (x, y, w, h) for condition box (ALT=0, HDG=1, SPD=2)."""
+    mx = 12
+    x = mx + idx * (_SIM_COND_W + 4)
+    return x, _SIM_COND_Y, _SIM_COND_W, _SIM_COND_H
+
+
+def _sim_fail_x(col_idx):
+    """Left x of the ON/FAIL pair for GPS=0, BARO=1, AHRS=2."""
+    total_pair = _SIM_FAIL_BW * 2 + _SIM_FAIL_GAP
+    section_w  = DISPLAY_W // 3
+    # centre the pair inside its section
+    return col_idx * section_w + (section_w - total_pair) // 2
+
+
+def _sim_fail_btn_pair(surf, col_idx, label, failed, y=None):
+    """Draw a sensor ON/FAIL segmented pair at col_idx (0=GPS,1=BARO,2=AHRS)."""
+    bx = _sim_fail_x(col_idx)
+    by = y if y is not None else _SIM_FAIL_Y
+    section_w = DISPLAY_W // 3
+    # section label
+    _text(surf, label, 11, (120, 140, 165),
+          cx=col_idx * section_w + section_w // 2, y=by - 14)
+    # ON button
+    on_active = not failed
+    on_bg = (0, 55, 20) if on_active else (0, 10, 20)
+    on_oc = (40, 200, 60) if on_active else (40, 70, 55)
+    on_tc = (60, 220, 80) if on_active else (70, 110, 90)
+    pygame.draw.rect(surf, on_bg, (bx, by, _SIM_FAIL_BW, _SIM_FAIL_H), border_radius=5)
+    pygame.draw.rect(surf, on_oc, (bx, by, _SIM_FAIL_BW, _SIM_FAIL_H), width=2, border_radius=5)
+    _text(surf, "ON", 13, on_tc, bold=on_active, cx=bx + _SIM_FAIL_BW // 2, cy=by + _SIM_FAIL_H // 2)
+    # FAIL button
+    fail_x = bx + _SIM_FAIL_BW + _SIM_FAIL_GAP
+    fail_active = failed
+    fail_bg = (50, 5, 5) if fail_active else (12, 0, 0)
+    fail_oc = (200, 40, 40) if fail_active else (80, 35, 35)
+    fail_tc = RED if fail_active else (120, 60, 60)
+    pygame.draw.rect(surf, fail_bg, (fail_x, by, _SIM_FAIL_BW, _SIM_FAIL_H), border_radius=5)
+    pygame.draw.rect(surf, fail_oc, (fail_x, by, _SIM_FAIL_BW, _SIM_FAIL_H), width=2, border_radius=5)
+    _text(surf, "FAIL", 11, fail_tc, bold=fail_active, cx=fail_x + _SIM_FAIL_BW // 2, cy=by + _SIM_FAIL_H // 2)
+
+
+def draw_sim_setup(surf):
+    """Full-screen flight simulator setup screen."""
+    _screen_header(surf, "FLIGHT SIMULATOR")
+    sim = disp["sim"]
+    selected = sim["preset_idx"]
+
+    # ── Airport preset grid ───────────────────────────────────────────────────
+    for idx, (icao, city, *_) in enumerate(SIM_PRESETS):
+        px, py, pw, ph = _sim_preset_rect(idx)
+        active = (idx == selected)
+        bg = (0, 35, 55) if active else (0, 12, 32)
+        oc = CYAN if active else (50, 70, 100)
+        pygame.draw.rect(surf, bg, (px, py, pw, ph), border_radius=6)
+        glow_h = ph // 5
+        for i in range(glow_h):
+            t = 1.0 - i / glow_h
+            gc = ((int(t * 20), int(50 + t * 50), int(65 + t * 60)) if active
+                  else (int(15 + t * 25), int(20 + t * 40), int(40 + t * 60)))
+            pygame.draw.line(surf, gc, (px + 6, py + 1 + i), (px + pw - 6, py + 1 + i))
+        pygame.draw.rect(surf, oc, (px, py, pw, ph), width=2 if active else 1, border_radius=6)
+        _text(surf, icao, 15, WHITE if active else (180, 195, 210), bold=True,
+              cx=px + pw // 2, cy=py + ph // 2 - 8)
+        _text(surf, city, 9, (100, 130, 155) if not active else CYAN,
+              cx=px + pw // 2, cy=py + ph // 2 + 8)
+
+    # ── Initial conditions row ─────────────────────────────────────────────────
+    cond_labels = ["ALT (ft)", "HDG (°)", "SPEED (kt)"]
+    cond_keys   = ["init_alt", "init_hdg", "init_spd"]
+    cond_vals   = [int(sim["init_alt"]), int(sim["init_hdg"]), int(sim["init_spd"])]
+
+    for i, (lbl, val) in enumerate(zip(cond_labels, cond_vals)):
+        cx2, cy2, cw, ch = _sim_cond_rect(i)
+        pygame.draw.rect(surf, (0, 18, 38), (cx2, cy2, cw, ch), border_radius=5)
+        pygame.draw.rect(surf, CYAN, (cx2, cy2, cw, ch), width=1, border_radius=5)
+        _text(surf, lbl, 9, (100, 140, 170), cx=cx2 + cw // 2, y=cy2 + 4)
+        _text(surf, str(val), 17, CYAN, bold=True, cx=cx2 + cw // 2, cy=cy2 + ch // 2 + 5)
+        _text(surf, "tap to set", 8, (70, 100, 130), cx=cx2 + cw // 2, y=cy2 + ch - 12)
+
+    # ── Sensor failure toggles ────────────────────────────────────────────────
+    _sim_fail_btn_pair(surf, 0, "GPS",  sim.get("gps_fail",  False))
+    _sim_fail_btn_pair(surf, 1, "BARO", sim.get("baro_fail", False))
+    _sim_fail_btn_pair(surf, 2, "AHRS", sim.get("ahrs_fail", False))
+
+    # ── START / CANCEL buttons ────────────────────────────────────────────────
+    bx = 12; bw = DISPLAY_W - 24
+    half = (bw - 10) // 2
+    _action_btn(surf, bx,          _SIM_ACT_Y, half, _SIM_ACT_H, "START SIM", "ok")
+    _action_btn(surf, bx + half + 10, _SIM_ACT_Y, half, _SIM_ACT_H, "CANCEL",    "danger")
+
+
+def sim_setup_hit(x, y):
+    """Return action string for the sim setup screen tap, or None."""
+    # BACK button
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+
+    # Airport preset grid
+    for idx in range(len(SIM_PRESETS)):
+        px, py, pw, ph = _sim_preset_rect(idx)
+        if px <= x <= px + pw and py <= y <= py + ph:
+            return f"preset:{idx}"
+
+    # Initial conditions tappable boxes
+    sim = disp["sim"]
+    for i, key in enumerate(("init_alt", "init_hdg", "init_spd")):
+        cx2, cy2, cw, ch = _sim_cond_rect(i)
+        if cx2 <= x <= cx2 + cw and cy2 <= y <= cy2 + ch:
+            return f"cond:{key}"
+
+    # Sensor failure toggles
+    for col_idx, sensor in enumerate(("gps", "baro", "ahrs")):
+        bx = _sim_fail_x(col_idx)
+        by = _SIM_FAIL_Y
+        if by <= y <= by + _SIM_FAIL_H:
+            if bx <= x <= bx + _SIM_FAIL_BW:
+                return f"sensor_on:{sensor}"
+            fail_x = bx + _SIM_FAIL_BW + _SIM_FAIL_GAP
+            if fail_x <= x <= fail_x + _SIM_FAIL_BW:
+                return f"sensor_fail:{sensor}"
+
+    # START / CANCEL
+    bx_btn = 12; bw_btn = DISPLAY_W - 24
+    half = (bw_btn - 10) // 2
+    if _SIM_ACT_Y <= y <= _SIM_ACT_Y + _SIM_ACT_H:
+        if bx_btn <= x <= bx_btn + half:
+            return "start"
+        if bx_btn + half + 10 <= x <= bx_btn + half + 10 + half:
+            return "cancel"
+
+    return None
+
+
+# ── Sim controls overlay ─────────────────────────────────────────────────────
+
+_SIMCTRL_W = 280
+_SIMCTRL_H = 200
+_SIMCTRL_X = (DISPLAY_W - _SIMCTRL_W) // 2
+_SIMCTRL_Y = (DISPLAY_H - _SIMCTRL_H) // 2 - 10
+
+_SIMCTRL_ROW_Y0  = _SIMCTRL_Y + 36   # first sensor row top
+_SIMCTRL_ROW_H   = 34
+_SIMCTRL_ROW_GAP = 4
+_SIMCTRL_BW      = 70     # ON / FAIL button width
+
+
+def draw_sim_controls(surf):
+    """Semi-transparent overlay drawn on top of the live PFD."""
+    sim = disp["sim"]
+
+    # Background panel
+    panel = pygame.Surface((_SIMCTRL_W, _SIMCTRL_H), pygame.SRCALPHA)
+    panel.fill((0, 10, 28, 220))
+    surf.blit(panel, (_SIMCTRL_X, _SIMCTRL_Y))
+    pygame.draw.rect(surf, CYAN, (_SIMCTRL_X, _SIMCTRL_Y, _SIMCTRL_W, _SIMCTRL_H),
+                     width=2, border_radius=8)
+
+    # Title
+    _text(surf, "SIM CONTROLS", 14, CYAN, bold=True,
+          cx=_SIMCTRL_X + _SIMCTRL_W // 2, cy=_SIMCTRL_Y + 16)
+
+    # Sensor rows: GPS / BARO / AHRS
+    sensors = [("GPS",  "gps_fail"), ("BARO", "baro_fail"), ("AHRS", "ahrs_fail")]
+    for ri, (label, key) in enumerate(sensors):
+        row_y = _SIMCTRL_ROW_Y0 + ri * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP)
+        failed = sim.get(key, False)
+
+        # Row label
+        _text(surf, label, 12, (160, 175, 200), bold=True,
+              x=_SIMCTRL_X + 14, cy=row_y + _SIMCTRL_ROW_H // 2)
+
+        # ON button
+        on_active = not failed
+        on_bg = (0, 50, 20) if on_active else (0, 8, 16)
+        on_oc = (40, 190, 60) if on_active else (35, 60, 45)
+        on_tc = (60, 220, 80) if on_active else (60, 100, 75)
+        ox = _SIMCTRL_X + _SIMCTRL_W - 2 * _SIMCTRL_BW - 8 - 6
+        pygame.draw.rect(surf, on_bg, (ox, row_y, _SIMCTRL_BW, _SIMCTRL_ROW_H), border_radius=4)
+        pygame.draw.rect(surf, on_oc, (ox, row_y, _SIMCTRL_BW, _SIMCTRL_ROW_H), width=2, border_radius=4)
+        _text(surf, "ON", 12, on_tc, bold=on_active,
+              cx=ox + _SIMCTRL_BW // 2, cy=row_y + _SIMCTRL_ROW_H // 2)
+
+        # FAIL button
+        fx = ox + _SIMCTRL_BW + 6
+        fail_active = failed
+        fail_bg = (50, 5, 5) if fail_active else (12, 0, 0)
+        fail_oc = (200, 40, 40) if fail_active else (75, 30, 30)
+        fail_tc = RED if fail_active else (110, 55, 55)
+        pygame.draw.rect(surf, fail_bg, (fx, row_y, _SIMCTRL_BW, _SIMCTRL_ROW_H), border_radius=4)
+        pygame.draw.rect(surf, fail_oc, (fx, row_y, _SIMCTRL_BW, _SIMCTRL_ROW_H), width=2, border_radius=4)
+        _text(surf, "FAIL", 11, fail_tc, bold=fail_active,
+              cx=fx + _SIMCTRL_BW // 2, cy=row_y + _SIMCTRL_ROW_H // 2)
+
+    # EXIT SIM button
+    exit_y = _SIMCTRL_ROW_Y0 + len(sensors) * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 6
+    _action_btn(surf,
+                _SIMCTRL_X + 14, exit_y,
+                _SIMCTRL_W - 28, _SIMCTRL_H - (exit_y - _SIMCTRL_Y) - 10,
+                "EXIT SIM", "danger")
+
+
+def sim_controls_hit(x, y):
+    """Return action for a tap on the sim_controls overlay, or None."""
+    # Outside the panel — ignore (do not propagate to PFD)
+    if not (_SIMCTRL_X <= x <= _SIMCTRL_X + _SIMCTRL_W and
+            _SIMCTRL_Y <= y <= _SIMCTRL_Y + _SIMCTRL_H):
+        return None
+
+    sensors = [("gps", "gps_fail"), ("baro", "baro_fail"), ("ahrs", "ahrs_fail")]
+    for ri, (key_short, _key) in enumerate(sensors):
+        row_y = _SIMCTRL_ROW_Y0 + ri * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP)
+        if not (row_y <= y <= row_y + _SIMCTRL_ROW_H):
+            continue
+        ox = _SIMCTRL_X + _SIMCTRL_W - 2 * _SIMCTRL_BW - 8 - 6
+        fx = ox + _SIMCTRL_BW + 6
+        if ox <= x <= ox + _SIMCTRL_BW:
+            return f"sensor_on:{key_short}"
+        if fx <= x <= fx + _SIMCTRL_BW:
+            return f"sensor_fail:{key_short}"
+
+    # EXIT SIM button area
+    exit_y = _SIMCTRL_ROW_Y0 + len(sensors) * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 6
+    exit_h = _SIMCTRL_H - (exit_y - _SIMCTRL_Y) - 10
+    if (exit_y <= y <= exit_y + exit_h and
+            _SIMCTRL_X + 14 <= x <= _SIMCTRL_X + _SIMCTRL_W - 14):
+        return "exit_sim"
+
+    return "noop"   # tapped inside panel but not on a control — consume event
+
+
 # ── Touch handler ─────────────────────────────────────────────────────────────
 _touch_t0      = {}
 _bug_dragging  = None    # "hdg" | "alt"
@@ -1446,7 +1714,7 @@ def _open_numpad(target):
 
 
 def handle_event(event, demo_mode):
-    global _bug_dragging, _active_fingers, _multitouch_t0
+    global _bug_dragging, _active_fingers, _multitouch_t0, _sim_state
 
     if event.type == pygame.QUIT:
         return False
@@ -1574,6 +1842,8 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "terrain_data"
             elif action == "obstacle_data":
                 disp["mode"] = "obstacle_data"
+            elif action == "simulator":
+                disp["mode"] = "sim_setup"
             elif action == "reset_defaults":
                 for k,v in [("vs0",VS0),("vs1",VS1),("vfe",VFE),("vno",VNO),
                              ("vne",VNE),("va",VA),("vy",VY),("vx",VX)]:
@@ -1581,6 +1851,49 @@ def handle_event(event, demo_mode):
                 disp["ds"].update(spd_unit="kt", alt_unit="ft", baro_unit="inhg",
                                    brightness=8, night_mode=False)
                 disp["ss"].update(pitch_trim=0.0, roll_trim=0.0)
+            return True
+
+        # ── Sim setup screen taps ─────────────────────────────────────────
+        if mode == "sim_setup":
+            action = sim_setup_hit(x, y)
+            if action == "back":
+                disp["mode"] = "system_setup"
+            elif action and action.startswith("preset:"):
+                disp["sim"]["preset_idx"] = int(action.split(":")[1])
+            elif action and action.startswith("cond:"):
+                key = action.split(":")[1]
+                target_map = {
+                    "init_alt": "sim_init_alt",
+                    "init_hdg": "sim_init_hdg",
+                    "init_spd": "sim_init_spd",
+                }
+                _open_numpad(target_map[key])
+            elif action and action.startswith("sensor_on:"):
+                sensor = action.split(":")[1]
+                disp["sim"][sensor + "_fail"] = False
+            elif action and action.startswith("sensor_fail:"):
+                sensor = action.split(":")[1]
+                disp["sim"][sensor + "_fail"] = True
+            elif action == "start":
+                _sim_state = SimFlyState()
+                disp["mode"] = "pfd"
+            elif action == "cancel":
+                disp["mode"] = "system_setup"
+            return True
+
+        # ── Sim controls overlay taps ─────────────────────────────────────
+        if mode == "sim_controls":
+            action = sim_controls_hit(x, y)
+            if action == "exit_sim":
+                _sim_state = None
+                disp["mode"] = "pfd"
+            elif action and action.startswith("sensor_on:"):
+                sensor = action.split(":")[1]
+                disp["sim"][sensor + "_fail"] = False
+            elif action and action.startswith("sensor_fail:"):
+                sensor = action.split(":")[1]
+                disp["sim"][sensor + "_fail"] = True
+            # "noop" or None: consume the event either way
             return True
 
         # ── Obstacle data screen taps ─────────────────────────────────────
@@ -1689,6 +2002,12 @@ def handle_event(event, demo_mode):
                                 disp["baro_hpa"] = float(val)
                             else:   # inHg: 4 digits → insert decimal after 2
                                 disp["baro_hpa"] = round(val / 100.0 * 33.8639, 2)
+                        elif target == "sim_init_alt":
+                            disp["sim"]["init_alt"] = float(val * 100)
+                        elif target == "sim_init_hdg":
+                            disp["sim"]["init_hdg"] = float(val % 360)
+                        elif target == "sim_init_spd":
+                            disp["sim"]["init_spd"] = float(val)
                         elif target in disp["fp"]:   # V-speed field
                             disp["fp"][target] = val
                     disp["mode"] = disp["numpad_prev"]
@@ -1696,6 +2015,12 @@ def handle_event(event, demo_mode):
             return True
 
         # ── PFD taps ──────────────────────────────────────────────────────
+        # Tap on SIM watermark → open sim controls overlay
+        if _sim_state is not None and mode == "pfd":
+            if CX - 30 <= x <= CX + 30 and CY - 30 <= y <= CY - 10:
+                disp["mode"] = "sim_controls"
+                return True
+
         # Tap on alt bug button → open numpad
         if ALT_X <= x <= DISPLAY_W and 2 <= y <= 24:
             _open_numpad("alt_bug")
@@ -2525,7 +2850,7 @@ def draw_system_setup(surf):
                    "OBSTACLE DATA", od_sub, active=True)
 
     half_w = (bw - 10) // 2
-    _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "DIAGNOSTICS", "normal")
+    _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "SIMULATOR", "ok")
     _action_btn(surf, bx+half_w+10,  _SYS_BTN_Y, half_w, _SYS_BTN_H, "RESET DEFAULTS", "danger")
 
 
@@ -2542,7 +2867,7 @@ def system_setup_hit(x, y):
     half_w = (bw - 10) // 2
     if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
         if bx <= x <= bx+half_w:
-            return "diagnostics"
+            return "simulator"
         if bx+half_w+10 <= x <= bx+half_w+10+half_w:
             return "reset_defaults"
     return None
@@ -3196,6 +3521,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_terrain_data(surf, disp["td"]); return
     if mode == "obstacle_data":
         draw_obstacle_data(surf, disp["od"]); return
+    if mode == "sim_setup":
+        draw_sim_setup(surf); return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
     surf.fill((0, 0, 0))
@@ -3316,12 +3643,17 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 11. Cyan tap-buttons for heading bug, baro, and alt bug
     draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug)
 
-    # 12. Demo watermark
+    # 12. Demo / SIM watermark
     if demo_mode:
         _text(surf, "DEMO", 14, (255, 60, 60), cx=CX, cy=CY - 20)
+    elif _sim_state is not None:
+        _text(surf, "SIM", 14, (255, 100, 60), cx=CX, cy=CY - 20)
 
     # ── Overlay modes: veil + UI drawn on top of live PFD ────────────────────
-    if mode == "numpad":
+    if mode == "sim_controls":
+        draw_sim_controls(surf)
+
+    elif mode == "numpad":
         _draw_veil(surf)
         target  = disp.get("numpad_target", "")
         buf     = disp.get("numpad_buf", "")
@@ -3335,22 +3667,30 @@ def render(surf, demo_mode, connected, data_stale=False):
             baro_cur  = int(round(disp["baro_hpa"] / 33.8639 * 100))  # e.g. 2992
             baro_title = "SET BARO  (in Hg)"
             baro_dec   = 2
-        titles  = {"alt_bug":  "SET ALTITUDE BUG  (\u00d7100 ft)",
-                   "hdg_bug":  "SET HEADING BUG",
-                   "spd_bug":  "SET GS BUG",
-                   "baro_hpa": baro_title}
-        curvals = {"alt_bug":  int(disp.get("alt_bug", 0)) // 100,
-                   "hdg_bug":  int(disp.get("hdg_bug", 0)),
-                   "spd_bug":  int(disp.get("spd_bug", 0)),
-                   "baro_hpa": baro_cur}
+        titles  = {"alt_bug":   "SET ALTITUDE BUG  (\u00d7100 ft)",
+                   "hdg_bug":   "SET HEADING BUG",
+                   "spd_bug":   "SET GS BUG",
+                   "baro_hpa":  baro_title,
+                   "sim_init_alt": "SET INITIAL ALTITUDE  (\u00d7100 ft)",
+                   "sim_init_hdg": "SET INITIAL HEADING",
+                   "sim_init_spd": "SET INITIAL SPEED (kt)"}
+        curvals = {"alt_bug":   int(disp.get("alt_bug", 0)) // 100,
+                   "hdg_bug":   int(disp.get("hdg_bug", 0)),
+                   "spd_bug":   int(disp.get("spd_bug", 0)),
+                   "baro_hpa":  baro_cur,
+                   "sim_init_alt": int(disp["sim"]["init_alt"]) // 100,
+                   "sim_init_hdg": int(disp["sim"]["init_hdg"]),
+                   "sim_init_spd": int(disp["sim"]["init_spd"])}
         for fkey, flabel, *_ in _FP_FIELDS:
             if fkey not in titles:
                 titles[fkey]  = f"SET {flabel}"
                 curvals[fkey] = int(disp["fp"].get(fkey, 0))
         dec = baro_dec if target == "baro_hpa" else 0
+        # sim_init_alt also uses ×100 suffix like alt_bug
+        sim_alt_suffix = "00" if target == "sim_init_alt" else ""
         draw_numpad(surf, titles.get(target, "ENTER VALUE"),
                     curvals.get(target, 0), buf,
-                    suffix="00" if target == "alt_bug" else "",
+                    suffix=("00" if target == "alt_bug" else sim_alt_suffix),
                     transparent=True,
                     decimal_after=dec)
 
@@ -3452,6 +3792,10 @@ def main():
         # Update demo state
         if demo_mode and demo:
             demo.tick()
+
+        # Update flight simulator state (mutually exclusive with demo)
+        if _sim_state is not None:
+            _sim_state.tick()
 
         # Smooth sensor values into display values
         smooth_state()
