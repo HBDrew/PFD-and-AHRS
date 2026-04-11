@@ -66,13 +66,25 @@ ssh pi@pfd.local
 # password: pfd1234 (or whatever you set)
 ```
 
-### 4. Clone the repo
+### 4. Install git and clone the repo
+
+Git is not pre-installed on Raspberry Pi OS Lite — install it first:
+
+```bash
+sudo apt update && sudo apt install git -y
+```
+
+Then clone:
 
 ```bash
 cd ~
 git clone https://github.com/HBDrew/PFD-and-AHRS.git
 cd PFD-and-AHRS
 ```
+
+**No internet on the Pi yet?** Alternatives:
+- Download the ZIP from GitHub on your PC, copy to a USB drive, then `cp -r /media/pi/DRIVE/pfd-and-ahrs ~/`
+- Use **WinSCP** (Windows) or `scp` (Mac/Linux) to transfer the folder over SSH
 
 ### 5. Run the install script
 
