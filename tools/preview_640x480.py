@@ -579,14 +579,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         hdg_bug_col = MAGENTA if hdg_src == "gps" else CYAN
         draw.polygon(bug, fill=hdg_bug_col)
 
-    # Heading box — 28 px tall to accommodate T/M source subscript.
+    # Heading box — bh=34 gives room for 17pt number + 8pt subscript without collision.
     # GPS TRK → magenta (matches track-pointer colour). MAG → white.
     _HDG_MAG = (220, 60, 220)  # slightly lighter magenta for text readability
     _hdg_col = _HDG_MAG if hdg_src == "gps" else WHITE
-    bw2, bh2 = 58, 28
+    bw2, bh2 = 58, 34
     bx = CX - bw2//2; by2 = HDG_Y - bh2 - 2
     th = bw2 // 3          # triangle base width ≈ 19px
-    td = bh2 // 2          # triangle depth = 14px
+    td = 14                # fixed triangle depth
     tx = CX - th // 2      # triangle left base x
     pts_h = _chamfer([(bx,       by2),
                       (bx+bw2,   by2),
@@ -597,18 +597,27 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                       (bx,       by2+bh2)], {0, 1, 2, 6})
     draw.polygon(pts_h, fill=(0, 0, 0))
     draw.line(pts_h + [pts_h[0]], fill=_hdg_col, width=2)
-    # Three-digit readout — full size, upper portion
-    _hstr = f"{round(hdg)%360:03d}\u00b0"
-    _hbf  = fnt(17)
-    _hbb  = draw.textbbox((0, 0), _hstr, font=_hbf)
-    _htw  = _hbb[2] - _hbb[0]
-    draw.text((CX - _htw // 2 - _hbb[0], by2 + 2 - _hbb[1]),
+    # Three-digit readout — centered in upper portion of box
+    _num_str = f"{round(hdg)%360:03d}"
+    _hstr    = _num_str + "\u00b0"
+    _hbf     = fnt(17)
+    _hbb     = draw.textbbox((0, 0), _hstr, font=_hbf)
+    _htw     = _hbb[2] - _hbb[0]
+    _hth     = _hbb[3] - _hbb[1]
+    draw.text((CX - _htw // 2 - _hbb[0], by2 + (bh2 // 2) - _hth // 2 - 4 - _hbb[1]),
               _hstr, fill=_hdg_col, font=_hbf)
-    # Source subscript: T = GPS-track, M = Magnetic
+    # T/M subscript — directly under the ° glyph, not centred on the full string
     _src_lbl = "T" if hdg_src == "gps" else "M"
-    _sf = fnt(8)
-    _sw = int(draw.textlength(_src_lbl, font=_sf))
-    draw.text((CX - _sw // 2, by2 + bh2 - 11), _src_lbl, fill=_hdg_col, font=_sf)
+    _sf      = fnt(8)
+    _num_bb  = draw.textbbox((0, 0), _num_str, font=_hbf)
+    _deg_bb  = draw.textbbox((0, 0), "\u00b0",  font=_hbf)
+    _num_w   = _num_bb[2] - _num_bb[0]
+    _deg_w   = _deg_bb[2] - _deg_bb[0]
+    _deg_cx  = (CX - _htw // 2) + _num_w + _deg_w // 2    # centre-x of ° glyph
+    _sw      = int(draw.textlength(_src_lbl, font=_sf))
+    _sub_bb  = draw.textbbox((0, 0), _src_lbl, font=_sf)
+    _sub_h   = _sub_bb[3] - _sub_bb[1]
+    draw.text((_deg_cx - _sw // 2, by2 + bh2 - _sub_h - 4), _src_lbl, fill=_hdg_col, font=_sf)
 
     # ── 6. ROLL ARC (rendered at 2× for anti-aliasing) ───────────────────────
     # Drawing at 2× then scaling down via LANCZOS gives smooth arc and shapes.
