@@ -108,9 +108,10 @@ disp["ds"] = {                      # display settings
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
 }
 disp["ss"] = {                      # AHRS / sensor settings
-    "pitch_trim": 0.0, "roll_trim": 0.0,
-    "mag_cal":    "idle", "mounting": "normal",
-    "hdg_src":    "mag",   # "mag" | "gps"  — heading source (magnetic or GPS track)
+    "pitch_trim":    0.0, "roll_trim": 0.0,
+    "mag_cal":       "idle", "mounting": "normal",
+    "hdg_src":       "mag",   # "mag" | "gps"  — heading source (magnetic or GPS track)
+    "airspeed_src":  "gps",   # "gps" | "ias"  — speed source (GPS groundspeed or IAS sensor)
 }
 disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
@@ -809,7 +810,8 @@ def alt_y(ft, alt):  return int(TAPE_MID - (ft - alt)  * PX_PER_FT)
 
 
 def draw_speed_tape(surf, speed, gs_bug=None,
-                    vs0=VS0, vs1=VS1, vfe=VFE, vno=VNO, vne=VNE):
+                    vs0=VS0, vs1=VS1, vfe=VFE, vno=VNO, vne=VNE,
+                    airspeed_src="gps"):
     """Left airspeed tape with GI-275-style V-speed colour bands.
     V-speed params should already be in the same unit as *speed*."""
     # Background (full height including top strip, matching alt tape)
@@ -858,14 +860,15 @@ def draw_speed_tape(surf, speed, gs_bug=None,
             _text(surf, str(v), 17, (230, 230, 230), bold=True,
                   x=SPD_X + tl + 2, y=vy - 9)
 
-    # GS bug — stores half-visible at tape edge when outside visible range.
+    # GS/IAS bug — color reflects source: magenta=GPS groundspeed, cyan=IAS sensor.
     if gs_bug is not None:
         gby = max(TAPE_TOP, min(TAPE_BOT, spd_y(gs_bug, speed)))
         gb = [(SPD_X,      gby - 17),
               (SPD_X + 14, gby - 17), (SPD_X + 14, gby - 5), (SPD_X + 7, gby),
               (SPD_X + 14, gby + 5),  (SPD_X + 14, gby + 17), (SPD_X, gby + 17)]
+        spd_bug_col = MAGENTA if airspeed_src == "gps" else CYAN
         surf.set_clip((0, TAPE_TOP, DISPLAY_W, TAPE_BOT - TAPE_TOP))
-        pygame.draw.polygon(surf, CYAN, gb)
+        pygame.draw.polygon(surf, spd_bug_col, gb)
         surf.set_clip(None)
 
     # Speed readout box — stepped Veeder-Root style (from SVG spec)
@@ -892,7 +895,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
-def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
+def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=True):
     """Right altitude tape with VSI and baro setting."""
     tape_surf = pygame.Surface((ALT_W, TAPE_H), pygame.SRCALPHA)
     tape_surf.fill(TAPE_BG)
@@ -948,14 +951,15 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None):
             _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
         pygame.draw.rect(surf, MAGENTA, (ALT_X + ALT_W - 5, _vsy1, 5, _vsy2 - _vsy1))
 
-    # Altitude bug — stores half-visible at tape edge when outside visible range.
+    # Altitude bug — color reflects source: cyan=baro, yellow=GPS alt (baro failed).
     if alt_bug is not None:
         aby = max(TAPE_TOP, min(TAPE_BOT, ay2(alt_bug)))
         bug = [(ALT_X + ALT_W,      aby - 17),
                (ALT_X + ALT_W - 14, aby - 17), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
                (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 17), (ALT_X + ALT_W, aby + 17)]
+        alt_bug_col = CYAN if baro_ok else YELLOW
         surf.set_clip((0, TAPE_TOP, DISPLAY_W, TAPE_BOT - TAPE_TOP))
-        pygame.draw.polygon(surf, CYAN, bug)
+        pygame.draw.polygon(surf, alt_bug_col, bug)
         surf.set_clip(None)
 
     # Altitude readout box — stepped Veeder-Root style (from SVG spec)
@@ -1043,7 +1047,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
             col = YELLOW if deg in _CARDINALS else (230, 230, 230)
             _text(surf, lbl, 17, col, bold=True, cx=x, y=HDG_Y + HDG_H - 18)
 
-    # Heading bug — stores at button edges when outside visible tape range.
+    # Heading bug — color reflects source: magenta=GPS track, cyan=magnetic.
     if hdg_bug is not None:
         off = ((hdg_bug - hdg + 180) % 360) - 180
         hbx = int(CX + off * PX_PER_DEG)
@@ -1051,8 +1055,9 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
         bug = [(hbx - 17, HDG_Y + 14), (hbx - 17, HDG_Y),
                (hbx - 5,  HDG_Y), (hbx, HDG_Y + 7), (hbx + 5, HDG_Y),
                (hbx + 17, HDG_Y), (hbx + 17, HDG_Y + 14)]
-        pygame.gfxdraw.filled_polygon(surf, bug, CYAN)
-        pygame.gfxdraw.aapolygon(surf, bug, CYAN)
+        hdg_bug_col = MAGENTA if hdg_src == "gps" else CYAN
+        pygame.gfxdraw.filled_polygon(surf, bug, hdg_bug_col)
+        pygame.gfxdraw.aapolygon(surf, bug, hdg_bug_col)
 
     # GPS track pointer (magenta, when GPS OK and heading source is MAG)
     # Suppressed in GPS TRK mode — hdg is already the track value.
@@ -2383,8 +2388,8 @@ def keyboard_hit(x, y):
 
 _SS_MX  = 12     # side margin
 _SS_Y0  = 52     # first row top (44px title bar + 8px gap)
-_SS_RH  = 68     # row height
-_SS_GAP = 8      # gap between rows
+_SS_RH  = 62     # row height (62 lets 6 rows fit in 480px)
+_SS_GAP = 6      # gap between rows
 
 
 def _ss_row_y(i):
@@ -2630,9 +2635,29 @@ def draw_ahrs_setup(surf, ss):
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts_src):
         _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur_src)
-    # Dim note: GPS TRK only available when GPS has a fix
-    _text(surf, "GPS TRK available with valid fix", 9, (80, 100, 125),
-          x=bx + 14, y=by + bh - 14)
+
+    # Row 5: Airspeed source (GPS groundspeed vs dedicated IAS sensor)
+    bx, by, bw, bh = _setting_row(surf, 5, "AIRSPEED SOURCE",
+                                   "GPS groundspeed or IAS sensor")
+    cur_as = ss.get("airspeed_src", "gps")
+    opts_as = [("gps", "GPS GS"), ("ias", "IAS SENSOR")]
+    total_as = 2*120 + _DSP_BTN_G
+    rx = bx + bw - total_as - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    for i, (v, lbl) in enumerate(opts_as):
+        active = v == cur_as
+        if v == "ias":
+            # IAS sensor not yet wired — show as future/disabled
+            pygame.draw.rect(surf, (18, 18, 20),
+                             (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), border_radius=6)
+            pygame.draw.rect(surf, (55, 55, 65),
+                             (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), width=2, border_radius=6)
+            _text(surf, lbl, 13, (75, 75, 88), bold=False,
+                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2-7)
+            _text(surf, "future", 9, (60, 60, 72),
+                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2+8)
+        else:
+            _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, active)
 
 
 def ahrs_setup_hit(x, y, ss):
@@ -2674,6 +2699,14 @@ def ahrs_setup_hit(x, y, ss):
                 if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
                     if ry <= y <= ry+_DSP_BTN_H:
                         return f"set:hdg_src:{v}"
+        elif ri == 5:
+            total_as = 2*120 + _DSP_BTN_G
+            rx = bx + bw - total_as - 14
+            ry = by + (_SS_RH - _DSP_BTN_H) // 2
+            # Only GPS GS (index 0) is active; IAS SENSOR (index 1) is future/disabled
+            if rx <= x <= rx+120:
+                if ry <= y <= ry+_DSP_BTN_H:
+                    return "set:airspeed_src:gps"
     return None
 
 
@@ -3573,6 +3606,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         _gps_hdg = _prev_yaw_disp = None
         hdg = disp["yaw"]
 
+    # ── Airspeed source selection ─────────────────────────────────────────────
+    # "gps" (default): GPS groundspeed  → bug triangle is magenta
+    # "ias":           IAS sensor        → bug triangle is cyan (future)
+    airspeed_src = ss.get("airspeed_src", "gps")
+
     # ── Unit conversions ──────────────────────────────────────────────────────
     ds = disp["ds"]
     spd_unit = ds.get("spd_unit", "kt")
@@ -3613,10 +3651,12 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 3. Speed tape (display unit, fp V-speeds)
     draw_speed_tape(surf, speed_d, gs_bug=gs_bug_d,
-                    vs0=vs0_d, vs1=vs1_d, vfe=vfe_d, vno=vno_d, vne=vne_d)
+                    vs0=vs0_d, vs1=vs1_d, vfe=vfe_d, vno=vno_d, vne=vne_d,
+                    airspeed_src=airspeed_src)
 
     # 4. Alt tape (display unit)
-    draw_alt_tape(surf, alt_d, vspeed, baro_hpa, baro_src, alt_bug_d)
+    draw_alt_tape(surf, alt_d, vspeed, baro_hpa, baro_src, alt_bug_d,
+                  baro_ok=baro_ok)
 
     # 5. Heading tape
     draw_heading_tape(surf, hdg, hdg_bug, track, gps_ok, hdg_src=hdg_src)
@@ -3667,9 +3707,10 @@ def render(surf, demo_mode, connected, data_stale=False):
             baro_cur  = int(round(disp["baro_hpa"] / 33.8639 * 100))  # e.g. 2992
             baro_title = "SET BARO  (in Hg)"
             baro_dec   = 2
+        spd_bug_title = "SET IAS BUG" if airspeed_src == "ias" else "SET GS BUG"
         titles  = {"alt_bug":   "SET ALTITUDE BUG  (\u00d7100 ft)",
                    "hdg_bug":   "SET HEADING BUG",
-                   "spd_bug":   "SET GS BUG",
+                   "spd_bug":   spd_bug_title,
                    "baro_hpa":  baro_title,
                    "sim_init_alt": "SET INITIAL ALTITUDE  (\u00d7100 ft)",
                    "sim_init_hdg": "SET INITIAL HEADING",

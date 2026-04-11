@@ -240,7 +240,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
                hdg_bug, alt_bug, label, filename,
                gs_bug=None, ahrs_ok=True, gps_ok=True, baro_ok=False, sats=8,
                baro_hpa=1013.25, terrain_alert=0,
-               no_terrain=False, obs_state="ok", hdg_src="mag"):
+               no_terrain=False, obs_state="ok", hdg_src="mag", airspeed_src="gps"):
 
     img  = Image.new('RGB', (W, H), (0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -406,14 +406,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             _d.rectangle([(0, y1+1), (W-1, H-1)], fill=(0, 0, 0, 0))
         img.paste(_t.convert('RGB'), (0, 0), _t.split()[3])
 
-    # GS bug — before speed box so box draws on top (bug goes behind readout)
-    # Stores half-visible at tape edge when outside visible range.
+    # GS/IAS bug — color reflects source: magenta=GPS groundspeed, cyan=IAS sensor.
     if gs_bug is not None:
         gby = max(TAPE_TOP, min(TAPE_BOT, spd_y(gs_bug)))
         gb = [(SPD_X,    gby-17),
               (SPD_X+14, gby-17), (SPD_X+14, gby-5), (SPD_X+7, gby),
               (SPD_X+14, gby+5),  (SPD_X+14, gby+17), (SPD_X, gby+17)]
-        _clipped_poly(gb, CYAN)
+        spd_bug_col = MAGENTA if airspeed_src == "gps" else CYAN
+        _clipped_poly(gb, spd_bug_col)
 
     # Speed readout box — stepped Veeder-Root style (from SVG spec)
     # Layout: pointer(15) → inner section(32) → drum section(19) = 66px total
@@ -483,13 +483,14 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             _vsy2 = min(TAPE_BOT, TAPE_MID + _vs_px)
         draw.rectangle([(ALT_X+ALT_W-5, _vsy1), (ALT_X+ALT_W, _vsy2)], fill=MAGENTA)
 
-    # Alt bug — stores half-visible at tape edge when outside visible range.
+    # Alt bug — color reflects source: cyan=baro, yellow=GPS alt (baro failed).
     if alt_bug is not None:
         aby = max(TAPE_TOP, min(TAPE_BOT, alt_y(alt_bug)))
         bug = [(ALT_X+ALT_W,    aby-17),
                (ALT_X+ALT_W-14, aby-17), (ALT_X+ALT_W-14, aby-5), (ALT_X+ALT_W-7, aby),
                (ALT_X+ALT_W-14, aby+5),  (ALT_X+ALT_W-14, aby+17), (ALT_X+ALT_W, aby+17)]
-        _clipped_poly(bug, CYAN)
+        alt_bug_col = CYAN if baro_ok else YELLOW
+        _clipped_poly(bug, alt_bug_col)
 
     # Altitude readout box — stepped Veeder-Root style (from SVG spec)
     # Layout: inner section(42) → drum section(24) → pointer(15) = 81px total
@@ -567,7 +568,7 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
             tw = int(draw.textlength(lbl, font=_hf))
             draw.text((x - tw // 2, HDG_Y+HDG_H-18), lbl, fill=col, font=_hf)
 
-    # Heading bug — stores at button edges when outside visible tape range.
+    # Heading bug — color reflects source: magenta=GPS track, cyan=magnetic.
     if hdg_bug is not None:
         hb_off = ((hdg_bug - hdg + 180) % 360) - 180
         hb_x   = int(CX + hb_off * PX_PER_DEG)
@@ -575,7 +576,8 @@ def draw_scene(roll, pitch, hdg, alt, speed, vspeed, ay,
         bug = [(hb_x-17, HDG_Y+14), (hb_x-17, HDG_Y),
                (hb_x-5,  HDG_Y), (hb_x, HDG_Y+7), (hb_x+5, HDG_Y),
                (hb_x+17, HDG_Y), (hb_x+17, HDG_Y+14)]
-        draw.polygon(bug, fill=CYAN)
+        hdg_bug_col = MAGENTA if hdg_src == "gps" else CYAN
+        draw.polygon(bug, fill=hdg_bug_col)
 
     # Heading box — 28 px tall to accommodate T/M source subscript.
     # GPS TRK → magenta (matches track-pointer colour). MAG → white.
@@ -1179,8 +1181,8 @@ def draw_keyboard_screen(title, current_val, filename, entered=""):
 
 _SS_MX  = 12
 _SS_Y0  = 52
-_SS_RH  = 68
-_SS_GAP = 8
+_SS_RH  = 62
+_SS_GAP = 6
 
 
 def _ss_row_y(i):
@@ -1340,7 +1342,7 @@ _SS_MAG_LABELS = {
 def draw_ahrs_screen(filename, ss=None):
     if ss is None:
         ss = {"pitch_trim":0.0,"roll_trim":0.0,"mag_cal":"idle","mounting":"normal",
-              "hdg_src":"mag"}
+              "hdg_src":"mag","airspeed_src":"gps"}
     img  = Image.new('RGB',(W,H),(0,8,22))
     draw = ImageDraw.Draw(img)
     _screen_header_p(draw, "AHRS / SENSORS")
@@ -1398,8 +1400,23 @@ def draw_ahrs_screen(filename, ss=None):
     ry = by + (bh - _DSP_BTN_H) // 2
     for i,(v,lbl) in enumerate(opts_src):
         _seg_btn_p(draw, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur_src)
-    draw.text((bx+14, by+bh-14), "GPS TRK available with valid fix",
-              fill=(80,100,125), font=fnt(9))
+
+    # Row 5: airspeed source
+    bx, by, bw, bh = _setting_row_p(draw, 5, "AIRSPEED SOURCE", "GPS groundspeed or IAS sensor")
+    cur_as = ss.get("airspeed_src", "gps")
+    total_as = 2*120 + _DSP_BTN_G
+    rx = bx + bw - total_as - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    # GPS GS — active button
+    _seg_btn_p(draw, rx, ry, 120, _DSP_BTN_H, "GPS GS", cur_as == "gps")
+    # IAS SENSOR — disabled / future
+    ibx = rx + 120 + _DSP_BTN_G
+    draw.rounded_rectangle([(ibx, ry), (ibx+119, ry+_DSP_BTN_H-1)], radius=6, fill=(18,18,20))
+    draw.rounded_rectangle([(ibx, ry), (ibx+119, ry+_DSP_BTN_H-1)], radius=6, outline=(55,55,65), width=2)
+    iw = int(draw.textlength("IAS SENSOR", font=fnt(13)))
+    draw.text((ibx+(120-iw)//2, ry+(_DSP_BTN_H//2)-14), "IAS SENSOR", fill=(75,75,88), font=fnt(13))
+    fw2 = int(draw.textlength("future", font=fnt(9)))
+    draw.text((ibx+(120-fw2)//2, ry+(_DSP_BTN_H//2)+2), "future", fill=(60,60,72), font=fnt(9))
 
     img.save(filename)
     print(f"Saved {filename}")
