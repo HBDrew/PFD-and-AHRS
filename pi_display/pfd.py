@@ -713,41 +713,42 @@ def _doghouse_pts(cx, cy, ang_rad, r, size=11, inward=True):
 
 def draw_roll_arc(surf, roll):
     """Draw GI-275 style roll scale: arc, tick marks, doghouse zero marker,
-    and doghouse roll pointer."""
+    and doghouse roll pointer.
+    Uses pygame.draw.arc (single C call) instead of 121-iteration Python loop.
+    """
     cx, cy = CX, ROLL_CY
 
-    # Arc (-60° to +60° of bank, mapped to screen top), rotates with roll
-    for a in range(-150, -29):
-        a1, a2 = (a + roll) * DEG, (a + 1 + roll) * DEG
-        x1 = int(cx + ROLL_R * math.cos(a1))
-        y1 = int(cy + ROLL_R * math.sin(a1))
-        x2 = int(cx + ROLL_R * math.cos(a2))
-        y2 = int(cy + ROLL_R * math.sin(a2))
-        # Draw at r and r+1 to approximate 2px AA arc
-        pygame.draw.aaline(surf, LTGREY, (x1, y1), (x2, y2))
-        x1b = int(cx + (ROLL_R + 1) * math.cos(a1))
-        y1b = int(cy + (ROLL_R + 1) * math.sin(a1))
-        x2b = int(cx + (ROLL_R + 1) * math.cos(a2))
-        y2b = int(cy + (ROLL_R + 1) * math.sin(a2))
-        pygame.draw.aaline(surf, LTGREY, (x1b, y1b), (x2b, y2b))
+    # ── Arc: 120° span centred at 12 o'clock, rotated by roll ────────────────
+    # Our angle convention: 0=right, CW positive, Y-down (standard math / pygame cos/sin).
+    # pygame.draw.arc uses mathematical CCW from right (Y-up).  Conversion: negate.
+    # Arc spans -150+roll … -30+roll in our convention → 30-roll … 150-roll in pygame.
+    arc_start = math.radians(30  - roll)
+    arc_stop  = math.radians(150 - roll)
+    arc_rect  = pygame.Rect(cx - ROLL_R - 1, cy - ROLL_R - 1,
+                            (ROLL_R + 1) * 2 + 2, (ROLL_R + 1) * 2 + 2)
+    # Two concentric arcs give ~2 px apparent width without a Python loop
+    pygame.draw.arc(surf, LTGREY, arc_rect, arc_start, arc_stop, 1)
+    arc_rect2 = pygame.Rect(cx - ROLL_R, cy - ROLL_R, ROLL_R * 2, ROLL_R * 2)
+    pygame.draw.arc(surf, LTGREY, arc_rect2, arc_start, arc_stop, 1)
 
-    # Tick marks
+    # ── Tick marks (10 trig evaluations instead of 484) ──────────────────────
     for deg2, length in [(10, 9), (20, 9), (30, 13),
                          (-10, 9), (-20, 9), (-30, 13),
                          (45, 9), (-45, 9), (60, 11), (-60, 11)]:
         ang = (-90 + deg2 + roll) * DEG
-        x1 = int(cx + (ROLL_R - length) * math.cos(ang))
-        y1 = int(cy + (ROLL_R - length) * math.sin(ang))
-        x2 = int(cx + ROLL_R * math.cos(ang))
-        y2 = int(cy + ROLL_R * math.sin(ang))
+        cos_a, sin_a = math.cos(ang), math.sin(ang)
+        x1 = int(cx + (ROLL_R - length) * cos_a)
+        y1 = int(cy + (ROLL_R - length) * sin_a)
+        x2 = int(cx + ROLL_R * cos_a)
+        y2 = int(cy + ROLL_R * sin_a)
         pygame.draw.aaline(surf, LTGREY, (x1, y1), (x2, y2))
         # Hollow triangles at ±45
         if abs(deg2) == 45:
             perp = ang + math.pi / 2
             tx2, ty2 = int(5 * math.cos(perp)), int(5 * math.sin(perp))
             mx, my = (x1 + x2) // 2, (y1 + y2) // 2
-            inner_x = int(cx + (ROLL_R - 16) * math.cos(ang))
-            inner_y = int(cy + (ROLL_R - 16) * math.sin(ang))
+            inner_x = int(cx + (ROLL_R - 16) * cos_a)
+            inner_y = int(cy + (ROLL_R - 16) * sin_a)
             tri = [(mx - tx2, my - ty2), (mx + tx2, my + ty2), (inner_x, inner_y)]
             pygame.gfxdraw.aapolygon(surf, tri, LTGREY)
 
@@ -833,15 +834,21 @@ def spd_y(v, speed): return int(TAPE_MID - (v - speed) * PX_PER_KT)
 def alt_y(ft, alt):  return int(TAPE_MID - (ft - alt)  * PX_PER_FT)
 
 
+_spd_tape_bg = None   # cached speed-tape background surface
+_alt_tape_bg = None   # cached alt-tape background surface
+
+
 def draw_speed_tape(surf, speed, gs_bug=None,
                     vs0=VS0, vs1=VS1, vfe=VFE, vno=VNO, vne=VNE,
                     airspeed_src="gps"):
     """Left airspeed tape with GI-275-style V-speed colour bands.
     V-speed params should already be in the same unit as *speed*."""
-    # Background (full height including top strip, matching alt tape)
-    tape_surf = pygame.Surface((SPD_W, TAPE_BOT), pygame.SRCALPHA)
-    tape_surf.fill(TAPE_BG)
-    surf.blit(tape_surf, (SPD_X, 0))
+    # Background — cached to avoid a new SRCALPHA Surface allocation every frame
+    global _spd_tape_bg
+    if _spd_tape_bg is None:
+        _spd_tape_bg = pygame.Surface((SPD_W, TAPE_BOT), pygame.SRCALPHA)
+        _spd_tape_bg.fill(TAPE_BG)
+    surf.blit(_spd_tape_bg, (SPD_X, 0))
     pygame.draw.line(surf, (255, 255, 255, 60), (SPD_X + SPD_W, 0),
                      (SPD_X + SPD_W, TAPE_BOT), 1)
 
@@ -922,9 +929,11 @@ def draw_speed_tape(surf, speed, gs_bug=None,
 # ── Altitude tape ──────────────────────────────────────────────────────────────
 def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=True):
     """Right altitude tape with VSI and baro setting."""
-    tape_surf = pygame.Surface((ALT_W, TAPE_H), pygame.SRCALPHA)
-    tape_surf.fill(TAPE_BG)
-    surf.blit(tape_surf, (ALT_X, TAPE_TOP))
+    global _alt_tape_bg
+    if _alt_tape_bg is None:
+        _alt_tape_bg = pygame.Surface((ALT_W, TAPE_H), pygame.SRCALPHA)
+        _alt_tape_bg.fill(TAPE_BG)
+    surf.blit(_alt_tape_bg, (ALT_X, TAPE_TOP))
     pygame.draw.line(surf, (255, 255, 255, 60), (ALT_X, TAPE_TOP),
                      (ALT_X, TAPE_BOT), 1)
 
