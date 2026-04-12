@@ -10,10 +10,11 @@ SSE_URL    = PICO_URL + "/events"
 SSE_TIMEOUT = 10                         # seconds before reconnect
 
 # ── Display ───────────────────────────────────────────────────────────────────
-DISPLAY_W  = 640
-DISPLAY_H  = 480
-FULLSCREEN = True                        # set False for windowed testing
-TARGET_FPS = 30
+DISPLAY_W      = 640
+DISPLAY_H      = 480
+FULLSCREEN     = True   # set False for windowed testing
+TARGET_FPS     = 30
+DISPLAY_ROTATE = 0      # degrees CCW: 0, 90, 180, 270
 
 # ── Layout (matches preview_640x480.py constants) ────────────────────────────
 SPD_X      = 0

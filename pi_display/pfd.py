@@ -19,8 +19,7 @@ import socket
 import subprocess
 import urllib.request
 
-os.environ.setdefault("SDL_FBDEV", "/dev/fb0")
-os.environ.setdefault("SDL_VIDEODRIVER", "fbcon")   # overridden by --sim
+os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")  # overridden by --sim
 
 import pygame
 import pygame.gfxdraw
@@ -3827,12 +3826,32 @@ def main():
     pygame.mouse.set_visible(False)
 
     if (not args.sim) and FULLSCREEN:
-        surf = pygame.display.set_mode(
-            (DISPLAY_W, DISPLAY_H),
+        info = pygame.display.Info()
+        _native_w = info.current_w if info.current_w > 0 else DISPLAY_W
+        _native_h = info.current_h if info.current_h > 0 else DISPLAY_H
+        screen = pygame.display.set_mode(
+            (_native_w, _native_h),
             pygame.FULLSCREEN | pygame.NOFRAME
         )
+        # Scale 640×480 PFD to fit native display, preserving aspect ratio
+        _scale = min(_native_w / DISPLAY_W, _native_h / DISPLAY_H)
+        _sw = int(DISPLAY_W * _scale)
+        _sh = int(DISPLAY_H * _scale)
+        _sx = (_native_w - _sw) // 2
+        _sy = (_native_h - _sh) // 2
+        surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
     else:
-        surf = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
+        screen = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
+        surf = screen
+        _sw = _sh = _sx = _sy = None
+
+    def _flip():
+        """Scale/rotate PFD surface onto the physical display."""
+        if surf is not screen:
+            s = pygame.transform.rotate(surf, DISPLAY_ROTATE) if DISPLAY_ROTATE else surf
+            screen.fill((0, 0, 0))
+            screen.blit(pygame.transform.smoothscale(s, (_sw, _sh)), (_sx, _sy))
+        pygame.display.flip()
 
     pygame.display.set_caption("PFD")
     clock = pygame.time.Clock()
@@ -3862,7 +3881,7 @@ def main():
         disp["alt_bug"] = args.ss_alt
         smooth_state()              # now a no-op (disp already matches state)
         render(surf, demo_mode=False, connected=True, data_stale=False)
-        pygame.display.flip()
+        _flip()
         outpath = os.path.abspath(args.screenshot)
         os.makedirs(os.path.dirname(outpath) or ".", exist_ok=True)
         pygame.image.save(surf, outpath)
@@ -3940,7 +3959,7 @@ def main():
 
         # Render
         render(surf, demo_mode, connected, data_stale=data_stale)
-        pygame.display.flip()
+        _flip()
         clock.tick(TARGET_FPS)
 
     if _sse_client:
