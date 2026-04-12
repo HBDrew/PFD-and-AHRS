@@ -235,17 +235,19 @@ def _ground_colour_rel(clearance_ft: float):
     return _interp_colour(_PALETTE, clearance_ft) + (255,)
 
 
+_SVT_STEP = 4  # block-sample ground pixels by this factor (4 → 16× fewer SRTM lookups)
+
+
 def _render_svt_numpy(surf, ai_w, ai_h, cx, cy, horizon_y,
                       pitch_deg, hdg_deg, alt_ft, lat, lon,
                       px_per_deg_v, px_per_deg_h, srtm_dir):
     """
     Fully vectorised SVT render — zero Python loops over pixels.
 
-    Old approach: two nested Python loops (rows × columns) calling
-    get_elevation_ft() ~97 K times per frame → 4-5 seconds on Pi Zero 2W.
-    New approach: numpy broadcasting computes all terrain lat/lon in one shot,
-    then a single fancy-index into the cached SRTM tile array fetches every
-    elevation simultaneously → < 100 ms on Pi Zero 2W.
+    Ground pixels are block-sampled at 1/_SVT_STEP resolution for SRTM
+    lookups, then nearest-neighbour expanded back to full resolution.
+    For a 484×200 ground area with STEP=4: 121×50 = ~6 K lookups instead
+    of 97 K, yielding a ~16× speedup on the bilinear-interpolation step.
     """
     pixels = pygame.surfarray.pixels3d(surf)   # shape (ai_w, ai_h, 3)
     alpha  = pygame.surfarray.pixels_alpha(surf) # shape (ai_w, ai_h)
@@ -267,38 +269,43 @@ def _render_svt_numpy(surf, ai_w, ai_h, cx, cy, horizon_y,
         del pixels, alpha
         return
 
-    # Row indices for ground portion
-    gy = np.arange(hy, ai_h, dtype=np.float32)                    # (n_gnd,)
+    STEP = _SVT_STEP
 
-    # Pitch angle each row looks below the horizon (degrees), clamped to ≥ 0.1°
-    angle_below = np.maximum((gy - horizon_y) / px_per_deg_v, 0.1)  # (n_gnd,)
+    # Block-sample: compute SRTM elevations on a coarse grid, then expand.
+    # Sampled row y-coords (every STEP rows starting from hy)
+    gy_s     = np.arange(hy, ai_h, STEP, dtype=np.float32)   # (n_gnd_s,)
+    # Sampled column x-coords (every STEP columns)
+    col_s    = np.arange(0, ai_w, STEP, dtype=np.float32)    # (ai_w_s,)
+    n_gnd_s  = len(gy_s)
+    ai_w_s   = len(col_s)
+
+    # Pitch angle each sampled row looks below the horizon (degrees)
+    angle_below = np.maximum((gy_s - horizon_y) / px_per_deg_v, 0.1)  # (n_gnd_s,)
     angle_rad   = angle_below * _DEG
 
-    # Ground distance in nm for each row (flat-earth)
+    # Ground distance in nm for each sampled row (flat-earth)
     dist_nm = (alt_ft / np.where(angle_rad > 0.001,
-                                 np.tan(angle_rad), 1e9)) / _NM_FT  # (n_gnd,)
+                                 np.tan(angle_rad), 1e9)) / _NM_FT  # (n_gnd_s,)
 
-    # Column bearing offsets — depend only on column, NOT on row
-    bear_offsets = (np.arange(ai_w, dtype=np.float32) - cx) / px_per_deg_h  # (ai_w,)
-    bear_rad     = ((hdg_deg + bear_offsets) % 360) * _DEG                   # (ai_w,)
-    cos_bear     = np.cos(bear_rad)   # (ai_w,)
-    sin_bear     = np.sin(bear_rad)   # (ai_w,)
+    # Column bearing offsets for sampled columns only
+    bear_offsets = (col_s - cx) / px_per_deg_h                        # (ai_w_s,)
+    bear_rad     = ((hdg_deg + bear_offsets) % 360) * _DEG            # (ai_w_s,)
+    cos_bear     = np.cos(bear_rad)   # (ai_w_s,)
+    sin_bear     = np.sin(bear_rad)   # (ai_w_s,)
     cos_lat      = max(1e-6, math.cos(lat * _DEG))
 
-    # Broadcast (n_gnd, 1) × (1, ai_w) → (n_gnd, ai_w) terrain positions
+    # Broadcast (n_gnd_s, 1) × (1, ai_w_s) → (n_gnd_s, ai_w_s) terrain positions
     d_lat    = (dist_nm[:, None] / 60.0) * cos_bear[None, :]
     d_lon    = (dist_nm[:, None] / 60.0) * sin_bear[None, :] / cos_lat
-    terr_lat = lat + d_lat    # (n_gnd, ai_w)
-    terr_lon = lon + d_lon    # (n_gnd, ai_w)
+    terr_lat = lat + d_lat    # (n_gnd_s, ai_w_s)
+    terr_lon = lon + d_lon    # (n_gnd_s, ai_w_s)
 
-    # ── Vectorised SRTM lookup ────────────────────────────────────────────────
-    elev_arr = np.zeros((n_gnd, ai_w), dtype=np.float32)
+    # ── Vectorised SRTM lookup on coarse grid ─────────────────────────────────
+    elev_arr = np.zeros((n_gnd_s, ai_w_s), dtype=np.float32)
 
-    # Determine which tiles are needed (usually just 1–4)
-    lat_int_arr = np.floor(terr_lat).astype(np.int32)   # (n_gnd, ai_w)
-    lon_int_arr = np.floor(terr_lon).astype(np.int32)   # (n_gnd, ai_w)
+    lat_int_arr = np.floor(terr_lat).astype(np.int32)   # (n_gnd_s, ai_w_s)
+    lon_int_arr = np.floor(terr_lon).astype(np.int32)   # (n_gnd_s, ai_w_s)
     # Encode with offset so negative longitudes encode correctly into int64
-    # lat ∈ [-90,90] → +90 gives [0,180]; lon ∈ [-180,180] → +360 gives [180,540]
     enc = ((lat_int_arr.astype(np.int64) + 90)  * 1000 +
            (lon_int_arr.astype(np.int64) + 360))
     tile_keys = np.unique(enc)
@@ -312,15 +319,15 @@ def _render_svt_numpy(surf, ai_w, ai_h, cx, cy, horizon_y,
             continue
         tile_data, n_s = result   # tile_data: numpy (n_s, n_s) float32
 
-        mask = (lat_int_arr == tla) & (lon_int_arr == tlo)   # (n_gnd, ai_w)
+        mask = (lat_int_arr == tla) & (lon_int_arr == tlo)   # (n_gnd_s, ai_w_s)
         if not mask.any():
             continue
 
         step = 1.0 / (n_s - 1)
 
-        # SRTM tile indices for every pixel (clipped to valid range)
-        row_f = np.clip((tla + 1 - terr_lat) / step, 0, n_s - 1)  # (n_gnd,ai_w)
-        col_f = np.clip((terr_lon - tlo)      / step, 0, n_s - 1)  # (n_gnd,ai_w)
+        # SRTM tile indices for every sampled pixel (clipped to valid range)
+        row_f = np.clip((tla + 1 - terr_lat) / step, 0, n_s - 1)
+        col_f = np.clip((terr_lon - tlo)      / step, 0, n_s - 1)
         r0 = np.minimum(row_f.astype(np.int32), n_s - 2)
         c0 = np.minimum(col_f.astype(np.int32), n_s - 2)
         r1 = r0 + 1
@@ -332,26 +339,30 @@ def _render_svt_numpy(surf, ai_w, ai_h, cx, cy, horizon_y,
         elev = (tile_data[r0, c0] * (1 - dr) * (1 - dc) +
                 tile_data[r0, c1] * (1 - dr) * dc        +
                 tile_data[r1, c0] * dr        * (1 - dc) +
-                tile_data[r1, c1] * dr        * dc)       # (n_gnd, ai_w)
+                tile_data[r1, c1] * dr        * dc)       # (n_gnd_s, ai_w_s)
 
         elev_arr[mask] = elev[mask]
 
     # ── Vectorised colour from clearance ──────────────────────────────────────
-    clearance = alt_ft - elev_arr   # (n_gnd, ai_w)
+    clearance = alt_ft - elev_arr   # (n_gnd_s, ai_w_s)
 
-    # Palette boundaries and colours (matches _PALETTE)
     thresholds = np.array([-9999, 0, 100, 500, 1000, 2000], dtype=np.float32)
     pal_r = np.array([220, 220, 200, 140, 100,  70], dtype=np.uint8)
     pal_g = np.array([ 30,  80, 130, 100,  75,  55], dtype=np.uint8)
     pal_b = np.array([ 30,   0,   0,  40,  35,  28], dtype=np.uint8)
 
     bins = np.searchsorted(thresholds, clearance, side='right') - 1
-    bins = np.clip(bins, 0, len(pal_r) - 1)   # (n_gnd, ai_w)
+    bins = np.clip(bins, 0, len(pal_r) - 1)   # (n_gnd_s, ai_w_s)
 
-    # Assign colours — transpose because pixels is (ai_w, ai_h, 3)
-    pixels[:, hy:, 0] = pal_r[bins].T         # (ai_w, n_gnd)
-    pixels[:, hy:, 1] = pal_g[bins].T
-    pixels[:, hy:, 2] = pal_b[bins].T
+    # Nearest-neighbour upsample: repeat each sample STEP times in both axes,
+    # then clip back to the exact ground dimensions.
+    bins_full = np.repeat(bins, STEP, axis=0)[:n_gnd]    # (n_gnd, ai_w_s)
+    bins_full = np.repeat(bins_full, STEP, axis=1)[:, :ai_w]  # (n_gnd, ai_w)
+
+    # Assign colours — transpose because pixels array is (ai_w, ai_h, 3)
+    pixels[:, hy:, 0] = pal_r[bins_full].T         # (ai_w, n_gnd)
+    pixels[:, hy:, 1] = pal_g[bins_full].T
+    pixels[:, hy:, 2] = pal_b[bins_full].T
     alpha [:, hy:]    = 255
 
     del pixels, alpha   # release surfarray lock

@@ -3856,6 +3856,11 @@ def main():
     threading.Thread(target=_startup_load_obstacles, daemon=True,
                      name="ObstacleLoad").start()
 
+    # Disable vsync so display.flip() doesn't block waiting for the display's
+    # vsync signal (which was taking ~82 ms at ~12 Hz on KMS/DRM, halving FPS).
+    os.environ.setdefault("SDL_RENDER_VSYNC", "0")
+    os.environ.setdefault("SDL_VIDEO_KMSDRM_VSYNC", "0")
+
     pygame.init()
     pygame.mouse.set_visible(False)
 
