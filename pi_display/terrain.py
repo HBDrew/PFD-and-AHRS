@@ -235,7 +235,7 @@ def _ground_colour_rel(clearance_ft: float):
     return _interp_colour(_PALETTE, clearance_ft) + (255,)
 
 
-_SVT_STEP = 4  # block-sample ground pixels by this factor (4 → 16× fewer SRTM lookups)
+_SVT_STEP = 8  # block-sample ground pixels by this factor (8 → 64× fewer SRTM lookups)
 
 
 def _render_svt_numpy(surf, ai_w, ai_h, cx, cy, horizon_y,
@@ -246,126 +246,111 @@ def _render_svt_numpy(surf, ai_w, ai_h, cx, cy, horizon_y,
 
     Ground pixels are block-sampled at 1/_SVT_STEP resolution for SRTM
     lookups, then nearest-neighbour expanded back to full resolution.
-    For a 484×200 ground area with STEP=4: 121×50 = ~6 K lookups instead
-    of 97 K, yielding a ~16× speedup on the bilinear-interpolation step.
+    STEP=8 on a 484×200 ground area: 61×25 = ~1.5 K lookups instead of
+    97 K. Nearest-neighbour (1 fancy index) replaces bilinear (4 indexes).
     """
+    # pixels/alpha hold a C-level lock on surf; the try/finally ensures the
+    # lock is released even if an exception occurs mid-render.
     pixels = pygame.surfarray.pixels3d(surf)   # shape (ai_w, ai_h, 3)
     alpha  = pygame.surfarray.pixels_alpha(surf) # shape (ai_w, ai_h)
+    try:
+        hy = int(max(0, min(ai_h, horizon_y)))
 
-    hy = int(max(0, min(ai_h, horizon_y)))
+        # ── Sky rows: broadcast gradient across all columns ───────────────────
+        if hy > 0:
+            sy = np.arange(hy, dtype=np.float32)                      # (hy,)
+            t  = np.clip(1.0 - (horizon_y - sy) / max(1.0, horizon_y), 0.0, 1.0)
+            pixels[:, :hy, 0] = (10  + t * 80 ).astype(np.uint8)
+            pixels[:, :hy, 1] = (42  + t * 110).astype(np.uint8)
+            pixels[:, :hy, 2] = (80  + t * 140).astype(np.uint8)
+            alpha [:, :hy]    = 255
 
-    # ── Sky rows: broadcast gradient across all columns ───────────────────────
-    if hy > 0:
-        sy = np.arange(hy, dtype=np.float32)                      # (hy,)
-        t  = np.clip(1.0 - (horizon_y - sy) / max(1.0, horizon_y), 0.0, 1.0)
-        pixels[:, :hy, 0] = (10  + t * 80 ).astype(np.uint8)     # broadcast (ai_w,hy)
-        pixels[:, :hy, 1] = (42  + t * 110).astype(np.uint8)
-        pixels[:, :hy, 2] = (80  + t * 140).astype(np.uint8)
-        alpha [:, :hy]    = 255
+        # ── Ground rows ───────────────────────────────────────────────────────
+        n_gnd = ai_h - hy
+        if n_gnd <= 0:
+            return
 
-    # ── Ground rows ───────────────────────────────────────────────────────────
-    n_gnd = ai_h - hy
-    if n_gnd <= 0:
-        del pixels, alpha
-        return
+        STEP = _SVT_STEP
 
-    STEP = _SVT_STEP
+        # Block-sample: compute SRTM elevations on a coarse grid, then expand.
+        gy_s     = np.arange(hy, ai_h, STEP, dtype=np.float32)   # (n_gnd_s,)
+        col_s    = np.arange(0, ai_w, STEP, dtype=np.float32)    # (ai_w_s,)
+        n_gnd_s  = len(gy_s)
+        ai_w_s   = len(col_s)
 
-    # Block-sample: compute SRTM elevations on a coarse grid, then expand.
-    # Sampled row y-coords (every STEP rows starting from hy)
-    gy_s     = np.arange(hy, ai_h, STEP, dtype=np.float32)   # (n_gnd_s,)
-    # Sampled column x-coords (every STEP columns)
-    col_s    = np.arange(0, ai_w, STEP, dtype=np.float32)    # (ai_w_s,)
-    n_gnd_s  = len(gy_s)
-    ai_w_s   = len(col_s)
+        angle_below = np.maximum((gy_s - horizon_y) / px_per_deg_v, 0.1)
+        angle_rad   = angle_below * _DEG
+        dist_nm = (alt_ft / np.where(angle_rad > 0.001,
+                                     np.tan(angle_rad), 1e9)) / _NM_FT
 
-    # Pitch angle each sampled row looks below the horizon (degrees)
-    angle_below = np.maximum((gy_s - horizon_y) / px_per_deg_v, 0.1)  # (n_gnd_s,)
-    angle_rad   = angle_below * _DEG
+        bear_offsets = (col_s - cx) / px_per_deg_h
+        bear_rad     = ((hdg_deg + bear_offsets) % 360) * _DEG
+        cos_bear     = np.cos(bear_rad)
+        sin_bear     = np.sin(bear_rad)
+        cos_lat      = max(1e-6, math.cos(lat * _DEG))
 
-    # Ground distance in nm for each sampled row (flat-earth)
-    dist_nm = (alt_ft / np.where(angle_rad > 0.001,
-                                 np.tan(angle_rad), 1e9)) / _NM_FT  # (n_gnd_s,)
+        d_lat    = (dist_nm[:, None] / 60.0) * cos_bear[None, :]
+        d_lon    = (dist_nm[:, None] / 60.0) * sin_bear[None, :] / cos_lat
+        terr_lat = lat + d_lat    # (n_gnd_s, ai_w_s)
+        terr_lon = lon + d_lon    # (n_gnd_s, ai_w_s)
 
-    # Column bearing offsets for sampled columns only
-    bear_offsets = (col_s - cx) / px_per_deg_h                        # (ai_w_s,)
-    bear_rad     = ((hdg_deg + bear_offsets) % 360) * _DEG            # (ai_w_s,)
-    cos_bear     = np.cos(bear_rad)   # (ai_w_s,)
-    sin_bear     = np.sin(bear_rad)   # (ai_w_s,)
-    cos_lat      = max(1e-6, math.cos(lat * _DEG))
+        # ── Vectorised SRTM lookup on coarse grid ─────────────────────────────
+        elev_arr = np.zeros((n_gnd_s, ai_w_s), dtype=np.float32)
 
-    # Broadcast (n_gnd_s, 1) × (1, ai_w_s) → (n_gnd_s, ai_w_s) terrain positions
-    d_lat    = (dist_nm[:, None] / 60.0) * cos_bear[None, :]
-    d_lon    = (dist_nm[:, None] / 60.0) * sin_bear[None, :] / cos_lat
-    terr_lat = lat + d_lat    # (n_gnd_s, ai_w_s)
-    terr_lon = lon + d_lon    # (n_gnd_s, ai_w_s)
+        lat_int_arr = np.floor(terr_lat).astype(np.int32)
+        lon_int_arr = np.floor(terr_lon).astype(np.int32)
+        enc = ((lat_int_arr.astype(np.int64) + 90)  * 1000 +
+               (lon_int_arr.astype(np.int64) + 360))
+        tile_keys = np.unique(enc)
 
-    # ── Vectorised SRTM lookup on coarse grid ─────────────────────────────────
-    elev_arr = np.zeros((n_gnd_s, ai_w_s), dtype=np.float32)
+        for key in tile_keys:
+            tla = int(key) // 1000 - 90
+            tlo = int(key) %  1000 - 360
 
-    lat_int_arr = np.floor(terr_lat).astype(np.int32)   # (n_gnd_s, ai_w_s)
-    lon_int_arr = np.floor(terr_lon).astype(np.int32)   # (n_gnd_s, ai_w_s)
-    # Encode with offset so negative longitudes encode correctly into int64
-    enc = ((lat_int_arr.astype(np.int64) + 90)  * 1000 +
-           (lon_int_arr.astype(np.int64) + 360))
-    tile_keys = np.unique(enc)
+            result = load_tile(srtm_dir, tla, tlo)
+            if result is None:
+                continue
+            tile_data, n_s = result
 
-    for key in tile_keys:
-        tla = int(key) // 1000 - 90
-        tlo = int(key) %  1000 - 360
+            mask = (lat_int_arr == tla) & (lon_int_arr == tlo)
+            if not mask.any():
+                continue
 
-        result = load_tile(srtm_dir, tla, tlo)
-        if result is None:
-            continue
-        tile_data, n_s = result   # tile_data: numpy (n_s, n_s) float32
+            step = 1.0 / (n_s - 1)
 
-        mask = (lat_int_arr == tla) & (lon_int_arr == tlo)   # (n_gnd_s, ai_w_s)
-        if not mask.any():
-            continue
+            # Nearest-neighbour — 1 fancy index vs 4 for bilinear.
+            # Colour-band accuracy doesn't need sub-90 m precision.
+            row_i = np.clip(
+                np.round((tla + 1 - terr_lat) / step).astype(np.int32),
+                0, n_s - 1)
+            col_i = np.clip(
+                np.round((terr_lon - tlo)      / step).astype(np.int32),
+                0, n_s - 1)
+            elev_arr[mask] = tile_data[row_i, col_i][mask]
 
-        step = 1.0 / (n_s - 1)
+        # ── Vectorised colour from clearance ──────────────────────────────────
+        clearance = alt_ft - elev_arr
 
-        # SRTM tile indices for every sampled pixel (clipped to valid range)
-        row_f = np.clip((tla + 1 - terr_lat) / step, 0, n_s - 1)
-        col_f = np.clip((terr_lon - tlo)      / step, 0, n_s - 1)
-        r0 = np.minimum(row_f.astype(np.int32), n_s - 2)
-        c0 = np.minimum(col_f.astype(np.int32), n_s - 2)
-        r1 = r0 + 1
-        c1 = c0 + 1
-        dr = (row_f - r0).astype(np.float32)
-        dc = (col_f - c0).astype(np.float32)
+        thresholds = np.array([-9999, 0, 100, 500, 1000, 2000], dtype=np.float32)
+        pal_r = np.array([220, 220, 200, 140, 100,  70], dtype=np.uint8)
+        pal_g = np.array([ 30,  80, 130, 100,  75,  55], dtype=np.uint8)
+        pal_b = np.array([ 30,   0,   0,  40,  35,  28], dtype=np.uint8)
 
-        # Bilinear interpolation using fancy indexing (all in numpy C layer)
-        elev = (tile_data[r0, c0] * (1 - dr) * (1 - dc) +
-                tile_data[r0, c1] * (1 - dr) * dc        +
-                tile_data[r1, c0] * dr        * (1 - dc) +
-                tile_data[r1, c1] * dr        * dc)       # (n_gnd_s, ai_w_s)
+        bins = np.searchsorted(thresholds, clearance, side='right') - 1
+        bins = np.clip(bins, 0, len(pal_r) - 1)
 
-        elev_arr[mask] = elev[mask]
+        # Nearest-neighbour upsample back to full ground dimensions
+        bins_full = np.repeat(bins, STEP, axis=0)[:n_gnd]
+        bins_full = np.repeat(bins_full, STEP, axis=1)[:, :ai_w]
 
-    # ── Vectorised colour from clearance ──────────────────────────────────────
-    clearance = alt_ft - elev_arr   # (n_gnd_s, ai_w_s)
+        # Transpose because pixels array is (ai_w, ai_h, 3)
+        pixels[:, hy:, 0] = pal_r[bins_full].T
+        pixels[:, hy:, 1] = pal_g[bins_full].T
+        pixels[:, hy:, 2] = pal_b[bins_full].T
+        alpha [:, hy:]    = 255
 
-    thresholds = np.array([-9999, 0, 100, 500, 1000, 2000], dtype=np.float32)
-    pal_r = np.array([220, 220, 200, 140, 100,  70], dtype=np.uint8)
-    pal_g = np.array([ 30,  80, 130, 100,  75,  55], dtype=np.uint8)
-    pal_b = np.array([ 30,   0,   0,  40,  35,  28], dtype=np.uint8)
-
-    bins = np.searchsorted(thresholds, clearance, side='right') - 1
-    bins = np.clip(bins, 0, len(pal_r) - 1)   # (n_gnd_s, ai_w_s)
-
-    # Nearest-neighbour upsample: repeat each sample STEP times in both axes,
-    # then clip back to the exact ground dimensions.
-    bins_full = np.repeat(bins, STEP, axis=0)[:n_gnd]    # (n_gnd, ai_w_s)
-    bins_full = np.repeat(bins_full, STEP, axis=1)[:, :ai_w]  # (n_gnd, ai_w)
-
-    # Assign colours — transpose because pixels array is (ai_w, ai_h, 3)
-    pixels[:, hy:, 0] = pal_r[bins_full].T         # (ai_w, n_gnd)
-    pixels[:, hy:, 1] = pal_g[bins_full].T
-    pixels[:, hy:, 2] = pal_b[bins_full].T
-    alpha [:, hy:]    = 255
-
-    del pixels, alpha   # release surfarray lock
+    finally:
+        del pixels, alpha   # always release the surfarray C-level lock
 
 
 

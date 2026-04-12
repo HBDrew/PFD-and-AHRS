@@ -3865,37 +3865,54 @@ def main():
     pygame.mouse.set_visible(False)
 
     if (not args.sim) and FULLSCREEN:
-        info = pygame.display.Info()
-        _native_w = info.current_w if info.current_w > 0 else DISPLAY_W
-        _native_h = info.current_h if info.current_h > 0 else DISPLAY_H
-        screen = pygame.display.set_mode(
-            (_native_w, _native_h),
-            pygame.FULLSCREEN | pygame.NOFRAME
-        )
-        # Scale 640×480 PFD to fit native display, preserving aspect ratio
-        _scale = min(_native_w / DISPLAY_W, _native_h / DISPLAY_H)
-        _sw = int(DISPLAY_W * _scale)
-        _sh = int(DISPLAY_H * _scale)
-        _sx = (_native_w - _sw) // 2
-        _sy = (_native_h - _sh) // 2
-        surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
+        if DISPLAY_ROTATE:
+            # Rotated display: need explicit native-res surface + manual transform.
+            info = pygame.display.Info()
+            _native_w = info.current_w if info.current_w > 0 else DISPLAY_W
+            _native_h = info.current_h if info.current_h > 0 else DISPLAY_H
+            screen = pygame.display.set_mode(
+                (_native_w, _native_h),
+                pygame.FULLSCREEN | pygame.NOFRAME
+            )
+            _scale = min(_native_w / DISPLAY_W, _native_h / DISPLAY_H)
+            _sw = int(DISPLAY_W * _scale)
+            _sh = int(DISPLAY_H * _scale)
+            _sx = (_native_w - _sw) // 2
+            _sy = (_native_h - _sh) // 2
+            surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
+        else:
+            # Use SDL2's built-in logical scaling (pygame.SCALED). SDL2 scales
+            # the 640×480 logical surface to the physical display size in C,
+            # which is ~10× faster than pygame.transform.scale() in Python
+            # (~80 ms saved per frame on Pi Zero 2W scaling to 1080p).
+            # SDL_RENDER_VSYNC=0 (set above) disables vsync on the SDL_Renderer
+            # that SCALED creates internally, removing the vsync-wait overhead.
+            screen = pygame.display.set_mode(
+                (DISPLAY_W, DISPLAY_H),
+                pygame.FULLSCREEN | pygame.SCALED
+            )
+            surf = screen
+            _sw = _sh = _sx = _sy = None
     else:
         screen = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
         surf = screen
         _sw = _sh = _sx = _sy = None
 
     def _flip():
-        """Scale/rotate PFD surface onto the physical display."""
+        """Present the PFD surface to the physical display.
+
+        In the normal (non-rotated) fullscreen path, surf IS screen and SDL2
+        handles the logical→physical scaling internally via pygame.SCALED, so
+        this function is just a pygame.display.flip() call.
+
+        The rotated path (DISPLAY_ROTATE != 0) still does an explicit
+        transform+scale because SDL2's logical-size API doesn't handle rotation.
+        """
         if surf is not screen:
-            s = pygame.transform.rotate(surf, DISPLAY_ROTATE) if DISPLAY_ROTATE else surf
-            if _sw == DISPLAY_W and _sh == DISPLAY_H and not DISPLAY_ROTATE:
-                # Native resolution matches PFD size — direct blit, no scaling
-                screen.blit(s, (_sx, _sy))
-            else:
-                # scale() is nearest-neighbour (fast); smoothscale is bilinear but
-                # kills frame rate on Pi Zero 2W at large output resolutions.
-                screen.fill((0, 0, 0))
-                screen.blit(pygame.transform.scale(s, (_sw, _sh)), (_sx, _sy))
+            # Rotated display — manual transform + scale
+            s = pygame.transform.rotate(surf, DISPLAY_ROTATE)
+            screen.fill((0, 0, 0))
+            screen.blit(pygame.transform.scale(s, (_sw, _sh)), (_sx, _sy))
         pygame.display.flip()
 
     pygame.display.set_caption("PFD")
