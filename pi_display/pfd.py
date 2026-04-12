@@ -3849,8 +3849,14 @@ def main():
         """Scale/rotate PFD surface onto the physical display."""
         if surf is not screen:
             s = pygame.transform.rotate(surf, DISPLAY_ROTATE) if DISPLAY_ROTATE else surf
-            screen.fill((0, 0, 0))
-            screen.blit(pygame.transform.smoothscale(s, (_sw, _sh)), (_sx, _sy))
+            if _sw == DISPLAY_W and _sh == DISPLAY_H and not DISPLAY_ROTATE:
+                # Native resolution matches PFD size — direct blit, no scaling
+                screen.blit(s, (_sx, _sy))
+            else:
+                # scale() is nearest-neighbour (fast); smoothscale is bilinear but
+                # kills frame rate on Pi Zero 2W at large output resolutions.
+                screen.fill((0, 0, 0))
+                screen.blit(pygame.transform.scale(s, (_sw, _sh)), (_sx, _sy))
         pygame.display.flip()
 
     pygame.display.set_caption("PFD")
