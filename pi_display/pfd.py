@@ -605,73 +605,78 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 
 # ── Pitch ladder ──────────────────────────────────────────────────────────────
 def draw_pitch_ladder(surf, ai_rect, pitch, roll):
-    """White pitch ladder lines, rotated with roll, overlaid on AI."""
+    """
+    White pitch ladder lines drawn directly in rotated coordinates.
+    No intermediate surface or transform.rotate — fast on Pi Zero 2W.
+    """
     ax, ay, aw, ah = ai_rect
     cx, cy = ax + aw // 2, ay + ah // 2
 
-    px_per_deg = 10.0   # 10 display pixels per degree of pitch
+    px_per_deg = 10.0
+    pitch_px   = int(pitch * px_per_deg)
 
-    # Render on a transparent canvas, then rotate.
-    # pad=0.25 covers ±60° roll (diagonal of AI rect / 2 ≈ 318 px); much smaller
-    # than the old 0.75 factor, cutting rotate surface area by ~8×.
-    pad = int(max(aw, ah) * 0.25)
-    cw, ch = aw + pad * 2, ah + pad * 2
-    canvas = pygame.Surface((cw, ch), pygame.SRCALPHA)
-    ccx, ccy = cw // 2, ch // 2
-
-    pitch_px = int(pitch * px_per_deg)
-
-    # Line half-widths based on AI width.
-    # GI-275 style: major ~7% each side, minor ~4%.
     major_half = int(aw * 0.07)   # ~34 px
     minor_half = int(aw * 0.04)   # ~19 px
 
+    # Precompute rotation basis (pygame CCW rotation in Y-down screen coords):
+    #   rotated_x = x * cos_r + y * sin_r
+    #   rotated_y = -x * sin_r + y * cos_r
+    roll_rad = math.radians(roll)
+    cos_r    = math.cos(roll_rad)
+    sin_r    = math.sin(roll_rad)
+
+    def _rv(x, y):
+        """Rotate vector (x,y) and offset to surf coords."""
+        return (int(cx + x * cos_r + y * sin_r),
+                int(cy - x * sin_r + y * cos_r))
+
+    # Clip to AI rect so lines don't bleed into tapes / heading tape
+    old_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(ax, ay, aw, ah))
+
     for deg in range(-30, 35, 5):
-        if deg == 0:
+        rel_y = pitch_px - int(deg * px_per_deg)  # y offset from AI center
+
+        # Cull lines too far from the visible window (±185 px from centre)
+        if rel_y < -185 or rel_y > 185:
             continue
-        row_y = ccy + pitch_px - int(deg * px_per_deg)
-        if row_y < ccy - 185:   # don't draw above roll arc area (display y < 44)
-            continue
-        if row_y > ccy + 185:   # don't draw below heading tape (display y > 414)
-            continue
-        if not (10 < row_y < ch - 10):
-            continue
+
         major = (deg % 10 == 0)
         half  = major_half if major else minor_half
-        col   = (255, 255, 255, 220)
+
+        if deg == 0:
+            # Horizon line
+            p1 = _rv(-half, rel_y)
+            p2 = _rv( half, rel_y)
+            pygame.draw.line(surf, (255, 255, 255, 200), p1, p2, 2)
+            continue
+
+        col = (255, 255, 255, 220)
+        p1  = _rv(-half, rel_y)
+        p2  = _rv( half, rel_y)
+
         if major:
-            pygame.draw.line(canvas, col, (ccx - half, row_y), (ccx + half, row_y), 2)
+            pygame.draw.line(surf, col, p1, p2, 2)
         else:
-            pygame.draw.aaline(canvas, col, (ccx - half, row_y), (ccx + half, row_y))
-        # End tick marks (inward — up for positive pitch, down for negative)
-        tick_dir = 8 if deg > 0 else -8
-        pygame.draw.aaline(canvas, col, (ccx - half, row_y), (ccx - half, row_y + tick_dir))
-        pygame.draw.aaline(canvas, col, (ccx + half, row_y), (ccx + half, row_y + tick_dir))
-        # Degree labels at major lines
+            pygame.draw.aaline(surf, col, p1, p2)
+
+        # Tick marks: 8 px inward (toward horizon = toward centre of AI)
+        tick = 8 if deg > 0 else -8
+        pygame.draw.aaline(surf, col, p1, _rv(-half, rel_y + tick))
+        pygame.draw.aaline(surf, col, p2, _rv( half, rel_y + tick))
+
+        # Degree labels at major lines (drawn without rotation for speed)
         if major:
             lbl = str(abs(deg))
             fnt = _get_font(16)
-            img = fnt.render(lbl, True, (255, 255, 255, 220))
-            canvas.blit(img, (ccx - half - img.get_width() - 4, row_y - 9))
-            canvas.blit(img, (ccx + half + 4, row_y - 9))
+            img = fnt.render(lbl, True, (255, 255, 255))
+            # Position label just outside each end of the line
+            lx1, ly1 = _rv(-half - img.get_width() - 4, rel_y - 8)
+            lx2, ly2 = _rv( half + 4,                   rel_y - 8)
+            surf.blit(img, (lx1, ly1))
+            surf.blit(img, (lx2, ly2))
 
-    # Horizon line (0°) — same width as major pitch lines
-    hy = ccy + pitch_px
-    if 0 < hy < ch:
-        pygame.draw.line(canvas, (255, 255, 255, 200),
-                         (ccx - major_half, hy), (ccx + major_half, hy), 2)
-
-    # Rotate with roll (skip rotation when near 0° — saves ~20 ms on Pi Zero 2W)
-    if abs(roll) < 0.5:
-        ox, oy = (cw - aw) // 2, (ch - ah) // 2
-        surf.blit(canvas, (ax, ay), pygame.Rect(ox, oy, aw, ah))
-    else:
-        rotated = pygame.transform.rotate(canvas, roll)
-        rw, rh = rotated.get_size()
-        ox, oy = (rw - aw) // 2, (rh - ah) // 2
-        crop = pygame.Surface((aw, ah), pygame.SRCALPHA)
-        crop.blit(rotated, (0, 0), pygame.Rect(ox, oy, aw, ah))
-        surf.blit(crop, (ax, ay))
+    surf.set_clip(old_clip)
 
 
 # ── Roll arc ──────────────────────────────────────────────────────────────────
@@ -3984,9 +3989,22 @@ def main():
             _multitouch_t0 = None
 
         # Render
+        _t0 = time.monotonic()
         render(surf, demo_mode, connected, data_stale=data_stale)
+        _t1 = time.monotonic()
         _flip()
+        _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
+
+        # Print frame timing every 60 frames so we can diagnose bottlenecks
+        if not hasattr(main, '_frame_n'):
+            main._frame_n = 0
+        main._frame_n += 1
+        if main._frame_n % 60 == 0:
+            render_ms = (_t1 - _t0) * 1000
+            flip_ms   = (_t2 - _t1) * 1000
+            fps       = clock.get_fps()
+            print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  flip={flip_ms:.1f}ms")
 
     if _sse_client:
         _sse_client.stop()
