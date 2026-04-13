@@ -705,13 +705,20 @@ def draw_roll_arc(surf, roll):
     cx, cy = CX, ROLL_CY
 
     # ── Arc: 120° span centred at 12 o'clock, rotated by roll ────────────────
-    # Our angle convention: 0=right, CW positive, Y-down (standard math / pygame cos/sin).
-    # pygame.draw.arc uses mathematical CCW from right (Y-up).  Conversion: negate.
-    # Arc spans -150+roll … -30+roll in our convention → 30-roll … 150-roll in pygame.
-    arc_start = math.radians(30  - roll)
-    arc_stop  = math.radians(150 - roll)
-    arc_rect  = pygame.Rect(cx - ROLL_R, cy - ROLL_R, ROLL_R * 2, ROLL_R * 2)
-    pygame.draw.arc(surf, LTGREY, arc_rect, arc_start, arc_stop, 2)
+    # Anti-aliased polyline instead of pygame.draw.arc (which rasterises poorly).
+    # Draw two concentric AA polylines offset by 1px for a clean 2px-wide arc.
+    _ARC_STEPS = 60   # 60 segments for a 120° arc = 2° per segment
+    arc_pts_outer = []
+    arc_pts_inner = []
+    for i in range(_ARC_STEPS + 1):
+        ang = math.radians(-150 + roll + i * 120.0 / _ARC_STEPS)
+        cos_a, sin_a = math.cos(ang), math.sin(ang)
+        arc_pts_outer.append((int(cx + (ROLL_R + 1) * cos_a),
+                              int(cy - (ROLL_R + 1) * sin_a)))
+        arc_pts_inner.append((int(cx + ROLL_R * cos_a),
+                              int(cy - ROLL_R * sin_a)))
+    pygame.draw.aalines(surf, LTGREY, False, arc_pts_outer)
+    pygame.draw.aalines(surf, LTGREY, False, arc_pts_inner)
 
     # ── Tick marks (10 trig evaluations instead of 484) ──────────────────────
     for deg2, length in [(10, 9), (20, 9), (30, 13),
@@ -1065,7 +1072,8 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
             _text(surf, lbl, 17, col, bold=True, cx=x, y=HDG_Y + HDG_H - 18)
 
     # Heading bug — color reflects source: magenta=GPS track, cyan=magnetic.
-    if hdg_bug is not None:
+    # hdg_bug=0 means "not set" (same convention as alt_bug and spd_bug).
+    if hdg_bug is not None and hdg_bug != 0:
         off = ((hdg_bug - hdg + 180) % 360) - 180
         hbx = int(CX + off * PX_PER_DEG)
         hbx = max(SPD_W, min(ALT_X, hbx))   # clamp to inner edges of tap buttons

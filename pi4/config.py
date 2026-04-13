@@ -74,14 +74,14 @@ TARGET_FPS     = 30
 DISPLAY_ROTATE = 0      # degrees CCW: 0, 90, 180, 270
 
 # ── Dynamic layout ───────────────────────────────────────────────────────────
-# All layout constants are computed as proportions of the display resolution.
-# Reference design: 640×480.  Constants scale linearly from there.
-_SX = DISPLAY_W / 640.0   # horizontal scale factor
+# Tape widths and heading strip height stay at their hand-tuned pixel sizes.
+# Extra horizontal pixels go to the wider AI region.  Vertical elements scale
+# with display height so the heading strip and top strip remain proportional.
 _SY = DISPLAY_H / 480.0   # vertical scale factor
 
 SPD_X      = 0
-SPD_W      = int(74  * _SX)
-ALT_W      = int(82  * _SX)
+SPD_W      = 74                          # fixed — hand-tuned tape width
+ALT_W      = 82                          # fixed — hand-tuned tape width
 ALT_X      = DISPLAY_W - ALT_W
 HDG_H      = int(44  * _SY)
 HDG_Y      = DISPLAY_H - HDG_H
@@ -89,9 +89,9 @@ TAPE_TOP   = int(22  * _SY)
 TAPE_BOT   = HDG_Y
 TAPE_H     = TAPE_BOT - TAPE_TOP
 TAPE_MID   = (TAPE_TOP + TAPE_BOT) // 2
-CX         = DISPLAY_W // 2
+CX         = SPD_W + (DISPLAY_W - SPD_W - ALT_W) // 2  # centre of AI region
 CY         = TAPE_MID
-_S_MIN     = min(_SX, _SY)             # use shorter axis to keep arc circular
+_S_MIN     = min(DISPLAY_W / 640.0, _SY)  # shorter axis keeps arc circular
 ROLL_R     = int(148 * _S_MIN)
 ROLL_CY    = ROLL_R + int(16 * _S_MIN)
 BALL_Y     = HDG_Y - int(30 * _SY)
@@ -103,7 +103,7 @@ AI_Y = TAPE_TOP
 AI_H = TAPE_H
 
 # Font scale factor — used by pfd.py to scale all font sizes
-FONT_SCALE = min(_SX, _SY)
+FONT_SCALE = _S_MIN
 
 # ── SVT / Terrain ────────────────────────────────────────────────────────────
 _HERE         = os.path.dirname(os.path.abspath(__file__))
