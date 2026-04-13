@@ -3848,6 +3848,8 @@ def main():
     # Useful for capturing SVT terrain renders with real SRTM tiles on hardware.
     parser.add_argument("--screenshot", metavar="FILE",
                         help="Render one PFD frame to FILE (.png) and exit")
+    parser.add_argument("--screenshots", metavar="DIR",
+                        help="Generate a full set of preview PNGs to DIR and exit")
     parser.add_argument("--ss-lat",    type=float, default=DEMO_LAT, metavar="DEG",
                         help="Screenshot latitude  (default: Sedona)")
     parser.add_argument("--ss-lon",    type=float, default=DEMO_LON, metavar="DEG",
@@ -3970,6 +3972,62 @@ def main():
         os.makedirs(os.path.dirname(outpath) or ".", exist_ok=True)
         pygame.image.save(surf, outpath)
         print(f"[PFD] Screenshot → {outpath}")
+        pygame.quit()
+        return
+
+    # ── Batch screenshots mode ────────────────────────────────────────────────
+    if args.screenshots:
+        outdir = os.path.abspath(args.screenshots)
+        os.makedirs(outdir, exist_ok=True)
+
+        _SCENES = [
+            ("preview_sedona_level.png",
+             dict(roll=0, pitch=2, hdg=133, alt=8500, speed=115, vspeed=0, ay=0)),
+            ("preview_sedona_climb_turn.png",
+             dict(roll=-18, pitch=6, hdg=145, alt=7800, speed=95, vspeed=500, ay=0.12)),
+            ("preview_sedona_approach.png",
+             dict(roll=0, pitch=-3, hdg=200, alt=5800, speed=90, vspeed=-700, ay=0)),
+        ]
+
+        for fname, params in _SCENES:
+            snap = {
+                "lat": DEMO_LAT, "lon": DEMO_LON,
+                "yaw": params["hdg"], "track": params["hdg"],
+                "roll": params["roll"], "pitch": params["pitch"],
+                "speed": params["speed"], "alt": params["alt"],
+                "vspeed": params["vspeed"], "ay": params["ay"],
+                "gps_ok": True, "baro_ok": True, "ahrs_ok": True,
+                "sats": 8, "gps_alt": params["alt"],
+                "baro_hpa": BARO_DEFAULT_HPA, "baro_src": "baro",
+                "fix": True, "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
+            }
+            with _state_lock:
+                state.update(snap)
+            disp.update(snap)
+            disp["hdg_bug"] = params["hdg"]
+            disp["alt_bug"] = params["alt"]
+            smooth_state()
+            render(surf, demo_mode=False, connected=True, data_stale=False)
+            _flip()
+            pygame.image.save(surf, os.path.join(outdir, fname))
+            print(f"  → {fname}")
+
+        for screen_mode, fname in [
+            ("setup",               "preview_setup_main.png"),
+            ("flight_profile",      "preview_setup_flight_profile.png"),
+            ("display_setup",       "preview_setup_display.png"),
+            ("ahrs_setup",          "preview_setup_ahrs.png"),
+            ("connectivity_setup",  "preview_setup_connectivity.png"),
+            ("system_setup",        "preview_setup_system.png"),
+        ]:
+            disp["mode"] = screen_mode
+            render(surf, demo_mode=False, connected=True, data_stale=False)
+            _flip()
+            pygame.image.save(surf, os.path.join(outdir, fname))
+            print(f"  → {fname}")
+
+        disp["mode"] = "pfd"
+        print(f"\n[PFD] Batch screenshots → {outdir}")
         pygame.quit()
         return
 

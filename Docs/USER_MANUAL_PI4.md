@@ -1,6 +1,6 @@
 # AHRS PFD — Pi 4 Pilot's User Manual
 
-**Software version 0.2 · Hardware: Raspberry Pi Pico W + Pi 4 (2 GB) · Display: TBD**
+**Software version 0.2 · Hardware: Raspberry Pi Pico W + Pi 4 (2 GB) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
 
 *Full SVT version — OpenGL vector graphics with 3D terrain rendering*
 
@@ -32,15 +32,25 @@
 
 ## 1. Screen Overview
 
-The display is divided into five fixed zones:
+The Pi 4 version supports two display options:
+
+| Display | Resolution | Interface | Size |
+|---------|-----------|-----------|------|
+| ROADOM 7" HDMI (default) | 1024×600 | HDMI + USB touch | 7" IPS, 178° viewing |
+| ROADOM 10" HDMI | 1024×600 | HDMI + USB touch | 10" IPS, 178° viewing |
+| Waveshare 3.5" DPI | 640×480 | DPI GPIO + I2C touch | 3.5" IPS, panel mount |
+
+All layout elements scale automatically to the display resolution. To switch displays, edit `DISPLAY_PROFILE` in `pi4/config.py`.
+
+The display is divided into five fixed zones (sizes shown for 1024×600 default):
 
 | Zone | Width / Height | Content |
 |------|---------------|---------|
-| Left tape | 74 px wide | Airspeed |
-| Right tape | 82 px wide | Altitude + VSI |
-| Centre AI | remainder | Attitude + synthetic vision terrain |
-| Bottom strip | 44 px tall | Heading tape |
-| Top strip | 22 px tall | Bug readouts |
+| Left tape | 118 px wide | Airspeed |
+| Right tape | 131 px wide | Altitude + VSI |
+| Centre AI | remainder (~775 px) | Attitude + synthetic vision terrain |
+| Bottom strip | 55 px tall | Heading tape |
+| Top strip | 28 px tall | Bug readouts |
 
 Everything is rendered at 30 fps using OpenGL ES vector graphics directly on the framebuffer.
 
