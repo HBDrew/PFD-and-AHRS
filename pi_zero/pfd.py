@@ -707,7 +707,7 @@ def draw_roll_arc(surf, roll):
     # ── Arc: 120° span centred at 12 o'clock, rotated by roll ────────────────
     # Solid filled polygon band between inner and outer radius.
     _ARC_STEPS = 80
-    _ARC_THICK = 3
+    _ARC_THICK = 2
     arc_outer = []
     arc_inner = []
     for i in range(_ARC_STEPS + 1):
