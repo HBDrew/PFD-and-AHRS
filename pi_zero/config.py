@@ -4,8 +4,11 @@ config.py – PFD display configuration for Pi Zero 2W (no SVT version).
 Platform-specific display settings.  Shared settings (V-speeds, SSE,
 thresholds, presets) are inherited from shared/config_base.py.
 
-The display resolution is set to 640×480 for the current DSI panel.
-This will be updated when the final display is selected.
+Display: Waveshare 3.5" DPI LCD
+  - 640×480 IPS, DPI parallel RGB via 40-pin GPIO
+  - 5-point capacitive touch via I2C
+  - PWM backlight on GPIO 18
+  - DT overlay: waveshare-35dpi-3b-4b
 """
 import os
 import sys
@@ -14,14 +17,20 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared'))
 from config_base import *   # noqa: F401,F403
 
-# ── Display ───────────────────────────────────────────────────────────────────
+# ── Display hardware ─────────────────────────────────────────────────────────
+# Waveshare 3.5inch DPI LCD — 640×480 IPS, 60 Hz, DPI interface
 DISPLAY_W      = 640
 DISPLAY_H      = 480
+DISPLAY_IF     = "dpi"          # DPI parallel RGB via 40-pin GPIO
+TOUCH_IF       = "i2c"          # I2C capacitive (5-point, toughened glass 6H)
+BL_MODE        = "pwm_gpio18"   # PWM backlight control on GPIO 18
+DT_OVERLAY     = "waveshare-35dpi-3b-4b"
+
 FULLSCREEN     = True   # set False for windowed testing
 TARGET_FPS     = 30
 DISPLAY_ROTATE = 0      # degrees CCW: 0, 90, 180, 270
 
-# ── Layout (matches preview_640x480.py constants) ────────────────────────────
+# ── Layout (640×480 — matches Waveshare 3.5" native resolution) ──────────────
 SPD_X      = 0
 SPD_W      = 74
 ALT_W      = 82

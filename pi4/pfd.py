@@ -326,6 +326,16 @@ def smooth_state():
 _fonts = {}
 
 def _get_font(size: int, bold: bool = False):
+    # Scale font size proportionally when display is larger than 640×480
+    _fs = getattr(sys.modules[__name__], '_font_scale', None)
+    if _fs is None:
+        try:
+            from config import FONT_SCALE
+            _fs = FONT_SCALE
+        except ImportError:
+            _fs = 1.0
+        sys.modules[__name__]._font_scale = _fs
+    size = int(size * _fs)
     key = (size, bold)
     if key not in _fonts:
         if bold:
@@ -560,7 +570,7 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     GND_MID  = (120,  85,  38)
     GND_FAR  = ( 70,  50,  25)
 
-    px_per_deg = 10.0
+    px_per_deg = ah / 48.0   # scale with AI height (10.0 at 480px)
     old_clip   = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay, aw, ah))
 
@@ -624,7 +634,7 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     ax, ay, aw, ah = ai_rect
     cx, cy = ax + aw // 2, ay + ah // 2
 
-    px_per_deg = 10.0
+    px_per_deg = ah / 48.0   # scale with AI height (10.0 at 480px)
     pitch_px   = int(pitch * px_per_deg)
 
     major_half = int(aw * 0.07)   # ~34 px

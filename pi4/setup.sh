@@ -50,8 +50,15 @@ pip3 install --quiet pygame numpy
 pip3 install --quiet --break-system-packages moderngl 2>/dev/null || true
 
 echo "[5/9] Configuring display…"
-# NOTE: Display resolution TBD — update these values when final display is selected
-if ! grep -q "dtoverlay=vc4-kms-v3d" /boot/firmware/config.txt 2>/dev/null; then
+echo ""
+echo "  Supported displays:"
+echo "    1) ROADOM 7\" HDMI  (1024×600) — default"
+echo "    2) ROADOM 10\" HDMI (1024×600)"
+echo "    3) Waveshare 3.5\" DPI (640×480)"
+echo ""
+# Auto-configure for HDMI displays (works for both ROADOM 7" and 10")
+# For Waveshare DPI: edit pi4/config.py → DISPLAY_PROFILE = "waveshare_35"
+if ! grep -q "# PFD Display (Pi 4)" /boot/firmware/config.txt 2>/dev/null; then
     cat >> /boot/firmware/config.txt << 'CFG'
 # PFD Display (Pi 4) – added by setup.sh
 dtoverlay=vc4-kms-v3d
@@ -59,8 +66,15 @@ dtparam=i2c_arm=on
 disable_overscan=1
 # GPU memory allocation for OpenGL rendering
 gpu_mem=256
+# HDMI display (ROADOM 7"/10"): auto-detected, no extra config needed.
+# For Waveshare 3.5" DPI, uncomment below and add DPI overlays:
+#dtoverlay=waveshare-35dpi-3b-4b
+#framebuffer_width=640
+#framebuffer_height=480
 CFG
     echo "  → /boot/firmware/config.txt updated"
+    echo "  → Default: HDMI display (ROADOM 7\"/10\")"
+    echo "  → For Waveshare 3.5\" DPI: edit config.txt and pi4/config.py"
 else
     echo "  → config.txt already configured"
 fi

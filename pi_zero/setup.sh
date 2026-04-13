@@ -39,19 +39,23 @@ echo "[3/8] Installing Python packages…"
 pip3 install --quiet --break-system-packages pygame numpy 2>/dev/null || \
 pip3 install --quiet pygame numpy
 
-echo "[4/8] Configuring DSI display…"
-# Enable DSI, set framebuffer resolution
-# NOTE: Display resolution TBD — update these values when final display is selected
-if ! grep -q "dtoverlay=vc4-kms-v3d" /boot/firmware/config.txt 2>/dev/null; then
+echo "[4/8] Configuring Waveshare 3.5\" DPI LCD…"
+# Waveshare 3.5inch DPI LCD: 640×480, DPI parallel RGB interface, I2C touch
+# Requires DT overlays copied to /boot/overlays/ (see Waveshare wiki)
+if ! grep -q "waveshare-35dpi" /boot/firmware/config.txt 2>/dev/null; then
     cat >> /boot/firmware/config.txt << 'CFG'
-# PFD Display (Pi Zero 2W) – added by setup.sh
+# PFD Display (Pi Zero 2W) – Waveshare 3.5" DPI LCD
+# Added by setup.sh
 dtoverlay=vc4-kms-v3d
+dtoverlay=waveshare-35dpi-3b-4b
 dtparam=i2c_arm=on
 disable_overscan=1
 framebuffer_width=640
 framebuffer_height=480
 CFG
-    echo "  → /boot/firmware/config.txt updated"
+    echo "  → /boot/firmware/config.txt updated for Waveshare 3.5\" DPI"
+    echo "  → IMPORTANT: Copy waveshare DT overlay files to /boot/overlays/"
+    echo "    Download from: https://www.waveshare.com/wiki/3.5inch_DPI_LCD"
 else
     echo "  → config.txt already configured"
 fi
