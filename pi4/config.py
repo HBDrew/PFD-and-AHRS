@@ -91,8 +91,9 @@ TAPE_H     = TAPE_BOT - TAPE_TOP
 TAPE_MID   = (TAPE_TOP + TAPE_BOT) // 2
 CX         = DISPLAY_W // 2
 CY         = TAPE_MID
-ROLL_R     = int(148 * _SY)
-ROLL_CY    = ROLL_R + int(16 * _SY)
+_S_MIN     = min(_SX, _SY)             # use shorter axis to keep arc circular
+ROLL_R     = int(148 * _S_MIN)
+ROLL_CY    = ROLL_R + int(16 * _S_MIN)
 BALL_Y     = HDG_Y - int(30 * _SY)
 
 # AI (Attitude Indicator) region

@@ -748,10 +748,7 @@ def draw_roll_arc(surf, roll):
     arc_stop  = math.radians(150 - roll)
     arc_rect  = pygame.Rect(cx - ROLL_R - 1, cy - ROLL_R - 1,
                             (ROLL_R + 1) * 2 + 2, (ROLL_R + 1) * 2 + 2)
-    # Two concentric arcs give ~2 px apparent width without a Python loop
-    pygame.draw.arc(surf, LTGREY, arc_rect, arc_start, arc_stop, 1)
-    arc_rect2 = pygame.Rect(cx - ROLL_R, cy - ROLL_R, ROLL_R * 2, ROLL_R * 2)
-    pygame.draw.arc(surf, LTGREY, arc_rect2, arc_start, arc_stop, 1)
+    pygame.draw.arc(surf, LTGREY, arc_rect, arc_start, arc_stop, 2)
 
     # ── Tick marks (10 trig evaluations instead of 484) ──────────────────────
     for deg2, length in [(10, 9), (20, 9), (30, 13),
@@ -3703,11 +3700,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 0. Compute terrain/obstacle alert level for this frame
     _update_terrain_alert(lat, lon, alt, speed, gps_ok)
 
-    # 1. SVT / AI background
+    # 1. AI background — draw full-width so tapes are transparent over sky/ground
+    _full_ai = (0, 0, DISPLAY_W, HDG_Y)
     if _has_terrain:
-        draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon)
+        draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt, lat, lon)
     else:
-        draw_simple_ai_background(surf, ai_rect, pitch, roll)
+        draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
     # 1b. Obstacle symbols projected onto AI
     if _obstacles is not None and gps_ok:
