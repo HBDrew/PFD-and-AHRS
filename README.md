@@ -1,17 +1,66 @@
-# AHRS PFD — Raspberry Pi Pico W + Pi Zero 2W Display
+# AHRS PFD — Dual Display System
 
-A two-board avionic display system:
+A two-board avionic display system with **two display versions**:
 
 | Board | Role |
 |-------|------|
 | **Pico W** | Reads WT901 AHRS, GPS, BME280 baro. Serves data via Wi-Fi SSE |
-| **Pi Zero 2W** | Renders GI-275 inspired PFD with synthetic vision on a 640×480 DSI touchscreen |
+| **Pi Zero 2W** | Lightweight PFD — plain horizon, TAWS alerting, no SVT |
+| **Pi 4** | Full PFD — OpenGL vector graphics with true 3D Synthetic Vision Terrain |
+
+Both display versions connect to the same Pico W AHRS unit over Wi-Fi SSE.
+
+---
+
+## Repository Structure
+
+```
+PFD-and-AHRS/
+├── firmware/          # Pico W AHRS sensor firmware (shared by both displays)
+├── shared/            # Common Python modules (SSE client, terrain loader, obstacles)
+├── pi_zero/           # Pi Zero 2W display version (no SVT)
+│   ├── pfd.py         # Pygame-based PFD renderer — plain horizon
+│   ├── config.py      # Zero-specific display config
+│   ├── setup.sh       # One-shot install for Pi Zero 2W
+│   ├── data/          # SRTM tiles (TAWS only) + obstacles
+│   └── previews/      # Screenshots for this version
+├── pi4/               # Pi 4 display version (full SVT)
+│   ├── pfd.py         # PFD renderer with full SVT terrain
+│   ├── svt_renderer.py # SVT terrain renderer (pygame now, OpenGL planned)
+│   ├── config.py      # Pi 4 display config
+│   ├── setup.sh       # One-shot install for Pi 4
+│   ├── data/          # SRTM tiles + obstacles
+│   └── previews/      # Screenshots for this version
+├── pi_display/        # Original combined codebase (preserved for reference)
+├── display/           # Pico W browser-based preview UI
+├── tools/             # Preview image generator
+├── Docs/              # Requirements, user manuals, test procedures
+└── README.md
+```
+
+---
+
+## Display Version Comparison
+
+| Feature | Pi Zero 2W | Pi 4 |
+|---------|-----------|------|
+| Processor | ARM Cortex-A53, 512 MB RAM | ARM Cortex-A72, 2–8 GB RAM |
+| Graphics | Pygame / SDL2 framebuffer | OpenGL ES vector graphics |
+| SVT terrain background | No — plain sky/ground horizon | Yes — full 3D perspective |
+| Terrain above horizon | No | Yes — mountain peaks visible |
+| TAWS alerting (banners) | Yes | Yes |
+| Obstacle symbols on AI | Yes | Yes |
+| Display resolution | TBD | TBD (higher) |
+| Target frame rate | 30 fps | 30 fps |
+| All other PFD features | Identical | Identical |
+
+Both versions share the same AHRS unit, instrument layout, menus, simulator, demo mode, and touch interface.
 
 ---
 
 ## Hardware
 
-### Pico W sensor board
+### Pico W sensor board (shared)
 | Part | Notes |
 |------|-------|
 | Raspberry Pi Pico W | Any revision |
@@ -24,108 +73,89 @@ A two-board avionic display system:
 | Part | Notes |
 |------|-------|
 | Raspberry Pi Zero 2W | 512 MB RAM |
-| KLAYERS 3.5" DSI 640×480 touchscreen | IPS, capacitive touch |
+| Display | TBD |
 | 64 GB microSD (Class 10 / A1) | Raspberry Pi OS Lite 64-bit |
-| USB-C power (5V 2A+) | For Pi Zero 2W |
+| USB-C power (5V 2A+) | |
+
+### Pi 4 display
+| Part | Notes |
+|------|-------|
+| Raspberry Pi 4 | 2 GB+ RAM recommended |
+| Display | TBD (higher resolution) |
+| 64 GB microSD (Class 10 / A1) | Raspberry Pi OS Lite 64-bit |
+| USB-C power (5V 3A) | |
 
 ---
 
-## Pi Zero 2W — First-Time Setup
+## Quick Start — Pi Zero 2W
 
 ### 1. Flash SD card
 
-Download **Raspberry Pi OS Lite (64-bit)** from raspberrypi.com.
+Download **Raspberry Pi OS Lite (64-bit)**. Use **Raspberry Pi Imager** with SSH enabled, hostname `pfd`, and your Wi-Fi credentials.
 
-Using **Raspberry Pi Imager**:
-1. Choose OS → Raspberry Pi OS (other) → Raspberry Pi OS Lite (64-bit)
-2. Click ⚙ **Advanced options** before writing:
-   - Enable SSH (use password auth)
-   - Set hostname: `pfd`
-   - Set username/password (e.g. `pi` / `pfd1234`)
-   - **Configure wireless LAN** → enter your home WiFi SSID + password
-   - Set locale/timezone
-3. Write to SD card.
-
-### 2. Boot and find the Pi
-
-Insert SD, attach the DSI display cable, power on.
-
-Find the IP address on your home network:
-
-```bash
-# From a Mac/Linux machine on the same WiFi:
-ping pfd.local
-
-# Or check your router's DHCP lease list
-```
-
-### 3. SSH in
+### 2. Clone and install
 
 ```bash
 ssh pi@pfd.local
-# password: pfd1234 (or whatever you set)
-```
-
-### 4. Install git and clone the repo
-
-Git is not pre-installed on Raspberry Pi OS Lite — install it first:
-
-```bash
 sudo apt update && sudo apt install git -y
-```
-
-Then clone:
-
-```bash
-cd ~
 git clone https://github.com/HBDrew/PFD-and-AHRS.git
 cd PFD-and-AHRS
+sudo bash pi_zero/setup.sh
 ```
 
-**No internet on the Pi yet?** Alternatives:
-- Download the ZIP from GitHub on your PC, copy to a USB drive, then `cp -r /media/pi/DRIVE/pfd-and-ahrs ~/`
-- Use **WinSCP** (Windows) or `scp` (Mac/Linux) to transfer the folder over SSH
-
-### 5. Run the install script
-
-```bash
-sudo bash setup.sh
-```
-
-This will:
-- Install Python/pygame/numpy
-- Configure the DSI display framebuffer (640×480)
-- Create `pi_display/data/srtm/` directory
-- Install `pfd.service` to auto-start on boot
-- Add `pi_display/download_terrain.py` helper
-
-### 6. Download Sedona terrain tiles (while on home WiFi)
+### 3. Download terrain tiles (for TAWS alerting)
 
 ```bash
 bash fetch_sedona_tiles.sh
 ```
 
-This downloads 4 SRTM elevation tiles (~11 MB) covering Sedona AZ for demo mode. For full US terrain coverage (~5 GB):
+### 4. Test demo mode
 
 ```bash
-python3 pi_display/download_terrain.py
+python3 pi_zero/pfd.py --demo --sim
 ```
 
-### 7. Test demo mode (no Pico W needed)
-
-```bash
-python3 pi_display/pfd.py --demo
-```
-
-You should see the GI-275 style PFD animating through Sedona flight scenarios on the DSI display.
-
-### 8. Reboot — PFD starts automatically
+### 5. Reboot — PFD starts automatically
 
 ```bash
 sudo reboot
 ```
 
-The `pfd.service` systemd unit will start `pfd.py` automatically on boot, connecting to the Pico W AP.
+---
+
+## Quick Start — Pi 4
+
+### 1. Flash SD card
+
+Same as above, but use a Pi 4 with hostname `pfd4`.
+
+### 2. Clone and install
+
+```bash
+ssh pi@pfd4.local
+sudo apt update && sudo apt install git -y
+git clone https://github.com/HBDrew/PFD-and-AHRS.git
+cd PFD-and-AHRS
+sudo bash pi4/setup.sh
+```
+
+### 3. Download terrain tiles (for SVT + TAWS)
+
+```bash
+bash fetch_sedona_tiles.sh
+```
+
+### 4. Test demo mode
+
+```bash
+python3 pi4/pfd.py --demo --sim
+```
+
+### 5. Reboot — PFD starts automatically
+
+```bash
+sudo reboot
+```
 
 ---
 
@@ -212,7 +242,20 @@ bash wifi_switch.sh status
 | (keyboard) D | Toggle demo mode |
 | (keyboard) Esc | Quit |
 
-See `Docs/USER_MANUAL.md` for full operational documentation.
+See `Docs/USER_MANUAL_ZERO.md` or `Docs/USER_MANUAL_PI4.md` for full operational documentation.
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| `Docs/REQUIREMENTS_AHRS.md` | AHRS unit high-level requirements (shared) |
+| `Docs/REQUIREMENTS_DISPLAY_ZERO.md` | Pi Zero 2W display HLRs (no SVT) |
+| `Docs/REQUIREMENTS_DISPLAY_PI4.md` | Pi 4 display HLRs (full SVT + OpenGL) |
+| `Docs/USER_MANUAL_ZERO.md` | Pi Zero 2W pilot's user manual |
+| `Docs/USER_MANUAL_PI4.md` | Pi 4 pilot's user manual |
+| `Docs/TEST_PROCEDURE_001.md` | Bench test procedure |
 
 ---
 
@@ -239,14 +282,6 @@ V-speeds are set via the on-screen setup menu and take effect immediately on the
 
 Default values (Cessna 172S) are restored by tapping **RESET DEFAULTS** on the Flight Profile screen, or via **System → RESET DEFAULTS**.
 
-The values in `pi_display/config.py` serve as the factory defaults only — edit them there if you want a different baseline for a new installation.
-
----
-
-## Baro Setting
-
-The baro setting is adjusted from the Pico W web interface (`http://192.168.4.1`). If the BME280 is installed it drives the altimeter; otherwise GPS altitude is used.
-
 ---
 
 ## Troubleshooting
@@ -258,11 +293,7 @@ sudo journalctl -u pfd.service -n 50
 ```
 
 ### Display wrong orientation / resolution
-Check `/boot/firmware/config.txt` — `setup.sh` should have added:
-```
-framebuffer_width=640
-framebuffer_height=480
-```
+Check `/boot/firmware/config.txt` — `setup.sh` should have added the framebuffer settings.
 
 ### "NO LINK" badge on PFD — can't connect to Pico W
 1. Check Pi is on Pico W AP: `bash wifi_switch.sh status`
@@ -279,7 +310,7 @@ framebuffer_height=480
 - GPS needs open-sky view; initial fix can take 2–5 minutes cold-start
 - Check NEO-6M LED: 1 Hz blink = fix acquired, fast blink = searching
 
-### Terrain not showing in demo
+### Terrain not showing in demo (Pi 4 only)
 ```bash
 bash fetch_sedona_tiles.sh
 ```
@@ -304,6 +335,8 @@ sudo systemctl restart pfd.service
 |-------|---------|
 | ✅ V1 | AHRS PFD — Pico W + phone browser display |
 | ✅ V2 | Pi Zero 2W dedicated display with SVT terrain |
-| V3 | 100 Hz WT901 + magnetic deviation calibration |
-| V4 | TruTrak Vizion RS-232 autopilot interface |
-| V5 | Aviation database, moving map, synthetic runway |
+| ✅ V3 | Split into Pi Zero 2W (no SVT) and Pi 4 (full SVT) versions |
+| V4 | Pi 4 OpenGL vector graphics + true 3D SVT |
+| V5 | 100 Hz WT901 + magnetic deviation calibration |
+| V6 | TruTrak Vizion RS-232 autopilot interface |
+| V7 | Aviation database, moving map, synthetic runway |

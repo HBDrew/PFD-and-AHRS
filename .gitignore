@@ -10,3 +10,16 @@ venv/
 # Editor / OS
 .DS_Store
 *.swp
+
+# SRTM terrain tiles (large binary, downloaded at runtime)
+pi_zero/data/srtm/*.hgt
+pi4/data/srtm/*.hgt
+pi_display/data/srtm/*.hgt
+
+# FAA obstacle data (downloaded at runtime)
+pi_zero/data/obstacles/
+pi4/data/obstacles/
+pi_display/data/obstacles/
+
+# Local config overrides
+config_local.py
