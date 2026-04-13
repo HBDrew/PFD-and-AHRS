@@ -932,11 +932,11 @@ def draw_speed_tape(surf, speed, gs_bug=None,
 
     # Speed readout box — stepped Veeder-Root style.
     # Extra tape width distributed across all sections:
-    #   pointer 15→18, inner 32→37, drum 19→26 = total 66→81
+    #   pointer 15→18, inner 32→33, drum 19→30 = total 66→81
     _sp = SPD_X
     _ptr_r  = 18   # pointer tip right edge
-    _inn_r  = 55   # inner section right edge (ptr + inner = 18 + 37)
-    _box_r  = 81   # full box right edge (ptr + inner + drum = 18 + 37 + 26)
+    _inn_r  = 51   # inner section right edge (ptr + inner = 18 + 33)
+    _box_r  = 81   # full box right edge (ptr + inner + drum = 18 + 33 + 30)
     pts_s = _chamfer([(_sp,          TAPE_MID),
                       (_sp + _ptr_r, TAPE_MID - 15), (_sp + _inn_r, TAPE_MID - 15),
                       (_sp + _inn_r, TAPE_MID - 29), (_sp + _box_r, TAPE_MID - 29),
@@ -946,11 +946,11 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
-    # Inner: hundreds + tens (37px wide); drum: units digit (26px wide)
-    _rolling_drum(surf, _sp + _ptr_r + 1, TAPE_MID - 14, 35, 28, speed, 2, spd_col, 24, power_offset=1)
-    _rolling_drum(surf, _sp + _inn_r + 1, TAPE_MID - 28, 24, 56, speed, 1, spd_col, 24,
+    # Inner: hundreds + tens (31px); drum: units digit (28px)
+    _rolling_drum(surf, _sp + _ptr_r + 1, TAPE_MID - 14, 31, 28, speed, 2, spd_col, 24, power_offset=1)
+    _rolling_drum(surf, _sp + _inn_r + 1, TAPE_MID - 28, 28, 56, speed, 1, spd_col, 24,
                   show_adjacent=True, adj_slot_h=23)
-    _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - 28, 24, 56)
+    _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - 28, 28, 56)
 
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -1068,20 +1068,21 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
     inner_int  = int(alt_inner)
-    # Inner digits: positioned from left edge of box; hundreds digit shifted left
-    _inn_x = R - _box_w + 1            # left edge of inner section
+    # Inner digits: right-justified against the drum section.
+    # Each digit cell is 16px wide (fits scaled 22-24pt font).
+    # Hundreds in rightmost cell, thousands left of that, ten-thousands leftmost.
+    _cell = 16                          # px per digit cell
+    _inn_right = R - _drm_l            # right edge of inner section
     if inner_int < 10:                  # alt < 1,000 ft — hundreds only
-        _rolling_drum(surf, _inn_x, TAPE_MID - 14, _inn_w, 28, alt_inner, 1, WHITE, 24)
+        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - 14, _cell, 28, alt_inner, 1, WHITE, 24)
     elif inner_int < 100:               # 1,000–9,999 ft
-        _half = _inn_w // 2
-        _rolling_drum(surf, _inn_x, TAPE_MID - 14, _half, 28, alt_inner, 1, WHITE, 24,
+        _rolling_drum(surf, _inn_right - _cell * 2, TAPE_MID - 14, _cell, 28, alt_inner, 1, WHITE, 24,
                       power_offset=1)
-        _rolling_drum(surf, _inn_x + _half, TAPE_MID - 14, _half, 28, alt_inner, 1, WHITE, 22)
+        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - 14, _cell, 28, alt_inner, 1, WHITE, 22)
     else:                               # alt >= 10,000 ft
-        _tw = _inn_w * 2 // 3
-        _rolling_drum(surf, _inn_x, TAPE_MID - 14, _tw, 28, alt_inner, 2, WHITE, 22,
+        _rolling_drum(surf, _inn_right - _cell * 3, TAPE_MID - 14, _cell * 2, 28, alt_inner, 2, WHITE, 22,
                       suppress_leading=True, power_offset=1)
-        _rolling_drum(surf, _inn_x + _tw, TAPE_MID - 14, _inn_w - _tw, 28, alt_inner, 1, WHITE, 22)
+        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - 14, _cell, 28, alt_inner, 1, WHITE, 22)
     # Drum: 20-ft labels — expanded from 22 to 29px for scaled fonts
     _drm_x = R - _drm_l + 1
     _drm_render_w = _drm_w - 2
@@ -1148,14 +1149,18 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                 pygame.draw.polygon(surf, (220, 60, 220),
                     [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
-    # Heading box — 66×28px: wider to give G/M outboard room to the right of °.
-    # GPS TRK mode → magenta (matches track-pointer colour). MAG mode → white.
+    # Heading box — scaled for font size. GPS TRK → magenta, MAG → white.
     hdg_col = MAGENTA if hdg_src == "gps" else WHITE
-    bw, bh = 66, 28
+    # Measure actual rendered width of "133°" to size the box
+    _hf = _get_font(17)
+    _hdg_str = f"{round(hdg) % 360:03d}\u00b0"
+    _hw = _hf.size(_hdg_str)[0]
+    bw = max(66, _hw + 28)  # text width + padding for M subscript + margins
+    bh = max(28, _hf.get_height() + 8)
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
-    th = bw // 3           # triangle base width ≈ 22px
-    td = 14                # fixed triangle depth
-    tx = CX - th // 2      # triangle left base x
+    th = bw // 3
+    td = 14
+    tx = CX - th // 2
     pts_h = _chamfer([(bx,      by2),
                       (bx + bw, by2),
                       (bx + bw, by2 + bh),
@@ -1165,16 +1170,12 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                       (bx,      by2 + bh)], {0, 1, 2, 6})
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
     pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
-    # Three-digit readout — perfectly centred in the box
-    num_str  = f"{round(hdg) % 360:03d}"
-    full_str = num_str + "\u00b0"
-    f17      = _get_font(17)
-    _text(surf, full_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)
-    # G/M subscript — outboard of the ° glyph, lower-right area of box
-    full_w   = f17.size(full_str)[0]
-    deg_right = CX + full_w // 2 + 2      # 2px outboard of ° right edge
+    # Three-digit readout — centred in the box
+    _text(surf, _hdg_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)
+    # G/M subscript — outboard of the ° glyph
+    deg_right = CX + _hw // 2 + 3
     src_lbl  = "G" if hdg_src == "gps" else "M"
-    _text(surf, src_lbl, 8, hdg_col, x=deg_right, y=by2 + bh - 10)
+    _text(surf, src_lbl, 8, hdg_col, x=deg_right, y=by2 + bh - 12)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────
