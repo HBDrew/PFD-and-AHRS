@@ -960,7 +960,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     # ALT bug button — top strip of alt tape; color matches bug triangle
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     alt_box_col = CYAN if baro_ok else MAGENTA
-    _cyan_box(surf, alt_str, x=ALT_X, y=2, w=ALT_W, h=22, col=alt_box_col)
+    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=22, col=alt_box_col)
 
     # VS bar — 5px wide on the outer (right) edge of the alt tape.
     # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
@@ -3467,7 +3467,7 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
         baro_fsz = 14
         baro_col = MAGENTA
     _cyan_box(surf, baro_lbl,
-              x=ALT_X, y=y, w=ALT_W, h=22, font_sz=baro_fsz, col=baro_col)
+              x=ALT_X + 1, y=y, w=ALT_W - 1, h=22, font_sz=baro_fsz, col=baro_col)
 
 
 # ── Veil surface for transparent overlay modes (allocated once) ───────────────
