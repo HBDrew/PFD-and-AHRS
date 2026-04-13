@@ -931,23 +931,26 @@ def draw_speed_tape(surf, speed, gs_bug=None,
         surf.set_clip(None)
 
     # Speed readout box — stepped Veeder-Root style.
-    # Original 640×480 layout preserved; extra tape width extends the box rightward.
+    # Extra tape width distributed across all sections:
+    #   pointer 15→18, inner 32→37, drum 19→26 = total 66→81
     _sp = SPD_X
-    _extra = SPD_W - 74  # extra pixels beyond base 74px tape width
-    pts_s = _chamfer([(_sp,           TAPE_MID),
-                      (_sp + 15,      TAPE_MID - 15), (_sp + 47 + _extra, TAPE_MID - 15),
-                      (_sp + 47 + _extra, TAPE_MID - 29), (_sp + 66 + _extra, TAPE_MID - 29),
-                      (_sp + 66 + _extra, TAPE_MID + 29),
-                      (_sp + 47 + _extra, TAPE_MID + 29), (_sp + 47 + _extra, TAPE_MID + 15),
-                      (_sp + 15,      TAPE_MID + 15)], {2, 3, 4, 5, 6, 7})
+    _ptr_r  = 18   # pointer tip right edge
+    _inn_r  = 55   # inner section right edge (ptr + inner = 18 + 37)
+    _box_r  = 81   # full box right edge (ptr + inner + drum = 18 + 37 + 26)
+    pts_s = _chamfer([(_sp,          TAPE_MID),
+                      (_sp + _ptr_r, TAPE_MID - 15), (_sp + _inn_r, TAPE_MID - 15),
+                      (_sp + _inn_r, TAPE_MID - 29), (_sp + _box_r, TAPE_MID - 29),
+                      (_sp + _box_r, TAPE_MID + 29),
+                      (_sp + _inn_r, TAPE_MID + 29), (_sp + _inn_r, TAPE_MID + 15),
+                      (_sp + _ptr_r, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7})
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
-    # Inner: hundreds + tens at 24pt; drum: units digit
-    _rolling_drum(surf, _sp + 16, TAPE_MID - 14, 30 + _extra, 28, speed, 2, spd_col, 24, power_offset=1)
-    _rolling_drum(surf, _sp + 48 + _extra, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 24,
+    # Inner: hundreds + tens (37px wide); drum: units digit (26px wide)
+    _rolling_drum(surf, _sp + _ptr_r + 1, TAPE_MID - 14, 35, 28, speed, 2, spd_col, 24, power_offset=1)
+    _rolling_drum(surf, _sp + _inn_r + 1, TAPE_MID - 28, 24, 56, speed, 1, spd_col, 24,
                   show_adjacent=True, adj_slot_h=23)
-    _drum_shade(surf, _sp + 48 + _extra, TAPE_MID - 28, 17, 56)
+    _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - 28, 24, 56)
 
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -1027,23 +1030,27 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         surf.set_clip(None)
 
     # Altitude readout box — stepped Veeder-Root style.
-    # Original 640×480 layout preserved; extra tape width extends the box leftward.
+    # Extra tape width distributed across all sections:
+    #   inner 42→47, drum 24→31, pointer 15→18 = total 81→96
     R = ALT_X + ALT_W
-    _extra_a = ALT_W - 82  # extra pixels beyond base 82px tape width
-    pts_a = _chamfer([(R,      TAPE_MID),
-                      (R - 15, TAPE_MID - 15), (R - 15, TAPE_MID - 29),
-                      (R - 39, TAPE_MID - 29), (R - 39, TAPE_MID - 15),
-                      (R - 81 - _extra_a, TAPE_MID - 15),
-                      (R - 81 - _extra_a, TAPE_MID + 15),
-                      (R - 39, TAPE_MID + 15), (R - 39, TAPE_MID + 29),
-                      (R - 15, TAPE_MID + 29), (R - 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7, 8, 9})
+    _ptr_w  = 18   # pointer section width
+    _drm_w  = 31   # drum (twenties) section width
+    _inn_w  = 47   # inner (hundreds thru ten-thousands) section width
+    _box_w  = _inn_w + _drm_w + _ptr_w   # 96 total
+    _drm_l  = _ptr_w + _drm_w            # 49 — drum left edge from R
+    pts_a = _chamfer([(R,              TAPE_MID),
+                      (R - _ptr_w,     TAPE_MID - 15), (R - _ptr_w, TAPE_MID - 29),
+                      (R - _drm_l,     TAPE_MID - 29), (R - _drm_l, TAPE_MID - 15),
+                      (R - _box_w,     TAPE_MID - 15),
+                      (R - _box_w,     TAPE_MID + 15),
+                      (R - _drm_l,     TAPE_MID + 15), (R - _drm_l, TAPE_MID + 29),
+                      (R - _ptr_w,     TAPE_MID + 29), (R - _ptr_w, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7, 8, 9})
     pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
 
     # VSI readout — drawn BEFORE the outline so the 2px white line frames shared edges
-    _R39  = R - 39
     _nx   = ALT_X
     _ny   = TAPE_MID + 15
-    _nw   = _R39 - ALT_X
+    _nw   = R - _drm_l - ALT_X
     _nh   = 22
     if abs(vspeed) > 30:
         _varr = "▲" if vspeed > 0 else "▼"
@@ -1061,20 +1068,26 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
     inner_int  = int(alt_inner)
-    if inner_int < 10:
-        _rolling_drum(surf, R - 80 - _extra_a, TAPE_MID - 14, 41 + _extra_a, 28, alt_inner, 1, WHITE, 24)
-    elif inner_int < 100:
-        _rolling_drum(surf, R - 66 - _extra_a, TAPE_MID - 14, 14 + _extra_a, 28, alt_inner, 1, WHITE, 24,
+    # Inner digits: positioned from left edge of box; hundreds digit shifted left
+    _inn_x = R - _box_w + 1            # left edge of inner section
+    if inner_int < 10:                  # alt < 1,000 ft — hundreds only
+        _rolling_drum(surf, _inn_x, TAPE_MID - 14, _inn_w, 28, alt_inner, 1, WHITE, 24)
+    elif inner_int < 100:               # 1,000–9,999 ft
+        _half = _inn_w // 2
+        _rolling_drum(surf, _inn_x, TAPE_MID - 14, _half, 28, alt_inner, 1, WHITE, 24,
                       power_offset=1)
-        _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
-    else:
-        _rolling_drum(surf, R - 80 - _extra_a, TAPE_MID - 14, 28 + _extra_a, 28, alt_inner, 2, WHITE, 22,
+        _rolling_drum(surf, _inn_x + _half, TAPE_MID - 14, _half, 28, alt_inner, 1, WHITE, 22)
+    else:                               # alt >= 10,000 ft
+        _tw = _inn_w * 2 // 3
+        _rolling_drum(surf, _inn_x, TAPE_MID - 14, _tw, 28, alt_inner, 2, WHITE, 22,
                       suppress_leading=True, power_offset=1)
-        _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
-    # Drum: 20-ft labels
-    _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 18,
+        _rolling_drum(surf, _inn_x + _tw, TAPE_MID - 14, _inn_w - _tw, 28, alt_inner, 1, WHITE, 22)
+    # Drum: 20-ft labels — expanded from 22 to 29px for scaled fonts
+    _drm_x = R - _drm_l + 1
+    _drm_render_w = _drm_w - 2
+    _rolling_drum_alt20(surf, _drm_x, TAPE_MID - 28, _drm_render_w, 56, alt, WHITE, 18,
                         show_adjacent=True, adj_slot_h=18)
-    _drum_shade(surf, R - 38, TAPE_MID - 28, 22, 56)
+    _drum_shade(surf, _drm_x, TAPE_MID - 28, _drm_render_w, 56)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
