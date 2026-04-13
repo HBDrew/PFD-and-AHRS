@@ -746,8 +746,7 @@ def draw_roll_arc(surf, roll):
     # Arc spans -150+roll … -30+roll in our convention → 30-roll … 150-roll in pygame.
     arc_start = math.radians(30  - roll)
     arc_stop  = math.radians(150 - roll)
-    arc_rect  = pygame.Rect(cx - ROLL_R - 1, cy - ROLL_R - 1,
-                            (ROLL_R + 1) * 2 + 2, (ROLL_R + 1) * 2 + 2)
+    arc_rect  = pygame.Rect(cx - ROLL_R, cy - ROLL_R, ROLL_R * 2, ROLL_R * 2)
     pygame.draw.arc(surf, LTGREY, arc_rect, arc_start, arc_stop, 2)
 
     # ── Tick marks (10 trig evaluations instead of 484) ──────────────────────
