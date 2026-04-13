@@ -80,8 +80,8 @@ DISPLAY_ROTATE = 0      # degrees CCW: 0, 90, 180, 270
 _SY = DISPLAY_H / 480.0   # vertical scale factor
 
 SPD_X      = 0
-SPD_W      = 74                          # fixed — hand-tuned tape width
-ALT_W      = 82                          # fixed — hand-tuned tape width
+SPD_W      = 79                          # 74 + 5px for 1024×600 readability
+ALT_W      = 87                          # 82 + 5px for 1024×600 readability
 ALT_X      = DISPLAY_W - ALT_W
 HDG_H      = int(44  * _SY)
 HDG_Y      = DISPLAY_H - HDG_H

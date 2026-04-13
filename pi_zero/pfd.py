@@ -705,22 +705,18 @@ def draw_roll_arc(surf, roll):
     cx, cy = CX, ROLL_CY
 
     # ── Arc: 120° span centred at 12 o'clock, rotated by roll ────────────────
-    # Anti-aliased polyline instead of pygame.draw.arc (which rasterises poorly).
-    # Draw two concentric AA polylines offset by 1px for a clean 2px-wide arc.
-    _ARC_STEPS = 60   # 60 segments for a 120° arc = 2° per segment
-    arc_pts_outer = []
-    arc_pts_inner = []
-    for i in range(_ARC_STEPS + 1):
-        ang = math.radians(-150 + roll + i * 120.0 / _ARC_STEPS)
-        cos_a, sin_a = math.cos(ang), math.sin(ang)
-        arc_pts_outer.append((int(cx + (ROLL_R + 1) * cos_a),
-                              int(cy - (ROLL_R + 1) * sin_a)))
-        arc_pts_inner.append((int(cx + ROLL_R * cos_a),
-                              int(cy - ROLL_R * sin_a)))
-    pygame.draw.aalines(surf, LTGREY, False, arc_pts_outer)
-    pygame.draw.aalines(surf, LTGREY, False, arc_pts_inner)
+    # Bold anti-aliased arc using 4 concentric polylines for ~3px visible weight.
+    _ARC_STEPS = 60
+    for r_offset in range(-1, 3):
+        pts = []
+        r = ROLL_R + r_offset
+        for i in range(_ARC_STEPS + 1):
+            ang = (-90 + roll - 60 + i * 120.0 / _ARC_STEPS) * DEG
+            pts.append((int(cx + r * math.cos(ang)),
+                        int(cy + r * math.sin(ang))))
+        pygame.draw.aalines(surf, LTGREY, False, pts)
 
-    # ── Tick marks (10 trig evaluations instead of 484) ──────────────────────
+    # ── Tick marks — bolder (width 2) to match arc weight ────────────────────
     for deg2, length in [(10, 9), (20, 9), (30, 13),
                          (-10, 9), (-20, 9), (-30, 13),
                          (45, 9), (-45, 9), (60, 11), (-60, 11)]:
@@ -730,7 +726,7 @@ def draw_roll_arc(surf, roll):
         y1 = int(cy + (ROLL_R - length) * sin_a)
         x2 = int(cx + ROLL_R * cos_a)
         y2 = int(cy + ROLL_R * sin_a)
-        pygame.draw.aaline(surf, LTGREY, (x1, y1), (x2, y2))
+        pygame.draw.line(surf, LTGREY, (x1, y1), (x2, y2), 2)
         # Hollow triangles at ±45
         if abs(deg2) == 45:
             perp = ang + math.pi / 2
@@ -920,9 +916,9 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     """Right altitude tape with VSI and baro setting."""
     global _alt_tape_bg
     if _alt_tape_bg is None:
-        _alt_tape_bg = pygame.Surface((ALT_W, TAPE_H), pygame.SRCALPHA)
+        _alt_tape_bg = pygame.Surface((ALT_W, TAPE_BOT), pygame.SRCALPHA)
         _alt_tape_bg.fill(TAPE_BG)
-    surf.blit(_alt_tape_bg, (ALT_X, TAPE_TOP))
+    surf.blit(_alt_tape_bg, (ALT_X, 0))
     pygame.draw.line(surf, (255, 255, 255, 60), (ALT_X, TAPE_TOP),
                      (ALT_X, TAPE_BOT), 1)
 
@@ -1086,12 +1082,14 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
 
     # GPS track pointer (magenta, when GPS OK and heading source is MAG)
     # Suppressed in GPS TRK mode — hdg is already the track value.
+    # Also suppressed when track ≈ hdg (within 1°) to avoid clutter at centre.
     if gps_ok and track is not None and hdg_src != "gps":
         off = ((track - hdg + 180) % 360) - 180
-        tx = int(CX + off * PX_PER_DEG)
-        if 0 < tx < DISPLAY_W:
-            pygame.draw.polygon(surf, (220, 60, 220),
-                [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
+        if abs(off) > 1.0:  # only show when there's visible wind/crab angle
+            tx = int(CX + off * PX_PER_DEG)
+            if 0 < tx < DISPLAY_W:
+                pygame.draw.polygon(surf, (220, 60, 220),
+                    [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
     # Heading box — 66×28px: wider to give G/M outboard room to the right of °.
     # GPS TRK mode → magenta (matches track-pointer colour). MAG mode → white.
