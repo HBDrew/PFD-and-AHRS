@@ -705,18 +705,23 @@ def draw_roll_arc(surf, roll):
     cx, cy = CX, ROLL_CY
 
     # ── Arc: 120° span centred at 12 o'clock, rotated by roll ────────────────
-    # Bold anti-aliased arc using 4 concentric polylines for ~3px visible weight.
-    _ARC_STEPS = 60
-    for r_offset in range(-1, 3):
-        pts = []
-        r = ROLL_R + r_offset
-        for i in range(_ARC_STEPS + 1):
-            ang = (-90 + roll - 60 + i * 120.0 / _ARC_STEPS) * DEG
-            pts.append((int(cx + r * math.cos(ang)),
-                        int(cy + r * math.sin(ang))))
-        pygame.draw.aalines(surf, LTGREY, False, pts)
+    # Solid filled polygon band between inner and outer radius.
+    _ARC_STEPS = 80
+    _ARC_THICK = 3
+    arc_outer = []
+    arc_inner = []
+    for i in range(_ARC_STEPS + 1):
+        ang = (-90 + roll - 60 + i * 120.0 / _ARC_STEPS) * DEG
+        cos_a, sin_a = math.cos(ang), math.sin(ang)
+        arc_outer.append((int(cx + (ROLL_R + _ARC_THICK) * cos_a),
+                          int(cy + (ROLL_R + _ARC_THICK) * sin_a)))
+        arc_inner.append((int(cx + ROLL_R * cos_a),
+                          int(cy + ROLL_R * sin_a)))
+    arc_band = arc_outer + list(reversed(arc_inner))
+    pygame.gfxdraw.filled_polygon(surf, arc_band, WHITE)
+    pygame.gfxdraw.aapolygon(surf, arc_band, WHITE)
 
-    # ── Tick marks — bolder (width 2) to match arc weight ────────────────────
+    # ── Tick marks — solid white, 2px width ──────────────────────────────────
     for deg2, length in [(10, 9), (20, 9), (30, 13),
                          (-10, 9), (-20, 9), (-30, 13),
                          (45, 9), (-45, 9), (60, 11), (-60, 11)]:
@@ -724,9 +729,9 @@ def draw_roll_arc(surf, roll):
         cos_a, sin_a = math.cos(ang), math.sin(ang)
         x1 = int(cx + (ROLL_R - length) * cos_a)
         y1 = int(cy + (ROLL_R - length) * sin_a)
-        x2 = int(cx + ROLL_R * cos_a)
-        y2 = int(cy + ROLL_R * sin_a)
-        pygame.draw.line(surf, LTGREY, (x1, y1), (x2, y2), 2)
+        x2 = int(cx + (ROLL_R + _ARC_THICK) * cos_a)
+        y2 = int(cy + (ROLL_R + _ARC_THICK) * sin_a)
+        pygame.draw.line(surf, WHITE, (x1, y1), (x2, y2), 2)
         # Hollow triangles at ±45
         if abs(deg2) == 45:
             perp = ang + math.pi / 2
