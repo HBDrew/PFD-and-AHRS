@@ -49,7 +49,41 @@ SCENES = [
     ("preview_low_altitude",      10,   0, 133, 4500, 95,     0,   0),
     ("preview_high_altitude",      0,   0, 133, 12000, 115,   0,   0),
     ("preview_climb_left",       -15,   8, 100, 6500, 95,   500, -0.10),
+    # Combined SVT + airport + obstacle: approaching Sedona (KSEZ) from NE at
+    # pattern altitude with a tall tower in view and rising terrain all around.
+    ("preview_svt_airports_obstacles", -4, -2, 226, 5500, 85, -300, 0),
 ]
+
+
+def _inject_synthetic_obstacles():
+    """Create a small set of synthetic obstacles near Sedona for preview
+    rendering.  Real obstacle data comes from FAA DOF (gitignored, ~20 MB)
+    but for preview PNGs a handful of towers is enough to demonstrate the
+    symbol rendering and its interaction with airports + SVT.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return
+
+    # Synthetic tower cluster NE of KSEZ, along a ridge at ~6000 ft MSL
+    # (roughly 500 ft above aircraft at the preview's 5500 ft cruise).
+    records = [
+        # (lat,      lon,      agl_ft, msl_ft, otype, lit)
+        (34.8825, -111.7420,    450,   6280, "TWR", True),
+        (34.8650, -111.7100,    300,   6050, "ANT", False),
+        (34.8550, -111.7250,    820,   6420, "TWR", True),
+        (34.8720, -111.7520,    280,   5890, "ANT", False),
+    ]
+    arr = np.array(records,
+                   dtype=[("lat","f4"),("lon","f4"),
+                          ("agl_ft","f4"),("msl_ft","f4"),
+                          ("otype","U3"),("lit","?")])
+    pfd._obstacles = arr
+    # Populate UI status so the NO OBS badge is suppressed in the preview
+    pfd.disp["od"]["records"] = len(arr)
+    pfd.disp["od"]["used_mb"] = 0.01
+    pfd.disp["od"]["expired"] = False
 
 
 def seed_state(roll, pitch, hdg, alt, speed, vspeed, ay, lat=DEMO_LAT, lon=DEMO_LON):
@@ -88,6 +122,10 @@ def main():
 
     # Load airport database synchronously (normally loaded by background thread)
     pfd._startup_load_airports()
+
+    # Inject synthetic obstacles so previews show the combined symbol stack
+    # (real FAA DOF data is ~20 MB, gitignored, downloaded at install time)
+    _inject_synthetic_obstacles()
 
     surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
 
