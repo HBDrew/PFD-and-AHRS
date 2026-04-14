@@ -226,9 +226,18 @@ void main() {
     float s = sin(u_roll_rad);
     float y_unrolled = -x_sq * s + y_sq * c;
 
-    // Sky above the rolled horizon, fallback-brown below (terrain covers it).
+    // Sky gradient above horizon; atmospheric-haze gradient below horizon.
+    // The "below" gradient fills the gap between the mesh edge and the
+    // true geometric horizon (which at altitude is 100+ nm away — far
+    // beyond the 20 nm terrain mesh).  Colored to blend naturally with
+    // the terrain mesh so there's no visible seam.
     if (y_unrolled < u_horizon_y) {
-        frag_color = vec4(0.35, 0.22, 0.10, 1.0);
+        // Below horizon: haze-tinted ground (lighter at horizon, darker deep down)
+        float t = clamp((u_horizon_y - y_unrolled) / max(0.001, u_horizon_y + 1.0),
+                        0.0, 1.0);
+        vec3 haze   = vec3(0.42, 0.33, 0.22);  // dusty atmospheric haze
+        vec3 ground = vec3(0.27, 0.22, 0.11);  // darker distant ground
+        frag_color = vec4(mix(haze, ground, t), 1.0);
     } else {
         float t = (y_unrolled - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
         vec3 horizon_col = vec3(0.23, 0.51, 0.78);
