@@ -3579,7 +3579,9 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
     _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=22, col=hdg_box_col)
 
     # Baro — right side of heading strip; CYAN when baro sensor active, MAGENTA when GPS ALT
-    if baro_ok and baro_src == "bme280":
+    # Accept any non-"gps" baro_src as meaning baro sensor is active (firmware uses
+    # "bme280", sim/demo/preview code uses "baro" — both mean the same thing).
+    if baro_ok and baro_src != "gps":
         baro_unit = disp["ds"].get("baro_unit", "inhg")
         if baro_unit == "hpa":
             baro_lbl = f"{baro_hpa:.0f} hPa"

@@ -62,7 +62,7 @@ def seed_state(roll, pitch, hdg, alt, speed, vspeed, ay, lat=DEMO_LAT, lon=DEMO_
         "vspeed": vspeed, "ay": ay,
         "gps_ok": True, "baro_ok": True, "ahrs_ok": True,
         "sats": 8, "gps_alt": alt,
-        "baro_hpa": BARO_DEFAULT_HPA, "baro_src": "baro",
+        "baro_hpa": BARO_DEFAULT_HPA, "baro_src": "bme280",
         "fix": True, "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
     }
     with pfd._state_lock:
