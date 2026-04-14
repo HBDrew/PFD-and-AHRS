@@ -3920,23 +3920,28 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
         # Relative bearing (from nose)
         rel_brg = (bearing - hdg_deg + 180) % 360 - 180   # −180…+180
 
-        # Vertical angle: atan of altitude difference over distance
-        # distance in ft (1 nm ≈ 6076 ft)
-        dist_ft = dist_nm * 6076.0
-        alt_diff_ft = ob.msl_ft - alt_ft          # positive = obstacle above
-        vert_deg = math.degrees(math.atan2(alt_diff_ft, dist_ft))
+        # Project BOTH the base (at ground = msl_ft - agl_ft) and the top
+        # (at msl_ft).  This anchors the tower to the terrain rather than
+        # leaving it as a fixed-height floating symbol.
+        dist_ft     = dist_nm * 6076.0
+        top_diff_ft = ob.msl_ft - alt_ft
+        base_diff_ft = (ob.msl_ft - ob.agl_ft) - alt_ft    # ground at obstacle
+        top_vert_deg  = math.degrees(math.atan2(top_diff_ft,  dist_ft))
+        base_vert_deg = math.degrees(math.atan2(base_diff_ft, dist_ft))
 
-        # Apply roll rotation to (rel_brg, -vert) screen coords
-        # (similar to how pitch ladder handles roll)
         cos_r = math.cos(math.radians(roll_deg))
         sin_r = math.sin(math.radians(roll_deg))
-        screen_x_raw = rel_brg * PX_PER_DEG
-        screen_y_raw = -(vert_deg + pitch_deg) * PX_PER_DEG  # flip: up = negative y
 
-        sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
-        sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
+        def _project(vert_deg):
+            sxr = rel_brg * PX_PER_DEG
+            syr = -(vert_deg + pitch_deg) * PX_PER_DEG
+            return (int(cx + sxr * cos_r - syr * sin_r),
+                    int(cy + sxr * sin_r + syr * cos_r))
 
-        # Clip to AI rect (with small margin)
+        bx, by = _project(base_vert_deg)   # tower base (on the ground)
+        sx, sy = _project(top_vert_deg)    # tower top (at MSL height)
+
+        # Clip based on the top anchor (most relevant for visibility)
         if not (ax + 4 <= sx <= ax + aw - 4 and ay_r + 4 <= sy <= ay_r + ah - 4):
             continue
 
@@ -3949,18 +3954,31 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
         else:
             col = (80, 200, 80)
 
-        # Draw tower symbol: vertical line + horizontal cap
-        h = 10; w = 6
-        pygame.draw.line(surf, col, (sx, sy), (sx, sy - h), 2)
-        pygame.draw.line(surf, col, (sx - w//2, sy - h), (sx + w//2, sy - h), 2)
-        # Lit indicator: small dot at top
-        if ob.lit:
-            pygame.draw.circle(surf, (255, 80, 80), (sx, sy - h - 3), 2)
+        # Draw tower as a caret/chevron shape: apex at the top (MSL height),
+        # base anchored to the ground.  Tapers from base to apex so tall
+        # towers look like obelisks rather than needles.
+        # Minimum 6 px height so short antennas stay visible at long range.
+        tower_h = max(6, by - sy)
+        apex = (sx, sy)
+        base_half = max(3, tower_h // 3)   # base width ~2/3 of height
+        left_base  = (sx - base_half, sy + tower_h)
+        right_base = (sx + base_half, sy + tower_h)
+        pygame.draw.line(surf, col, left_base,  apex, 2)
+        pygame.draw.line(surf, col, right_base, apex, 2)
 
-        # Height label for tall/close obstacles
+        # Lit tower: 4-point asterisk/star at the apex
+        if ob.lit:
+            r = 4
+            star_col = (255, 230, 100)     # bright yellow star
+            pygame.draw.line(surf, star_col, (sx - r, sy),     (sx + r, sy),     2)
+            pygame.draw.line(surf, star_col, (sx,     sy - r), (sx,     sy + r), 2)
+            pygame.draw.line(surf, star_col, (sx - r, sy - r), (sx + r, sy + r), 1)
+            pygame.draw.line(surf, star_col, (sx - r, sy + r), (sx + r, sy - r), 1)
+
+        # Height label for tall/close obstacles (above the apex)
         if ob.agl_ft >= 500 or dist_nm < 3.0:
             lbl = f"{int(ob.msl_ft//100)*100}"
-            _text(surf, lbl, 8, col, cx=sx, cy=sy - h - 14)
+            _text(surf, lbl, 8, col, cx=sx, cy=sy - 14)
 
 
 def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
