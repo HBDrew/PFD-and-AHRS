@@ -901,15 +901,16 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                       (SPD_X + 47, TAPE_MID + 29), (SPD_X + 47, TAPE_MID + 15),
                       (SPD_X + 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7})
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
-    pygame.draw.polygon(surf, WHITE, pts_s, width=2)
-    pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     # Inner: hundreds + tens at same font as drum, cascade-rolling
     _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 24, power_offset=1)
     # Drum: units digit, adjacent digits ~50% visible
     _rolling_drum(surf, SPD_X + 48, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 24,
                   show_adjacent=True, adj_slot_h=23)
-    _drum_shade(surf,   SPD_X + 48, TAPE_MID - 28, 17, 56)   # 1px inset from border
+    _drum_shade(surf,   SPD_X + 48, TAPE_MID - 28, 17, 56)
+    # Border drawn LAST so drum shade doesn't cover the inner pixels
+    pygame.draw.polygon(surf, WHITE, pts_s, width=2)
+    pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
 
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -1017,8 +1018,6 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     pygame.draw.rect(surf, (70, 100, 130), (_nx, _ny, _nw, _nh), width=1, border_radius=3)
     _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
 
-    pygame.draw.polygon(surf, WHITE, pts_a, width=2)
-    pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
     # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
@@ -1026,18 +1025,20 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     if inner_int < 10:                      # alt < 1,000 ft — hundreds only
         _rolling_drum(surf, R - 80, TAPE_MID - 14, 41, 28, alt_inner, 1, WHITE, 24)
     elif inner_int < 100:                   # 1,000–9,999 ft — thousands (24pt) + hundreds (22pt)
-        # Thousands in right cell of 28px slot (R-66..R-52); ten-thousands slot left empty
         _rolling_drum(surf, R - 66, TAPE_MID - 14, 14, 28, alt_inner, 1, WHITE, 24,
                       power_offset=1)
         _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
-    else:                                   # alt ≥ 10,000 ft — ten-thou+thou (22pt) + hundreds
+    else:                                   # alt ≥ 10,000 ft
         _rolling_drum(surf, R - 80, TAPE_MID - 14, 28, 28, alt_inner, 2, WHITE, 22,
                       suppress_leading=True, power_offset=1)
         _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
     # Drum: 20-ft labels scroll together, adjacent labels half-visible
     _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 18,
                         show_adjacent=True, adj_slot_h=18)
-    _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)   # 1px inset from border
+    _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)
+    # Border drawn LAST so drum shade doesn't cover the inner pixels
+    pygame.draw.polygon(surf, WHITE, pts_a, width=2)
+    pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
