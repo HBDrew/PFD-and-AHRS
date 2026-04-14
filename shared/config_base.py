@@ -37,6 +37,11 @@ OBSTACLE_CAUTION_FT  = 500    # amber below this clearance
 OBSTACLE_WARNING_FT  = 100    # red below this clearance
 OBSTACLE_EXPIRY_DAYS = 28     # FAA DOF update cycle (days)
 
+# ── Airport database (OurAirports CSV) ────────────────────────────────────────
+AIRPORT_RADIUS_NM    = 20.0   # only show airports within this radius on AI
+AIRPORT_LABEL_NM     = 15.0   # only show text label within this closer range
+AIRPORT_EXPIRY_DAYS  = 60     # recommend refresh after 60 days (loose vs DOF's 28)
+
 # ── Proximity alert lookahead ─────────────────────────────────────────────────
 ALERT_TIME_S         = 60     # lookahead window in seconds
 ALERT_RADIUS_MIN_NM  = 1.0    # floor — always check at least this far ahead

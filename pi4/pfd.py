@@ -50,6 +50,7 @@ except Exception as e:
     render_svt_gl = None
 
 import obstacles as obs_mod
+import airports as apt_mod
 
 DEG = math.pi / 180
 
@@ -124,6 +125,7 @@ disp["od"] = {                      # obstacle download/parse state
     "age_days":    0,
 }
 _obstacles = None           # loaded obstacle array (module-level)
+_airports  = None           # loaded airport array (module-level)
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
@@ -3699,6 +3701,101 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
             _text(surf, lbl, 8, col, cx=sx, cy=sy - h - 14)
 
 
+def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
+                         hdg_deg, pitch_deg, roll_deg):
+    """
+    Project nearby airports onto the AI viewport as small symbols + labels.
+
+    Symbol shape encodes airport type:
+      S/M/L (small/medium/large public airport) → cyan circle
+      H (heliport) → magenta "H"
+      W (seaplane base) → cyan circle with wavy underscore
+      B (balloonport) → small cyan triangle
+
+    Label (ident) shown only within AIRPORT_LABEL_NM to avoid clutter.
+    """
+    import airports as apt_mod
+    if _airports is None:
+        return
+
+    nearby = apt_mod.query_nearby(_airports, lat, lon,
+                                  radius_nm=AIRPORT_RADIUS_NM)
+    if not nearby:
+        return
+
+    ax, ay_r, aw, ah = ai_rect
+    cx = ax + aw // 2
+    cy = ay_r + ah // 2
+
+    # Same pixel-per-degree scale as the pitch ladder and SVT projection
+    # (ai_h / 48° vertical FOV), so airport symbols align with the 3D view.
+    PX_PER_DEG = ah / 48.0
+    nm_per_deg_lat = 60.0
+    nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
+
+    # Maximum relative bearing that will actually render within the AI rect.
+    # Half-width in px / px_per_deg gives the angular extent of the AI.
+    max_rel_brg = (aw // 2) / PX_PER_DEG
+
+    APT_PUBLIC  = (120, 220, 255)   # cyan — public paved/unpaved
+    APT_HELI    = (220, 120, 220)   # magenta — heliport
+    APT_WATER   = (150, 200, 255)   # lighter blue — seaplane base
+    APT_OTHER   = (180, 180, 200)   # grey — other
+
+    # Render farthest first so nearer ones are drawn on top (Z-order ish)
+    for apt in reversed(nearby):
+        dlat_nm = (apt.lat - lat) * nm_per_deg_lat
+        dlon_nm = (apt.lon - lon) * nm_per_deg_lon
+        dist_nm = math.hypot(dlat_nm, dlon_nm)
+        if dist_nm < 0.05:
+            continue
+        bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
+        rel_brg = (bearing - hdg_deg + 180) % 360 - 180
+        # Cull airports outside the AI's angular field of view
+        if abs(rel_brg) > max_rel_brg:
+            continue
+
+        dist_ft = dist_nm * 6076.0
+        alt_diff_ft = apt.elev_ft - alt_ft          # negative = below aircraft
+        vert_deg = math.degrees(math.atan2(alt_diff_ft, dist_ft))
+
+        screen_x_raw = rel_brg * PX_PER_DEG
+        screen_y_raw = -(vert_deg + pitch_deg) * PX_PER_DEG
+        sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
+        sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
+
+        if not (ax + 8 <= sx <= ax + aw - 8 and ay_r + 8 <= sy <= ay_r + ah - 8):
+            continue
+
+        # Symbol by type
+        if apt.atype == "H":
+            col = APT_HELI
+            _text(surf, "H", 12, col, bold=True, cx=sx, cy=sy)
+        elif apt.atype == "W":
+            col = APT_WATER
+            pygame.draw.circle(surf, col, (sx, sy), 4, 1)
+            pygame.draw.line(surf, col, (sx - 4, sy + 5), (sx + 4, sy + 5), 1)
+        elif apt.atype == "B":
+            col = APT_OTHER
+            pts = [(sx, sy - 4), (sx - 4, sy + 3), (sx + 4, sy + 3)]
+            pygame.draw.polygon(surf, col, pts, 1)
+        else:  # S / M / L = public airport
+            col = APT_PUBLIC
+            # Filled outer ring, dark centre — runway-ring style
+            pygame.draw.circle(surf, col, (sx, sy), 5, 0)
+            pygame.draw.circle(surf, (0, 10, 30), (sx, sy), 3, 0)
+            # Medium/large airports get a larger ring
+            if apt.atype in ("M", "L"):
+                pygame.draw.circle(surf, col, (sx, sy), 7, 1)
+
+        # Ident label for close airports only (declutter)
+        if dist_nm <= AIRPORT_LABEL_NM:
+            lbl = apt.ident
+            _text(surf, lbl, 9, col, bold=True, cx=sx, cy=sy + 12)
+
+
 # ── Main render function ──────────────────────────────────────────────────────
 def render(surf, demo_mode, connected, data_stale=False):
     mode = disp.get("mode", "pfd")
@@ -3809,7 +3906,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
-    # 1b. Obstacle symbols projected onto AI
+    # 1b. Airport symbols projected onto AI (drawn BEFORE obstacles so
+    # nearby towers/obstructions appear on top of airport rings)
+    if _airports is not None and gps_ok:
+        draw_airport_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
+
+    # 1c. Obstacle symbols projected onto AI
     if _obstacles is not None and gps_ok:
         draw_obstacle_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
 
@@ -3950,6 +4052,17 @@ def _startup_load_obstacles():
         print("[PFD] Obstacles: no data on disk")
 
 
+def _startup_load_airports():
+    """Background thread: load airport cache at startup without blocking."""
+    global _airports
+    os.makedirs(AIRPORT_DIR, exist_ok=True)
+    _airports = apt_mod.load(AIRPORT_DIR)
+    if _airports is not None:
+        print(f"[PFD] Airports: {len(_airports):,} records loaded")
+    else:
+        print("[PFD] Airports: no data on disk")
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="PFD Display")
@@ -3989,9 +4102,11 @@ def main():
     _init_backlight()
     _set_backlight(disp["ds"].get("brightness", 8))
 
-    # Load obstacle database in background (non-blocking)
+    # Load obstacle + airport databases in background (non-blocking)
     threading.Thread(target=_startup_load_obstacles, daemon=True,
                      name="ObstacleLoad").start()
+    threading.Thread(target=_startup_load_airports, daemon=True,
+                     name="AirportLoad").start()
 
     # Disable vsync so display.flip() doesn't block waiting for the display's
     # vsync signal (which was taking ~82 ms at ~12 Hz on KMS/DRM, halving FPS).
@@ -4092,6 +4207,9 @@ def main():
     if args.screenshots:
         outdir = os.path.abspath(args.screenshots)
         os.makedirs(outdir, exist_ok=True)
+
+        # Load airport DB synchronously so symbols appear in preview renders
+        _startup_load_airports()
 
         def _save(fname):
             smooth_state()

@@ -21,5 +21,10 @@ pi_zero/data/obstacles/
 pi4/data/obstacles/
 pi_display/data/obstacles/
 
+# OurAirports CSV + cache (downloaded at runtime via fetch_airports.sh)
+pi_zero/data/airports/
+pi4/data/airports/
+pi_display/data/airports/
+
 # Local config overrides
 config_local.py

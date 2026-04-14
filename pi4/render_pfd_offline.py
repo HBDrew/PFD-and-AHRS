@@ -86,6 +86,9 @@ def main():
     # the simple sky/ground split when no SRTM tiles)
     pfd._has_terrain = True
 
+    # Load airport database synchronously (normally loaded by background thread)
+    pfd._startup_load_airports()
+
     surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
 
     print(f"Rendering full-PFD previews with OpenGL SVT to {args.outdir}")

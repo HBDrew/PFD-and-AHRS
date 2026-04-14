@@ -119,6 +119,9 @@ SVT_RENDERER = "opengl"
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
 OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")
 
+# ── Airport database (OurAirports CSV) ────────────────────────────────────────
+AIRPORT_DIR   = os.path.join(_HERE, "data", "airports")
+
 # ── Try to import local overrides ─────────────────────────────────────────────
 # config_local.py can override DISPLAY_PROFILE, DISPLAY_W, DISPLAY_H, etc.
 try:

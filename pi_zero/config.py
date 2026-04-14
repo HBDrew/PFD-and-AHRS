@@ -62,6 +62,9 @@ SRTM_DIR      = os.path.join(_HERE, "data", "srtm")
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
 OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")
 
+# ── Airport database (OurAirports CSV) ────────────────────────────────────────
+AIRPORT_DIR   = os.path.join(_HERE, "data", "airports")
+
 # ── Try to import local overrides ─────────────────────────────────────────────
 try:
     from config_local import *  # noqa: F401,F403
