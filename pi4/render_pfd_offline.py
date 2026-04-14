@@ -60,27 +60,52 @@ def _inject_synthetic_obstacles():
     rendering.  Real obstacle data comes from FAA DOF (gitignored, ~20 MB)
     but for preview PNGs a handful of towers is enough to demonstrate the
     symbol rendering and its interaction with airports + SVT.
+
+    Ground elevations are looked up from SRTM at each tower location so the
+    base of the caret symbol anchors exactly to the rendered terrain.
+    If SRTM is unavailable the call falls back to a reasonable default.
     """
     try:
         import numpy as np
     except ImportError:
         return
 
-    # Synthetic tower cluster NE of KSEZ, along a ridge at ~6000 ft MSL
-    # (roughly 500 ft above aircraft at the preview's 5500 ft cruise).
-    records = [
-        # (lat,      lon,      agl_ft, msl_ft, otype, lit)
-        (34.8825, -111.7420,    450,   6280, "TWR", True),
-        (34.8650, -111.7100,    300,   6050, "ANT", False),
-        (34.8550, -111.7250,    820,   6420, "TWR", True),
-        (34.8720, -111.7520,    280,   5890, "ANT", False),
+    try:
+        from terrain import get_elevation_ft
+        srtm_dir = os.path.join(_HERE, "data", "srtm")
+    except ImportError:
+        get_elevation_ft = None
+        srtm_dir = None
+
+    def _ground_ft(lat, lon, fallback):
+        if get_elevation_ft is None or srtm_dir is None:
+            return fallback
+        try:
+            v = get_elevation_ft(srtm_dir, lat, lon)
+            return v if v > 0 else fallback
+        except Exception:
+            return fallback
+
+    # Tower locations + AGL heights (keeping all ≤ ~350 ft AGL for realism).
+    # Each entry: (lat, lon, agl_ft, otype, lit, fallback_ground_ft)
+    towers = [
+        (34.8825, -111.7420, 250, "TWR", True,  5900),
+        (34.8650, -111.7100, 180, "ANT", False, 5700),
+        (34.8550, -111.7250, 310, "TWR", True,  5700),
+        (34.8720, -111.7520, 220, "ANT", False, 5500),
     ]
+
+    records = []
+    for lat, lon, agl, otype, lit, fb_ground in towers:
+        ground = _ground_ft(lat, lon, fb_ground)
+        msl = ground + agl
+        records.append((lat, lon, agl, msl, otype, lit))
+
     arr = np.array(records,
                    dtype=[("lat","f4"),("lon","f4"),
                           ("agl_ft","f4"),("msl_ft","f4"),
                           ("otype","U3"),("lit","?")])
     pfd._obstacles = arr
-    # Populate UI status so the NO OBS badge is suppressed in the preview
     pfd.disp["od"]["records"] = len(arr)
     pfd.disp["od"]["used_mb"] = 0.01
     pfd.disp["od"]["expired"] = False
