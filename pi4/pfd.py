@@ -650,17 +650,17 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 
 
 # ── Pitch ladder ──────────────────────────────────────────────────────────────
-def draw_zero_pitch_line(surf, ai_rect, roll):
-    """Draw the zero-pitch reference line across the AI at screen centre.
+def draw_zero_pitch_line(surf, ai_rect, pitch, roll):
+    """Draw the zero-pitch reference line across the AI.
 
-    The line represents the aircraft's level-flight pitch reference (0°).
-    With 3D SVT the visible horizon may sit above or below this line depending
-    on terrain, but the zero-pitch reference itself rotates WITH the horizon
-    based on the current roll angle — it's locked to the sky/horizon frame,
-    not to the screen.
+    The line represents the aircraft's 0° pitch reference — i.e. the
+    straight-and-level horizon line in the sky frame.  It moves with pitch
+    (drops below AI centre when pitched up, rises when pitched down) and
+    rotates with roll, tracking where the "true" horizon would be on a
+    flat-earth model.
 
     Rendered as a pair of hash marks with a gap for the aircraft symbol.
-    Cyan to distinguish it from the white horizon line of the SVT.
+    Cyan to distinguish it from the white terrain horizon of the SVT.
     """
     ax, ay, aw, ah = ai_rect
     cy = ay + ah // 2
@@ -668,17 +668,23 @@ def draw_zero_pitch_line(surf, ai_rect, roll):
     gap_half = int(aw * 0.20)
     end_half = int(aw * 0.42)
 
-    # Rotate endpoints by -roll around (cx, cy) so the line matches the
-    # horizon tilt (same direction the sky rotates in the SVT view).
+    # Same pitch scale as the pitch ladder so the zero-pitch hash marks
+    # line up exactly with the ladder's 0° bar position.
+    px_per_deg = ah / 48.0
+    pitch_px = int(pitch * px_per_deg)   # + = nose up = line below centre
+
+    # Rotate around (cx, cy) by -roll and offset vertically by pitch_px.
+    # Endpoints before rotation lie on a horizontal line at y=pitch_px below cy.
     theta = math.radians(-roll)
     c = math.cos(theta)
     s = math.sin(theta)
 
     def rot(dx, dy):
-        return (cx + int(dx * c - dy * s), cy + int(dx * s + dy * c))
+        return (cx + int(dx * c - dy * s),
+                cy + int(dx * s + dy * c))
 
-    l1 = rot(-end_half, 0); l2 = rot(-gap_half, 0)
-    r1 = rot( gap_half, 0); r2 = rot( end_half, 0)
+    l1 = rot(-end_half, pitch_px); l2 = rot(-gap_half, pitch_px)
+    r1 = rot( gap_half, pitch_px); r2 = rot( end_half, pitch_px)
     pygame.draw.line(surf, CYAN, l1, l2, 2)
     pygame.draw.line(surf, CYAN, r1, r2, 2)
 
@@ -3808,7 +3814,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # screen-centre, regardless of actual horizon position.  Critical with
     # 3D SVT because high terrain shifts the visible horizon away from 0°.
     if SVT_RENDERER == "opengl" and _SVT_GL_AVAILABLE:
-        draw_zero_pitch_line(surf, ai_rect, roll)
+        draw_zero_pitch_line(surf, ai_rect, pitch, roll)
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
