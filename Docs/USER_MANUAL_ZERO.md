@@ -129,7 +129,7 @@ Grey pitch bars are drawn at ±5°, ±10°, ±15°, ±20°, ±30°. The bars nar
 
 ### Roll arc and pointer
 
-A graduated arc at the top of the AI shows bank angle. A moving doghouse rides outside the arc and points to the roll scale. A fixed doghouse inside the arc is the wings-level reference. Tick marks at 10°, 20°, 30°, 45°, and 60° either side.
+A graduated arc at the top of the AI shows bank angle using the **sky-pointer** convention: the arc and its tick marks (10°, 20°, 30°, 45°, 60° either side) rotate with the sky. The fixed aircraft reference inside the arc stays at the top of the screen and reads the current bank angle directly on the graduated scale. A moving outer doghouse marks the sky's "up" direction.
 
 ### Aircraft symbol
 

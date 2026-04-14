@@ -115,24 +115,62 @@ Green/amber bar along the inner edge of the alt tape. ±2000 fpm scale. Amber ab
 
 ### Synthetic vision background
 
-The Pi 4 version renders a **full 3D Synthetic Vision Terrain (SVT)** background behind the attitude indicator. When SRTM terrain tiles are loaded, the AI background shows real terrain rendered in true 3D perspective from the aircraft's position.
+The Pi 4 renders a **full 3D Synthetic Vision Terrain (SVT)** background behind the attitude indicator using OpenGL ES. A terrain mesh is built from SRTM elevation data within a 20 nm radius of the aircraft and rendered through a true perspective projection from the aircraft's position.
 
-**Key capability:** Unlike 2D scanline renderers, the Pi 4's OpenGL-based SVT shows terrain features that are **above the aircraft's altitude** — mountain peaks and ridges are visible **above the horizon line** in correct geometric perspective. This gives the pilot a natural, out-the-window view of the terrain environment.
+**Key capability:** Unlike 2D scanline renderers, the OpenGL SVT shows terrain features that are **above the aircraft's altitude** — mountain peaks and ridges rise **above the horizon line** in correct geometric perspective. This gives the pilot a natural, out-the-window view of the terrain environment.
 
-Terrain colouring indicates clearance:
-- **Red** — terrain within **100 ft** below aircraft altitude (immediate proximity)
-- **Yellow/amber** — terrain within **500 ft** below aircraft altitude (caution)
-- **Brown earth tones** — terrain more than 500 ft below, darkening with distance
+#### Clearance colouring
 
-When no terrain data is available the background is the traditional blue-over-brown split.
+Terrain is coloured by clearance below the aircraft:
+
+| Clearance | Colour | Meaning |
+|-----------|--------|---------|
+| Above aircraft altitude | Red | Terrain is higher than you — obstacle |
+| 0–100 ft below | Deep orange | Immediate proximity |
+| 100–500 ft below | Amber | Caution |
+| 500–1000 ft below | Brown | Safe clearance |
+| 1000–2000 ft below | Dark brown | Well clear |
+| More than 2000 ft below | Very dark | Far below |
+
+Beyond the 20 nm mesh edge the rendering fades to a dusty atmospheric-haze gradient that blends with distant terrain so there is no visible seam.
+
+#### Sun-angle lighting
+
+Terrain is shaded by a directional sun source so that slopes facing the sun appear brighter and slopes in shadow darken toward the ambient level. Ridge-lines, valleys, canyons, and mesa edges become immediately recognisable. Default sun position is 45° elevation, SE azimuth (mid-morning). This is configurable in `pi4/svt_renderer_gl.py`.
+
+#### Distance grid
+
+A cyan grid aligned with cardinal directions is overlaid on the terrain to help judge distance and orientation.
+
+- Minor lines every **0.5 nm** (counts squares to estimate distance)
+- Major lines every **2 nm** (slightly brighter for longer-range reference)
+- Lines fade toward the mesh edge to avoid clutter at the visible horizon
+- Grid colours switch automatically: light cyan-white on brown terrain, dark blue on red/orange "above aircraft" terrain for contrast
+
+The grid doubles as a heading reference — the N/S grid line is always parallel to true north, so a glance at the grid orientation relative to the aircraft symbol gives a crude no-compass heading check.
+
+#### Zero-pitch reference line
+
+A pair of short cyan hash marks across the AI mark the aircraft's **0° pitch reference** in the sky frame. With 3D SVT the visible horizon may be higher or lower than the actual 0° pitch position depending on terrain (for example, mountains above your altitude push the apparent horizon up). The zero-pitch line is independent of terrain — it always shows where level flight would put the nose.
+
+- Drops below AI centre in climbs
+- Rises above AI centre in descents
+- Tilts with the horizon during banks
+- Aligned exactly with the pitch ladder's 0° bar
+
+When terrain is at or below your altitude, the zero-pitch line and the visible SVT horizon coincide.
+
+#### No terrain data
+
+When no SRTM tiles are loaded the SVT falls back to a traditional blue-sky-over-brown-ground split. The `NO TER` badge appears in the status strip.
 
 ### Pitch ladder
 
-Grey pitch bars at ±5°, ±10°, ±15°, ±20°, ±30°. GI-275 style. Horizon bar is white.
+Grey pitch bars at ±5°, ±10°, ±15°, ±20°, ±30°. GI-275 style. Horizon bar is white. Scale is 10 px/° (matches the SVT horizon projection exactly so the 0° bar and the terrain horizon align at all pitches).
 
 ### Roll arc and pointer
 
-Graduated arc at the top of the AI. Moving doghouse tracks bank angle. Fixed wings-level reference. Ticks at 10°, 20°, 30°, 45°, 60°.
+Graduated arc at the top of the AI implementing the **sky-pointer** convention. The arc and tick marks (10°, 20°, 30°, 45°, 60°) rotate with the sky so that the fixed aircraft reference at the very top of the screen reads the current bank angle on the arc. A moving doghouse outside the arc marks the sky's "up" direction; a fixed reference inside the arc at the top marks the aircraft's current bank position.
 
 ### Aircraft symbol
 

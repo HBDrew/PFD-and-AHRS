@@ -36,13 +36,15 @@ For the lightweight variant without SVT, see HLR-DISP-ZERO-001.
 
 > **REQ-DISP-PI4-REND-001** The PFD shall render at a sustained minimum of 30 frames per second under all normal operating conditions including full SVT terrain rendering.
 
-> **REQ-DISP-PI4-REND-002** PFD instruments (airspeed tape, altitude tape, heading tape, pitch ladder, roll arc, and aircraft symbol) shall be rendered as vector geometry using OpenGL ES, not as raster bitmaps.
+> **REQ-DISP-PI4-REND-002** The PFD renderer shall use a hybrid architecture: pygame/SDL shall draw all PFD UI elements (tapes, pitch ladder, roll arc, drum boxes, menus, aircraft symbol) into the display surface; OpenGL ES shall render only the SVT terrain background, which is composited into the attitude indicator region of the pygame surface as a `pygame.Surface` read back from an offscreen framebuffer.
 
-> **REQ-DISP-PI4-REND-003** The renderer shall use OpenGL ES 2.0 at minimum, with OpenGL ES 3.0 preferred. Rendering shall use EGL direct rendering without requiring an X11 or Wayland compositor.
+> **REQ-DISP-PI4-REND-003** The OpenGL SVT renderer shall use OpenGL ES 3.0 (accessed via `moderngl`) with a standalone EGL context so that no X11 or Wayland compositor is required. If the EGL context cannot be created, the renderer shall automatically fall back to the pygame scanline SVT implementation.
 
-> **REQ-DISP-PI4-REND-004** Anti-aliasing shall be applied via multisample anti-aliasing (MSAA) at 4× minimum to ensure smooth edges on vector instruments and terrain geometry.
+> **REQ-DISP-PI4-REND-004** The SVT rendering path shall be selectable via the `SVT_RENDERER` configuration value (`"opengl"` or `"pygame"`). Default shall be `"opengl"`.
 
-> **REQ-DISP-PI4-REND-005** An IIR low-pass smoothing filter with coefficient α = 0.25 per frame shall be applied to the attitude, altitude, airspeed, and vertical speed values before rendering.
+> **REQ-DISP-PI4-REND-005** Anti-aliasing on terrain grid lines shall be applied via `fwidth()`-based screen-space derivatives so that line width is constant regardless of terrain distance.
+
+> **REQ-DISP-PI4-REND-006** An IIR low-pass smoothing filter with coefficient α = 0.25 per frame shall be applied to the attitude, altitude, airspeed, and vertical speed values before rendering.
 
 ---
 
@@ -98,23 +100,37 @@ The attitude indicator on the Pi 4 variant provides full 3D Synthetic Vision Ter
 
 > **REQ-DISP-PI4-AI-002** Terrain features whose elevation exceeds the aircraft's current altitude shall be visible above the horizon line as mountain peaks and ridges, rendered in correct geometric perspective.
 
-> **REQ-DISP-PI4-AI-003** The terrain mesh shall be constructed from SRTM elevation data within a configurable radius of the aircraft position, with a default radius of 5 nautical miles.
+> **REQ-DISP-PI4-AI-003** The terrain mesh shall be constructed from SRTM elevation data within a configurable radius of the aircraft position. Default radius shall be 20 nautical miles, with configurable altitude-scaled mode available (radius scales with √altitude, clamped between 10 and 40 nautical miles).
 
-> **REQ-DISP-PI4-AI-004** The terrain mesh shall update at a minimum rate of 10 Hz to ensure smooth visual tracking during turns and altitude changes.
+> **REQ-DISP-PI4-AI-004** The terrain mesh shall update at a minimum rate of 10 Hz to ensure smooth visual tracking during turns and altitude changes. Mesh rebuilds shall be cached and triggered only when aircraft position moves by more than ~0.3 nm or altitude changes by more than 200 ft.
 
-> **REQ-DISP-PI4-AI-005** Terrain shall be coloured by clearance relative to the aircraft altitude: terrain within 100 ft below shall be red, terrain within 500 ft below shall be yellow/amber, and terrain more than 500 ft below shall use brown earth tones darkening with increasing clearance.
+> **REQ-DISP-PI4-AI-005** Terrain shall be coloured by clearance relative to the aircraft altitude using the following palette: red for terrain above aircraft altitude, deep orange for 0–100 ft clearance, amber for 100–500 ft, brown for 500–1000 ft, dark brown for 1000–2000 ft, and very dark brown for clearance greater than 2000 ft.
 
 > **REQ-DISP-PI4-AI-006** When SRTM terrain tiles are not present, a plain horizon shall be displayed using a solid blue upper half and solid brown lower half.
 
-> **REQ-DISP-PI4-AI-007** A sky gradient background shall be rendered behind the terrain mesh, darker at zenith and lighter near the horizon.
+> **REQ-DISP-PI4-AI-007** A sky gradient background shall be rendered behind the terrain mesh, darker at zenith and lighter near the horizon. The sky/ground boundary in the background shader shall rotate with aircraft roll to match the terrain mesh orientation at any bank angle.
 
-> **REQ-DISP-PI4-AI-008** Pitch ladder lines shall be drawn at ±5°, ±10°, ±15°, ±20°, and ±30° from the horizon, consistent with GI-275 styling.
+> **REQ-DISP-PI4-AI-008** Beyond the mesh radius, the rendering shall transition smoothly to a dusty atmospheric-haze gradient (lighter at horizon, darker deep) so that there is no visible seam between the mesh edge and the distant view.
 
-> **REQ-DISP-PI4-AI-009** A roll arc shall be rendered with a moving doghouse bank angle pointer and fixed wings-level reference mark.
+> **REQ-DISP-PI4-AI-009** Directional sun-angle lighting shall be applied to the terrain mesh using a Lambertian diffuse model. Slopes facing the sun shall appear brighter; slopes in shadow shall darken toward a configurable ambient level. Sun azimuth, elevation, intensity, and ambient level shall be configurable in the renderer module.
 
-> **REQ-DISP-PI4-AI-010** A slip/skid ball indicator shall deflect laterally in proportion to lateral acceleration (`ay`).
+> **REQ-DISP-PI4-AI-010** A cardinal-aligned distance grid shall be overlaid on the terrain. Minor lines shall be drawn every 0.5 nautical miles; major lines every 2 nautical miles. Grid line width shall be anti-aliased and constant in screen space regardless of distance.
 
-> **REQ-DISP-PI4-AI-011** A fixed amber delta-wing aircraft symbol shall be rendered at the centre of the attitude indicator.
+> **REQ-DISP-PI4-AI-011** Distance grid line colour shall be contrast-aware: light cyan-white on safe-clearance terrain, dark blue on caution/warning terrain (red/orange zones). Line intensity shall boost automatically over red zones so the lines remain clearly visible.
+
+> **REQ-DISP-PI4-AI-012** The distance grid shall fade to invisible at the mesh edge to avoid clutter at the haze transition.
+
+> **REQ-DISP-PI4-AI-013** A zero-pitch reference line shall be drawn across the attitude indicator as a pair of cyan hash marks with a gap for the aircraft symbol. The line shall offset vertically with pitch (drop below centre for positive pitch, rise above centre for negative pitch) using a scale of 10 pixels per degree matching the pitch ladder, and shall rotate around the AI centre with aircraft roll.
+
+> **REQ-DISP-PI4-AI-014** The SVT vertical field of view shall be 48° so that the pitch ladder bars, the zero-pitch reference line, and the SVT horizon all align at the same screen position for any given pitch angle.
+
+> **REQ-DISP-PI4-AI-015** Pitch ladder lines shall be drawn at ±5°, ±10°, ±15°, ±20°, and ±30° from the horizon, consistent with GI-275 styling. The pitch ladder 0° bar shall coincide with the zero-pitch reference line.
+
+> **REQ-DISP-PI4-AI-016** A roll arc shall be rendered implementing the sky-pointer convention. The arc, tick marks (10°, 20°, 30°, 45°, 60°), and outer doghouse marker shall rotate with the sky so that a fixed aircraft reference inside the arc reads the current bank angle on the graduated scale.
+
+> **REQ-DISP-PI4-AI-017** A slip/skid ball indicator shall deflect laterally in proportion to lateral acceleration (`ay`).
+
+> **REQ-DISP-PI4-AI-018** A fixed amber delta-wing aircraft symbol shall be rendered at the centre of the attitude indicator.
 
 ---
 
@@ -210,11 +226,12 @@ The attitude indicator on the Pi 4 variant provides full 3D Synthetic Vision Ter
 
 The following features are planned for future versions of the Pi 4 display and are not required for the initial release:
 
-- Synthetic runway rendering using airport database coordinates
-- Texture-mapped terrain with satellite imagery or elevation-derived texturing
-- Moving map underlay (planned for separate dedicated hardware)
-- Flight path vector (velocity vector symbol on the AI)
-- Highway-in-the-sky (HITS) waypoint tunnel rendering
+- **Texture-mapped terrain** with satellite imagery, USGS terrain textures, or elevation-shaded relief maps
+- **Synthetic runway rendering** using airport database coordinates, shown in correct 3D perspective
+- **Flight path vector** — velocity vector symbol on the AI showing where the aircraft is actually going (vs. where it's pointed)
+- **Highway-in-the-sky (HITS)** — waypoint tunnel rendering for RNAV/GPS approach guidance
+- **Time-of-day sun position** — compute sun azimuth/elevation from current lat/lon/time so shading matches actual sun position rather than a fixed configured direction
+- **Moving map / MFD** — planned for a separate dedicated hardware unit (not integrated with the PFD)
 
 ---
 
