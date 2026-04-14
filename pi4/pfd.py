@@ -38,7 +38,17 @@ import pygame.gfxdraw
 from config import *   # noqa: F403
 from sse_client import SSEClient
 from terrain import get_elevation_ft
-from svt_renderer import render_svt
+from svt_renderer import render_svt as render_svt_pygame
+
+# Try to load the OpenGL SVT renderer.  Falls back to pygame on failure.
+try:
+    from svt_renderer_gl import render_svt_gl, is_available as _gl_available
+    _SVT_GL_AVAILABLE = _gl_available()
+except Exception as e:
+    print(f"[PFD] OpenGL SVT unavailable: {e}")
+    _SVT_GL_AVAILABLE = False
+    render_svt_gl = None
+
 import obstacles as obs_mod
 
 DEG = math.pi / 180
@@ -541,11 +551,25 @@ SVT_UPDATE_FRAMES = 3   # update terrain every N frames (~10 Hz at 30 fps)
 
 
 def get_svt_surface(ai_w, ai_h, pitch, roll, hdg, alt, lat, lon):
+    """Dispatch to OpenGL or pygame SVT renderer based on config + availability.
+
+    With the OpenGL renderer, we render every frame (no caching) since the
+    GPU update is essentially free at the Pi 4's frame rate.  The pygame
+    fallback caches every SVT_UPDATE_FRAMES frames to keep up with 30 fps.
+    """
     global _svt_frame
     _svt_frame += 1
+
+    use_gl = (SVT_RENDERER == "opengl") and _SVT_GL_AVAILABLE
+    if use_gl:
+        surf = render_svt_gl(SRTM_DIR, ai_w, ai_h, pitch, roll, hdg, alt, lat, lon)
+        if surf is not None:
+            return surf
+        # Fall through to pygame on render failure
+
     key = "svt"
     if key not in _svt_cache or _svt_frame % SVT_UPDATE_FRAMES == 0:
-        surf = render_svt(
+        surf = render_svt_pygame(
             SRTM_DIR, ai_w, ai_h, pitch, roll, hdg, alt, lat, lon
         )
         _svt_cache[key] = surf
@@ -626,6 +650,27 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 
 
 # ── Pitch ladder ──────────────────────────────────────────────────────────────
+def draw_zero_pitch_line(surf, ai_rect):
+    """Draw a fixed horizontal reference line across the AI at the screen
+    centre.  Used with 3D SVT where the visible horizon may sit above or
+    below the aircraft's level-flight pitch reference depending on terrain.
+
+    The line is a thin double-tick pattern: two short hash marks at the AI
+    centre, leaving a gap for the aircraft symbol.  Cyan to distinguish it
+    from the white horizon line.
+    """
+    ax, ay, aw, ah = ai_rect
+    cy = ay + ah // 2
+    cx = ax + aw // 2
+    # Gap around aircraft symbol (~140 px wide on 484-wide AI)
+    gap_half = int(aw * 0.20)
+    # Outer extent — about 35% of AI width either side
+    end_half = int(aw * 0.42)
+    # Left and right hash marks
+    pygame.draw.line(surf, CYAN, (cx - end_half, cy), (cx - gap_half, cy), 2)
+    pygame.draw.line(surf, CYAN, (cx + gap_half, cy), (cx + end_half, cy), 2)
+
+
 def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     """
     White pitch ladder lines drawn directly in rotated coordinates.
@@ -3740,6 +3785,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 1b. Obstacle symbols projected onto AI
     if _obstacles is not None and gps_ok:
         draw_obstacle_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
+
+    # 1c. Zero-pitch reference line — always horizontal across AI at
+    # screen-centre, regardless of actual horizon position.  Critical with
+    # 3D SVT because high terrain shifts the visible horizon away from 0°.
+    if SVT_RENDERER == "opengl" and _SVT_GL_AVAILABLE:
+        draw_zero_pitch_line(surf, ai_rect)
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)

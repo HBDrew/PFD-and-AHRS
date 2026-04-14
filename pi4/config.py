@@ -109,11 +109,12 @@ FONT_SCALE = _S_MIN
 _HERE         = os.path.dirname(os.path.abspath(__file__))
 SRTM_DIR      = os.path.join(_HERE, "data", "srtm")
 
-# ── OpenGL rendering options (Phase 2) ────────────────────────────────────────
-# SVT_RENDERER    = "pygame"    # "pygame" (current) | "opengl" (planned)
-# SVT_MESH_RADIUS = 5.0         # nm — terrain mesh radius around aircraft
-# SVT_MESH_RES    = 90           # metres — terrain mesh grid resolution
-# SVT_MSAA        = 4            # anti-aliasing sample count
+# ── SVT renderer selection ────────────────────────────────────────────────────
+# "opengl" — full 3D synthetic vision via moderngl + EGL (Pi 4 default).
+#            Renders true perspective terrain, including peaks above horizon.
+# "pygame" — legacy 2D scanline renderer (fallback for testing/debug).
+# Auto-falls back to "pygame" at runtime if EGL/moderngl unavailable.
+SVT_RENDERER = "opengl"
 
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
 OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")

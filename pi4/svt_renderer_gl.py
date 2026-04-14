@@ -1,0 +1,427 @@
+"""
+svt_renderer_gl.py – OpenGL ES SVT renderer for Pi 4.
+
+Hybrid architecture: this module renders only the SVT terrain background.
+The rest of the PFD (tapes, ladder, drum boxes, UI) continues to be
+drawn by pygame in pfd.py.  This module exposes one function:
+
+    render_svt_gl(srtm_dir, ai_w, ai_h, pitch, roll, hdg, alt, lat, lon)
+        → pygame.Surface
+
+which is a drop-in replacement for the pygame scanline renderer.
+The rendered Surface can be blitted into the AI region of the main PFD.
+
+Implementation:
+  - Standalone EGL context (offscreen, no display required)
+  - Terrain mesh built from SRTM tiles within MESH_RADIUS_NM of aircraft
+  - World coordinates: X=East, Y=North, Z=Up (metres relative to aircraft)
+  - Vertex shader: world → clip space using look-at + perspective matrices
+  - Fragment shader: clearance-based color palette (matches pygame version)
+  - Sky gradient rendered as a fullscreen quad behind the terrain
+  - Result read back via glReadPixels → pygame.Surface
+
+Falls back to None if EGL/moderngl unavailable.  pfd.py handles fallback
+to the pygame renderer.
+"""
+
+import math
+import os
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
+try:
+    import moderngl
+    HAS_MODERNGL = True
+except ImportError:
+    HAS_MODERNGL = False
+
+import pygame
+
+# Import shared terrain utilities
+from terrain import load_tile, get_elevation_ft
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+MESH_RADIUS_NM = 10.0          # nm — terrain mesh extent around aircraft
+MESH_GRID_N    = 200            # mesh resolution (200×200 = 40K vertices)
+NM_TO_M        = 1852.0         # nautical miles → metres
+FT_TO_M        = 0.3048         # feet → metres
+M_TO_FT        = 1.0 / FT_TO_M
+
+V_FOV_DEG      = 40.0           # vertical field of view
+NEAR_PLANE_M   = 50.0
+FAR_PLANE_M    = MESH_RADIUS_NM * NM_TO_M * 1.5
+
+# ── GLSL shaders ──────────────────────────────────────────────────────────────
+
+VERTEX_SHADER = """
+#version 330 core
+
+in vec3 in_pos;          // world position (East, North, Up) in metres, relative to aircraft
+in float in_clearance;   // aircraft_alt_m - terrain_alt_m at this vertex (metres)
+
+uniform mat4 u_mvp;
+
+out float v_clearance_ft;   // pass clearance in FEET to fragment
+
+void main() {
+    gl_Position = u_mvp * vec4(in_pos, 1.0);
+    v_clearance_ft = in_clearance * 3.28084;  // m → ft
+}
+"""
+
+FRAGMENT_SHADER = """
+#version 330 core
+
+in float v_clearance_ft;
+out vec4 frag_color;
+
+// Clearance-based color palette (matches pygame PALETTE_RELATIVE)
+//   < 0      → red     (terrain above aircraft)
+//   < 100    → orange
+//   < 500    → amber
+//   < 1000   → brown
+//   < 2000   → dark brown
+//   >= 2000  → very dark
+vec3 clearance_color(float c) {
+    if (c < 0.0)    return vec3(0.86, 0.12, 0.12);
+    if (c < 100.0)  return vec3(0.86, 0.31, 0.0);
+    if (c < 500.0)  return vec3(0.78, 0.51, 0.0);
+    if (c < 1000.0) return vec3(0.55, 0.39, 0.16);
+    if (c < 2000.0) return vec3(0.39, 0.29, 0.14);
+    return vec3(0.27, 0.22, 0.11);
+}
+
+void main() {
+    frag_color = vec4(clearance_color(v_clearance_ft), 1.0);
+}
+"""
+
+SKY_VERTEX_SHADER = """
+#version 330 core
+
+in vec2 in_pos;          // fullscreen quad in NDC
+out vec2 v_uv;
+
+void main() {
+    gl_Position = vec4(in_pos, 0.999, 1.0);   // far plane — drawn behind terrain
+    v_uv = (in_pos + 1.0) * 0.5;              // 0..1 UV
+}
+"""
+
+SKY_FRAGMENT_SHADER = """
+#version 330 core
+
+in vec2 v_uv;
+out vec4 frag_color;
+
+uniform float u_horizon_y;   // NDC Y of horizon line (-1..1)
+
+void main() {
+    // Sky above horizon: blue gradient (darker at top, lighter near horizon)
+    // Below horizon: leave default brown (overdrawn by terrain anyway)
+    float y_ndc = v_uv.y * 2.0 - 1.0;   // -1 (bottom) .. +1 (top)
+    if (y_ndc < u_horizon_y) {
+        // Below horizon — fallback brown (terrain will cover this)
+        frag_color = vec4(0.35, 0.22, 0.10, 1.0);
+    } else {
+        // Above horizon — sky gradient
+        float t = (y_ndc - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
+        // t=0 at horizon (light), t=1 at zenith (dark)
+        vec3 horizon_col = vec3(0.23, 0.51, 0.78);   // light blue
+        vec3 zenith_col  = vec3(0.04, 0.16, 0.31);   // dark blue
+        frag_color = vec4(mix(horizon_col, zenith_col, t), 1.0);
+    }
+}
+"""
+
+
+# ── Module-level state ────────────────────────────────────────────────────────
+_ctx        = None       # moderngl Context
+_fbo        = None       # framebuffer object
+_color_tex  = None       # color attachment
+_depth_buf  = None       # depth attachment
+_terrain_prog = None     # shader program for terrain
+_sky_prog     = None     # shader program for sky
+_sky_vao      = None     # fullscreen quad VAO
+_terrain_vao  = None     # terrain mesh VAO
+_terrain_vbo_pos = None  # terrain vertex positions VBO
+_terrain_vbo_clr = None  # terrain vertex clearances VBO
+_terrain_ibo     = None  # terrain triangle indices IBO
+
+_fbo_size   = (0, 0)     # current FBO (w, h)
+_mesh_key   = None       # cache key (lat_q, lon_q, alt_q) — mesh rebuild trigger
+
+
+def _init_gl(width: int, height: int) -> bool:
+    """Create EGL context and FBO at the requested size.  Returns True on success."""
+    global _ctx, _fbo, _color_tex, _depth_buf, _terrain_prog, _sky_prog, _sky_vao
+    global _fbo_size
+
+    if not (HAS_MODERNGL and HAS_NUMPY):
+        return False
+
+    if _ctx is not None and _fbo_size == (width, height):
+        return True
+
+    if _ctx is None:
+        try:
+            _ctx = moderngl.create_standalone_context(backend='egl', require=330)
+        except Exception as e:
+            print(f"[SVT-GL] EGL context creation failed: {e}")
+            return False
+
+    # (Re)allocate FBO at requested size
+    if _fbo is not None:
+        _fbo.release()
+        _color_tex.release()
+        _depth_buf.release()
+    _color_tex = _ctx.texture((width, height), 4)
+    _depth_buf = _ctx.depth_renderbuffer((width, height))
+    _fbo = _ctx.framebuffer(color_attachments=[_color_tex],
+                            depth_attachment=_depth_buf)
+    _fbo_size = (width, height)
+
+    # Compile shaders once
+    if _terrain_prog is None:
+        _terrain_prog = _ctx.program(vertex_shader=VERTEX_SHADER,
+                                     fragment_shader=FRAGMENT_SHADER)
+        _sky_prog = _ctx.program(vertex_shader=SKY_VERTEX_SHADER,
+                                 fragment_shader=SKY_FRAGMENT_SHADER)
+
+    # Sky quad: fullscreen triangle pair in NDC
+    if _sky_vao is None:
+        sky_verts = np.array([
+            -1, -1,   1, -1,   1,  1,
+            -1, -1,   1,  1,  -1,  1,
+        ], dtype=np.float32)
+        sky_vbo = _ctx.buffer(sky_verts.tobytes())
+        _sky_vao = _ctx.vertex_array(_sky_prog, [(sky_vbo, '2f', 'in_pos')])
+
+    return True
+
+
+def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
+    """Sample SRTM around aircraft into a vertex+index buffer.
+
+    Returns (positions [N×3 float32 metres], clearances [N float32 metres]).
+    Aircraft is at origin (0,0,0); +X=East, +Y=North, +Z=Up; alt is mesh-relative.
+    """
+    global _mesh_key, _terrain_vao, _terrain_vbo_pos, _terrain_vbo_clr, _terrain_ibo
+
+    # Cache key: quantize lat/lon/alt so we don't rebuild every frame
+    # 0.005° ≈ 0.3 nm at mid-latitudes; 200 ft alt steps
+    key = (round(lat, 3), round(lon, 3), round(alt_ft / 200) * 200)
+    if key == _mesh_key and _terrain_vao is not None:
+        return
+
+    radius_m = MESH_RADIUS_NM * NM_TO_M
+    n = MESH_GRID_N
+    alt_m = alt_ft * FT_TO_M
+
+    # Grid in local East/North metres
+    grid_1d = np.linspace(-radius_m, radius_m, n, dtype=np.float32)
+    east, north = np.meshgrid(grid_1d, grid_1d)   # both (n, n)
+
+    # Convert each grid point to lat/lon for SRTM lookup
+    cos_lat = max(1e-6, math.cos(math.radians(lat)))
+    dlat = north / NM_TO_M / 60.0                  # metres → degrees
+    dlon = east  / NM_TO_M / 60.0 / cos_lat
+    sample_lat = lat + dlat
+    sample_lon = lon + dlon
+
+    # Vectorized SRTM lookup (one tile lookup per unique tile)
+    elev_ft = np.zeros((n, n), dtype=np.float32)
+    lat_int_arr = np.floor(sample_lat).astype(np.int32)
+    lon_int_arr = np.floor(sample_lon).astype(np.int32)
+    enc = ((lat_int_arr.astype(np.int64) + 90) * 1000 +
+           (lon_int_arr.astype(np.int64) + 360))
+    for tile_key in np.unique(enc):
+        tla = int(tile_key) // 1000 - 90
+        tlo = int(tile_key) %  1000 - 360
+        result = load_tile(srtm_dir, tla, tlo)
+        if result is None:
+            continue
+        tile_data, n_s = result
+        mask = (lat_int_arr == tla) & (lon_int_arr == tlo)
+        if not mask.any():
+            continue
+        step = 1.0 / (n_s - 1)
+        row_i = np.clip(np.round((tla + 1 - sample_lat) / step).astype(np.int32),
+                        0, n_s - 1)
+        col_i = np.clip(np.round((sample_lon - tlo) / step).astype(np.int32),
+                        0, n_s - 1)
+        elev_ft[mask] = tile_data[row_i, col_i][mask]
+
+    elev_m = elev_ft * FT_TO_M
+
+    # Build vertex array: position (east, north, up) and clearance (metres)
+    positions = np.stack([east, north, elev_m - alt_m], axis=-1).astype(np.float32)
+    clearances = (alt_m - elev_m).astype(np.float32)
+
+    # Build triangle indices (two triangles per quad)
+    # Vertex (i, j) → flat index i*n + j
+    i, j = np.meshgrid(np.arange(n - 1), np.arange(n - 1), indexing='ij')
+    v0 = (i     * n + j    ).astype(np.uint32)
+    v1 = (i     * n + j + 1).astype(np.uint32)
+    v2 = ((i+1) * n + j    ).astype(np.uint32)
+    v3 = ((i+1) * n + j + 1).astype(np.uint32)
+    tri1 = np.stack([v0, v2, v1], axis=-1).reshape(-1)
+    tri2 = np.stack([v1, v2, v3], axis=-1).reshape(-1)
+    indices = np.concatenate([tri1, tri2]).astype(np.uint32)
+
+    # Upload to GPU (release old buffers if present)
+    if _terrain_vbo_pos is not None:
+        _terrain_vao.release()
+        _terrain_vbo_pos.release()
+        _terrain_vbo_clr.release()
+        _terrain_ibo.release()
+
+    _terrain_vbo_pos = _ctx.buffer(positions.tobytes())
+    _terrain_vbo_clr = _ctx.buffer(clearances.tobytes())
+    _terrain_ibo     = _ctx.buffer(indices.tobytes())
+    _terrain_vao = _ctx.vertex_array(
+        _terrain_prog,
+        [(_terrain_vbo_pos, '3f', 'in_pos'),
+         (_terrain_vbo_clr, '1f', 'in_clearance')],
+        index_buffer=_terrain_ibo,
+    )
+
+    _mesh_key = key
+
+
+# ── Math helpers ──────────────────────────────────────────────────────────────
+
+def _perspective(fov_y_deg: float, aspect: float, near: float, far: float):
+    """Build a right-handed perspective projection matrix (column-major)."""
+    f = 1.0 / math.tan(math.radians(fov_y_deg) / 2.0)
+    m = np.zeros((4, 4), dtype=np.float32)
+    m[0, 0] = f / aspect
+    m[1, 1] = f
+    m[2, 2] = (far + near) / (near - far)
+    m[2, 3] = (2 * far * near) / (near - far)
+    m[3, 2] = -1.0
+    return m
+
+
+def _look_at(eye, target, up):
+    """Right-handed look-at view matrix (column-major)."""
+    eye = np.asarray(eye, dtype=np.float32)
+    f = np.asarray(target, dtype=np.float32) - eye
+    f /= np.linalg.norm(f)
+    up = np.asarray(up, dtype=np.float32)
+    s = np.cross(f, up); s /= np.linalg.norm(s)
+    u = np.cross(s, f)
+    m = np.eye(4, dtype=np.float32)
+    m[0, :3] = s
+    m[1, :3] = u
+    m[2, :3] = -f
+    m[:3, 3] = -m[:3, :3] @ eye
+    return m
+
+
+def _attitude_basis(pitch_deg: float, roll_deg: float, hdg_deg: float):
+    """Compute camera (forward, up) world vectors from aircraft attitude.
+    World: X=East, Y=North, Z=Up.
+    Aircraft conventions: pitch+ = nose up, roll+ = right wing down,
+    hdg = compass degrees (0=N, 90=E).
+    """
+    p = math.radians(pitch_deg)
+    r = math.radians(roll_deg)
+    h = math.radians(hdg_deg)
+
+    # Heading: forward at (sin h, cos h, 0); right at (cos h, -sin h, 0)
+    fwd0 = np.array([math.sin(h), math.cos(h), 0.0])
+    rgt0 = np.array([math.cos(h), -math.sin(h), 0.0])
+    up0  = np.array([0.0, 0.0, 1.0])
+
+    # Pitch: rotate forward/up around right axis (positive pitch = nose up)
+    fwd1 = fwd0 * math.cos(p) + up0 * math.sin(p)
+    up1  = -fwd0 * math.sin(p) + up0 * math.cos(p)
+    rgt1 = rgt0
+
+    # Roll: rotate right/up around forward axis (positive roll = right wing down)
+    rgt2 = rgt1 * math.cos(r) - up1 * math.sin(r)
+    up2  = rgt1 * math.sin(r) + up1 * math.cos(r)
+    fwd2 = fwd1
+
+    return fwd2, up2
+
+
+def _horizon_y_ndc(pitch_deg: float, fov_y_deg: float) -> float:
+    """NDC Y of the horizon line for the sky shader.
+
+    With camera pitched up by P degrees, the horizon (which is straight
+    out the nose at zero pitch) appears at angle -P below the camera's
+    forward.  Convert to NDC: y_ndc = -tan(angle) / tan(fov/2).
+    """
+    half_fov = math.radians(fov_y_deg) / 2.0
+    angle = math.radians(-pitch_deg)
+    return max(-1.0, min(1.0, -math.tan(angle) / math.tan(half_fov)))
+
+
+# ── Public render function ────────────────────────────────────────────────────
+
+def render_svt_gl(
+    srtm_dir: str,
+    ai_w: int,
+    ai_h: int,
+    pitch_deg: float,
+    roll_deg: float,
+    hdg_deg: float,
+    alt_ft: float,
+    lat: float,
+    lon: float,
+    v_fov_deg: float = V_FOV_DEG,
+):
+    """Render the SVT terrain background using OpenGL.
+    Returns a pygame.Surface (ai_w × ai_h, RGBA) or None if GL failed.
+    """
+    if not _init_gl(ai_w, ai_h):
+        return None
+
+    _build_mesh(srtm_dir, lat, lon, alt_ft)
+
+    # Camera
+    fwd, up = _attitude_basis(pitch_deg, roll_deg, hdg_deg)
+    eye = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    target = eye + fwd
+    view = _look_at(eye, target, up)
+    proj = _perspective(v_fov_deg, ai_w / ai_h, NEAR_PLANE_M, FAR_PLANE_M)
+    mvp = proj @ view
+
+    # Render
+    _fbo.use()
+    _ctx.enable(moderngl.DEPTH_TEST)
+    _ctx.clear(0.04, 0.16, 0.31, 1.0)   # default sky-blue (will be overdrawn)
+
+    # Sky: write at far plane so it's behind terrain
+    horizon_y = _horizon_y_ndc(pitch_deg, v_fov_deg)
+    _sky_prog['u_horizon_y'].value = horizon_y
+    _ctx.disable(moderngl.DEPTH_TEST)
+    _sky_vao.render()
+    _ctx.enable(moderngl.DEPTH_TEST)
+
+    # Terrain
+    if _terrain_vao is not None:
+        _terrain_prog['u_mvp'].write(mvp.T.tobytes())   # column-major for GL
+        _terrain_vao.render()
+
+    # Read pixels back into pygame Surface (flip Y: OpenGL origin is bottom-left)
+    raw = _fbo.read(components=3, alignment=1)
+    arr = np.frombuffer(raw, dtype=np.uint8).reshape((ai_h, ai_w, 3))[::-1, :, :]
+    surf = pygame.image.frombuffer(arr.tobytes(), (ai_w, ai_h), 'RGB')
+    return surf
+
+
+def is_available() -> bool:
+    """Return True if the GL backend can be initialised."""
+    if not (HAS_MODERNGL and HAS_NUMPY):
+        return False
+    try:
+        return _init_gl(64, 64)
+    except Exception:
+        return False

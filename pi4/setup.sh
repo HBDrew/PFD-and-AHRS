@@ -35,19 +35,17 @@ apt-get install -y --no-install-recommends \
     git curl \
     2>/dev/null
 
-echo "[3/9] Installing OpenGL dependencies…"
+echo "[3/9] Installing OpenGL dependencies (for SVT renderer)…"
 apt-get install -y --no-install-recommends \
     libgles2-mesa-dev \
     libegl1-mesa-dev \
-    python3-opengl \
+    libgl1-mesa-dri \
     mesa-utils \
     2>/dev/null
 
 echo "[4/9] Installing Python packages…"
-pip3 install --quiet --break-system-packages pygame numpy 2>/dev/null || \
-pip3 install --quiet pygame numpy
-# OpenGL packages for Phase 2
-pip3 install --quiet --break-system-packages moderngl 2>/dev/null || true
+pip3 install --quiet --break-system-packages pygame numpy moderngl glcontext 2>/dev/null || \
+pip3 install --quiet pygame numpy moderngl glcontext
 
 echo "[5/9] Configuring display…"
 echo ""
