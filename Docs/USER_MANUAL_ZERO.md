@@ -408,6 +408,19 @@ The OurAirports.com global database adds airport and heliport symbols to the att
 
 Airport identifier (e.g. "KSEZ") shown below the symbol within 15 nm to reduce clutter at long range.
 
+### Display filters
+
+The AIRPORT DATA screen has four toggle buttons at the bottom:
+
+| Filter | Controls | Default |
+|--------|----------|---------|
+| **PUBLIC** | Small / medium / large public airports | On |
+| **HELI** | Heliports | On |
+| **WATER** | Seaplane bases | Off |
+| **OTHER** | Balloonports + uncategorised | Off |
+
+Tap to toggle. Useful for decluttering on dense urban sectional overlay (e.g. disable HELI near cities).
+
 ### Downloading
 
 Tap **AIRPORTS** on the System screen → **DOWNLOAD** to fetch `airports.csv` (~12 MB) from the OurAirports GitHub mirror.

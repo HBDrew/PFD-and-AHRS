@@ -364,6 +364,19 @@ The OurAirports.com global database adds airport and heliport symbols to the att
 
 The airport identifier (e.g. "KSEZ") is shown below the symbol within 15 nm — beyond that range, only the symbol is drawn to reduce clutter.
 
+### Display filters
+
+The AIRPORT DATA screen has four toggle buttons at the bottom to control which airport types render on the attitude indicator. Tap to toggle.
+
+| Filter | Controls | Default |
+|--------|----------|---------|
+| **PUBLIC** | Small / medium / large public-use airports | On |
+| **HELIPORTS** | Hospital helipads, rooftop pads, private helis | On |
+| **SEAPLANE** | Seaplane bases (water operations) | Off |
+| **OTHER** | Balloonports and uncategorised types | Off |
+
+This lets you declutter the AI to show only the types relevant to your flight — for example, turn off HELIPORTS when operating in dense urban airspace where helipads would swamp the display.
+
 ### Downloading
 
 Tap **AIRPORTS** on the System screen to open the airport data screen.

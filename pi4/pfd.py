@@ -136,6 +136,12 @@ disp["ad"] = {                      # airport download/parse state
     "dl_date":     None,    # datetime.date of last download
     "expired":     False,   # True when CSV is > AIRPORT_EXPIRY_DAYS old
     "age_days":    0,
+    # Per-category display filters (bool).  Users toggle these on the
+    # AIRPORT DATA screen to reduce clutter.
+    "show_public":   True,      # S/M/L — small/medium/large airports
+    "show_heli":     True,      # H — heliports
+    "show_seaplane": False,     # W — seaplane bases
+    "show_other":    False,     # B — balloonports + misc
 }
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
@@ -2101,6 +2107,9 @@ def handle_event(event, demo_mode):
             elif action == "download":
                 if not disp["ad"]["downloading"]:
                     _ad_start_download()
+            elif isinstance(action, str) and action.startswith("toggle:"):
+                key = action.split(":", 1)[1]
+                disp["ad"][key] = not disp["ad"].get(key, False)
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -3658,6 +3667,19 @@ def draw_airport_data(surf, ad):
     pygame.draw.line(surf, (150, 200, 255), (sx - 4, sy + 5), (sx + 4, sy + 5), 1)
     _text(surf, "SEAPLANE", 9, (160,170,180), x=sx+10, y=leg_y+8)
 
+    # ── Display filters — toggle which airport types render on the AI ────
+    filt_y = leg_y + leg_h + 14
+    filt_h = 44
+    _text(surf, "Display filters — tap to toggle:",
+          11, (140,160,185), x=bx+6, y=filt_y-14)
+    btn_w = (bw - 30) // 4
+    for i, (key, lbl) in enumerate([("show_public",   "PUBLIC"),
+                                     ("show_heli",     "HELIPORTS"),
+                                     ("show_seaplane", "SEAPLANE"),
+                                     ("show_other",    "OTHER")]):
+        bxi = bx + i * (btn_w + 10)
+        _seg_btn(surf, bxi, filt_y, btn_w, filt_h, lbl, ad.get(key, False), r=6)
+
 
 def airport_data_hit(x, y, ad):
     """Return action string or None."""
@@ -3666,8 +3688,21 @@ def airport_data_hit(x, y, ad):
     bx = _AD_MX; bw = DISPLAY_W - 2*_AD_MX
     btn_y = 92 + 90 + 14
     btn_h = 54
+    # Filter toggle strip (same geometry as in draw_airport_data)
+    prog_y = btn_y + btn_h + 10
+    prog_h = 48
+    leg_y  = prog_y + prog_h + 12
+    leg_h  = 34
+    filt_y = leg_y + leg_h + 14
+    filt_h = 44
+    btn_w  = (bw - 30) // 4
+    if filt_y <= y <= filt_y + filt_h:
+        for i, key in enumerate(["show_public", "show_heli",
+                                 "show_seaplane", "show_other"]):
+            bxi = bx + i * (btn_w + 10)
+            if bxi <= x <= bxi + btn_w:
+                return f"toggle:{key}"
     if ad.get("downloading"):
-        prog_y = btn_y + btn_h + 10
         if (bx+bw-80 <= x <= bx+bw and prog_y+6 <= y <= prog_y+38):
             return "cancel"
     if bx <= x <= bx+bw and btn_y <= y <= btn_y+btn_h:
@@ -3998,6 +4033,19 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
     if _airports is None:
         return
 
+    # Per-category filter — user toggles on the AIRPORT DATA screen
+    ad = disp["ad"]
+    show = {
+        "S": ad.get("show_public",   True),
+        "M": ad.get("show_public",   True),
+        "L": ad.get("show_public",   True),
+        "H": ad.get("show_heli",     True),
+        "W": ad.get("show_seaplane", False),
+        "B": ad.get("show_other",    False),
+    }
+    if not any(show.values()):
+        return
+
     nearby = apt_mod.query_nearby(_airports, lat, lon,
                                   radius_nm=AIRPORT_RADIUS_NM)
     if not nearby:
@@ -4026,6 +4074,8 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
     # Render farthest first so nearer ones are drawn on top (Z-order ish)
     for apt in reversed(nearby):
+        if not show.get(apt.atype, False):
+            continue
         dlat_nm = (apt.lat - lat) * nm_per_deg_lat
         dlon_nm = (apt.lon - lon) * nm_per_deg_lon
         dist_nm = math.hypot(dlat_nm, dlon_nm)

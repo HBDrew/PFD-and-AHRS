@@ -195,6 +195,15 @@ The display unit shall show nearby airports on the attitude indicator to provide
 
 > **REQ-DISP-PI4-APT-009** A `NO APT` status badge (amber) shall be displayed when no airport data is loaded. An `EXP APT` status badge (orange) shall be displayed when the loaded airport data is older than the configured expiry.
 
+> **REQ-DISP-PI4-APT-010** The AIRPORT DATA screen shall provide four independently toggleable display filters controlling which airport types render on the attitude indicator:
+>
+> - PUBLIC — small / medium / large public-use airports (default: on)
+> - HELIPORTS — heliports (default: on)
+> - SEAPLANE — seaplane bases (default: off)
+> - OTHER — balloonports and uncategorised types (default: off)
+>
+> Filter state shall persist across the session. When all four filters are off, no airport symbols shall render.
+
 ---
 
 ## 10. Status Badges

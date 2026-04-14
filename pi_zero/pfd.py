@@ -122,6 +122,11 @@ disp["ad"] = {                      # airport download/parse state
     "dl_date":     None,
     "expired":     False,
     "age_days":    0,
+    # Per-category display filters
+    "show_public":   True,
+    "show_heli":     True,
+    "show_seaplane": False,
+    "show_other":    False,
 }
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
@@ -1982,6 +1987,9 @@ def handle_event(event, demo_mode):
             elif action == "download":
                 if not disp["ad"]["downloading"]:
                     _ad_start_download()
+            elif isinstance(action, str) and action.startswith("toggle:"):
+                key = action.split(":", 1)[1]
+                disp["ad"][key] = not disp["ad"].get(key, False)
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -3503,6 +3511,18 @@ def draw_airport_data(surf, ad):
         col = (60,220,80) if status_msg.startswith("Done") else (160,160,170)
         _text(surf, status_msg, 9, col, cx=DISPLAY_W//2, cy=prog_y+20)
 
+    # ── Display filters — toggle which airport types render on the AI ────
+    filt_y = prog_y + prog_h + 12
+    filt_h = 34
+    _text(surf, "Display filters:", 10, (140,160,185), x=bx+6, y=filt_y-12)
+    bt_w = (bw - 30) // 4
+    for i, (key, lbl) in enumerate([("show_public",   "PUBLIC"),
+                                     ("show_heli",     "HELI"),
+                                     ("show_seaplane", "WATER"),
+                                     ("show_other",    "OTHER")]):
+        bxi = bx + i * (bt_w + 10)
+        _seg_btn(surf, bxi, filt_y, bt_w, filt_h, lbl, ad.get(key, False), r=5)
+
 
 def airport_data_hit(x, y, ad):
     if 8 <= x <= 80 and 6 <= y <= 37:
@@ -3510,8 +3530,19 @@ def airport_data_hit(x, y, ad):
     bx = _AD_MX; bw = DISPLAY_W - 2*_AD_MX
     btn_y = 92 + 82 + 10
     btn_h = 48
+    # Filter toggle strip
+    prog_y = btn_y + btn_h + 8
+    prog_h = 40
+    filt_y = prog_y + prog_h + 12
+    filt_h = 34
+    bt_w   = (bw - 30) // 4
+    if filt_y <= y <= filt_y + filt_h:
+        for i, key in enumerate(["show_public", "show_heli",
+                                 "show_seaplane", "show_other"]):
+            bxi = bx + i * (bt_w + 10)
+            if bxi <= x <= bxi + bt_w:
+                return f"toggle:{key}"
     if ad.get("downloading"):
-        prog_y = btn_y + btn_h + 8
         if (bx+bw-70 <= x <= bx+bw and prog_y+4 <= y <= prog_y+32):
             return "cancel"
     if bx <= x <= bx+bw and btn_y <= y <= btn_y+btn_h:
@@ -3826,6 +3857,19 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
     if _airports is None:
         return
 
+    # Per-category filter
+    ad = disp["ad"]
+    show = {
+        "S": ad.get("show_public",   True),
+        "M": ad.get("show_public",   True),
+        "L": ad.get("show_public",   True),
+        "H": ad.get("show_heli",     True),
+        "W": ad.get("show_seaplane", False),
+        "B": ad.get("show_other",    False),
+    }
+    if not any(show.values()):
+        return
+
     nearby = apt_mod.query_nearby(_airports, lat, lon,
                                   radius_nm=AIRPORT_RADIUS_NM)
     if not nearby:
@@ -3849,6 +3893,8 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
     APT_OTHER   = (180, 180, 200)
 
     for apt in reversed(nearby):
+        if not show.get(apt.atype, False):
+            continue
         dlat_nm = (apt.lat - lat) * nm_per_deg_lat
         dlon_nm = (apt.lon - lon) * nm_per_deg_lon
         dist_nm = math.hypot(dlat_nm, dlon_nm)
