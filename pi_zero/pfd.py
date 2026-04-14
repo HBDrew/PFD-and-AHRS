@@ -3763,10 +3763,17 @@ def render(surf, demo_mode, connected, data_stale=False):
                    "sim_init_alt": int(disp["sim"]["init_alt"]) // 100,
                    "sim_init_hdg": int(disp["sim"]["init_hdg"]),
                    "sim_init_spd": int(disp["sim"]["init_spd"])}
-        for fkey, flabel, *_ in _FP_FIELDS:
+        for fkey, flabel, *rest in _FP_FIELDS:
             if fkey not in titles:
                 titles[fkey]  = f"SET {flabel}"
-                curvals[fkey] = int(disp["fp"].get(fkey, 0))
+                _v = disp["fp"].get(fkey, 0)
+                # Only numeric fields are numpad-editable; skip string fields (tail, actype)
+                if rest and len(rest) >= 3 and rest[2] == "kbd":
+                    continue
+                try:
+                    curvals[fkey] = int(_v)
+                except (ValueError, TypeError):
+                    continue
         dec = baro_dec if target == "baro_hpa" else 0
         # sim_init_alt also uses ×100 suffix like alt_bug
         sim_alt_suffix = "00" if target == "sim_init_alt" else ""
@@ -3949,40 +3956,102 @@ def main():
         outdir = os.path.abspath(args.screenshots)
         os.makedirs(outdir, exist_ok=True)
 
-        # Standard flight scenes
-        _SCENES = [
-            ("preview_sedona_level.png",
-             dict(roll=0, pitch=2, hdg=133, alt=8500, speed=115, vspeed=0, ay=0)),
-            ("preview_sedona_climb_turn.png",
-             dict(roll=-18, pitch=6, hdg=145, alt=7800, speed=95, vspeed=500, ay=0.12)),
-            ("preview_sedona_approach.png",
-             dict(roll=0, pitch=-3, hdg=200, alt=5800, speed=90, vspeed=-700, ay=0)),
-        ]
-
-        for fname, params in _SCENES:
-            snap = {
-                "lat": DEMO_LAT, "lon": DEMO_LON,
-                "yaw": params["hdg"], "track": params["hdg"],
-                "roll": params["roll"], "pitch": params["pitch"],
-                "speed": params["speed"], "alt": params["alt"],
-                "vspeed": params["vspeed"], "ay": params["ay"],
-                "gps_ok": True, "baro_ok": True, "ahrs_ok": True,
-                "sats": 8, "gps_alt": params["alt"],
-                "baro_hpa": BARO_DEFAULT_HPA, "baro_src": "baro",
-                "fix": True, "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
-            }
-            with _state_lock:
-                state.update(snap)
-            disp.update(snap)
-            disp["hdg_bug"] = params["hdg"]
-            disp["alt_bug"] = params["alt"]
+        def _save(fname):
             smooth_state()
             render(surf, demo_mode=False, connected=True, data_stale=False)
             _flip()
             pygame.image.save(surf, os.path.join(outdir, fname))
             print(f"  → {fname}")
 
-        # Setup screens
+        def _seed(**kwargs):
+            snap = {
+                "lat": kwargs.get("lat", DEMO_LAT),
+                "lon": kwargs.get("lon", DEMO_LON),
+                "yaw": kwargs.get("hdg", 133),
+                "track": kwargs.get("track", kwargs.get("hdg", 133)),
+                "roll": kwargs.get("roll", 0),
+                "pitch": kwargs.get("pitch", 2),
+                "speed": kwargs.get("speed", 115),
+                "alt": kwargs.get("alt", 8500),
+                "vspeed": kwargs.get("vspeed", 0),
+                "ay": kwargs.get("ay", 0),
+                "gps_ok": kwargs.get("gps_ok", True),
+                "baro_ok": kwargs.get("baro_ok", True),
+                "ahrs_ok": kwargs.get("ahrs_ok", True),
+                "sats": kwargs.get("sats", 8),
+                "gps_alt": kwargs.get("alt", 8500),
+                "baro_hpa": BARO_DEFAULT_HPA,
+                "baro_src": "baro" if kwargs.get("baro_ok", True) else "gps",
+                "fix": kwargs.get("gps_ok", True),
+                "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
+            }
+            with _state_lock:
+                state.update(snap)
+            disp.update(snap)
+            disp["hdg_bug"] = kwargs.get("hdg_bug", kwargs.get("hdg", 133))
+            disp["alt_bug"] = kwargs.get("alt_bug", kwargs.get("alt", 8500))
+            if "spd_bug" in kwargs:
+                disp["spd_bug"] = kwargs["spd_bug"]
+            else:
+                disp["spd_bug"] = 0
+            disp["mode"]    = "pfd"
+            disp["ss"]["hdg_src"] = kwargs.get("hdg_src", "mag")
+
+        # ── Flight scenes ─────────────────────────────────────────────────────
+        _seed(roll=0,   pitch=2,  hdg=133, alt=8500, speed=115, vspeed=0)
+        _save("preview_sedona_level.png")
+
+        _seed(roll=-18, pitch=6,  hdg=145, alt=7800, speed=95,  vspeed=500,  ay=0.12)
+        _save("preview_sedona_climb_turn.png")
+
+        _seed(roll=0,   pitch=-3, hdg=200, alt=5800, speed=90,  vspeed=-700)
+        _save("preview_sedona_approach.png")
+
+        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115, hdg_src="gps")
+        _save("preview_gps_trk_mode.png")
+
+        _seed(roll=0, pitch=0, hdg=133, alt=8500, speed=115, baro_ok=False)
+        _save("preview_badges_no_data.png")
+
+        _seed(roll=0, pitch=0, hdg=133, alt=8500, speed=115)
+        disp["od"]["expired"] = True
+        disp["od"]["records"] = 76842
+        _save("preview_badges_exp_obs.png")
+        disp["od"]["expired"] = False
+
+        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115)
+        _save("pfd_preview.png")
+
+        # ── Numpad overlays ───────────────────────────────────────────────────
+        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115)
+        disp["mode"] = "numpad"
+        disp["numpad_target"] = "alt_bug"
+        disp["numpad_buf"]    = "85"
+        _save("preview_numpad_alt.png")
+
+        disp["numpad_target"] = "hdg_bug"
+        disp["numpad_buf"]    = "133"
+        _save("preview_numpad_hdg.png")
+
+        disp["ds"]["baro_unit"] = "inhg"
+        disp["numpad_target"] = "baro_hpa"
+        disp["numpad_buf"]    = "2992"
+        _save("preview_numpad_baro_inhg.png")
+
+        disp["ds"]["baro_unit"] = "hpa"
+        disp["numpad_target"] = "baro_hpa"
+        disp["numpad_buf"]    = "1013"
+        _save("preview_numpad_baro_hpa.png")
+        disp["ds"]["baro_unit"] = "inhg"
+
+        # ── Keyboard overlay ──────────────────────────────────────────────────
+        disp["mode"] = "keyboard"
+        disp["kbd_target"] = "tail"
+        disp["kbd_buf"]    = "N12345"
+        disp["kbd_prev"]   = "flight_profile"
+        _save("preview_keyboard.png")
+
+        # ── Setup screens ─────────────────────────────────────────────────────
         for screen_mode, fname in [
             ("setup",               "preview_setup_main.png"),
             ("flight_profile",      "preview_setup_flight_profile.png"),
@@ -3992,10 +4061,79 @@ def main():
             ("system_setup",        "preview_setup_system.png"),
         ]:
             disp["mode"] = screen_mode
-            render(surf, demo_mode=False, connected=True, data_stale=False)
-            _flip()
-            pygame.image.save(surf, os.path.join(outdir, fname))
-            print(f"  → {fname}")
+            _save(fname)
+
+        disp["ss"]["hdg_src"] = "gps"
+        disp["mode"] = "ahrs_setup"
+        _save("preview_setup_ahrs_gpstrk.png")
+        disp["ss"]["hdg_src"] = "mag"
+
+        # ── Terrain data screen states ────────────────────────────────────────
+        disp["mode"] = "terrain_data"
+        disp["td"]["downloading"] = False
+        disp["td"]["dl_region"]   = ""
+        disp["td"]["dl_current"]  = 0
+        disp["td"]["dl_total"]    = 0
+        disp["td"]["dl_status"]   = ""
+        _save("preview_terrain_idle.png")
+
+        disp["td"]["downloading"] = True
+        disp["td"]["dl_region"]   = "US Southwest"
+        disp["td"]["dl_current"]  = 47
+        disp["td"]["dl_total"]    = 132
+        disp["td"]["dl_status"]   = "Downloading N35W111.hgt\u2026"
+        _save("preview_terrain_downloading.png")
+
+        disp["td"]["downloading"] = False
+        disp["td"]["dl_region"]   = ""
+
+        # ── Obstacle data screen states ───────────────────────────────────────
+        disp["mode"] = "obstacle_data"
+        disp["od"]["downloading"] = False
+        disp["od"]["records"]     = 0
+        disp["od"]["used_mb"]     = 0.0
+        disp["od"]["dl_status"]   = ""
+        _save("preview_obstacle_idle.png")
+
+        disp["od"]["records"] = 76842
+        disp["od"]["used_mb"] = 19.4
+        disp["od"]["dl_status"] = "Done \u2713  76,842 obstacles loaded"
+        _save("preview_obstacle_loaded.png")
+
+        disp["od"]["downloading"] = True
+        disp["od"]["records"]     = 0
+        disp["od"]["dl_status"]   = "Downloading\u2026 38%  (7,440 / 19,584 KB)"
+        _save("preview_obstacle_downloading.png")
+
+        disp["od"]["downloading"] = False
+        disp["od"]["dl_status"]   = ""
+
+        # ── Terrain proximity alert scenes ────────────────────────────────────
+        _seed(roll=0, pitch=-2, hdg=133, alt=5500, speed=95, vspeed=-200)
+        try:
+            globals()['_terrain_alert_level'] = 1
+            globals()['_terrain_alert_alpha'] = 1.0
+        except Exception:
+            pass
+        _save("preview_terrain_caution.png")
+
+        _seed(roll=0, pitch=-5, hdg=133, alt=5200, speed=95, vspeed=-400)
+        try:
+            globals()['_terrain_alert_level'] = 2
+            globals()['_terrain_alert_alpha'] = 1.0
+        except Exception:
+            pass
+        _save("preview_terrain_warning.png")
+
+        try:
+            globals()['_terrain_alert_level'] = 0
+            globals()['_terrain_alert_alpha'] = 0.0
+        except Exception:
+            pass
+
+        # ── VR cascade demo ───────────────────────────────────────────────────
+        _seed(roll=0, pitch=0, hdg=133, alt=9980, speed=115, vspeed=0)
+        _save("preview_vr_cascade.png")
 
         disp["mode"] = "pfd"
         print(f"\n[PFD] Batch screenshots → {outdir}")

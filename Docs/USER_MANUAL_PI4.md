@@ -86,6 +86,8 @@ A chevron marker tracks the speed bug. Tap the readout button at the **top** of 
 
 ## 3. Altitude Tape and VSI
 
+![Descending final approach](../pi4/previews/preview_sedona_approach.png)
+
 ### Altitude tape
 
 Veeder-Root drum on the right side. Scrolls in 50 ft increments. **Altitude bug** settable via numpad (entry in hundreds of feet) or by tapping the tape.
@@ -154,6 +156,8 @@ Requires GPS fix and SRTM tiles or obstacle data loaded.
 
 ### Heading source modes
 
+![Heading tape — MAG mode](../pi4/previews/preview_sedona_level.png)
+
 **MAG mode (default):** Magnetometer heading. Dim border, `M` subscript.
 
 **GPS TRK mode:** Heading slewed to GPS track via complementary filter. Magenta border, `G` subscript. `GPS TRK` badge appears.
@@ -192,6 +196,8 @@ Three bugs — altitude, heading, ground-speed.
 
 ### Numpad entry
 
+![Altitude bug numpad](../pi4/previews/preview_numpad_alt.png)
+
 Tap the readout button. Numpad overlays the live PFD.
 
 **Altitude** — hundreds of feet (`85` → `8500 ft`). **Heading** — 3 digits. **GS** — whole knots.
@@ -212,11 +218,15 @@ Enter `0` + ENTER.
 
 ## 8. Setup Menu
 
+![Main setup screen](../pi4/previews/preview_setup_main.png)
+
 Two-finger hold 0.8 s → six tiles: FLIGHT PROFILE, DISPLAY, AHRS / SENSORS, CONNECTIVITY, SYSTEM, EXIT.
 
 ---
 
 ## 9. Flight Profile — V-Speeds and Callsign
+
+![Flight profile screen](../pi4/previews/preview_setup_flight_profile.png)
 
 Cessna 172S defaults: VS0=48, VS1=55, VFE=85, VNO=129, VNE=163, VA=105, VY=74, VX=62 kt.
 
@@ -226,11 +236,15 @@ Tap any V-speed box to change. RESET DEFAULTS restores all. Tap CALLSIGN to ente
 
 ## 10. Display Settings
 
+![Display settings screen](../pi4/previews/preview_setup_display.png)
+
 **Speed:** KT / MPH / KPH. **Altitude:** FT / M. **Pressure:** inHg / hPa. **Brightness:** 1–10 steps.
 
 ---
 
 ## 11. AHRS / Sensors
+
+![AHRS setup screen](../pi4/previews/preview_setup_ahrs.png)
 
 **Pitch/Roll trim:** ±0.5° steps. **Mounting:** NORMAL / INVERTED. **Heading source:** MAG / GPS TRK. **Airspeed source:** GPS GS / IAS SENSOR (future).
 
@@ -238,17 +252,23 @@ Tap any V-speed box to change. RESET DEFAULTS restores all. Tap CALLSIGN to ente
 
 ## 12. Connectivity
 
+![Connectivity screen](../pi4/previews/preview_setup_connectivity.png)
+
 AHRS URL (default `http://192.168.4.1`), WiFi SSID/password, TEST AHRS, APPLY WIFI.
 
 ---
 
 ## 13. System
 
+![System screen](../pi4/previews/preview_setup_system.png)
+
 Version info, terrain/obstacle status, DIAGNOSTICS (future), RESET DEFAULTS, FLIGHT SIMULATOR.
 
 ---
 
 ## 14. Terrain Data Download
+
+![Terrain idle screen](../pi4/previews/preview_terrain_idle.png)
 
 SRTM elevation tiles provide the ground texture for the SVT background and power the TAWS proximity alerting. Without tiles the AI shows a plain blue/brown split.
 
@@ -269,6 +289,8 @@ Pi must be on internet-reachable network. Switch via Connectivity screen.
 ---
 
 ## 15. Obstacle Data Download
+
+![Obstacle data screen — idle](../pi4/previews/preview_obstacle_idle.png)
 
 FAA DOF adds tower/antenna/wind-turbine symbols. Within 10 nm and ±2000 ft.
 

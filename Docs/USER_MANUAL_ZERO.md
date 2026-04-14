@@ -32,6 +32,8 @@
 
 ## 1. Screen Overview
 
+![PFD — level cruise](../pi_zero/previews/preview_sedona_level.png)
+
 The display is divided into five fixed zones:
 
 | Zone | Width / Height | Content |
@@ -47,6 +49,8 @@ Everything is rendered at 30 fps directly on the framebuffer — there is no ope
 ---
 
 ## 2. Airspeed Tape
+
+![Climb with bank and V-speed bands](../pi_zero/previews/preview_sedona_climb_turn.png)
 
 ### Reading the tape
 
@@ -77,6 +81,8 @@ The bug and its readout button are **colour-coded by data source**:
 ---
 
 ## 3. Altitude Tape and VSI
+
+![Descending final approach](../pi_zero/previews/preview_sedona_approach.png)
 
 ### Altitude tape
 
@@ -189,6 +195,8 @@ Three settable bugs — altitude, heading, and ground-speed.
 
 ### Numpad entry
 
+![Altitude bug numpad](../pi_zero/previews/preview_numpad_alt.png)
+
 Tap the readout button for the bug you want to change. The numpad overlays the live PFD.
 
 | Key | Action |
@@ -206,6 +214,8 @@ Tap the readout button for the bug you want to change. The numpad overlays the l
 
 ### Adjusting baro
 
+![Baro numpad — inHg](../pi_zero/previews/preview_numpad_baro_inhg.png)
+
 Tap the baro button. **inHg mode**: type four digits, decimal auto-inserted after second digit (e.g. `2992` → `29.92`). **hPa mode**: plain four-digit integer.
 
 ### Tapping the tape directly
@@ -219,6 +229,8 @@ Enter `0` and press `ENTER`.
 ---
 
 ## 8. Setup Menu
+
+![Main setup screen](../pi_zero/previews/preview_setup_main.png)
 
 Two-finger press-and-hold anywhere on the PFD for 0.8 seconds.
 
@@ -235,6 +247,8 @@ Two-finger press-and-hold anywhere on the PFD for 0.8 seconds.
 
 ## 9. Flight Profile — V-Speeds and Callsign
 
+![Flight profile screen](../pi_zero/previews/preview_setup_flight_profile.png)
+
 | Field | Default | Meaning |
 |-------|---------|---------|
 | VS0 | 48 kt | Stall — flaps full |
@@ -250,11 +264,15 @@ Defaults are Cessna 172S. Tap any V-speed box to enter a new value. **RESET DEFA
 
 ### Aircraft callsign
 
+![Keyboard screen](../pi_zero/previews/preview_keyboard.png)
+
 Tap the CALLSIGN box to open the keyboard. Type the tail number and tap DONE.
 
 ---
 
 ## 10. Display Settings
+
+![Display settings screen](../pi_zero/previews/preview_setup_display.png)
 
 ### Speed units
 **KT**, **MPH**, or **KPH**. All V-speed arcs and GS bug scale together.
@@ -272,6 +290,8 @@ Tap **−** or **+** to step between levels 1–10.
 
 ## 11. AHRS / Sensors
 
+![AHRS setup screen](../pi_zero/previews/preview_setup_ahrs.png)
+
 ### Pitch trim
 Corrects horizon pitch on level ground. ±0.5° steps.
 
@@ -282,6 +302,8 @@ Corrects horizon tilt. ±0.5° steps.
 **NORMAL** (label up) or **INVERTED** (label down).
 
 ### Heading source
+
+![AHRS setup — GPS TRK selected](../pi_zero/previews/preview_setup_ahrs_gpstrk.png)
 
 | Option | Behaviour |
 |--------|-----------|
@@ -299,6 +321,8 @@ Corrects horizon tilt. ±0.5° steps.
 
 ## 12. Connectivity
 
+![Connectivity screen](../pi_zero/previews/preview_setup_connectivity.png)
+
 ### AHRS URL
 Default `http://192.168.4.1`. Tap to edit. SSE stream reconnects on DONE.
 
@@ -312,17 +336,23 @@ Attempts TCP connection to AHRS URL. Shows success/failure message.
 
 ## 13. System
 
+![System screen](../pi_zero/previews/preview_setup_system.png)
+
 Shows firmware version, build date, display resolution, platform, terrain/obstacle status. Buttons for DIAGNOSTICS (future), RESET DEFAULTS, and FLIGHT SIMULATOR.
 
 ---
 
 ## 14. Terrain Data Download
 
+![Terrain idle screen](../pi_zero/previews/preview_terrain_idle.png)
+
 SRTM elevation tiles are used on this version for **TAWS proximity alerting only** — they do not render a terrain background on the attitude indicator. (For terrain background rendering, use the Pi 4 version.)
 
 Tiles are stored in `pi_zero/data/srtm/` as `.hgt` files (~1 MB each).
 
 ### Downloading a preset region
+
+![Terrain downloading](../pi_zero/previews/preview_terrain_downloading.png)
 
 Six preset regions: US Southwest, US Pacific, US Southeast, US Northeast, Alaska, Canada.
 
@@ -339,6 +369,8 @@ The Pi must be on an internet-reachable network to download. Switch to home WiFi
 ---
 
 ## 15. Obstacle Data Download
+
+![Obstacle data screen — idle](../pi_zero/previews/preview_obstacle_idle.png)
 
 FAA Digital Obstacle File adds tower, antenna, and wind-turbine symbols to the display. Obstacles within **10 nm** and **±2000 ft** are shown.
 
