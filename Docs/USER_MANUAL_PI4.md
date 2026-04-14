@@ -221,6 +221,8 @@ Blank during normal flight. Appear only when attention required.
 | `NO TER` | Amber | No SRTM terrain tiles loaded |
 | `NO OBS` | Amber | No FAA obstacle data loaded |
 | `EXP OBS` | Orange | Obstacle data > 28 days old |
+| `NO APT` | Amber | No airport data loaded |
+| `EXP APT` | Orange | Airport data older than expiry |
 | `GPS TRK` | Magenta | GPS TRK heading mode active |
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
 | `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites |
@@ -341,6 +343,44 @@ Tap DOWNLOAD to fetch. Symbols colour-coded:
 | Green | Cleared > 500 ft |
 
 Red dot = lit obstacle. 28-day update cycle.
+
+---
+
+## 15A. Airport Data Download
+
+![Airport data screen — loaded](../pi4/previews/preview_airport_loaded.png)
+
+The OurAirports.com global database adds airport and heliport symbols to the attitude indicator within 20 nm of the aircraft. The database covers approximately 72,000 airports worldwide including ~20,000 in the US.
+
+### Symbols on the AI
+
+| Symbol | Meaning |
+|--------|---------|
+| Cyan ring (filled centre) | Public airport (small / medium / large) |
+| Cyan ring with outer ring | Medium or large public airport |
+| Magenta "H" | Heliport |
+| Cyan circle with wavy underscore | Seaplane base |
+| Grey triangle | Balloonport |
+
+The airport identifier (e.g. "KSEZ") is shown below the symbol within 15 nm — beyond that range, only the symbol is drawn to reduce clutter.
+
+### Downloading
+
+Tap **AIRPORTS** on the System screen to open the airport data screen.
+
+Tap **DOWNLOAD** (or **UPDATE** if data is already present) to fetch `airports.csv` (~12 MB) from the OurAirports GitHub mirror.
+
+![Airport data screen — downloading](../pi4/previews/preview_airport_downloading.png)
+
+A progress bar updates as the download runs. After completion the CSV is parsed into a NumPy cache for fast future loads. Tap **CANCEL** to abort at any time — no partial data is kept.
+
+### Update schedule
+
+The OurAirports database is community-maintained and updated frequently. A 60-day local expiry is enforced; after that the `EXP APT` badge appears in the status strip to remind the pilot to refresh. The data is usable past expiry — the badge is an advisory only.
+
+### WiFi requirement
+
+The Pi 4 must be on an internet-reachable network to download. Use the Connectivity screen to switch to home Wi-Fi, download here, then switch back to the Pico W AP for flight.
 
 ---
 

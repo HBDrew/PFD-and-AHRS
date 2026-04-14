@@ -154,6 +154,35 @@ The display unit implements a basic terrain awareness and warning function using
 
 ---
 
+## 9A. Airport Display
+
+The display unit shall show nearby airports on the attitude indicator to give the pilot immediate awareness of emergency-landing options and navigational references.
+
+> **REQ-DISP-ZERO-APT-001** Airports within a configurable radius of the aircraft (default 20 nm) shall be rendered on the attitude indicator as small symbols projected onto the AI using the same pixel-per-degree scale as the pitch ladder.
+
+> **REQ-DISP-ZERO-APT-002** Airport symbol style shall encode airport type:
+>
+> - Public airport (small / medium / large) — cyan ring with dark centre; outer ring added for medium and large airports
+> - Heliport — magenta letter "H"
+> - Seaplane base — cyan circle with a wavy underscore
+> - Balloonport — grey triangle
+
+> **REQ-DISP-ZERO-APT-003** The airport identifier (ICAO/local code) shall be displayed as a label beneath each symbol within a closer configurable range (default 15 nm) to prevent label clutter at long range.
+
+> **REQ-DISP-ZERO-APT-004** Airports outside the attitude indicator's angular field of view shall be culled so that no symbol appears clipped at the edge of the AI rectangle.
+
+> **REQ-DISP-ZERO-APT-005** Airport symbols shall be drawn before obstacle symbols in the Z-order so that close-in towers and obstructions appear on top of airport symbols at the same screen position.
+
+> **REQ-DISP-ZERO-APT-006** The airport database shall be the OurAirports global CSV (approximately 72,000 airports worldwide). Closed airports and records with missing coordinates shall be filtered out at parse time.
+
+> **REQ-DISP-ZERO-APT-007** The airport database shall be downloadable from within the PFD user interface via a dedicated AIRPORT DATA screen. The screen shall show record count, disk usage, age in days since last download, and shall indicate an expired dataset when older than 60 days (configurable).
+
+> **REQ-DISP-ZERO-APT-008** Downloaded airport CSV shall be parsed into a NumPy structured-array cache (.npy) on first access so that subsequent PFD launches load the database without re-parsing the text CSV.
+
+> **REQ-DISP-ZERO-APT-009** A `NO APT` status badge (amber) shall be displayed when no airport data is loaded. An `EXP APT` status badge (orange) shall be displayed when the loaded airport data is older than the configured expiry.
+
+---
+
 ## 10. Status Badges
 
 Status badges provide at-a-glance annunciation of system conditions that require pilot awareness. The badge strip is intentionally blank during fully normal operation so that any badge appearance is immediately conspicuous. The requirements below govern when the badge strip is used and which specific badges must be implemented.
@@ -167,6 +196,8 @@ Status badges provide at-a-glance annunciation of system conditions that require
 > - `NO TER` (amber) — no SRTM terrain tiles are present for the current region.
 > - `NO OBS` (amber) — no FAA Digital Obstacle File data is loaded.
 > - `EXP OBS` (orange) — the loaded obstacle data has exceeded the 28-day validity period.
+> - `NO APT` (amber) — no airport data is loaded.
+> - `EXP APT` (orange) — the loaded airport data is older than the configured expiry.
 > - `GPS TRK` (magenta) — GPS TRK heading source mode is active.
 > - `GPS ALT` (amber) — altitude is being sourced from GPS because the barometric sensor has failed.
 > - `GPS Nsat` (amber) — GPS fix is valid but the satellite count is below the minimum reliable threshold.

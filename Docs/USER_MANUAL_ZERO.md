@@ -182,6 +182,8 @@ Badges appear **only when something requires attention** — the strip is blank 
 | `NO TER` | Amber | No SRTM terrain tiles loaded |
 | `NO OBS` | Amber | No FAA obstacle data loaded |
 | `EXP OBS` | Orange | Obstacle data > 28 days old |
+| `NO APT` | Amber | No airport data loaded |
+| `EXP APT` | Orange | Airport data older than expiry |
 | `GPS TRK` | Magenta | GPS TRK heading mode active |
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
 | `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites |
@@ -385,6 +387,42 @@ Once loaded, obstacles appear as coloured symbols:
 | Green | Cleared by more than 500 ft |
 
 Red dot above symbol = lit obstacle. FAA publishes new data every 28 days.
+
+---
+
+## 15A. Airport Data Download
+
+![Airport data screen — loaded](../pi_zero/previews/preview_airport_loaded.png)
+
+The OurAirports.com global database adds airport and heliport symbols to the attitude indicator within 20 nm of the aircraft. About 72,000 airports worldwide.
+
+### Symbols on the AI
+
+| Symbol | Meaning |
+|--------|---------|
+| Cyan ring with dark centre | Public airport (small / medium / large) |
+| Outer ring added | Medium or large public airport |
+| Magenta "H" | Heliport |
+| Cyan circle with wavy underscore | Seaplane base |
+| Grey triangle | Balloonport |
+
+Airport identifier (e.g. "KSEZ") shown below the symbol within 15 nm to reduce clutter at long range.
+
+### Downloading
+
+Tap **AIRPORTS** on the System screen → **DOWNLOAD** to fetch `airports.csv` (~12 MB) from the OurAirports GitHub mirror.
+
+![Airport data screen — downloading](../pi_zero/previews/preview_airport_downloading.png)
+
+Progress bar + CANCEL work the same as the obstacle download. After download the CSV is parsed into a NumPy cache for fast future loads.
+
+### Update schedule
+
+Community-maintained, updated frequently. Local expiry: 60 days — then the `EXP APT` badge appears as a reminder. Data remains usable past expiry.
+
+### WiFi requirement
+
+The Pi Zero must be on an internet-reachable network to download. Switch to home Wi-Fi via Connectivity, download here, then switch back to Pico W AP for flight.
 
 ---
 

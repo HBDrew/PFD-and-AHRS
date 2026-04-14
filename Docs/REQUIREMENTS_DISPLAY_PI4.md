@@ -168,11 +168,40 @@ The attitude indicator on the Pi 4 variant provides full 3D Synthetic Vision Ter
 
 ---
 
+## 9A. Airport Display
+
+The display unit shall show nearby airports on the attitude indicator to provide the pilot with immediate situational awareness of emergency-landing options, navigation references, and surrounding airspace structure.
+
+> **REQ-DISP-PI4-APT-001** Airports within a configurable radius of the aircraft (default 20 nm) shall be rendered on the attitude indicator as small symbols projected into the 3D view using the same perspective-projection scale as the pitch ladder and SVT.
+
+> **REQ-DISP-PI4-APT-002** Airport symbol style shall encode airport type:
+>
+> - Public airport (small / medium / large) — cyan ring with dark centre; a second outer ring shall be added for medium and large airports
+> - Heliport — magenta letter "H"
+> - Seaplane base — cyan circle with a wavy underscore
+> - Balloonport — grey triangle
+
+> **REQ-DISP-PI4-APT-003** The airport identifier (ICAO/local code) shall be displayed as a label beneath each symbol within a closer configurable range (default 15 nm) to prevent label clutter at long range.
+
+> **REQ-DISP-PI4-APT-004** Airports with relative bearing outside the attitude indicator's angular field of view shall be culled so that no symbol appears clipped at the edge of the AI rectangle.
+
+> **REQ-DISP-PI4-APT-005** Airport symbols shall be drawn before obstacle symbols in the Z-order so that close-in towers and obstructions appear on top of airport symbols at the same screen position.
+
+> **REQ-DISP-PI4-APT-006** The airport database shall be the OurAirports global CSV (field-accurate latitude, longitude, elevation, and type for approximately 72,000 airports worldwide). Closed airports and records with missing coordinates shall be filtered out at parse time.
+
+> **REQ-DISP-PI4-APT-007** The airport database shall be downloadable from within the PFD user interface via a dedicated AIRPORT DATA screen. The screen shall show record count, disk usage, age in days since last download, and shall indicate an expired dataset when older than AIRPORT_EXPIRY_DAYS (default 60 days).
+
+> **REQ-DISP-PI4-APT-008** Downloaded airport CSV shall be parsed into a NumPy structured-array cache (.npy) on first access so that subsequent PFD launches load the database without re-parsing the text CSV.
+
+> **REQ-DISP-PI4-APT-009** A `NO APT` status badge (amber) shall be displayed when no airport data is loaded. An `EXP APT` status badge (orange) shall be displayed when the loaded airport data is older than the configured expiry.
+
+---
+
 ## 10. Status Badges
 
 > **REQ-DISP-PI4-BADGE-001** Status badges shall appear only when a condition requires pilot attention.
 
-> **REQ-DISP-PI4-BADGE-002** Required badges: `AHRS FAIL` (red), `NO LINK` (red), `NO TER` (amber), `NO OBS` (amber), `EXP OBS` (orange), `GPS TRK` (magenta), `GPS ALT` (amber), `GPS Nsat` (amber), `NO GPS` (red).
+> **REQ-DISP-PI4-BADGE-002** Required badges: `AHRS FAIL` (red), `NO LINK` (red), `NO TER` (amber), `NO OBS` (amber), `EXP OBS` (orange), `NO APT` (amber), `EXP APT` (orange), `GPS TRK` (magenta), `GPS ALT` (amber), `GPS Nsat` (amber), `NO GPS` (red).
 
 ---
 
