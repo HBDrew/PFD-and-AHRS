@@ -45,8 +45,8 @@ import pygame
 from terrain import load_tile, get_elevation_ft
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MESH_RADIUS_NM = 10.0          # nm — terrain mesh extent around aircraft
-MESH_GRID_N    = 200            # mesh resolution (200×200 = 40K vertices)
+MESH_RADIUS_NM = 20.0          # nm — terrain mesh extent around aircraft
+MESH_GRID_N    = 300            # mesh resolution (300×300 = 90K vertices)
 NM_TO_M        = 1852.0         # nautical miles → metres
 FT_TO_M        = 0.3048         # feet → metres
 M_TO_FT        = 1.0 / FT_TO_M
@@ -58,8 +58,8 @@ FAR_PLANE_M    = MESH_RADIUS_NM * NM_TO_M * 1.5
 # ── Distance grid overlay ─────────────────────────────────────────────────────
 # Cyan-tinted lines on the terrain to help judge distance and orientation.
 # Aligned with cardinal directions (N/S and E/W).
-GRID_SPACING_NM   = 1.0         # minor grid spacing (1 nm squares)
-GRID_MAJOR_EVERY  = 5           # major (brighter) line every N minor lines
+GRID_SPACING_NM   = 0.5         # minor grid spacing (0.5 nm squares)
+GRID_MAJOR_EVERY  = 4           # major (brighter) line every N minor lines (= 2 nm)
 GRID_FADE_NM      = MESH_RADIUS_NM   # grid fades out at the mesh edge
 
 # ── GLSL shaders ──────────────────────────────────────────────────────────────
@@ -123,16 +123,30 @@ void main() {
     if (fade > 0.01 && u_grid_spacing_m > 0.0) {
         // Minor lines (every grid_spacing_m metres)
         float minor = grid_line(v_world_pos.xy, u_grid_spacing_m, 1.0);
-        // Major lines (every grid_major_every minor lines — typically 5 nm)
+        // Major lines (every grid_major_every minor lines)
         float major = grid_line(v_world_pos.xy,
                                 u_grid_spacing_m * u_grid_major_every, 1.5);
 
-        // Brighter, slightly cyan-tinted lines for visibility on brown terrain
-        vec3 minor_col = vec3(0.85, 0.95, 1.00);
-        vec3 major_col = vec3(0.60, 0.95, 1.00);
+        // Contrast-aware colors: switch from light-on-dark (over brown
+        // terrain) to dark-on-light (over red/orange "above aircraft" zones).
+        // Blend smoothly between 0 and 500 ft clearance so transitions
+        // look natural.
+        float t_dark = smoothstep(500.0, 0.0, v_clearance_ft);
+        // Light grid colors (used over brown / dark terrain)
+        vec3 minor_light = vec3(0.85, 0.95, 1.00);
+        vec3 major_light = vec3(0.40, 0.90, 1.00);
+        // Dark grid colors (used over red / orange terrain)
+        vec3 minor_dark  = vec3(0.05, 0.05, 0.10);
+        vec3 major_dark  = vec3(0.00, 0.10, 0.30);
 
-        base = mix(base, minor_col, minor * 0.35 * fade);
-        base = mix(base, major_col, major * 0.55 * fade);
+        vec3 minor_col = mix(minor_light, minor_dark, t_dark);
+        vec3 major_col = mix(major_light, major_dark, t_dark);
+        // Stronger blend over red zones (line needs to punch through)
+        float minor_strength = mix(0.40, 0.65, t_dark);
+        float major_strength = mix(0.60, 0.85, t_dark);
+
+        base = mix(base, minor_col, minor * minor_strength * fade);
+        base = mix(base, major_col, major * major_strength * fade);
     }
 
     frag_color = vec4(base, 1.0);
