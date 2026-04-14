@@ -942,8 +942,9 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                       (_sp + _inn_r, TAPE_MID - 29), (_sp + _box_r, TAPE_MID - 29),
                       (_sp + _box_r, TAPE_MID + 29),
                       (_sp + _inn_r, TAPE_MID + 29), (_sp + _inn_r, TAPE_MID + 15),
-                      (_sp + _ptr_r, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7}, r=7)
+                      (_sp + _ptr_r, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7}, r=3)
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
+    pygame.draw.polygon(surf, WHITE, pts_s, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     # Inner: hundreds + tens (31px); drum: units digit (28px)
@@ -1044,7 +1045,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                       (R - _box_w,     TAPE_MID - 15),
                       (R - _box_w,     TAPE_MID + 15),
                       (R - _drm_l,     TAPE_MID + 15), (R - _drm_l, TAPE_MID + 29),
-                      (R - _ptr_w,     TAPE_MID + 29), (R - _ptr_w, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7, 8, 9}, r=7)
+                      (R - _ptr_w,     TAPE_MID + 29), (R - _ptr_w, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7, 8, 9}, r=3)
     pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
 
     # VSI readout — drawn BEFORE the outline so the 2px white line frames shared edges
@@ -1063,6 +1064,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     pygame.draw.rect(surf, (70, 100, 130), (_nx, _ny, _nw, _nh), width=1, border_radius=3)
     _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
 
+    pygame.draw.polygon(surf, WHITE, pts_a, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
     # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
@@ -1167,8 +1169,9 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                       (tx + th, by2 + bh),
                       (CX,      by2 + bh + td),
                       (tx,      by2 + bh),
-                      (bx,      by2 + bh)], {0, 1, 2, 6}, r=7)
+                      (bx,      by2 + bh)], {0, 1, 2, 6}, r=3)
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
+    pygame.draw.polygon(surf, hdg_col, pts_h, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
     # Three-digit readout — centred in the box
     _text(surf, _hdg_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)

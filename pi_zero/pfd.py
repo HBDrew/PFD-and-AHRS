@@ -901,6 +901,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                       (SPD_X + 47, TAPE_MID + 29), (SPD_X + 47, TAPE_MID + 15),
                       (SPD_X + 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7})
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
+    pygame.draw.polygon(surf, WHITE, pts_s, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     # Inner: hundreds + tens at same font as drum, cascade-rolling
@@ -1016,6 +1017,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     pygame.draw.rect(surf, (70, 100, 130), (_nx, _ny, _nw, _nh), width=1, border_radius=3)
     _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
 
+    pygame.draw.polygon(surf, WHITE, pts_a, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
     # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
@@ -1112,6 +1114,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                       (tx,      by2 + bh),
                       (bx,      by2 + bh)], {0, 1, 2, 6})
     pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
+    pygame.draw.polygon(surf, hdg_col, pts_h, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
     # Three-digit readout — perfectly centred in the box
     num_str  = f"{round(hdg) % 360:03d}"
