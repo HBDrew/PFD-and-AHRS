@@ -55,6 +55,13 @@ V_FOV_DEG      = 40.0           # vertical field of view
 NEAR_PLANE_M   = 50.0
 FAR_PLANE_M    = MESH_RADIUS_NM * NM_TO_M * 1.5
 
+# ── Distance grid overlay ─────────────────────────────────────────────────────
+# Cyan-tinted lines on the terrain to help judge distance and orientation.
+# Aligned with cardinal directions (N/S and E/W).
+GRID_SPACING_NM   = 1.0         # minor grid spacing (1 nm squares)
+GRID_MAJOR_EVERY  = 5           # major (brighter) line every N minor lines
+GRID_FADE_NM      = MESH_RADIUS_NM   # grid fades out at the mesh edge
+
 # ── GLSL shaders ──────────────────────────────────────────────────────────────
 
 VERTEX_SHADER = """
@@ -66,10 +73,14 @@ in float in_clearance;   // aircraft_alt_m - terrain_alt_m at this vertex (metre
 uniform mat4 u_mvp;
 
 out float v_clearance_ft;   // pass clearance in FEET to fragment
+out vec3 v_world_pos;       // world position for grid overlay
+out float v_dist_m;         // horizontal distance from aircraft (for fade)
 
 void main() {
     gl_Position = u_mvp * vec4(in_pos, 1.0);
     v_clearance_ft = in_clearance * 3.28084;  // m → ft
+    v_world_pos = in_pos;
+    v_dist_m = length(in_pos.xy);
 }
 """
 
@@ -77,15 +88,15 @@ FRAGMENT_SHADER = """
 #version 330 core
 
 in float v_clearance_ft;
+in vec3 v_world_pos;
+in float v_dist_m;
 out vec4 frag_color;
 
+uniform float u_grid_spacing_m;     // metres per grid square (e.g. 1852 = 1 nm)
+uniform float u_grid_major_every;   // major line every N squares (e.g. 5)
+uniform float u_grid_max_dist_m;    // grid fades to invisible at this distance
+
 // Clearance-based color palette (matches pygame PALETTE_RELATIVE)
-//   < 0      → red     (terrain above aircraft)
-//   < 100    → orange
-//   < 500    → amber
-//   < 1000   → brown
-//   < 2000   → dark brown
-//   >= 2000  → very dark
 vec3 clearance_color(float c) {
     if (c < 0.0)    return vec3(0.86, 0.12, 0.12);
     if (c < 100.0)  return vec3(0.86, 0.31, 0.0);
@@ -95,8 +106,36 @@ vec3 clearance_color(float c) {
     return vec3(0.27, 0.22, 0.11);
 }
 
+// Anti-aliased grid line: returns 0.0 (no line) to 1.0 (full line).
+// Uses screen-space derivatives for consistent line width regardless of distance.
+float grid_line(vec2 pos, float spacing, float line_width_px) {
+    vec2 grid = abs(fract(pos / spacing - 0.5) - 0.5) / fwidth(pos / spacing);
+    float line = min(grid.x, grid.y);
+    return 1.0 - smoothstep(0.0, line_width_px, line);
+}
+
 void main() {
-    frag_color = vec4(clearance_color(v_clearance_ft), 1.0);
+    vec3 base = clearance_color(v_clearance_ft);
+
+    // Distance-based grid fade: full strength near, fades out at u_grid_max_dist_m
+    float fade = 1.0 - smoothstep(u_grid_max_dist_m * 0.5, u_grid_max_dist_m, v_dist_m);
+
+    if (fade > 0.01 && u_grid_spacing_m > 0.0) {
+        // Minor lines (every grid_spacing_m metres)
+        float minor = grid_line(v_world_pos.xy, u_grid_spacing_m, 1.0);
+        // Major lines (every grid_major_every minor lines — typically 5 nm)
+        float major = grid_line(v_world_pos.xy,
+                                u_grid_spacing_m * u_grid_major_every, 1.5);
+
+        // Brighter, slightly cyan-tinted lines for visibility on brown terrain
+        vec3 minor_col = vec3(0.85, 0.95, 1.00);
+        vec3 major_col = vec3(0.60, 0.95, 1.00);
+
+        base = mix(base, minor_col, minor * 0.35 * fade);
+        base = mix(base, major_col, major * 0.55 * fade);
+    }
+
+    frag_color = vec4(base, 1.0);
 }
 """
 
@@ -408,6 +447,9 @@ def render_svt_gl(
     # Terrain
     if _terrain_vao is not None:
         _terrain_prog['u_mvp'].write(mvp.T.tobytes())   # column-major for GL
+        _terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
+        _terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
+        _terrain_prog['u_grid_max_dist_m'].value  = GRID_FADE_NM * NM_TO_M
         _terrain_vao.render()
 
     # Read pixels back into pygame Surface (flip Y: OpenGL origin is bottom-left)
