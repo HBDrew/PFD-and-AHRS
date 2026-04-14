@@ -63,7 +63,11 @@ NM_TO_M        = 1852.0         # nautical miles → metres
 FT_TO_M        = 0.3048         # feet → metres
 M_TO_FT        = 1.0 / FT_TO_M
 
-V_FOV_DEG      = 40.0           # vertical field of view
+# Vertical FOV chosen to match the pygame pitch-ladder scale exactly:
+# pitch_ladder uses px_per_deg = ai_h / 48, so vertical FOV = 48° ensures the
+# SVT horizon, pitch-ladder 0° bar, and zero-pitch reference line all align
+# at the same screen position for any given pitch angle.
+V_FOV_DEG      = 48.0           # vertical field of view
 NEAR_PLANE_M   = 50.0
 FAR_PLANE_M    = MESH_RADIUS_NM * NM_TO_M * 1.5
 
