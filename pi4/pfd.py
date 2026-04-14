@@ -126,6 +126,17 @@ disp["od"] = {                      # obstacle download/parse state
 }
 _obstacles = None           # loaded obstacle array (module-level)
 _airports  = None           # loaded airport array (module-level)
+disp["ad"] = {                      # airport download/parse state
+    "downloading": False,
+    "dl_status":   "",
+    "dl_cancel":   False,
+    "parsing":     False,
+    "records":     0,
+    "used_mb":     0.0,
+    "dl_date":     None,    # datetime.date of last download
+    "expired":     False,   # True when CSV is > AIRPORT_EXPIRY_DAYS old
+    "age_days":    0,
+}
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
@@ -1356,7 +1367,7 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
     Badges are shown only when something requires pilot attention.
     Nominal state = clean strip.  Problem state = badge appears.
 
-    Left  (from AI_X): AHRS FAIL, NO LINK, NO TER, NO OBS, EXP OBS
+    Left  (from AI_X): AHRS FAIL, NO LINK, NO TER, NO OBS, EXP OBS, NO APT, EXP APT
     Right (to ALT_X):  GPS TRK (info), GPS ALT (only when baro absent),
                        GPS Xsat (acquiring), NO GPS (absent)
     """
@@ -1386,6 +1397,12 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
         badge_l("NO OBS", _AMBER, (220, 180, 60))
     elif od.get("expired", False):
         badge_l("EXP OBS", (120, 55, 0), (255, 160, 40))
+
+    ad = disp["ad"]
+    if ad.get("records", 0) == 0:
+        badge_l("NO APT", _AMBER, (220, 180, 60))
+    elif ad.get("expired", False):
+        badge_l("EXP APT", (120, 55, 0), (255, 160, 40))
 
     # ── Right badges: problems only ─────────────────────────────────────────
     rx = ALT_X - 4
@@ -2006,6 +2023,8 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "terrain_data"
             elif action == "obstacle_data":
                 disp["mode"] = "obstacle_data"
+            elif action == "airport_data":
+                disp["mode"] = "airport_data"
             elif action == "simulator":
                 disp["mode"] = "sim_setup"
             elif action == "reset_defaults":
@@ -2070,6 +2089,18 @@ def handle_event(event, demo_mode):
             elif action == "download":
                 if not disp["od"]["downloading"]:
                     _od_start_download()
+            return True
+
+        # ── Airport data screen taps ──────────────────────────────────────
+        if mode == "airport_data":
+            action = airport_data_hit(x, y, disp["ad"])
+            if action == "back":
+                disp["mode"] = "system_setup"
+            elif action == "cancel":
+                disp["ad"]["dl_cancel"] = True
+            elif action == "download":
+                if not disp["ad"]["downloading"]:
+                    _ad_start_download()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -3017,29 +3048,36 @@ def draw_system_setup(surf):
     _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
     _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
 
-    # Data download tiles: TERRAIN DATA (left) | OBSTACLE DATA (right)
-    half = (bw - 8) // 2
+    # Data download tiles: TERRAIN | OBSTACLE | AIRPORT (three columns)
+    third = (bw - 16) // 3
     n_tiles, used_mb = _td_disk_stats()
-    _sys_data_tile(surf, bx,          _SYS_TERRAIN_Y, half, _SS_RH,
-                   "TERRAIN DATA",
-                   f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB",
+    _sys_data_tile(surf, bx,              _SYS_TERRAIN_Y, third, _SS_RH,
+                   "TERRAIN",
+                   f"{n_tiles} tile{'s' if n_tiles != 1 else ''}  \u00b7  {used_mb:.1f} MB",
                    active=True)
     od_cnt     = disp["od"].get("records", 0)
     od_mb      = disp["od"].get("used_mb", 0.0)
     od_expired = disp["od"].get("expired", False)
-    od_date    = disp["od"].get("dl_date", None)
     if od_cnt:
-        date_str = od_date.strftime("%-d %b %Y") if od_date else ""
         if od_expired:
-            od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB  \u00b7  \u26a0 EXPIRED"
-        elif date_str:
-            od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB  \u00b7  {date_str}"
+            od_sub = f"{od_cnt:,} obs  \u00b7  \u26a0 EXP"
         else:
             od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB"
     else:
-        od_sub = "Tap to download FAA DOF"
-    _sys_data_tile(surf, bx+half+8,   _SYS_TERRAIN_Y, half, _SS_RH,
-                   "OBSTACLE DATA", od_sub, active=True)
+        od_sub = "Tap to download"
+    _sys_data_tile(surf, bx+third+8,      _SYS_TERRAIN_Y, third, _SS_RH,
+                   "OBSTACLE", od_sub, active=True)
+    ad_cnt     = disp["ad"].get("records", 0)
+    ad_expired = disp["ad"].get("expired", False)
+    if ad_cnt:
+        if ad_expired:
+            ad_sub = f"{ad_cnt:,} apts  \u00b7  \u26a0 EXP"
+        else:
+            ad_sub = f"{ad_cnt:,} airports"
+    else:
+        ad_sub = "Tap to download"
+    _sys_data_tile(surf, bx+2*(third+8),  _SYS_TERRAIN_Y, third, _SS_RH,
+                   "AIRPORTS", ad_sub, active=True)
 
     half_w = (bw - 10) // 2
     _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "SIMULATOR", "ok")
@@ -3051,11 +3089,13 @@ def system_setup_hit(x, y):
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
-        half = (bw - 8) // 2
-        if bx <= x <= bx+half:
+        third = (bw - 16) // 3
+        if bx <= x <= bx+third:
             return "terrain_data"
-        if bx+half+8 <= x <= bx+half+8+half:
+        if bx+third+8 <= x <= bx+2*third+8:
             return "obstacle_data"
+        if bx+2*(third+8) <= x <= bx+2*(third+8)+third:
+            return "airport_data"
     half_w = (bw - 10) // 2
     if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
         if bx <= x <= bx+half_w:
@@ -3408,6 +3448,228 @@ def obstacle_data_hit(x, y, od):
         if (bx+bw-80 <= x <= bx+bw and prog_y+6 <= y <= prog_y+38):
             return "cancel"
     # Download/Update button
+    if bx <= x <= bx+bw and btn_y <= y <= btn_y+btn_h:
+        return "download"
+    return None
+
+
+# ── Airport data download ─────────────────────────────────────────────────────
+
+_AD_MX = 12   # horizontal margin for airport data screen
+
+def _ad_load_airports():
+    """(Re-)load the airport cache into module-level _airports."""
+    import airports as apt_mod
+    global _airports
+    os.makedirs(AIRPORT_DIR, exist_ok=True)
+    _airports = apt_mod.load(AIRPORT_DIR)
+    cnt, mb = apt_mod.disk_stats(AIRPORT_DIR)
+    disp["ad"]["records"] = cnt
+    disp["ad"]["used_mb"] = mb
+    dl_date = apt_mod.download_date(AIRPORT_DIR)
+    disp["ad"]["dl_date"] = dl_date
+    if dl_date is not None:
+        import datetime as _dt
+        age = (_dt.date.today() - dl_date).days
+        disp["ad"]["age_days"] = age
+        disp["ad"]["expired"]  = age > AIRPORT_EXPIRY_DAYS
+    else:
+        disp["ad"]["age_days"] = 0
+        disp["ad"]["expired"]  = False
+
+
+def _ad_download_thread():
+    """Background thread: download OurAirports CSV, parse, cache."""
+    import airports as apt_mod
+
+    ad = disp["ad"]
+    ad["downloading"] = True
+    ad["dl_cancel"]   = False
+    ad["dl_status"]   = "Connecting to OurAirports\u2026"
+
+    os.makedirs(AIRPORT_DIR, exist_ok=True)
+    csv_path   = os.path.join(AIRPORT_DIR, apt_mod.CSV_FILENAME)
+    cache_path = os.path.join(AIRPORT_DIR, apt_mod.CACHE_FILENAME)
+
+    try:
+        ad["dl_status"] = "Downloading airports.csv\u2026"
+        req = urllib.request.Request(
+            apt_mod.AIRPORTS_CSV_URL,
+            headers={"User-Agent": "PFD-AHRS/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size = 65536
+            with open(csv_path + ".tmp", "wb") as out:
+                while True:
+                    if ad["dl_cancel"]:
+                        ad["dl_status"]   = "Cancelled"
+                        ad["downloading"] = False
+                        try: os.remove(csv_path + ".tmp")
+                        except Exception: pass
+                        return
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = int(downloaded * 100 / total)
+                        ad["dl_status"] = f"Downloading\u2026 {pct}%  ({downloaded//1024} / {total//1024} KB)"
+                    else:
+                        ad["dl_status"] = f"Downloading\u2026 {downloaded//1024} KB"
+
+        os.replace(csv_path + ".tmp", csv_path)
+        # Invalidate old cache so parse builds fresh
+        try: os.remove(cache_path)
+        except Exception: pass
+
+        ad["dl_status"] = "Parsing airport records\u2026"
+        ad["parsing"]   = True
+        _ad_load_airports()
+        ad["parsing"]   = False
+
+        cnt = ad["records"]
+        ad["dl_status"] = f"Done \u2713  {cnt:,} airports loaded"
+
+    except Exception as exc:
+        ad["dl_status"] = f"Error: {exc}"
+    finally:
+        ad["downloading"] = False
+
+
+def _ad_start_download():
+    t = threading.Thread(target=_ad_download_thread, daemon=True,
+                         name="AirportDownload")
+    t.start()
+
+
+def draw_airport_data(surf, ad):
+    """Full-screen airport data management screen."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "AIRPORT DATA")
+    bx = _AD_MX; bw = DISPLAY_W - 2*_AD_MX
+
+    cnt      = ad.get("records", 0)
+    used_mb  = ad.get("used_mb", 0.0)
+    expired  = ad.get("expired", False)
+    age      = ad.get("age_days", 0)
+
+    # Status strip
+    pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, 28), border_radius=4)
+    pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, 28), width=1, border_radius=4)
+    if cnt:
+        age_str = f"  \u00b7  {age} day{'' if age == 1 else 's'} old"
+        if expired:
+            age_str += "  (expired)"
+            stat_col = (220, 130, 60)
+        else:
+            stat_col = (60, 220, 80)
+        stat_str = f"{cnt:,} airports  \u00b7  {used_mb:.1f} MB on disk{age_str}"
+    else:
+        stat_str = "No airport data on disk"
+        stat_col = YELLOW
+    _text(surf, stat_str, 12, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+
+    downloading = ad.get("downloading", False)
+    parsing     = ad.get("parsing", False)
+
+    # Info panel
+    info_y = 92
+    info_h = 90
+    pygame.draw.rect(surf, (0,10,26), (bx, info_y, bw, info_h), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, info_y, bw, info_h), width=1, border_radius=6)
+    _text(surf, "OurAirports Global Database", 13, WHITE, bold=True,
+          cx=DISPLAY_W//2, cy=info_y+16)
+    _text(surf, "\u2248 72,000 airports worldwide (~20K in the US)",
+          10, (140,160,185), cx=DISPLAY_W//2, cy=info_y+34)
+    _text(surf, "Single CSV \u2248 12 MB \u00b7 Community-maintained, updated frequently",
+          10, (120,140,165), cx=DISPLAY_W//2, cy=info_y+50)
+    _text(surf, "Displayed on AI as cyan rings (airports), magenta H (heliports)",
+          10, (120,140,165), cx=DISPLAY_W//2, cy=info_y+66)
+    _text(surf, "WiFi (home network) required for download",
+          10, (160,130,60), cx=DISPLAY_W//2, cy=info_y+80)
+
+    # Download / Update button
+    btn_y = info_y + info_h + 14
+    btn_h = 54
+    if downloading or parsing:
+        bg = (0,20,10); oc = (40,140,60)
+    else:
+        bg = (0,18,45); oc = WHITE
+    pygame.draw.rect(surf, bg, (bx, btn_y, bw, btn_h), border_radius=6)
+    gh = btn_h // 5
+    if not (downloading or parsing):
+        for i in range(gh):
+            t2 = 1.0 - i/gh
+            gc = (int(15+t2*25), int(20+t2*40), int(40+t2*65))
+            pygame.draw.line(surf, gc, (bx+6, btn_y+1+i), (bx+bw-6, btn_y+1+i))
+    pygame.draw.rect(surf, oc, (bx, btn_y, bw, btn_h), width=2, border_radius=6)
+    btn_label = "UPDATE" if cnt else "DOWNLOAD"
+    tc = (70,80,90) if (downloading or parsing) else WHITE
+    _text(surf, btn_label, 15, tc, bold=True, cx=DISPLAY_W//2, cy=btn_y+btn_h//2-8)
+    sub = "airports.csv  from  ourairports-data"
+    _text(surf, sub, 10, (100,120,140) if not (downloading or parsing) else (60,80,70),
+          cx=DISPLAY_W//2, cy=btn_y+btn_h//2+10)
+
+    # Progress / status area
+    prog_y = btn_y + btn_h + 10
+    prog_h = 48
+    pygame.draw.rect(surf, (0,10,24), (bx, prog_y, bw, prog_h), border_radius=6)
+    pygame.draw.rect(surf, (35,50,75), (bx, prog_y, bw, prog_h), width=1, border_radius=6)
+
+    status_msg = ad.get("dl_status", "")
+    if downloading:
+        pct = 0
+        try:
+            if "%" in status_msg:
+                pct = int(status_msg.split("%")[0].split()[-1])
+        except (ValueError, IndexError):
+            pct = 0
+        bar_w = int((bw - 20) * pct / 100)
+        pygame.draw.rect(surf, (0,22,12), (bx+10, prog_y+28, bw-20, 10), border_radius=3)
+        if bar_w > 0:
+            pygame.draw.rect(surf, (40,180,60), (bx+10, prog_y+28, bar_w, 10), border_radius=3)
+        _text(surf, status_msg, 10, (140,160,180), cx=DISPLAY_W//2, cy=prog_y+16)
+        _action_btn(surf, bw-80, prog_y+6, 72, 32, "CANCEL", "danger", r=5)
+    elif parsing:
+        _text(surf, status_msg, 10, (140,180,140), cx=DISPLAY_W//2, cy=prog_y+24)
+    else:
+        col = (60,220,80) if status_msg.startswith("Done") else (160,160,170)
+        _text(surf, status_msg, 10, col, cx=DISPLAY_W//2, cy=prog_y+24)
+
+    # Symbol legend
+    leg_y = prog_y + prog_h + 12
+    leg_h = 34
+    pygame.draw.rect(surf, (0,8,20), (bx, leg_y, bw, leg_h), border_radius=4)
+    _text(surf, "Symbol legend:", 10, (120,140,165), x=bx+10, y=leg_y+8)
+    # Public airport ring
+    lx = bx + 120; ly = leg_y + 13
+    pygame.draw.circle(surf, (120, 220, 255), (lx, ly), 5, 0)
+    pygame.draw.circle(surf, (0, 10, 30), (lx, ly), 3, 0)
+    _text(surf, "PUBLIC", 9, (160,170,180), x=lx+10, y=leg_y+8)
+    # Heliport H
+    _text(surf, "H", 11, (220, 120, 220), bold=True, cx=bx+230, cy=ly)
+    _text(surf, "HELIPORT", 9, (160,170,180), x=bx+240, y=leg_y+8)
+    # Seaplane base
+    sx = bx + 340; sy = ly
+    pygame.draw.circle(surf, (150, 200, 255), (sx, sy), 4, 1)
+    pygame.draw.line(surf, (150, 200, 255), (sx - 4, sy + 5), (sx + 4, sy + 5), 1)
+    _text(surf, "SEAPLANE", 9, (160,170,180), x=sx+10, y=leg_y+8)
+
+
+def airport_data_hit(x, y, ad):
+    """Return action string or None."""
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _AD_MX; bw = DISPLAY_W - 2*_AD_MX
+    btn_y = 92 + 90 + 14
+    btn_h = 54
+    if ad.get("downloading"):
+        prog_y = btn_y + btn_h + 10
+        if (bx+bw-80 <= x <= bx+bw and prog_y+6 <= y <= prog_y+38):
+            return "cancel"
     if bx <= x <= bx+bw and btn_y <= y <= btn_y+btn_h:
         return "download"
     return None
@@ -3817,6 +4079,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_terrain_data(surf, disp["td"]); return
     if mode == "obstacle_data":
         draw_obstacle_data(surf, disp["od"]); return
+    if mode == "airport_data":
+        draw_airport_data(surf, disp["ad"]); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
 
@@ -4054,9 +4318,7 @@ def _startup_load_obstacles():
 
 def _startup_load_airports():
     """Background thread: load airport cache at startup without blocking."""
-    global _airports
-    os.makedirs(AIRPORT_DIR, exist_ok=True)
-    _airports = apt_mod.load(AIRPORT_DIR)
+    _ad_load_airports()
     if _airports is not None:
         print(f"[PFD] Airports: {len(_airports):,} records loaded")
     else:
@@ -4368,6 +4630,29 @@ def main():
 
         disp["od"]["downloading"] = False
         disp["od"]["dl_status"]   = ""
+
+        # ── Airport data screen states ────────────────────────────────────────
+        disp["mode"] = "airport_data"
+        disp["ad"]["downloading"] = False
+        disp["ad"]["records"]     = 0
+        disp["ad"]["used_mb"]     = 0.0
+        disp["ad"]["dl_status"]   = ""
+        disp["ad"]["expired"]     = False
+        _save("preview_airport_idle.png")
+
+        disp["ad"]["records"] = 72007
+        disp["ad"]["used_mb"] = 12.3
+        disp["ad"]["age_days"] = 5
+        disp["ad"]["dl_status"] = "Done \u2713  72,007 airports loaded"
+        _save("preview_airport_loaded.png")
+
+        disp["ad"]["downloading"] = True
+        disp["ad"]["records"]     = 0
+        disp["ad"]["dl_status"]   = "Downloading\u2026 42%  (5,280 / 12,500 KB)"
+        _save("preview_airport_downloading.png")
+
+        disp["ad"]["downloading"] = False
+        disp["ad"]["dl_status"]   = ""
 
         # ── Terrain proximity alert scenes ────────────────────────────────────
         # Force terrain alert by seeding alert state directly.  Renders over
