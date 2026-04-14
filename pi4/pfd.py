@@ -794,7 +794,9 @@ def draw_roll_arc(surf, roll):
     arc_outer = []
     arc_inner = []
     for i in range(_ARC_STEPS + 1):
-        ang = (-90 + roll - 60 + i * 120.0 / _ARC_STEPS) * DEG
+        # Arc is FIXED on screen (ground-pointer style).  The moving doghouse
+        # below rotates with roll to indicate current bank angle.
+        ang = (-90 - 60 + i * 120.0 / _ARC_STEPS) * DEG
         cos_a, sin_a = math.cos(ang), math.sin(ang)
         arc_outer.append((int(cx + (ROLL_R + _ARC_THICK) * cos_a),
                           int(cy + (ROLL_R + _ARC_THICK) * sin_a)))
@@ -804,11 +806,11 @@ def draw_roll_arc(surf, roll):
     pygame.gfxdraw.filled_polygon(surf, arc_band, WHITE)
     pygame.gfxdraw.aapolygon(surf, arc_band, WHITE)
 
-    # ── Tick marks — solid white, 2px width ──────────────────────────────────
+    # ── Tick marks — FIXED on screen, solid white, 2px width ─────────────────
     for deg2, length in [(10, 9), (20, 9), (30, 13),
                          (-10, 9), (-20, 9), (-30, 13),
                          (45, 9), (-45, 9), (60, 11), (-60, 11)]:
-        ang = (-90 + deg2 + roll) * DEG
+        ang = (-90 + deg2) * DEG   # fixed position on the fixed arc
         cos_a, sin_a = math.cos(ang), math.sin(ang)
         x1 = int(cx + (ROLL_R - length) * cos_a)
         y1 = int(cy + (ROLL_R - length) * sin_a)

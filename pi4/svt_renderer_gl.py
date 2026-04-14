@@ -45,8 +45,20 @@ import pygame
 from terrain import load_tile, get_elevation_ft
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MESH_RADIUS_NM = 20.0          # nm — terrain mesh extent around aircraft
-MESH_GRID_N    = 300            # mesh resolution (300×300 = 90K vertices)
+MESH_RADIUS_NM    = 20.0        # nm — terrain mesh extent around aircraft
+MESH_GRID_N       = 300         # mesh resolution (300×300 = 90K vertices)
+
+# Mesh sizing strategy:
+#   "constant"  — always use MESH_RADIUS_NM regardless of altitude.  Keeps the
+#                 grid spacing consistent and predictable; simpler to reason
+#                 about distances.  Recommended default.
+#   "altitude"  — scale radius with sqrt(alt_ft) so that higher altitudes
+#                 show more terrain (up to MESH_RADIUS_MAX_NM).  Clamped at
+#                 MESH_RADIUS_MIN_NM on the low end.  Keeps the ~90 m vertex
+#                 spacing since MESH_GRID_N scales with the radius.
+MESH_SIZE_MODE    = "constant"  # "constant" | "altitude"
+MESH_RADIUS_MIN_NM = 10.0       # floor (altitude mode)
+MESH_RADIUS_MAX_NM = 40.0       # ceiling (altitude mode)
 NM_TO_M        = 1852.0         # nautical miles → metres
 FT_TO_M        = 0.3048         # feet → metres
 M_TO_FT        = 1.0 / FT_TO_M
@@ -61,6 +73,16 @@ FAR_PLANE_M    = MESH_RADIUS_NM * NM_TO_M * 1.5
 GRID_SPACING_NM   = 0.5         # minor grid spacing (0.5 nm squares)
 GRID_MAJOR_EVERY  = 4           # major (brighter) line every N minor lines (= 2 nm)
 GRID_FADE_NM      = MESH_RADIUS_NM   # grid fades out at the mesh edge
+
+# ── Sun-angle lighting ────────────────────────────────────────────────────────
+# Direction FROM terrain TOWARD the sun, in world frame (X=East, Y=North, Z=Up).
+# Default: mid-morning sun from the SE at 45° elevation.
+#   azimuth_deg measured from North, clockwise (compass bearing of the sun)
+#   elevation_deg above horizon (0° = horizon, 90° = directly overhead)
+SUN_AZIMUTH_DEG   = 135.0       # SE (compass bearing)
+SUN_ELEVATION_DEG = 45.0        # sun height above horizon
+SUN_INTENSITY     = 0.75        # 0.0 = lighting off, 1.0 = full strength
+SUN_AMBIENT       = 0.45        # 0.0 = pitch-black shadows, 1.0 = no shadow
 
 # ── GLSL shaders ──────────────────────────────────────────────────────────────
 
@@ -95,6 +117,9 @@ out vec4 frag_color;
 uniform float u_grid_spacing_m;     // metres per grid square (e.g. 1852 = 1 nm)
 uniform float u_grid_major_every;   // major line every N squares (e.g. 5)
 uniform float u_grid_max_dist_m;    // grid fades to invisible at this distance
+uniform vec3  u_sun_dir;            // unit vector pointing TOWARD the sun
+uniform float u_sun_intensity;      // 0.0 = no lighting, 1.0 = full
+uniform float u_ambient;            // 0.0 = pitch black shadows, 1.0 = no shadow
 
 // Clearance-based color palette (matches pygame PALETTE_RELATIVE)
 vec3 clearance_color(float c) {
@@ -104,6 +129,19 @@ vec3 clearance_color(float c) {
     if (c < 1000.0) return vec3(0.55, 0.39, 0.16);
     if (c < 2000.0) return vec3(0.39, 0.29, 0.14);
     return vec3(0.27, 0.22, 0.11);
+}
+
+// Per-fragment normal from screen-space derivatives of world position.
+// Gives flat-shaded lighting (constant across each triangle face) — cheap,
+// no per-vertex normal buffer required.
+vec3 compute_normal() {
+    vec3 dx = dFdx(v_world_pos);
+    vec3 dy = dFdy(v_world_pos);
+    vec3 n  = normalize(cross(dx, dy));
+    // World frame is +Z up; ensure normal points upward (cross product sign
+    // depends on triangle winding order which we don't control perfectly).
+    if (n.z < 0.0) n = -n;
+    return n;
 }
 
 // Anti-aliased grid line: returns 0.0 (no line) to 1.0 (full line).
@@ -117,31 +155,34 @@ float grid_line(vec2 pos, float spacing, float line_width_px) {
 void main() {
     vec3 base = clearance_color(v_clearance_ft);
 
+    // ── Sun-angle lighting ───────────────────────────────────────────────
+    // Simple Lambertian diffuse term on the terrain color.  Faces pointing
+    // toward the sun appear brighter; faces in shadow darken toward ambient.
+    if (u_sun_intensity > 0.001) {
+        vec3 n = compute_normal();
+        float diffuse = max(0.0, dot(n, u_sun_dir));
+        // light_factor: at N·L = 0 → ambient; at N·L = 1 → full illumination
+        float light = mix(u_ambient, 1.0, diffuse) * u_sun_intensity
+                    + (1.0 - u_sun_intensity);
+        base *= light;
+    }
+
     // Distance-based grid fade: full strength near, fades out at u_grid_max_dist_m
     float fade = 1.0 - smoothstep(u_grid_max_dist_m * 0.5, u_grid_max_dist_m, v_dist_m);
 
     if (fade > 0.01 && u_grid_spacing_m > 0.0) {
-        // Minor lines (every grid_spacing_m metres)
         float minor = grid_line(v_world_pos.xy, u_grid_spacing_m, 1.0);
-        // Major lines (every grid_major_every minor lines)
         float major = grid_line(v_world_pos.xy,
                                 u_grid_spacing_m * u_grid_major_every, 1.5);
 
-        // Contrast-aware colors: switch from light-on-dark (over brown
-        // terrain) to dark-on-light (over red/orange "above aircraft" zones).
-        // Blend smoothly between 0 and 500 ft clearance so transitions
-        // look natural.
         float t_dark = smoothstep(500.0, 0.0, v_clearance_ft);
-        // Light grid colors (used over brown / dark terrain)
         vec3 minor_light = vec3(0.85, 0.95, 1.00);
         vec3 major_light = vec3(0.40, 0.90, 1.00);
-        // Dark grid colors (used over red / orange terrain)
         vec3 minor_dark  = vec3(0.05, 0.05, 0.10);
         vec3 major_dark  = vec3(0.00, 0.10, 0.30);
 
         vec3 minor_col = mix(minor_light, minor_dark, t_dark);
         vec3 major_col = mix(major_light, major_dark, t_dark);
-        // Stronger blend over red zones (line needs to punch through)
         float minor_strength = mix(0.40, 0.65, t_dark);
         float major_strength = mix(0.60, 0.85, t_dark);
 
@@ -157,35 +198,41 @@ SKY_VERTEX_SHADER = """
 #version 330 core
 
 in vec2 in_pos;          // fullscreen quad in NDC
-out vec2 v_uv;
+out vec2 v_ndc;
 
 void main() {
     gl_Position = vec4(in_pos, 0.999, 1.0);   // far plane — drawn behind terrain
-    v_uv = (in_pos + 1.0) * 0.5;              // 0..1 UV
+    v_ndc = in_pos;                            // pass through raw NDC (-1..1)
 }
 """
 
 SKY_FRAGMENT_SHADER = """
 #version 330 core
 
-in vec2 v_uv;
+in vec2 v_ndc;
 out vec4 frag_color;
 
-uniform float u_horizon_y;   // NDC Y of horizon line (-1..1)
+uniform float u_horizon_y;   // NDC Y of horizon line at x=0 (-1..1)
+uniform float u_roll_rad;    // camera roll in radians
+uniform float u_aspect;      // aspect ratio (w/h) for rotation correction
 
 void main() {
-    // Sky above horizon: blue gradient (darker at top, lighter near horizon)
-    // Below horizon: leave default brown (overdrawn by terrain anyway)
-    float y_ndc = v_uv.y * 2.0 - 1.0;   // -1 (bottom) .. +1 (top)
-    if (y_ndc < u_horizon_y) {
-        // Below horizon — fallback brown (terrain will cover this)
+    // Un-roll the NDC point so horizon becomes a horizontal line again.
+    // Stretch x by aspect ratio so the rotation is angle-preserving (otherwise
+    // a banked horizon would appear at the wrong angle on non-square displays).
+    float x_sq = v_ndc.x * u_aspect;
+    float y_sq = v_ndc.y;
+    float c = cos(u_roll_rad);
+    float s = sin(u_roll_rad);
+    float y_unrolled = -x_sq * s + y_sq * c;
+
+    // Sky above the rolled horizon, fallback-brown below (terrain covers it).
+    if (y_unrolled < u_horizon_y) {
         frag_color = vec4(0.35, 0.22, 0.10, 1.0);
     } else {
-        // Above horizon — sky gradient
-        float t = (y_ndc - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
-        // t=0 at horizon (light), t=1 at zenith (dark)
-        vec3 horizon_col = vec3(0.23, 0.51, 0.78);   // light blue
-        vec3 zenith_col  = vec3(0.04, 0.16, 0.31);   // dark blue
+        float t = (y_unrolled - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
+        vec3 horizon_col = vec3(0.23, 0.51, 0.78);
+        vec3 zenith_col  = vec3(0.04, 0.16, 0.31);
         frag_color = vec4(mix(horizon_col, zenith_col, t), 1.0);
     }
 }
@@ -207,6 +254,7 @@ _terrain_ibo     = None  # terrain triangle indices IBO
 
 _fbo_size   = (0, 0)     # current FBO (w, h)
 _mesh_key   = None       # cache key (lat_q, lon_q, alt_q) — mesh rebuild trigger
+_mesh_radius_m = MESH_RADIUS_NM * NM_TO_M  # current mesh radius (for grid fade)
 
 
 def _init_gl(width: int, height: int) -> bool:
@@ -263,7 +311,7 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
     Returns (positions [N×3 float32 metres], clearances [N float32 metres]).
     Aircraft is at origin (0,0,0); +X=East, +Y=North, +Z=Up; alt is mesh-relative.
     """
-    global _mesh_key, _terrain_vao, _terrain_vbo_pos, _terrain_vbo_clr, _terrain_ibo
+    global _mesh_key, _mesh_radius_m, _terrain_vao, _terrain_vbo_pos, _terrain_vbo_clr, _terrain_ibo
 
     # Cache key: quantize lat/lon/alt so we don't rebuild every frame
     # 0.005° ≈ 0.3 nm at mid-latitudes; 200 ft alt steps
@@ -271,7 +319,16 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
     if key == _mesh_key and _terrain_vao is not None:
         return
 
-    radius_m = MESH_RADIUS_NM * NM_TO_M
+    # Mesh radius: constant or altitude-dependent
+    if MESH_SIZE_MODE == "altitude":
+        # ~ sqrt(alt/1000) * 6  → 1000ft:6nm, 5000ft:13nm, 10000ft:19nm, 30000ft:33nm
+        r_nm = max(MESH_RADIUS_MIN_NM,
+                   min(MESH_RADIUS_MAX_NM,
+                       6.0 * math.sqrt(max(100.0, alt_ft) / 1000.0)))
+    else:
+        r_nm = MESH_RADIUS_NM
+    radius_m = r_nm * NM_TO_M
+    _mesh_radius_m = radius_m   # publish for grid fade uniform
     n = MESH_GRID_N
     alt_m = alt_ft * FT_TO_M
 
@@ -454,6 +511,8 @@ def render_svt_gl(
     # Sky: write at far plane so it's behind terrain
     horizon_y = _horizon_y_ndc(pitch_deg, v_fov_deg)
     _sky_prog['u_horizon_y'].value = horizon_y
+    _sky_prog['u_roll_rad'].value  = math.radians(roll_deg)
+    _sky_prog['u_aspect'].value    = ai_w / ai_h
     _ctx.disable(moderngl.DEPTH_TEST)
     _sky_vao.render()
     _ctx.enable(moderngl.DEPTH_TEST)
@@ -463,7 +522,16 @@ def render_svt_gl(
         _terrain_prog['u_mvp'].write(mvp.T.tobytes())   # column-major for GL
         _terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
         _terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
-        _terrain_prog['u_grid_max_dist_m'].value  = GRID_FADE_NM * NM_TO_M
+        _terrain_prog['u_grid_max_dist_m'].value  = _mesh_radius_m
+        # Sun direction vector (world frame: X=East, Y=North, Z=Up)
+        az_rad = math.radians(SUN_AZIMUTH_DEG)
+        el_rad = math.radians(SUN_ELEVATION_DEG)
+        sun_x = math.cos(el_rad) * math.sin(az_rad)   # east component
+        sun_y = math.cos(el_rad) * math.cos(az_rad)   # north component
+        sun_z = math.sin(el_rad)                      # up component
+        _terrain_prog['u_sun_dir'].value       = (sun_x, sun_y, sun_z)
+        _terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
+        _terrain_prog['u_ambient'].value       = SUN_AMBIENT
         _terrain_vao.render()
 
     # Read pixels back into pygame Surface (flip Y: OpenGL origin is bottom-left)
