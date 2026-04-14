@@ -924,7 +924,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         _alt_tape_bg = pygame.Surface((ALT_W, TAPE_BOT), pygame.SRCALPHA)
         _alt_tape_bg.fill(TAPE_BG)
     surf.blit(_alt_tape_bg, (ALT_X, 0))
-    pygame.draw.line(surf, (255, 255, 255, 60), (ALT_X, TAPE_TOP),
+    pygame.draw.line(surf, (255, 255, 255, 60), (ALT_X, 0),
                      (ALT_X, TAPE_BOT), 1)
 
     def ay2(ft): return alt_y(ft, alt)
