@@ -3430,7 +3430,7 @@ def draw_obstacle_data(surf, od):
     _text(surf, "Clearance legend:", 10, (120,140,165), x=bx+10, y=leg_y+8)
     for dx, col, lbl in [(120, RED, "< 100 ft  WARNING"),
                           (270, YELLOW, "< 500 ft  CAUTION"),
-                          (430, (80,200,80), "> 500 ft  CLEAR")]:
+                          (430, WHITE,       "> 500 ft  CLEAR")]:
         pygame.draw.rect(surf, col, (bx+dx, leg_y+8, 10, 10))
         _text(surf, lbl, 9, (160,170,180), x=bx+dx+14, y=leg_y+8)
 
@@ -3945,14 +3945,14 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
         if not (ax + 4 <= sx <= ax + aw - 4 and ay_r + 4 <= sy <= ay_r + ah - 4):
             continue
 
-        # Colour by clearance
+        # Colour by clearance — red/yellow/white (standard aviation convention)
         clearance = alt_ft - ob.msl_ft
         if clearance < _OBS_WARNING_FT:
             col = RED
         elif clearance < _OBS_CAUTION_FT:
             col = YELLOW
         else:
-            col = (80, 200, 80)
+            col = WHITE
 
         # Draw tower as a caret/chevron shape: apex at the top (MSL height),
         # base anchored to the ground.  Tapers from base to apex so tall

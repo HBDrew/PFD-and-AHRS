@@ -384,7 +384,7 @@ Once loaded, obstacles appear as coloured symbols:
 |--------------|---------|
 | Red | Within **100 ft** below aircraft |
 | Amber/yellow | Within **500 ft** below aircraft |
-| Green | Cleared by more than 500 ft |
+| White | Cleared by more than 500 ft |
 
 Red dot above symbol = lit obstacle. FAA publishes new data every 28 days.
 

@@ -340,7 +340,7 @@ Tap DOWNLOAD to fetch. Symbols colour-coded:
 |--------|---------|
 | Red | Within 100 ft below |
 | Amber | Within 500 ft below |
-| Green | Cleared > 500 ft |
+| White | Cleared > 500 ft |
 
 Red dot = lit obstacle. 28-day update cycle.
 
