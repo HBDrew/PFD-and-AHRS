@@ -473,13 +473,15 @@ def _attitude_basis(pitch_deg: float, roll_deg: float, hdg_deg: float):
 def _horizon_y_ndc(pitch_deg: float, fov_y_deg: float) -> float:
     """NDC Y of the horizon line for the sky shader.
 
-    With camera pitched up by P degrees, the horizon (which is straight
-    out the nose at zero pitch) appears at angle -P below the camera's
-    forward.  Convert to NDC: y_ndc = -tan(angle) / tan(fov/2).
+    With camera pitched up by +P degrees, the geometric horizon at infinity
+    appears at angle -P below the camera forward vector.  In OpenGL NDC
+    (Y-up), "below center" is negative Y.  So:
+        y_horizon = tan(-pitch) / tan(fov/2)  =  -tan(pitch) / tan(fov/2)
+    Pitched up  → negative Y (horizon below centre).
+    Pitched down → positive Y (horizon above centre).
     """
     half_fov = math.radians(fov_y_deg) / 2.0
-    angle = math.radians(-pitch_deg)
-    return max(-1.0, min(1.0, -math.tan(angle) / math.tan(half_fov)))
+    return max(-1.0, min(1.0, -math.tan(math.radians(pitch_deg)) / math.tan(half_fov)))
 
 
 # ── Public render function ────────────────────────────────────────────────────
