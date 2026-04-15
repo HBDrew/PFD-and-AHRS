@@ -1,12 +1,12 @@
-# PFD System — Bench Test Procedure
+# Pi Zero 2W Display Unit — Bench Test Procedure
 
 | Field | Value |
 |-------|-------|
-| Document No. | TP-001 |
-| Title | Initial Hardware Bring-Up — Display Unit and AHRS Unit |
+| Document No. | TP-ZERO-001 |
+| Title | Initial Hardware Bring-Up — Pi Zero 2W Display + AHRS Unit |
 | Project | Pico-AHRS / PFD |
-| Date | 2026-04-11 |
-| Version | 0.1 |
+| Date | 2026-04-15 |
+| Version | 0.2 |
 | Performed by | _____________ |
 | Date performed | _____________ |
 
@@ -15,11 +15,12 @@
 ## Equipment Required
 
 - Raspberry Pi Zero 2W with 640×480 DSI touchscreen
-- Pico W AHRS unit (ICM-42688-P, BME280, GPS module)
+- Pico W AHRS unit (ICM-42688-P or WT901, BME280, u-blox GPS module)
 - 5 V USB power supply (×2)
 - USB keyboard (for initial startup commands)
+- Smartphone or laptop (for Pico W AP validation and internet-tethered downloads)
 - Level surface (bench or table)
-- GitHub branch: `claude/pico-ahrs-flight-display-GAxs8`
+- GitHub branch: `claude/split-display-versions-YJ9h8`
 
 **Pass/Fail legend:**  ✓ Pass   ✗ Fail   N/T Not tested   N/A Not applicable
 
@@ -39,7 +40,7 @@
 
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
-| 1.2.1 | Run `python3 pi_display/pfd.py --demo` | PFD fills screen within 3 s | | |
+| 1.2.1 | Run `python3 pi_zero/pfd.py --demo` | PFD fills screen within 3 s | | |
 | 1.2.2 | Observe top strip | `NO LINK` badge present (no AHRS connected — expected) | | |
 | 1.2.3 | Observe AI | Blue sky / brown ground horizon visible | | |
 | 1.2.4 | Observe AI animation | Horizon animates through scripted demo scenarios | | |
@@ -57,12 +58,15 @@
 
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
-| 1.3.1 | Place two fingers on screen and hold 0.8 s | Setup menu appears with 6 tiles | | |
+| 1.3.1 | Place two fingers on screen and hold 0.8 s | Setup menu appears with 6 tiles: FLIGHT PROFILE, DISPLAY, AHRS / SENSORS, CONNECTIVITY, SYSTEM, EXIT | | |
 | 1.3.2 | Tap **EXIT** tile | Returns to PFD | | |
 | 1.3.3 | Re-enter setup; tap **DISPLAY** | Display settings screen opens | | |
 | 1.3.4 | Tap **+** brightness button | Screen brightens one step | | |
 | 1.3.5 | Tap **−** brightness button | Screen dims one step | | |
 | 1.3.6 | Tap **BACK** | Returns to setup menu | | |
+| 1.3.7 | Tap **FLIGHT PROFILE** | V-speeds screen opens with VS0/VS1/VFE/VNO/VNE + tail/actype fields | | |
+| 1.3.8 | Tap **BACK**; tap **CONNECTIVITY** | Connectivity screen opens showing current SSID and AHRS link status | | |
+| 1.3.9 | Tap **BACK**; tap **SYSTEM** | System screen opens; shows version, TERRAIN/OBSTACLES/AIRPORTS data tiles, FLIGHT SIMULATOR, RESET DEFAULTS | | |
 
 ### 1.4 Touch — Bug Setting
 
@@ -156,7 +160,7 @@
 |------|--------|----------------|--------|-------|
 | 3.1.1 | Start AHRS unit; confirm AP `AHRS-Link` is visible | AP broadcasting | | |
 | 3.1.2 | Configure Pi Zero 2W WiFi to join `AHRS-Link` (via Connectivity screen) | Pi associates | | |
-| 3.1.3 | Launch `python3 pi_display/pfd.py` (no --demo) | PFD starts | | |
+| 3.1.3 | Launch `python3 pi_zero/pfd.py` (no --demo) | PFD starts | | |
 | 3.1.4 | Observe top strip within 5 s | `NO LINK` badge clears | | |
 | 3.1.5 | Observe baro button (bottom-right) | Shows `29.92 IN` in cyan (not `GPS ALT`) | | |
 | 3.1.6 | Observe alt bug box (top-right) | Cyan border | | |
@@ -166,7 +170,7 @@
 
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
-| 3.2.1 | Hold AHRS unit level | AI horizon centred; slip ball centred | | |
+| 3.2.1 | Hold AHRS unit level | AI horizon centred; slip bar centred under zero-bank doghouse | | |
 | 3.2.2 | Roll AHRS unit ~30° right | AI rolls right; bank pointer deflects right | | |
 | 3.2.3 | Roll AHRS unit ~30° left | AI rolls left | | |
 | 3.2.4 | Pitch AHRS unit ~10° nose-up | Horizon bar drops; pitch ladder moves down | | |
@@ -188,7 +192,7 @@
 
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
-| 3.4.1 | With GPS fix acquired: observe track pointer | Cyan tick on heading tape shows GPS track | | |
+| 3.4.1 | With GPS fix acquired: observe track pointer | **Magenta** tick on heading tape shows GPS ground track (suppressed if track ≈ hdg within 1°) | | |
 | 3.4.2 | Observe top strip | No `GPS` badge (fix is valid) | | |
 | 3.4.3 | Enable GPS TRK mode in AHRS / SENSORS | Heading box border turns magenta; `G` subscript | | |
 | 3.4.4 | Rotate AHRS unit slowly | Heading follows GPS track via complementary filter | | |
@@ -217,6 +221,106 @@
 
 ---
 
+## Phase 5 — Data Downloads
+
+Requires Pi to be on an internet-reachable WiFi (use `sudo bash wifi_switch.sh home`, or configure a home SSID via Connectivity setup).
+
+### 5.1 Terrain Data (SRTM tiles for TAWS alerting)
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 5.1.1 | Setup → System → **TERRAIN** | Terrain data screen opens; idle state if no tiles present | | |
+| 5.1.2 | Tap preset region **US Southwest** | Region highlights | | |
+| 5.1.3 | Tap **DOWNLOAD** | Progress bar advances; per-tile status updates | | |
+| 5.1.4 | Wait for completion | Done ✓ message; record count and MB displayed | | |
+| 5.1.5 | Return to PFD, observe status badges | `NO TER` badge clears | | |
+| 5.1.6 | If on Pico W AP (no internet): tap DOWNLOAD | "WiFi (home network) required" guard message appears | | |
+
+### 5.2 Obstacle Data (FAA DOF)
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 5.2.1 | Setup → System → **OBSTACLES** | Obstacle data screen opens | | |
+| 5.2.2 | Tap **DOWNLOAD** | Progress bar runs; ~20 MB CSV downloads then parses | | |
+| 5.2.3 | Wait for completion | "Done ✓  ~76,000 obstacles loaded" | | |
+| 5.2.4 | Return to PFD | `NO OBS` badge clears | | |
+| 5.2.5 | After 28-day simulated expiry (or on stale file) | `EXP OBS` orange badge appears | | |
+
+### 5.3 Airport + Runway Data (OurAirports)
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 5.3.1 | Setup → System → **AIRPORTS** | Airport data screen opens | | |
+| 5.3.2 | Tap **DOWNLOAD** (or **UPDATE** if present) | Progress bar runs; airports.csv (~12 MB) then runways.csv (~3 MB) download | | |
+| 5.3.3 | Wait for completion | "Done ✓  72,007 airports, 14,727 runways" (counts may vary by data version) | | |
+| 5.3.4 | Observe screen footer | Two-row toggle panel: PUBLIC / HELI / WATER / OTHER on row 1; RUNWAYS / EXT C/LINES on row 2 | | |
+| 5.3.5 | Return to PFD | `NO APT` badge clears | | |
+
+---
+
+## Phase 6 — Attitude Indicator Overlays
+
+Run in demo mode (`pi_zero/pfd.py --demo`) or flight simulator (Setup → System → FLIGHT SIMULATOR → KSEZ → START SIM) for repeatable overlay scenes. All overlays presume Phase 5 downloads completed.
+
+### 6.1 Airport Symbols + Road-Sign Labels
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.1.1 | Sim at KSEZ, alt 6000 ft, heading 200° | Cyan-ring airport symbol visible for KSEZ in lower AI | | |
+| 6.1.2 | Observe near KSEZ | Magenta "H" symbols for nearby heliports (e.g. 4BAZ) | | |
+| 6.1.3 | Observe airport label rendering | Ident ("KSEZ") rendered as small box on short vertical post within 15 nm | | |
+| 6.1.4 | Open AIRPORT DATA; tap **HELI** to toggle OFF | Heliport H symbols disappear from AI | | |
+| 6.1.5 | Tap **HELI** again | Heliports reappear | | |
+| 6.1.6 | Tap **PUBLIC** OFF, all other filters OFF | No airport symbols rendered (sanity check) | | |
+| 6.1.7 | Re-enable PUBLIC + HELI | Symbols restored | | |
+
+### 6.2 Runway Polygons + Extended Centerlines
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.2.1 | Sim at KSEZ, set alt 5500, heading 033°, position 2 NM SW of RWY 03 threshold (use runway_approach preset or manually position) | Two tan runway polygons visible below horizon near airport symbol | | |
+| 6.2.2 | Observe extended centerlines | Dashed white lines extending 10 nm from each threshold along runway axis, visible within 15 nm | | |
+| 6.2.3 | Airport Data → toggle **RUNWAYS** OFF | Polygons disappear; centerlines remain | | |
+| 6.2.4 | Toggle **EXT C/LINES** OFF (RUNWAYS still off) | Centerlines disappear | | |
+| 6.2.5 | Re-enable both | Polygons + centerlines restored | | |
+| 6.2.6 | Roll simulator ±30° | Runway polygons rotate correctly with horizon (no "phantom" horizontal streaks across AI) | | |
+
+### 6.3 Obstacle Symbols
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.3.1 | Position sim with known tower in view | Caret-shape obstacle symbol visible on AI, anchored to terrain | | |
+| 6.3.2 | Observe colour coding | Red = above aircraft alt; Yellow = within 500 ft below; White = more than 500 ft below | | |
+| 6.3.3 | Observe lit indicator | Star (★) above caret for lit towers; plain caret for unlit | | |
+
+### 6.4 TAWS Proximity Alerts
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.4.1 | Descend sim toward rising terrain (e.g. Mogollon Rim north of KSEZ) | Amber `TERRAIN` caution banner appears at ~500 ft clearance | | |
+| 6.4.2 | Continue descent | Red `PULL UP` warning banner appears at ~100 ft clearance | | |
+| 6.4.3 | Climb away from terrain | Banners clear | | |
+| 6.4.4 | Verify at altitude well above terrain | No banner visible (normal state) | | |
+
+---
+
+## Phase 7 — User Settings Persistence
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 7.1 | Record current settings: brightness __, baro unit __, speed unit __, HDG bug __, ALT bug __, HDG source __, tail # __ | | | |
+| 7.2 | Adjust brightness to an unusual value (e.g. 3) | Value changes; screen dims | | |
+| 7.3 | Set HDG bug to 270°, ALT bug to 9500 | Bugs reflect new values | | |
+| 7.4 | Toggle RUNWAYS off on AIRPORT DATA | State recorded | | |
+| 7.5 | Wait 3 s (allow debounce writer to flush) | | | |
+| 7.6 | `sudo reboot` the Pi Zero | Pi reboots | | |
+| 7.7 | After PFD relaunch, observe startup console | "[PFD] Settings restored from …/settings.json" line present | | |
+| 7.8 | Verify brightness, HDG bug, ALT bug, RUNWAYS toggle | All match values from step 7.3–7.4 | | |
+| 7.9 | Check `pi_zero/data/settings.json` exists and contains adjusted values | JSON has expected keys (fp, ds, ad, hdg_bug, alt_bug, etc.) | | |
+| 7.10 | Verify Wi-Fi password is **not** in the file | `password` key absent from the `cs.networks[*]` entries (only SSID + known=true) | | |
+
+---
+
 ## Anomaly Log
 
 Use this table to record any unexpected behaviour for later investigation.
@@ -239,7 +343,10 @@ Use this table to record any unexpected behaviour for later investigation.
 | Phase 2 — AHRS standalone | Y / N | | |
 | Phase 3 — Integrated | Y / N | | |
 | Phase 4 — Baro verification | Y / N | | |
+| Phase 5 — Data downloads | Y / N | | |
+| Phase 6 — AI overlays | Y / N | | |
+| Phase 7 — Settings persistence | Y / N | | |
 
 ---
 
-*TP-001 v0.1 — covers software branch `claude/pico-ahrs-flight-display-GAxs8`*
+*TP-ZERO-001 v0.2 — covers software branch `claude/split-display-versions-YJ9h8`. For the Pi 4 variant see TP-PI4-001.*
