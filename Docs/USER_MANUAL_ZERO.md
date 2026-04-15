@@ -406,7 +406,7 @@ The OurAirports.com global database adds airport and heliport symbols to the att
 | Cyan circle with wavy underscore | Seaplane base |
 | Grey triangle | Balloonport |
 
-Airport identifier (e.g. "KSEZ") shown below the symbol within 15 nm to reduce clutter at long range.
+Airport identifier (e.g. "KSEZ") shown within 15 nm as a small "road sign" — a coloured text box on a thin vertical post above the symbol, so the label rises clear of terrain. Beyond 15 nm only the symbol is drawn (declutter).
 
 ### Display filters
 

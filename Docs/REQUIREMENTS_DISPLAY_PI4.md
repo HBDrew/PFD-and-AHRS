@@ -181,7 +181,7 @@ The display unit shall show nearby airports on the attitude indicator to provide
 > - Seaplane base — cyan circle with a wavy underscore
 > - Balloonport — grey triangle
 
-> **REQ-DISP-PI4-APT-003** The airport identifier (ICAO/local code) shall be displayed as a label beneath each symbol within a closer configurable range (default 15 nm) to prevent label clutter at long range.
+> **REQ-DISP-PI4-APT-003** The airport identifier (ICAO/local code) shall be rendered within a closer configurable range (default 15 nm) as a "road sign" — a dark-filled, coloured-bordered text box mounted on a thin vertical post anchored at the airport symbol. The post shall lift the sign clear of the airport symbol so the label remains legible against busy terrain. The sign border colour shall match the symbol colour (cyan for public airports, magenta for heliports, etc.). The sign shall be auto-sized to the rendered text width plus padding, and shall be clamped to remain within the AI rectangle when the airport is near the top of the visible area.
 
 > **REQ-DISP-PI4-APT-004** Airports with relative bearing outside the attitude indicator's angular field of view shall be culled so that no symbol appears clipped at the edge of the AI rectangle.
 
