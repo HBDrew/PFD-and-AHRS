@@ -342,6 +342,8 @@ Attempts TCP connection to AHRS URL. Shows success/failure message.
 
 Shows firmware version, build date, display resolution, platform, terrain/obstacle status. Buttons for DIAGNOSTICS (future), RESET DEFAULTS, and FLIGHT SIMULATOR.
 
+All configurable settings — V-speeds, tail number, units, backlight brightness, colour scheme, heading-source mode, Wi-Fi SSID, airport display filters, and the runway/centerline overlay toggles — persist across power cycles in `pi_zero/data/settings.json`. The file is written atomically on a background thread with a 1.5 s debounce, so rapid successive taps produce a single write with no UI stutter. The Wi-Fi password is intentionally *not* stored — it must be re-entered when joining a new network.
+
 ---
 
 ## 14. Terrain Data Download
@@ -410,7 +412,7 @@ Airport identifier (e.g. "KSEZ") shown within 15 nm as a small "road sign" — a
 
 ### Display filters
 
-The AIRPORT DATA screen has four toggle buttons at the bottom:
+The AIRPORT DATA screen has four type filters and two overlay toggles:
 
 | Filter | Controls | Default |
 |--------|----------|---------|
@@ -418,12 +420,26 @@ The AIRPORT DATA screen has four toggle buttons at the bottom:
 | **HELI** | Heliports | On |
 | **WATER** | Seaplane bases | Off |
 | **OTHER** | Balloonports + uncategorised | Off |
+| **RUNWAYS** | Runway polygons (within 8 nm) | On |
+| **EXT C/LINES** | Dashed extended centerlines (within 15 nm) | On |
 
-Tap to toggle. Useful for decluttering on dense urban sectional overlay (e.g. disable HELI near cities).
+Tap to toggle. Useful for decluttering on dense urban sectional overlay (e.g. disable HELI near cities) or turning off EXT C/LINES en-route.
+
+All filter and toggle states persist across power cycles — the settings file is written atomically on a background thread to avoid flight-display stutters.
+
+### Runways and extended centerlines
+
+![Runway approach — KSEZ RWY 03](../pi_zero/previews/preview_runway_approach.png)
+
+Within 8 nm of an airport, a tan polygon is drawn for each runway, projected from the thresholds' lat/lon/elevation so runways translate, rotate, and scale naturally with aircraft position, bank and pitch. Runway width is taken from the OurAirports database.
+
+Extended centerlines (dashed) project 10 nm outward from each threshold along the runway bearing, visible within 15 nm of the airport. At night, lit runways are distinguishable from unlit by the runway edge colour. The centerlines give an at-a-glance final-approach reference for visual approaches without requiring a flight plan.
+
+Runway data comes from OurAirports `runways.csv` (~14,700 runways worldwide) and is downloaded alongside the airport CSV in a single UPDATE action.
 
 ### Downloading
 
-Tap **AIRPORTS** on the System screen → **DOWNLOAD** to fetch `airports.csv` (~12 MB) from the OurAirports GitHub mirror.
+Tap **AIRPORTS** on the System screen → **DOWNLOAD** to fetch `airports.csv` (~12 MB) plus `runways.csv` (~3 MB) from the OurAirports GitHub mirror.
 
 ![Airport data screen — downloading](../pi_zero/previews/preview_airport_downloading.png)
 

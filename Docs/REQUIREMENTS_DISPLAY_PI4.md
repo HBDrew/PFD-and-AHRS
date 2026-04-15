@@ -204,6 +204,26 @@ The display unit shall show nearby airports on the attitude indicator to provide
 >
 > Filter state shall persist across the session. When all four filters are off, no airport symbols shall render.
 
+> **REQ-DISP-PI4-APT-011** Runway polygons for airports within 8 NM shall be projected onto the attitude indicator from each runway's low-end and high-end threshold lat/lon/elevation, using the same flat-earth atan2 bearing/elevation projection as airport and obstacle symbols. Polygons shall scale with runway width (derived from `runways.csv`) and translate/scale/rotate correctly with aircraft position, heading, pitch, and roll. The runway database shall be the OurAirports `runways.csv` (approximately 14,700 records globally), parsed into a NumPy structured-array cache (`runways_cache.npy`) analogous to the airport cache. Closed runways shall be filtered out at parse time. Runway polygons shall be drawn before airport symbols in the Z-order so that the cyan airport ring appears on top of the runway asphalt at the airport centre.
+>
+> A `RUNWAYS` toggle on the AIRPORT DATA screen shall enable or disable runway rendering (default: on). Toggle state shall persist across power cycles via the settings persistence layer.
+
+> **REQ-DISP-PI4-APT-012** Extended dashed centerlines shall be rendered outward from each runway threshold along the runway bearing, for airports within 15 NM. Each centerline shall extend 10 NM from the threshold with 0.5 NM dash segments. Extended centerlines shall not render when the aircraft is between the two thresholds of the same runway.
+>
+> An `EXT CENTERLINES` toggle on the AIRPORT DATA screen shall enable or disable extended centerlines independently of the runway polygons (default: on). Toggle state shall persist across power cycles via the settings persistence layer.
+
+---
+
+## 9a. User Settings Persistence
+
+> **REQ-DISP-PI4-PERSIST-001** User-adjusted settings shall persist across power cycles via a JSON file at `pi4/data/settings.json`. Persisted values shall include: flight profile (V-speeds, tail number, aircraft type, TAS offset), display settings (brightness, baro unit, speed unit, altitude unit, colour scheme), system settings, connectivity settings (Wi-Fi SSID excluding password), airport-data display filters (PUBLIC / HELIPORTS / SEAPLANE / OTHER / RUNWAYS / EXT CENTERLINES), heading bug, altitude bug, and last-used display mode.
+
+> **REQ-DISP-PI4-PERSIST-002** Settings writes shall be debounced and performed on a background thread (default 1.5 s coalesce window) so that rapid consecutive toggle changes produce at most one file write. Writes shall be atomic via `os.replace` from a `.tmp` file so that a power-loss during write cannot corrupt `settings.json`.
+
+> **REQ-DISP-PI4-PERSIST-003** The Wi-Fi password shall not be written to `settings.json`. Any other security-sensitive values explicitly listed in the persistence skip-list shall be excluded similarly.
+
+> **REQ-DISP-PI4-PERSIST-004** On shutdown, pending settings changes shall be flushed synchronously so that no user-visible change is lost on a graceful exit.
+
 ---
 
 ## 10. Status Badges
@@ -265,7 +285,6 @@ The display unit shall show nearby airports on the attitude indicator to provide
 The following features are planned for future versions of the Pi 4 display and are not required for the initial release:
 
 - **Texture-mapped terrain** with satellite imagery, USGS terrain textures, or elevation-shaded relief maps
-- **Synthetic runway rendering** using airport database coordinates, shown in correct 3D perspective
 - **Flight path vector** — velocity vector symbol on the AI showing where the aircraft is actually going (vs. where it's pointed)
 - **Highway-in-the-sky (HITS)** — waypoint tunnel rendering for RNAV/GPS approach guidance
 - **Time-of-day sun position** — compute sun azimuth/elevation from current lat/lon/time so shading matches actual sun position rather than a fixed configured direction

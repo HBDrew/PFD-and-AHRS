@@ -304,6 +304,8 @@ AHRS URL (default `http://192.168.4.1`), WiFi SSID/password, TEST AHRS, APPLY WI
 
 Version info, terrain/obstacle status, DIAGNOSTICS (future), RESET DEFAULTS, FLIGHT SIMULATOR.
 
+All configurable settings — V-speeds, tail number, units, backlight brightness, colour scheme, heading-source mode, Wi-Fi SSID, airport display filters, and the runway/centerline overlay toggles — persist across power cycles in `pi4/data/settings.json`. The file is written atomically on a background thread with a 1.5 s debounce, so rapid successive taps produce a single write with no UI stutter. The Wi-Fi password is intentionally *not* stored — it must be re-entered when joining a new network.
+
 ---
 
 ## 14. Terrain Data Download
@@ -366,7 +368,7 @@ The airport identifier (e.g. "KSEZ") is rendered within 15 nm as a small "road s
 
 ### Display filters
 
-The AIRPORT DATA screen has four toggle buttons at the bottom to control which airport types render on the attitude indicator. Tap to toggle.
+The AIRPORT DATA screen has four type filters and two overlay toggles at the bottom. Tap any tile to toggle its state.
 
 | Filter | Controls | Default |
 |--------|----------|---------|
@@ -374,14 +376,28 @@ The AIRPORT DATA screen has four toggle buttons at the bottom to control which a
 | **HELIPORTS** | Hospital helipads, rooftop pads, private helis | On |
 | **SEAPLANE** | Seaplane bases (water operations) | Off |
 | **OTHER** | Balloonports and uncategorised types | Off |
+| **RUNWAYS** | Paved/unpaved runway polygons (within 8 nm) | On |
+| **EXT CENTERLINES** | Dashed extended centerlines off each threshold (within 15 nm) | On |
 
-This lets you declutter the AI to show only the types relevant to your flight — for example, turn off HELIPORTS when operating in dense urban airspace where helipads would swamp the display.
+This lets you declutter the AI to show only the types relevant to your flight — for example, turn off HELIPORTS when operating in dense urban airspace where helipads would swamp the display, or turn off EXT CENTERLINES en-route and only re-enable during terminal-area operations.
+
+All filter and toggle states persist across power cycles — you don't need to re-configure on every startup.
+
+### Runways and extended centerlines
+
+![Runway approach — KSEZ RWY 03](../pi4/previews/pfd_gl/preview_runway_approach.png)
+
+Within 8 nm of an airport, the PFD overlays a scaled polygon for each runway threshold-to-threshold, projected in the same perspective as the rest of the attitude indicator so runways translate, rotate, and scale naturally with the aircraft's position, bank and pitch. Width is taken from the OurAirports database.
+
+Extended centerlines (dashed yellow) extend 10 nm outward from each runway threshold along its exact bearing, visible within 15 nm of the airport. This provides an at-a-glance final-approach reference for non-precision and visual approaches — the same kind of cue you get from a flight director's course bar, but derived purely from the runway geometry rather than a flight-plan waypoint.
+
+Runway data comes from OurAirports `runways.csv` (approximately 14,700 runways worldwide) and is downloaded alongside the airport CSV in a single UPDATE action.
 
 ### Downloading
 
 Tap **AIRPORTS** on the System screen to open the airport data screen.
 
-Tap **DOWNLOAD** (or **UPDATE** if data is already present) to fetch `airports.csv` (~12 MB) from the OurAirports GitHub mirror.
+Tap **DOWNLOAD** (or **UPDATE** if data is already present) to fetch `airports.csv` (~12 MB) plus `runways.csv` (~3 MB) from the OurAirports GitHub mirror.
 
 ![Airport data screen — downloading](../pi4/previews/preview_airport_downloading.png)
 

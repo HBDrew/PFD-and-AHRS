@@ -190,6 +190,28 @@ The display unit shall show nearby airports on the attitude indicator to give th
 >
 > Filter state shall persist across the session. When all four filters are off, no airport symbols shall render.
 
+> **REQ-DISP-ZERO-APT-011** Runway polygons for airports within 8 NM shall be projected onto the attitude indicator from each runway's low-end and high-end threshold lat/lon/elevation, using the same flat-earth atan2 bearing/elevation projection as airport and obstacle symbols. Polygons shall scale with runway width (derived from `runways.csv`) and translate/scale/rotate correctly with aircraft position, heading, pitch, and roll. The runway database shall be the OurAirports `runways.csv` (approximately 14,700 records globally), parsed into a NumPy structured-array cache (`runways_cache.npy`) analogous to the airport cache. Closed runways shall be filtered out at parse time. Runway polygons shall be drawn before airport symbols in the Z-order so that the cyan airport ring appears on top of the runway asphalt at the airport centre.
+>
+> A `RUNWAYS` toggle on the AIRPORT DATA screen shall enable or disable runway rendering (default: on). Toggle state shall persist across power cycles via the settings persistence layer.
+
+> **REQ-DISP-ZERO-APT-012** Extended dashed centerlines shall be rendered outward from each runway threshold along the runway bearing, for airports within 15 NM. Each centerline shall extend 10 NM from the threshold with 0.5 NM dash segments. Extended centerlines shall not render when the aircraft is between the two thresholds of the same runway.
+>
+> An `EXT C/LINES` toggle on the AIRPORT DATA screen shall enable or disable extended centerlines independently of the runway polygons (default: on). Toggle state shall persist across power cycles via the settings persistence layer.
+
+---
+
+## 9a. User Settings Persistence
+
+Settings the pilot adjusts through the PFD user interface — brightness, units, flight-profile V-speeds and tail number, display filters, heading bug, etc. — must persist across power cycles so that the display remembers configuration between flights.
+
+> **REQ-DISP-ZERO-PERSIST-001** User-adjusted settings shall persist across power cycles via a JSON file at `pi_zero/data/settings.json`. Persisted values shall include: flight profile (V-speeds, tail number, aircraft type, TAS offset), display settings (brightness, baro unit, speed unit, altitude unit, colour scheme), system settings, connectivity settings (Wi-Fi SSID excluding password), airport-data display filters (PUBLIC / HELI / WATER / OTHER / RUNWAYS / EXT C/LINES), heading bug, altitude bug, and last-used display mode.
+
+> **REQ-DISP-ZERO-PERSIST-002** Settings writes shall be debounced and performed on a background thread (default 1.5 s coalesce window) so that rapid consecutive toggle changes produce at most one file write. Writes shall be atomic via `os.replace` from a `.tmp` file so that a power-loss during write cannot corrupt `settings.json`.
+
+> **REQ-DISP-ZERO-PERSIST-003** The Wi-Fi password shall not be written to `settings.json`. Any other security-sensitive values explicitly listed in the persistence skip-list shall be excluded similarly.
+
+> **REQ-DISP-ZERO-PERSIST-004** On shutdown, pending settings changes shall be flushed synchronously so that no user-visible change is lost on a graceful exit.
+
 ---
 
 ## 10. Status Badges
