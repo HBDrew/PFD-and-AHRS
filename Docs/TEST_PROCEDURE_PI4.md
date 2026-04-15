@@ -32,7 +32,7 @@
 
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
-| 1.1.1 | Apply 5 V / 3 A to Pi 4 | Green power LED illuminates; HDMI (or DSI) display powers up | | |
+| 1.1.1 | Apply 5 V / 3 A to Pi 4 | Green power LED illuminates; HDMI (or DPI) display powers up | | |
 | 1.1.2 | Observe display panel | Backlight or video signal within 10 s; no "no signal" banner once fully booted | | |
 | 1.1.3 | Wait for console prompt | OS boot completes without kernel panic; `/boot/firmware/config.txt` has the HDMI force-hotplug + resolution overrides applied by `pi4/setup.sh` | | |
 | 1.1.4 | Verify `config.py` DISPLAY_PROFILE | Matches the connected panel (`roadom_7` for 1024×600; `waveshare_35` for 640×480) | | |

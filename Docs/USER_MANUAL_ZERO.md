@@ -1,6 +1,6 @@
 # AHRS PFD — Pi Zero 2W Pilot's User Manual
 
-**Software version 0.2 · Hardware: Raspberry Pi Pico W + Pi Zero 2W · Display: TBD**
+**Software version 0.2 · Hardware: Raspberry Pi Pico W + Pi Zero 2W · Display: Waveshare 3.5" DPI LCD (640×480)**
 
 *No SVT version — plain horizon background with TAWS alerting*
 

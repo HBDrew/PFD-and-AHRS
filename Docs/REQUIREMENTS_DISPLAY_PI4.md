@@ -22,7 +22,7 @@ For the lightweight variant without SVT, see HLR-DISP-ZERO-001.
 
 > **REQ-DISP-PI4-HW-001** The processor shall be a Raspberry Pi 4 with a minimum of 2 GB RAM.
 
-> **REQ-DISP-PI4-HW-002** The display hardware is TBD. The software shall support configurable display resolution with a minimum of 640×480 pixels.
+> **REQ-DISP-PI4-HW-002** The nominal display shall be a ROADOM 7" IPS 1024×600 HDMI panel with USB capacitive touch. The software shall support a configurable display profile via `DISPLAY_PROFILE` in `pi4/config.py` so that alternative panels of the same or higher resolution, or a 640×480 Waveshare DPI panel as a fallback, can be substituted. The minimum supported resolution is 640×480 pixels.
 
 > **REQ-DISP-PI4-HW-003** The touchscreen shall support at minimum 2-point simultaneous touch detection to allow two-finger gestures for menu access.
 

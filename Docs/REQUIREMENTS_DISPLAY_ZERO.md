@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-The display unit (Pi Zero 2W variant) is the pilot-facing component of the Pico-AHRS / PFD system optimised for deployment on Raspberry Pi Zero 2W hardware. It connects to a touchscreen display (resolution TBD) and is responsible for receiving the flight-state SSE stream from the AHRS unit, rendering a full Primary Flight Display (PFD) at 30 fps directly on the framebuffer, and providing a touch-based interface for pilot configuration and bug setting. The display unit contains all rendering logic, terrain awareness alerting, configuration menus, a built-in flight simulator, and a scripted demo mode.
+The display unit (Pi Zero 2W variant) is the pilot-facing component of the Pico-AHRS / PFD system optimised for deployment on Raspberry Pi Zero 2W hardware. It connects to a 640×480 Waveshare 3.5" DPI LCD (parallel RGB over the 40-pin GPIO header with I2C capacitive touch) and is responsible for receiving the flight-state SSE stream from the AHRS unit, rendering a full Primary Flight Display (PFD) at 30 fps directly on the framebuffer, and providing a touch-based interface for pilot configuration and bug setting. The display unit contains all rendering logic, terrain awareness alerting, configuration menus, a built-in flight simulator, and a scripted demo mode.
 
 This variant deliberately omits Synthetic Vision Terrain (SVT) background rendering on the attitude indicator in order to remain within the GPU and memory budget of the Pi Zero 2W. The attitude indicator instead uses a plain horizon: a solid blue upper half representing sky and a solid brown lower half representing ground. SRTM elevation tile data is still consumed for Terrain Awareness and Warning System (TAWS) proximity alerting — generating TERRAIN CAUTION and PULL UP / TERRAIN banners — but that data is never used to texture or colour the attitude indicator background.
 
@@ -28,7 +28,7 @@ The following requirements define the minimum acceptable hardware configuration 
 
 > **REQ-DISP-ZERO-HW-001** The processor shall be a Raspberry Pi Zero 2W.
 
-> **REQ-DISP-ZERO-HW-002** The display shall be a touchscreen compatible with the Raspberry Pi Zero 2W. The specific display model and resolution are TBD; the software shall be configurable to target the installed display resolution.
+> **REQ-DISP-ZERO-HW-002** The display shall be a Waveshare 3.5" DPI LCD: 640×480 IPS, DPI parallel RGB via the 40-pin GPIO header, I2C capacitive touch, and PWM backlight on GPIO 18. The software shall target 640×480 native resolution. Alternative DPI/HDMI panels of the same resolution may be substituted provided the touch interface is compatible.
 
 > **REQ-DISP-ZERO-HW-003** The touchscreen shall support at minimum 2-point simultaneous touch detection to allow two-finger gestures for menu access.
 

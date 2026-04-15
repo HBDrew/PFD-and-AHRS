@@ -1,6 +1,6 @@
 # AHRS PFD — Pilot's User Manual
 
-**Software version 0.1 · Hardware: Raspberry Pi Pico W + Pi Zero 2W · Display: 640 × 480 DSI**
+**Software version 0.1 · Hardware: Raspberry Pi Pico W + Pi Zero 2W · Display: Waveshare 3.5" DPI LCD (640×480)**
 
 ---
 
@@ -40,7 +40,7 @@ The display is divided into five fixed zones:
 | Bottom strip | 44 px tall | Heading tape |
 | Top strip | 22 px tall | Bug readouts |
 
-Everything is rendered at 30 fps directly on the DSI framebuffer — there is no operating-system UI underneath.
+Everything is rendered at 30 fps directly on the DPI framebuffer — there is no operating-system UI underneath.
 
 ---
 

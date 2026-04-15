@@ -5,7 +5,7 @@ A two-board avionic display system with **two display versions** that share a si
 | Board | Role |
 |-------|------|
 | **Pico W** | Reads IMU (ICM-42688-P or WT901), GPS, BME280 baro. Serves state to the display over Wi-Fi SSE |
-| **Pi Zero 2W** | 640×480 DSI PFD — plain horizon, TAWS alerting, airport/runway overlays, no SVT |
+| **Pi Zero 2W** | Waveshare 3.5" DPI 640×480 PFD — plain horizon, TAWS alerting, airport/runway overlays, no SVT |
 | **Pi 4** | 1024×600 PFD — true 3D Synthetic Vision Terrain rendered through OpenGL ES + same overlays |
 
 Both displays connect to the same Pico W AHRS unit over Wi-Fi SSE. The feature set (airports, runways, extended centerlines, obstacles, TAWS, persistence, simulator, demo mode) is identical across both — the Pi 4 adds the OpenGL SVT terrain background with mountains that rise above the horizon line.
@@ -57,7 +57,7 @@ PFD-and-AHRS/
 | Feature | Pi Zero 2W | Pi 4 |
 |---------|-----------|------|
 | Processor | ARM Cortex-A53, 512 MB RAM | ARM Cortex-A72, 2–8 GB RAM |
-| Display | 640×480 DSI touchscreen | 1024×600 HDMI + USB touch (or 640×480 DSI) |
+| Display | Waveshare 3.5" DPI LCD (640×480, 40-pin GPIO parallel RGB, I2C cap touch, PWM backlight) | ROADOM 7" HDMI IPS (1024×600, USB cap touch) — or Waveshare 3.5" DPI as a fallback |
 | Graphics | Pygame / SDL2 framebuffer | Pygame UI + OpenGL ES 3.0 SVT (via moderngl/EGL) |
 | SVT terrain background | No — plain sky/ground horizon | Yes — full 3D perspective mesh |
 | Terrain above horizon | No | Yes — mountain peaks + ridges rise above horizon line |
@@ -94,7 +94,7 @@ Both versions share the same AHRS unit, instrument layout, menus, simulator, dem
 | Part | Notes |
 |------|-------|
 | Raspberry Pi Zero 2W | 512 MB RAM |
-| Display | TBD |
+| Waveshare 3.5" DPI LCD | 640×480 IPS, DPI parallel RGB via 40-pin GPIO header, 5-point I2C capacitive touch, PWM backlight on GPIO 18, device-tree overlay `waveshare-35dpi-3b-4b` |
 | 64 GB microSD (Class 10 / A1) | Raspberry Pi OS Lite 64-bit |
 | USB-C power (5V 2A+) | |
 
@@ -102,7 +102,7 @@ Both versions share the same AHRS unit, instrument layout, menus, simulator, dem
 | Part | Notes |
 |------|-------|
 | Raspberry Pi 4 | 2 GB+ RAM recommended |
-| Display | TBD (higher resolution) |
+| ROADOM 7" HDMI IPS | 1024×600, HDMI video + USB capacitive touch (no software backlight control). Alternative: ROADOM 10" same electronics, or Waveshare 3.5" DPI as a Pi 4 fallback (`DISPLAY_PROFILE = "waveshare_35"`). |
 | 64 GB microSD (Class 10 / A1) | Raspberry Pi OS Lite 64-bit |
 | USB-C power (5V 3A) | |
 

@@ -14,7 +14,7 @@
 
 ## Equipment Required
 
-- Raspberry Pi Zero 2W with 640×480 DSI touchscreen
+- Raspberry Pi Zero 2W with Waveshare 3.5" DPI LCD (640×480, DPI parallel RGB via 40-pin GPIO, I2C capacitive touch)
 - Pico W AHRS unit (ICM-42688-P or WT901, BME280, u-blox GPS module)
 - 5 V USB power supply (×2)
 - USB keyboard (for initial startup commands)
@@ -33,7 +33,7 @@
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
 | 1.1.1 | Apply 5 V to Pi Zero 2W | Green power LED illuminates | | |
-| 1.1.2 | Observe DSI panel | Backlight illuminates within 10 s | | |
+| 1.1.2 | Observe DPI panel | PWM backlight illuminates within 10 s | | |
 | 1.1.3 | Wait for desktop or console prompt | OS boot completes without kernel panic | | |
 
 ### 1.2 First Launch — Demo Mode
