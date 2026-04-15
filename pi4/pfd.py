@@ -3032,8 +3032,8 @@ def draw_system_setup(surf):
     lines = [
         ("Firmware version",  _SYS_VERSION),
         ("Build date",        _SYS_BUILD),
-        ("Display",           "640\u00d7480  DSI"),
-        ("Hardware",          "Pi Zero 2W + Pico W"),
+        ("Display",           f"{DISPLAY_W}\u00d7{DISPLAY_H}  HDMI"),
+        ("Hardware",          "Pi 4 + Pico W  (OpenGL SVT)"),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
     pygame.draw.rect(surf, (0,12,32), (bx, _SYS_INFO_Y, bw, _SYS_IH), border_radius=6)

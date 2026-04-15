@@ -167,6 +167,34 @@ def main():
         pygame.image.save(surf, outpath)
         print(f"  → {os.path.basename(outpath)}")
 
+    # ── Setup screens (no GL needed) ─────────────────────────────────────────
+    # Move output dir up one level so setup PNGs go alongside the existing
+    # preview_setup_*.png files in pi4/previews/, not into the pfd_gl subdir.
+    setup_outdir = os.path.dirname(args.outdir) if args.outdir.endswith("pfd_gl") \
+                                                  else args.outdir
+
+    # Seed plausible non-empty data so the setup tiles show realistic stats
+    pfd.disp["od"]["records"] = 76842
+    pfd.disp["od"]["used_mb"] = 19.4
+    pfd.disp["ad"]["records"] = 72007
+    pfd.disp["ad"]["used_mb"] = 12.3
+    pfd.disp["ad"]["age_days"] = 5
+
+    for screen_mode, fname in [
+        ("setup",               "preview_setup_main.png"),
+        ("flight_profile",      "preview_setup_flight_profile.png"),
+        ("display_setup",       "preview_setup_display.png"),
+        ("ahrs_setup",          "preview_setup_ahrs.png"),
+        ("connectivity_setup",  "preview_setup_connectivity.png"),
+        ("system_setup",        "preview_setup_system.png"),
+        ("airport_data",        "preview_airport_loaded.png"),
+    ]:
+        pfd.disp["mode"] = screen_mode
+        pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+        outpath = os.path.join(setup_outdir, fname)
+        pygame.image.save(surf, outpath)
+        print(f"  → {os.path.basename(outpath)}")
+
     print("\nDone.")
 
 

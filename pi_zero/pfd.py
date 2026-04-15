@@ -2912,7 +2912,7 @@ def draw_system_setup(surf):
     lines = [
         ("Firmware version",  _SYS_VERSION),
         ("Build date",        _SYS_BUILD),
-        ("Display",           "640\u00d7480  DSI"),
+        ("Display",           f"{DISPLAY_W}\u00d7{DISPLAY_H}  DPI"),
         ("Hardware",          "Pi Zero 2W + Pico W"),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
