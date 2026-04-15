@@ -198,6 +198,7 @@ def main():
         ("connectivity_setup",  "preview_setup_connectivity.png"),
         ("system_setup",        "preview_setup_system.png"),
         ("airport_data",        "preview_airport_loaded.png"),
+        ("sim_setup",           "preview_sim_setup.png"),
     ]:
         pfd.disp["mode"] = screen_mode
         pfd.render(surf, demo_mode=False, connected=True, data_stale=False)

@@ -477,16 +477,47 @@ Press **D** on a keyboard to toggle demo mode during bench testing.
 
 ## 18. Flight Simulator
 
-Physics-based autopilot that holds heading, altitude, and speed bugs.
+![Flight simulator setup screen](../pi_zero/previews/preview_sim_setup.png)
+
+A full-PFD flight simulator is built in. It drives every instrument on the display through an internal physics + autopilot model, so every tape, badge, bug, terrain-awareness alert, and airport / runway overlay behaves exactly as it would with a live AHRS link. No Pico W and no network are needed.
 
 ### Starting
-Setup → System → FLIGHT SIMULATOR → select airport → START.
+
+Setup → System → **FLIGHT SIMULATOR**. The setup screen lets you pick:
+
+| Control | Purpose |
+|---------|---------|
+| Airport preset grid | 12 US airports covering mountain, coastal, plains, and desert terrain. Tap to highlight (cyan border). Starts the simulator parked on the field at the runway elevation. |
+| **ALT / HDG / SPEED** tiles | Tap a tile to open the numpad and set the initial cruise altitude, heading, and indicated airspeed the autopilot will fly to once airborne. |
+| **GPS / BARO / AHRS** ON / FAIL pairs | Inject a sensor failure before the sim starts. FAIL makes the corresponding badge appear (`NO GPS`, `GPS ALT`, `AHRS FAIL`) and disables that sensor's contribution to the flight model so you can practice partial-panel scenarios. |
+| **START SIM** / **CANCEL** | Start drops you at the selected airport and immediately commands a takeoff; the autopilot holds the initial ALT / HDG / SPD targets. |
 
 ### 12 airport presets
-KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA.
+
+KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA — chosen for geographic variety so you can watch TAWS caution/warning thresholds and obstacle proximity alerts behave naturally in different environments. Sedona (KSEZ) is the default because the surrounding red-rock mesas exercise the terrain proximity alerting dramatically.
+
+### While the simulator is running
+
+- A small `SIM` watermark appears at the centre of the AI.
+- Tap the watermark to open the **SIM CONTROLS** overlay on top of the live PFD — here you can toggle GPS/BARO/AHRS failures mid-flight and exit back to the setup screen.
+- All three bug controls (ALT / HDG / SPD) remain active — set a new bug and the autopilot will fly to it. That's how you explore turns, climbs, descents, and arrivals at other airports.
+- Baro setting, display units, filters, and every other adjustment take effect in real time just as they would in the aircraft.
 
 ### Failure injection
-Toggle GPS, BARO, or AHRS between ON and FAIL via SIM CONTROLS overlay. Tap the `SIM` watermark to open controls.
+
+Inject a sensor failure either before start (SIM SETUP) or mid-flight (SIM CONTROLS).
+
+| Failure | Effect |
+|---------|--------|
+| **GPS** | `NO GPS` badge, magenta ground-track tick hidden, GPS-TRK mode forced off, airport and runway overlays dim. |
+| **BARO** | `GPS ALT` badge; altitude tape falls back to GPS altitude; baro setting shows `GPS ALT` in magenta. |
+| **AHRS** | `AHRS FAIL` badge; attitude freezes (classic AI fail). Tapes still work from GPS. |
+
+All failures revert the moment you toggle back to ON — use them for quick what-if drills and recovery procedures.
+
+### Exit
+
+SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is connected the display simply shows stale indications (`NO LINK`). If you're connected to the Pico W AHRS, live data resumes immediately.
 
 ---
 

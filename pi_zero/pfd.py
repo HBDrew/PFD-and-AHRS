@@ -4677,6 +4677,7 @@ def main():
             ("ahrs_setup",          "preview_setup_ahrs.png"),
             ("connectivity_setup",  "preview_setup_connectivity.png"),
             ("system_setup",        "preview_setup_system.png"),
+            ("sim_setup",           "preview_sim_setup.png"),
         ]:
             disp["mode"] = screen_mode
             _save(fname)
