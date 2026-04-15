@@ -4120,10 +4120,32 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
             if apt.atype in ("M", "L"):
                 pygame.draw.circle(surf, col, (sx, sy), 7, 1)
 
-        # Ident label for close airports only (declutter)
+        # Ident label as a small "road sign" on a post above the symbol.
+        # Post anchors at the airport, sign sits ~25 px above so the label
+        # rises clear of nearby terrain features.
         if dist_nm <= AIRPORT_LABEL_NM:
             lbl = apt.ident
-            _text(surf, lbl, 9, col, bold=True, cx=sx, cy=sy + 12)
+            font_sz = 9
+            f = _get_font(font_sz, bold=True)
+            tw, th = f.size(lbl)
+            sign_w = tw + 8
+            sign_h = th + 4
+            post_h = 22
+            sign_x = sx - sign_w // 2
+            sign_y = sy - post_h - sign_h
+            # Clamp sign to stay on screen
+            if sign_y < ay_r + 2:
+                sign_y = ay_r + 2
+                post_h = max(4, sy - sign_y - sign_h)
+            # Post: thin vertical line from symbol up to bottom of sign
+            pygame.draw.line(surf, col, (sx, sy - 6), (sx, sign_y + sign_h), 1)
+            # Sign: dark fill with coloured border
+            pygame.draw.rect(surf, (0, 10, 26),
+                             (sign_x, sign_y, sign_w, sign_h), border_radius=2)
+            pygame.draw.rect(surf, col,
+                             (sign_x, sign_y, sign_w, sign_h), width=1, border_radius=2)
+            _text(surf, lbl, font_sz, col, bold=True,
+                  cx=sx, cy=sign_y + sign_h // 2)
 
 
 # ── Main render function ──────────────────────────────────────────────────────
