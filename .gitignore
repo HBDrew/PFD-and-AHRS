@@ -26,5 +26,9 @@ pi_zero/data/airports/
 pi4/data/airports/
 pi_display/data/airports/
 
+# User settings persistence file (created at runtime, per-device)
+pi_zero/data/settings.json
+pi4/data/settings.json
+
 # Local config overrides
 config_local.py

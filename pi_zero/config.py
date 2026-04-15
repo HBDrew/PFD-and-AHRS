@@ -65,6 +65,9 @@ OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")
 # ── Airport database (OurAirports CSV) ────────────────────────────────────────
 AIRPORT_DIR   = os.path.join(_HERE, "data", "airports")
 
+# ── User settings persistence ─────────────────────────────────────────────────
+SETTINGS_PATH = os.path.join(_HERE, "data", "settings.json")
+
 # ── Try to import local overrides ─────────────────────────────────────────────
 try:
     from config_local import *  # noqa: F401,F403

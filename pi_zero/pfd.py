@@ -37,6 +37,7 @@ from sse_client import SSEClient
 from terrain import get_elevation_ft   # elevation lookup only — no SVT renderer
 import obstacles as obs_mod
 import airports as apt_mod
+import settings as _settings
 
 DEG = math.pi / 180
 
@@ -1851,10 +1852,12 @@ def handle_event(event, demo_mode):
             elif action and action.startswith("set:"):
                 _, key, val_str = action.split(":", 2)
                 disp["ds"][key] = (val_str == "True") if key == "night_mode" else val_str
+                _settings.mark_dirty()
             elif action and action.startswith("inc:brightness:"):
                 delta = int(action.split(":")[-1])
                 disp["ds"]["brightness"] = max(1, min(10, disp["ds"]["brightness"] + delta))
                 _set_backlight(disp["ds"]["brightness"])
+                _settings.mark_dirty()
             return True
 
         # ── AHRS / Sensors taps ───────────────────────────────────────────
@@ -1865,11 +1868,13 @@ def handle_event(event, demo_mode):
             elif action and action.startswith("trim:"):
                 _, key, delta_str = action.split(":")
                 disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
+                _settings.mark_dirty()
             elif action == "mag_cal":
                 disp["ss"]["mag_cal"] = "running"
             elif action and action.startswith("set:"):
                 _, key, val = action.split(":", 2)
                 disp["ss"][key] = val
+                _settings.mark_dirty()
             return True
 
         # ── Connectivity taps ─────────────────────────────────────────────
@@ -1990,6 +1995,7 @@ def handle_event(event, demo_mode):
             elif isinstance(action, str) and action.startswith("toggle:"):
                 key = action.split(":", 1)[1]
                 disp["ad"][key] = not disp["ad"].get(key, False)
+                _settings.mark_dirty()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -2052,6 +2058,7 @@ def handle_event(event, demo_mode):
                                 _restart_sse(buf)
                         else:
                             disp["fp"][target] = buf
+                        _settings.mark_dirty()
                     disp["kbd_buf"] = ""
                     disp["mode"] = disp["kbd_prev"]
             return True
@@ -2094,6 +2101,7 @@ def handle_event(event, demo_mode):
                             disp["sim"]["init_spd"] = float(val)
                         elif target in disp["fp"]:   # V-speed field
                             disp["fp"][target] = val
+                        _settings.mark_dirty()
                     disp["mode"] = disp["numpad_prev"]
                     disp["numpad_buf"] = ""
             return True
@@ -4249,6 +4257,11 @@ def main():
         os.environ["SDL_VIDEODRIVER"] = "x11"
         os.environ.pop("SDL_FBDEV", None)
 
+    # Restore persisted user settings before initialising the display
+    if _settings.load_into(disp, SETTINGS_PATH):
+        print(f"[PFD] Settings restored from {SETTINGS_PATH}")
+    _settings.start(disp, SETTINGS_PATH)
+
     _init_backlight()
     _set_backlight(disp["ds"].get("brightness", 8))
 
@@ -4653,6 +4666,7 @@ def main():
 
     if _sse_client:
         _sse_client.stop()
+    _settings.flush()
     pygame.quit()
 
 

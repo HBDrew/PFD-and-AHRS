@@ -122,6 +122,11 @@ OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")
 # ── Airport database (OurAirports CSV) ────────────────────────────────────────
 AIRPORT_DIR   = os.path.join(_HERE, "data", "airports")
 
+# ── User settings persistence ─────────────────────────────────────────────────
+# JSON file that stores V-speeds, units, brightness, AHRS trims, airport
+# filters and other user-configurable values across reboots.
+SETTINGS_PATH = os.path.join(_HERE, "data", "settings.json")
+
 # ── Try to import local overrides ─────────────────────────────────────────────
 # config_local.py can override DISPLAY_PROFILE, DISPLAY_W, DISPLAY_H, etc.
 try:
