@@ -4005,7 +4005,11 @@ _CENTERLINE_DASH_NM        = 0.5
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
                     elev_ft, hdg_deg, pitch_deg, roll_deg,
-                    cx, cy, px_per_deg):
+                    cx, cy, px_per_deg, max_fov_deg=None):
+    """Project a lat/lon point onto the AI. Returns (sx, sy), or ``None``
+    when the bearing from the aircraft exceeds ``max_fov_deg`` (used by the
+    extended-centerline renderer to cull far-field dashes behind the aircraft
+    where the flat-earth projection would wrap and streak across the AI)."""
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
     dlat_nm = (lat_deg - ref_lat) * nm_per_deg_lat
@@ -4015,6 +4019,8 @@ def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
         return (cx, cy)
     bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
     rel_brg = (bearing - hdg_deg + 180) % 360 - 180
+    if max_fov_deg is not None and abs(rel_brg) > max_fov_deg:
+        return None
     dist_ft = dist_nm * 6076.0
     alt_diff = elev_ft - ref_alt_ft
     vert_deg = math.degrees(math.atan2(alt_diff, dist_ft))
@@ -4121,6 +4127,12 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
 
+    # Angular cutoff: skip segments whose endpoint is more than 60° off the
+    # nose — past that the flat-earth bearing math wraps and dashes behind
+    # the aircraft would streak across the AI.  Well beyond the ~40° on-
+    # screen half-FOV so visible dashes are never clipped.
+    _FOV = 60.0
+
     for thresh_lat, thresh_lon, thresh_elev, sign in (
         (r.le_lat, r.le_lon, r.le_elev_ft, -1),
         (r.he_lat, r.he_lon, r.he_elev_ft, +1),
@@ -4134,10 +4146,14 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
             e_lon = thresh_lon + sign * u_dlon * end
             ps = _project_latlon(s_lat, s_lon, lat, lon, alt_ft,
                                  thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg)
+                                 cx, cy, px_per_deg, max_fov_deg=_FOV)
+            if ps is None:
+                continue
             pe = _project_latlon(e_lat, e_lon, lat, lon, alt_ft,
                                  thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg)
+                                 cx, cy, px_per_deg, max_fov_deg=_FOV)
+            if pe is None:
+                continue
             pygame.draw.aaline(surf, col, ps, pe)
 
     surf.set_clip(old_clip)

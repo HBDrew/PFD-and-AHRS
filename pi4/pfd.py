@@ -1756,7 +1756,7 @@ def draw_sim_setup(surf):
 def sim_setup_hit(x, y):
     """Return action string for the sim setup screen tap, or None."""
     # BACK button
-    if 8 <= x <= 80 and 6 <= y <= 37:
+    if _back_hit(x, y):
         return "back"
 
     # Airport preset grid
@@ -2303,6 +2303,29 @@ def _setup_button(surf, bx, by, bw, bh, label, subtitle="", exit_btn=False, r=8)
         _text(surf, subtitle, 11, (155,170,190),           cx=bx+bw//2, cy=ly+lh+10)
 
 
+# ── Header BACK button — sized to comfortably fit the scaled label font ───────
+# On 640×480 the 72 px width is fine; on 1024×600 (FONT_SCALE≈1.25) the arrow
+# + "BACK" at 19pt bold exceeds 72 px, so we scale width with the font.
+try:
+    from config import FONT_SCALE as _FS_FOR_BACK
+except ImportError:
+    _FS_FOR_BACK = 1.0
+_BACK_BX = 8
+_BACK_BY = 6
+_BACK_BW = max(72, int(72 * _FS_FOR_BACK + 0.5))
+_BACK_BH = 31
+
+
+def _draw_back_button(surf):
+    _setup_button(surf, _BACK_BX, _BACK_BY, _BACK_BW, _BACK_BH,
+                  "\u2190 BACK", r=5)
+
+
+def _back_hit(x, y):
+    return (_BACK_BX <= x <= _BACK_BX + _BACK_BW
+            and _BACK_BY <= y <= _BACK_BY + _BACK_BH)
+
+
 def draw_setup_screen(surf):
     """Full-screen setup main menu — entered via 2-finger hold."""
     surf.fill((0, 8, 22))
@@ -2461,7 +2484,7 @@ def draw_flight_profile(surf, fp_vals):
     surf.fill((0, 8, 22))
     pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
-    _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
+    _draw_back_button(surf)
     _text(surf, "FLIGHT PROFILE", 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
 
     MX=_FP_MX; GAP=_FP_GAP
@@ -2496,7 +2519,7 @@ def flight_profile_hit(x, y, fp_vals):
     """Return the field key tapped, or None."""
     MX=_FP_MX; GAP=_FP_GAP; FW=DISPLAY_W-2*MX
     # BACK button
-    if 8<=x<=80 and 6<=y<=37:
+    if _back_hit(x, y):
         return "__back__"
     # Aircraft fields
     fy = _FP_Y0
@@ -2613,7 +2636,7 @@ def _screen_header(surf, title):
     surf.fill((0, 8, 22))
     pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
-    _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
+    _draw_back_button(surf)
     _text(surf, title, 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
 
 
@@ -2747,7 +2770,7 @@ def draw_display_setup(surf, ds):
 
 def display_setup_hit(x, y, ds):
     """Return action string or None."""
-    if 8 <= x <= 80 and 6 <= y <= 37:
+    if _back_hit(x, y):
         return "back"
     for ri, row in enumerate(_DSP_ROWS):
         key, *_, opts_v, opts_l, bw_each = row
@@ -2874,7 +2897,7 @@ def draw_ahrs_setup(surf, ss):
 
 
 def ahrs_setup_hit(x, y, ss):
-    if 8 <= x <= 80 and 6 <= y <= 37:
+    if _back_hit(x, y):
         return "back"
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
@@ -2982,7 +3005,7 @@ def draw_connectivity_setup(surf, cs):
 
 
 def connectivity_setup_hit(x, y, cs):
-    if 8 <= x <= 80 and 6 <= y <= 37:
+    if _back_hit(x, y):
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     # Editable field rows
@@ -3108,7 +3131,7 @@ def draw_system_setup(surf):
 
 
 def system_setup_hit(x, y):
-    if 8 <= x <= 80 and 6 <= y <= 37:
+    if _back_hit(x, y):
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
@@ -3460,7 +3483,7 @@ def draw_obstacle_data(surf, od):
 
 def obstacle_data_hit(x, y, od):
     """Return action string or None."""
-    if 8 <= x <= 80 and 6 <= y <= 37:
+    if _back_hit(x, y):
         return "back"
     bx = _OD_MX; bw = DISPLAY_W - 2*_OD_MX
     btn_y = 92 + 90 + 14   # info_y + info_h + 14
@@ -3721,7 +3744,7 @@ def draw_airport_data(surf, ad):
 
 def airport_data_hit(x, y, ad):
     """Return action string or None."""
-    if 8 <= x <= 80 and 6 <= y <= 37:
+    if _back_hit(x, y):
         return "back"
     bx = _AD_MX; bw = DISPLAY_W - 2*_AD_MX
     btn_y = 92 + 90 + 14
@@ -3852,7 +3875,7 @@ def draw_terrain_data(surf, td):
 
 def terrain_data_hit(x, y, td):
     """Return action string or None."""
-    if 8 <= x <= 80 and 6 <= y <= 37:
+    if _back_hit(x, y):
         return "back"
     bx = _TD_MX; bw = DISPLAY_W - 2*_TD_MX
     rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
@@ -4205,10 +4228,13 @@ _CENTERLINE_DASH_NM        = 0.5    # dash length (nm)
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
                     elev_ft, hdg_deg, pitch_deg, roll_deg,
-                    cx, cy, px_per_deg):
+                    cx, cy, px_per_deg, max_fov_deg=None):
     """Project a lat/lon/elevation point onto the AI screen.
     Uses the same flat-earth atan2 math as obstacle/airport symbols so
-    everything stays aligned.  Returns (sx, sy)."""
+    everything stays aligned.  Returns (sx, sy), or ``None`` when the point
+    is more than ``max_fov_deg`` off the nose — used by the extended-
+    centerline renderer so far-field dashes behind the aircraft (where the
+    flat-earth projection wraps and would streak across the AI) are culled."""
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
     dlat_nm = (lat_deg - ref_lat) * nm_per_deg_lat
@@ -4218,6 +4244,8 @@ def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
         return (cx, cy)
     bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
     rel_brg = (bearing - hdg_deg + 180) % 360 - 180
+    if max_fov_deg is not None and abs(rel_brg) > max_fov_deg:
+        return None
     dist_ft = dist_nm * 6076.0
     alt_diff = elev_ft - ref_alt_ft
     vert_deg = math.degrees(math.atan2(alt_diff, dist_ft))
@@ -4351,6 +4379,13 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
 
+    # Angular cutoff: skip segments whose endpoint is more than 60° off the
+    # nose — past that the flat-earth bearing math wraps and dashes behind
+    # the aircraft would streak horizontally across the AI.  60° is well
+    # beyond the ~40° half-FOV implied by px_per_deg so on-screen dashes
+    # are never clipped.
+    _FOV = 60.0
+
     # For each threshold, extend OUTWARD (opposite of the axis toward the
     # other end).  For LE: step in -u direction.  For HE: step in +u.
     for thresh_lat, thresh_lon, thresh_elev, sign in (
@@ -4366,10 +4401,14 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
             e_lon = thresh_lon + sign * u_dlon * end
             ps = _project_latlon(s_lat, s_lon, lat, lon, alt_ft,
                                  thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg)
+                                 cx, cy, px_per_deg, max_fov_deg=_FOV)
+            if ps is None:
+                continue
             pe = _project_latlon(e_lat, e_lon, lat, lon, alt_ft,
                                  thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg)
+                                 cx, cy, px_per_deg, max_fov_deg=_FOV)
+            if pe is None:
+                continue
             pygame.draw.aaline(surf, col, ps, pe)
 
     surf.set_clip(old_clip)

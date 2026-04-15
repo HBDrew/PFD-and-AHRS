@@ -597,7 +597,7 @@ Twelve US airports are available.  Selecting one sets the aircraft's initial GPS
 | KSFO | San Francisco, CA | 13 ft |
 | KLAS | Las Vegas, NV | 2141 ft |
 | KSEA | Seattle, WA | 433 ft |
-| KATL | Atlanta, GA | 1026 ft |
+| KOSH | Oshkosh, WI | 808 ft |
 | KJFK | New York, NY | 13 ft |
 | KORD | Chicago, IL | 668 ft |
 | KDFW | Dallas, TX | 603 ft |

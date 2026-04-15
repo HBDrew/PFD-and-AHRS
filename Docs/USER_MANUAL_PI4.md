@@ -25,8 +25,9 @@
 13. [System](#13-system)
 14. [Terrain Data Download](#14-terrain-data-download)
 15. [Obstacle Data Download](#15-obstacle-data-download)
-16. [Demo Mode](#16-demo-mode)
-17. [Flight Simulator](#17-flight-simulator)
+16. [Airport Data Download](#16-airport-data-download)
+17. [Demo Mode](#17-demo-mode)
+18. [Flight Simulator](#18-flight-simulator)
 
 ---
 
@@ -86,7 +87,7 @@ A chevron marker tracks the speed bug. Tap the readout button at the **top** of 
 
 ## 3. Altitude Tape and VSI
 
-![Descending final approach](../pi4/previews/preview_sedona_approach.png)
+![Descending final approach](../pi4/previews/pfd_gl/preview_sedona_approach.png)
 
 ### Altitude tape
 
@@ -113,11 +114,17 @@ Green/amber bar along the inner edge of the alt tape. ±2000 fpm scale. Amber ab
 
 ## 4. Attitude Indicator
 
+![Level cruise over Sedona — SVT, distance grid, sun-angle shading](../pi4/previews/pfd_gl/preview_sedona_level.png)
+
 ### Synthetic vision background
 
 The Pi 4 renders a **full 3D Synthetic Vision Terrain (SVT)** background behind the attitude indicator using OpenGL ES. A terrain mesh is built from SRTM elevation data within a 20 nm radius of the aircraft and rendered through a true perspective projection from the aircraft's position.
 
 **Key capability:** Unlike 2D scanline renderers, the OpenGL SVT shows terrain features that are **above the aircraft's altitude** — mountain peaks and ridges rise **above the horizon line** in correct geometric perspective. This gives the pilot a natural, out-the-window view of the terrain environment.
+
+![Climbing left turn — banked terrain mesh, grid follows roll](../pi4/previews/pfd_gl/preview_sedona_climb_turn.png)
+
+![Combined SVT + airports + obstacles near Sedona](../pi4/previews/pfd_gl/preview_svt_airports_obstacles.png)
 
 #### Clearance colouring
 
@@ -176,9 +183,9 @@ Graduated arc at the top of the AI implementing the **sky-pointer** convention. 
 
 Amber swept-delta wing symbol fixed at AI centre.
 
-### Slip ball
+### Slip/skid indicator
 
-White ball, deflects laterally with lateral acceleration. Centred = coordinated flight.
+A short white horizontal bar (16×4 px) sits below the roll pointer's doghouse base and slides laterally with uncoordinated flight. Centred under the zero-bank triangle = ball-centered, coordinated flight. The bar moves in the same direction as the imaginary ball of a conventional inclinometer — step on the rudder toward the bar to re-centre it.
 
 ### Terrain / obstacle proximity alert
 
@@ -194,7 +201,7 @@ Requires GPS fix and SRTM tiles or obstacle data loaded.
 
 ### Heading source modes
 
-![Heading tape — MAG mode](../pi4/previews/preview_sedona_level.png)
+![Heading tape — MAG mode](../pi4/previews/pfd_gl/preview_sedona_level.png)
 
 **MAG mode (default):** Magnetometer heading. Dim border, `M` subscript.
 
@@ -202,7 +209,7 @@ Requires GPS fix and SRTM tiles or obstacle data loaded.
 
 ### Track pointer
 
-In MAG mode with GPS fix, a **cyan** tick shows GPS ground track (wind/crab indication).
+In MAG mode with GPS fix, a **magenta** tick shows GPS ground track (wind/crab indication). Magenta matches the PFD's data-source convention: GPS-derived values and indicators are magenta; sensor-derived values are cyan.
 
 ### Heading bug
 
@@ -348,7 +355,7 @@ Red dot = lit obstacle. 28-day update cycle.
 
 ---
 
-## 15A. Airport Data Download
+## 16. Airport Data Download
 
 ![Airport data screen — loaded](../pi4/previews/preview_airport_loaded.png)
 
@@ -413,7 +420,7 @@ The Pi 4 must be on an internet-reachable network to download. Use the Connectiv
 
 ---
 
-## 16. Demo Mode
+## 17. Demo Mode
 
 Scripted Sedona, AZ flight. No hardware needed.
 
@@ -426,7 +433,7 @@ Cycles: level cruise → climbing left turn → level → descending right turn.
 
 ---
 
-## 17. Flight Simulator
+## 18. Flight Simulator
 
 Autopilot holds heading, altitude, speed bugs. 12 US airport presets. Failure injection (GPS/BARO/AHRS). Tap `SIM` watermark for controls.
 

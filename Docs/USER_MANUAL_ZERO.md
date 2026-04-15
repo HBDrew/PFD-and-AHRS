@@ -25,8 +25,9 @@
 13. [System](#13-system)
 14. [Terrain Data Download](#14-terrain-data-download)
 15. [Obstacle Data Download](#15-obstacle-data-download)
-16. [Demo Mode](#16-demo-mode)
-17. [Flight Simulator](#17-flight-simulator)
+16. [Airport Data Download](#16-airport-data-download)
+17. [Demo Mode](#17-demo-mode)
+18. [Flight Simulator](#18-flight-simulator)
 
 ---
 
@@ -135,9 +136,9 @@ A graduated arc at the top of the AI shows bank angle using the **sky-pointer** 
 
 An amber swept-delta wing symbol sits fixed at the AI centre.
 
-### Slip ball
+### Slip/skid indicator
 
-A white ball in the slip/skid indicator sits at the bottom of the AI. Ball centred = coordinated flight.
+A short white horizontal bar (16×4 px) sits below the roll pointer's doghouse base and slides laterally with uncoordinated flight. Centred under the zero-bank triangle = coordinated flight. Step on the rudder toward the bar to re-centre it — the direction mimics the ball of a conventional turn-coordinator inclinometer.
 
 ### Terrain / obstacle proximity alert
 
@@ -163,7 +164,7 @@ The heading tape runs across the bottom of the screen.
 
 ### Track pointer
 
-When GPS fix is valid and in MAG mode, a **cyan** tick mark shows GPS ground track. Drift between heading and track tick indicates wind.
+When GPS fix is valid and in MAG mode, a **magenta** tick mark shows GPS ground track. Drift between heading and track tick indicates wind. Magenta matches the PFD's data-source convention: GPS-derived values and indicators are magenta; sensor-derived values are cyan.
 
 ### Heading bug
 
@@ -392,7 +393,7 @@ Red dot above symbol = lit obstacle. FAA publishes new data every 28 days.
 
 ---
 
-## 15A. Airport Data Download
+## 16. Airport Data Download
 
 ![Airport data screen — loaded](../pi_zero/previews/preview_airport_loaded.png)
 
@@ -455,7 +456,7 @@ The Pi Zero must be on an internet-reachable network to download. Switch to home
 
 ---
 
-## 16. Demo Mode
+## 17. Demo Mode
 
 Scripted flight over **Sedona, Arizona (KSEZ)** without Pico W hardware.
 
@@ -474,7 +475,7 @@ Press **D** on a keyboard to toggle demo mode during bench testing.
 
 ---
 
-## 17. Flight Simulator
+## 18. Flight Simulator
 
 Physics-based autopilot that holds heading, altitude, and speed bugs.
 
@@ -482,7 +483,7 @@ Physics-based autopilot that holds heading, altitude, and speed bugs.
 Setup → System → FLIGHT SIMULATOR → select airport → START.
 
 ### 12 airport presets
-KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KATL, KJFK, KORD, KDFW, KMIA.
+KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA.
 
 ### Failure injection
 Toggle GPS, BARO, or AHRS between ON and FAIL via SIM CONTROLS overlay. Tap the `SIM` watermark to open controls.

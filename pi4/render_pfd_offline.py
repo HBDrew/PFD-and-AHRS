@@ -205,6 +205,21 @@ def main():
         pygame.image.save(surf, outpath)
         print(f"  → {os.path.basename(outpath)}")
 
+    # Airport data "downloading" variant (no record counts yet, progress string set)
+    pfd.disp["mode"] = "airport_data"
+    pfd.disp["ad"]["downloading"] = True
+    pfd.disp["ad"]["records"]     = 0
+    pfd.disp["ad"]["used_mb"]     = 0.0
+    pfd.disp["ad"]["dl_status"]   = "Downloading\u2026 42%  (5,280 / 12,500 KB)"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_airport_downloading.png"))
+    print("  → preview_airport_downloading.png")
+    # Restore loaded state so any later scenes see normal stats
+    pfd.disp["ad"]["downloading"] = False
+    pfd.disp["ad"]["records"]     = 72007
+    pfd.disp["ad"]["used_mb"]     = 12.3
+    pfd.disp["ad"]["dl_status"]   = "Done \u2713  72,007 airports loaded"
+
     print("\nDone.")
 
 

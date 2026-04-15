@@ -98,7 +98,7 @@
 |------|--------|----------------|--------|-------|
 | 1.6.1 | Enter setup; tap **SYSTEM** | System screen opens | | |
 | 1.6.2 | Tap **FLIGHT SIMULATOR** tile | Simulator setup screen opens with airport grid | | |
-| 1.6.3 | Confirm 12 airport presets visible | KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KATL, KJFK, KORD, KDFW, KMIA | | |
+| 1.6.3 | Confirm 12 airport presets visible | KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA | | |
 | 1.6.4 | Tap **KSEZ** (Sedona AZ) | Preset highlights cyan | | |
 | 1.6.5 | Tap **START** | PFD returns; `SIM` watermark visible at AI centre | | |
 | 1.6.6 | Observe aircraft behaviour | Speed, altitude, heading hold set values | | |
