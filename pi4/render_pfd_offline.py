@@ -41,7 +41,9 @@ import pfd
 from config import (DISPLAY_W, DISPLAY_H, BARO_DEFAULT_HPA,
                     DEMO_LAT, DEMO_LON)
 
-# Same scenes as the regular --screenshots batch mode
+# Same scenes as the regular --screenshots batch mode.
+# Each scene: (name, roll, pitch, hdg, alt, speed, vspeed, ay, [lat, lon])
+# Optional lat/lon trailing entries override DEMO_LAT/DEMO_LON.
 SCENES = [
     ("preview_sedona_level",       0,   2, 133, 8500, 115,    0,   0),
     ("preview_sedona_climb_turn", -18,  6, 145, 7800, 95,   500, 0.12),
@@ -52,6 +54,11 @@ SCENES = [
     # Combined SVT + airport + obstacle: approaching Sedona (KSEZ) from NE at
     # pattern altitude with a tall tower in view and rising terrain all around.
     ("preview_svt_airports_obstacles", -4, -2, 226, 5500, 85, -300, 0),
+    # Dedicated runway approach scene: short final to KSEZ RWY 03, ~2.5 NM
+    # SSW of the threshold on a 3° glideslope at ~700 ft AGL.  Shows runway
+    # polygons and extended dashed centerlines prominently.
+    ("preview_runway_approach",    0,  -3,  33, 5500,  80, -500,   0,
+                                   34.809, -111.823),
 ]
 
 
@@ -159,8 +166,11 @@ def main():
     print(f"SVT_RENDERER: {pfd.SVT_RENDERER}  GL_AVAILABLE: {pfd._SVT_GL_AVAILABLE}")
     print()
 
-    for name, roll, pitch, hdg, alt, speed, vspeed, ay in SCENES:
-        seed_state(roll, pitch, hdg, alt, speed, vspeed, ay)
+    for scene in SCENES:
+        name, roll, pitch, hdg, alt, speed, vspeed, ay = scene[:8]
+        lat = scene[8] if len(scene) > 8 else DEMO_LAT
+        lon = scene[9] if len(scene) > 9 else DEMO_LON
+        seed_state(roll, pitch, hdg, alt, speed, vspeed, ay, lat, lon)
         pfd.smooth_state()
         pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
         outpath = os.path.join(args.outdir, f"{name}.png")

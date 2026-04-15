@@ -37,6 +37,7 @@ from sse_client import SSEClient
 from terrain import get_elevation_ft   # elevation lookup only — no SVT renderer
 import obstacles as obs_mod
 import airports as apt_mod
+import runways as rwy_mod
 import settings as _settings
 
 DEG = math.pi / 180
@@ -113,6 +114,7 @@ disp["od"] = {                      # obstacle download/parse state
 }
 _obstacles = None           # loaded obstacle array (module-level)
 _airports  = None           # loaded airport array (module-level)
+_runways   = None           # loaded runway array (module-level)
 disp["ad"] = {                      # airport download/parse state
     "downloading": False,
     "dl_status":   "",
@@ -128,6 +130,9 @@ disp["ad"] = {                      # airport download/parse state
     "show_heli":     True,
     "show_seaplane": False,
     "show_other":    False,
+    # Runway polygons + extended centerlines
+    "show_runways":     True,
+    "show_centerlines": True,
 }
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
@@ -3355,13 +3360,16 @@ def obstacle_data_hit(x, y, od):
 _AD_MX = 12
 
 def _ad_load_airports():
-    """(Re-)load the airport cache into module-level _airports."""
-    global _airports
+    """(Re-)load the airport + runway caches into module-level arrays."""
+    global _airports, _runways
     os.makedirs(AIRPORT_DIR, exist_ok=True)
     _airports = apt_mod.load(AIRPORT_DIR)
+    _runways  = rwy_mod.load(AIRPORT_DIR)
     cnt, mb = apt_mod.disk_stats(AIRPORT_DIR)
+    rcnt, rmb = rwy_mod.disk_stats(AIRPORT_DIR)
     disp["ad"]["records"] = cnt
-    disp["ad"]["used_mb"] = mb
+    disp["ad"]["used_mb"] = mb + rmb
+    disp["ad"]["runway_count"] = rcnt
     dl_date = apt_mod.download_date(AIRPORT_DIR)
     disp["ad"]["dl_date"] = dl_date
     if dl_date is not None:
@@ -3379,50 +3387,57 @@ def _ad_download_thread():
     ad["downloading"] = True
     ad["dl_cancel"]   = False
     ad["dl_status"]   = "Connecting to OurAirports\u2026"
-
     os.makedirs(AIRPORT_DIR, exist_ok=True)
-    csv_path   = os.path.join(AIRPORT_DIR, apt_mod.CSV_FILENAME)
-    cache_path = os.path.join(AIRPORT_DIR, apt_mod.CACHE_FILENAME)
 
-    try:
-        ad["dl_status"] = "Downloading airports.csv\u2026"
-        req = urllib.request.Request(
-            apt_mod.AIRPORTS_CSV_URL,
-            headers={"User-Agent": "PFD-AHRS/1.0"}
-        )
+    def _download_file(url, path, label):
+        ad["dl_status"] = f"Downloading {label}\u2026"
+        req = urllib.request.Request(url, headers={"User-Agent": "PFD-AHRS/1.0"})
         with urllib.request.urlopen(req, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
-            chunk_size = 65536
-            with open(csv_path + ".tmp", "wb") as out:
+            with open(path + ".tmp", "wb") as out:
                 while True:
                     if ad["dl_cancel"]:
-                        ad["dl_status"]   = "Cancelled"
-                        ad["downloading"] = False
-                        try: os.remove(csv_path + ".tmp")
+                        try: os.remove(path + ".tmp")
                         except Exception: pass
-                        return
-                    chunk = resp.read(chunk_size)
+                        return False
+                    chunk = resp.read(65536)
                     if not chunk:
                         break
                     out.write(chunk)
                     downloaded += len(chunk)
                     if total:
                         pct = int(downloaded * 100 / total)
-                        ad["dl_status"] = f"Downloading\u2026 {pct}%  ({downloaded//1024} / {total//1024} KB)"
+                        ad["dl_status"] = f"{label}: {pct}%  ({downloaded//1024} / {total//1024} KB)"
                     else:
-                        ad["dl_status"] = f"Downloading\u2026 {downloaded//1024} KB"
+                        ad["dl_status"] = f"{label}: {downloaded//1024} KB"
+        os.replace(path + ".tmp", path)
+        return True
 
-        os.replace(csv_path + ".tmp", csv_path)
-        try: os.remove(cache_path)
-        except Exception: pass
+    csv_apt   = os.path.join(AIRPORT_DIR, apt_mod.CSV_FILENAME)
+    csv_rwy   = os.path.join(AIRPORT_DIR, rwy_mod.CSV_FILENAME)
+    cache_apt = os.path.join(AIRPORT_DIR, apt_mod.CACHE_FILENAME)
+    cache_rwy = os.path.join(AIRPORT_DIR, rwy_mod.CACHE_FILENAME)
 
-        ad["dl_status"] = "Parsing airport records\u2026"
+    try:
+        if not _download_file(apt_mod.AIRPORTS_CSV_URL, csv_apt, "airports.csv"):
+            ad["dl_status"]   = "Cancelled"
+            ad["downloading"] = False
+            return
+        if not _download_file(rwy_mod.RUNWAYS_CSV_URL, csv_rwy, "runways.csv"):
+            ad["dl_status"]   = "Cancelled"
+            ad["downloading"] = False
+            return
+        for p in (cache_apt, cache_rwy):
+            try: os.remove(p)
+            except Exception: pass
+        ad["dl_status"] = "Parsing airport + runway records\u2026"
         ad["parsing"]   = True
         _ad_load_airports()
         ad["parsing"]   = False
         cnt = ad["records"]
-        ad["dl_status"] = f"Done \u2713  {cnt:,} airports loaded"
+        rwy_cnt = ad.get("runway_count", 0)
+        ad["dl_status"] = f"Done \u2713  {cnt:,} apts, {rwy_cnt:,} rwys"
     except Exception as exc:
         ad["dl_status"] = f"Error: {exc}"
     finally:
@@ -3521,7 +3536,7 @@ def draw_airport_data(surf, ad):
 
     # ── Display filters — toggle which airport types render on the AI ────
     filt_y = prog_y + prog_h + 12
-    filt_h = 34
+    filt_h = 30
     _text(surf, "Display filters:", 10, (140,160,185), x=bx+6, y=filt_y-12)
     bt_w = (bw - 30) // 4
     for i, (key, lbl) in enumerate([("show_public",   "PUBLIC"),
@@ -3530,6 +3545,13 @@ def draw_airport_data(surf, ad):
                                      ("show_other",    "OTHER")]):
         bxi = bx + i * (bt_w + 10)
         _seg_btn(surf, bxi, filt_y, bt_w, filt_h, lbl, ad.get(key, False), r=5)
+    # Row 2: runway + centerline
+    row2_y = filt_y + filt_h + 6
+    big_w = (bw - 10) // 2
+    _seg_btn(surf, bx,              row2_y, big_w, filt_h,
+             "RUNWAYS", ad.get("show_runways", False), r=5)
+    _seg_btn(surf, bx + big_w + 10, row2_y, big_w, filt_h,
+             "EXT C/LINES", ad.get("show_centerlines", False), r=5)
 
 
 def airport_data_hit(x, y, ad):
@@ -3542,7 +3564,7 @@ def airport_data_hit(x, y, ad):
     prog_y = btn_y + btn_h + 8
     prog_h = 40
     filt_y = prog_y + prog_h + 12
-    filt_h = 34
+    filt_h = 30
     bt_w   = (bw - 30) // 4
     if filt_y <= y <= filt_y + filt_h:
         for i, key in enumerate(["show_public", "show_heli",
@@ -3550,6 +3572,14 @@ def airport_data_hit(x, y, ad):
             bxi = bx + i * (bt_w + 10)
             if bxi <= x <= bxi + bt_w:
                 return f"toggle:{key}"
+    # Row 2: runway + centerline
+    row2_y = filt_y + filt_h + 6
+    big_w = (bw - 10) // 2
+    if row2_y <= y <= row2_y + filt_h:
+        if bx <= x <= bx + big_w:
+            return "toggle:show_runways"
+        if bx + big_w + 10 <= x <= bx + big_w + 10 + big_w:
+            return "toggle:show_centerlines"
     if ad.get("downloading"):
         if (bx+bw-70 <= x <= bx+bw and prog_y+4 <= y <= prog_y+32):
             return "cancel"
@@ -3965,6 +3995,154 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
                   cx=sx, cy=sign_y + sign_h // 2)
 
 
+# ── Runway polygons + extended centerlines ───────────────────────────────────
+
+_RUNWAY_MAX_RANGE_NM       = 8.0
+_CENTERLINE_RANGE_NM       = 15.0
+_CENTERLINE_EXTEND_NM      = 10.0
+_CENTERLINE_DASH_NM        = 0.5
+
+
+def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
+                    elev_ft, hdg_deg, pitch_deg, roll_deg,
+                    cx, cy, px_per_deg):
+    nm_per_deg_lat = 60.0
+    nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
+    dlat_nm = (lat_deg - ref_lat) * nm_per_deg_lat
+    dlon_nm = (lon_deg - ref_lon) * nm_per_deg_lon
+    dist_nm = math.hypot(dlat_nm, dlon_nm)
+    if dist_nm < 0.001:
+        return (cx, cy)
+    bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
+    rel_brg = (bearing - hdg_deg + 180) % 360 - 180
+    dist_ft = dist_nm * 6076.0
+    alt_diff = elev_ft - ref_alt_ft
+    vert_deg = math.degrees(math.atan2(alt_diff, dist_ft))
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
+    sxr = rel_brg * px_per_deg
+    syr = -(vert_deg + pitch_deg) * px_per_deg
+    return (int(cx + sxr * cos_r - syr * sin_r),
+            int(cy + sxr * sin_r + syr * cos_r))
+
+
+def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
+                        hdg_deg, pitch_deg, roll_deg):
+    if _runways is None:
+        return
+    ad = disp["ad"]
+    show_rwy   = ad.get("show_runways",     True)
+    show_cline = ad.get("show_centerlines", True)
+    if not (show_rwy or show_cline):
+        return
+    nearby = rwy_mod.query_nearby(_runways, lat, lon,
+                                  radius_nm=max(_RUNWAY_MAX_RANGE_NM,
+                                                _CENTERLINE_RANGE_NM))
+    if not nearby:
+        return
+
+    ax, ay_r, aw, ah = ai_rect
+    cx = ax + aw // 2
+    cy = ay_r + ah // 2
+    px_per_deg = ah / 48.0
+
+    ASPHALT = (60, 60, 65)
+    STRIPE  = (230, 230, 235)
+    CLINE   = (220, 230, 240)
+
+    nm_per_deg_lat = 60.0
+    nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
+
+    def _proj(la, lo, elev):
+        return _project_latlon(la, lo, lat, lon, alt_ft,
+                               elev, hdg_deg, pitch_deg, roll_deg,
+                               cx, cy, px_per_deg)
+
+    def _in_ai(sx, sy):
+        return ax <= sx <= ax + aw and ay_r <= sy <= ay_r + ah
+
+    for r in nearby:
+        d_nm = math.hypot((r.centre_lat - lat) * nm_per_deg_lat,
+                          (r.centre_lon - lon) * nm_per_deg_lon)
+
+        if show_rwy and d_nm <= _RUNWAY_MAX_RANGE_NM:
+            ax_lat = r.he_lat - r.le_lat
+            ax_lon = r.he_lon - r.le_lon
+            axis_len_nm = math.hypot(ax_lat * nm_per_deg_lat,
+                                     ax_lon * nm_per_deg_lon)
+            if axis_len_nm < 0.01:
+                continue
+            perp_lat_nm =  (ax_lon * nm_per_deg_lon) / axis_len_nm
+            perp_lon_nm = -(ax_lat * nm_per_deg_lat) / axis_len_nm
+            half_w_nm = r.width_ft / 6076.0
+            perp_lat = (perp_lat_nm * half_w_nm) / nm_per_deg_lat
+            perp_lon = (perp_lon_nm * half_w_nm) / nm_per_deg_lon
+
+            p1 = _proj(r.le_lat + perp_lat, r.le_lon + perp_lon, r.le_elev_ft)
+            p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, r.he_elev_ft)
+            p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, r.he_elev_ft)
+            p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
+            if _in_ai(*p1) or _in_ai(*p2) or _in_ai(*p3) or _in_ai(*p4):
+                old_clip = surf.get_clip()
+                surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
+                pygame.gfxdraw.filled_polygon(surf, [p1, p2, p3, p4], ASPHALT)
+                pygame.gfxdraw.aapolygon(surf, [p1, p2, p3, p4], STRIPE)
+                mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
+                mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
+                pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
+                surf.set_clip(old_clip)
+
+        if show_cline and d_nm <= _CENTERLINE_RANGE_NM:
+            _draw_extended_centerline(
+                surf, ai_rect, r, lat, lon, alt_ft,
+                hdg_deg, pitch_deg, roll_deg, cx, cy, px_per_deg,
+                CLINE, nm_per_deg_lat, nm_per_deg_lon,
+            )
+
+
+def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
+                              hdg_deg, pitch_deg, roll_deg,
+                              cx, cy, px_per_deg, col,
+                              nm_per_deg_lat, nm_per_deg_lon):
+    ax, ay_r, aw, ah = ai_rect
+    ax_dlat = r.he_lat - r.le_lat
+    ax_dlon = r.he_lon - r.le_lon
+    axis_len_nm = math.hypot(ax_dlat * nm_per_deg_lat,
+                             ax_dlon * nm_per_deg_lon)
+    if axis_len_nm < 0.01:
+        return
+    u_dlat = ax_dlat / axis_len_nm
+    u_dlon = ax_dlon / axis_len_nm
+
+    dash_nm = _CENTERLINE_DASH_NM
+    gap_nm  = _CENTERLINE_DASH_NM * 0.6
+    n_steps = int(_CENTERLINE_EXTEND_NM / (dash_nm + gap_nm))
+
+    old_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
+
+    for thresh_lat, thresh_lon, thresh_elev, sign in (
+        (r.le_lat, r.le_lon, r.le_elev_ft, -1),
+        (r.he_lat, r.he_lon, r.he_elev_ft, +1),
+    ):
+        for i in range(n_steps):
+            start = (dash_nm + gap_nm) * i
+            end   = start + dash_nm
+            s_lat = thresh_lat + sign * u_dlat * start
+            s_lon = thresh_lon + sign * u_dlon * start
+            e_lat = thresh_lat + sign * u_dlat * end
+            e_lon = thresh_lon + sign * u_dlon * end
+            ps = _project_latlon(s_lat, s_lon, lat, lon, alt_ft,
+                                 thresh_elev, hdg_deg, pitch_deg, roll_deg,
+                                 cx, cy, px_per_deg)
+            pe = _project_latlon(e_lat, e_lon, lat, lon, alt_ft,
+                                 thresh_elev, hdg_deg, pitch_deg, roll_deg,
+                                 cx, cy, px_per_deg)
+            pygame.draw.aaline(surf, col, ps, pe)
+
+    surf.set_clip(old_clip)
+
+
 # ── Main render function ──────────────────────────────────────────────────────
 def render(surf, demo_mode, connected, data_stale=False):
     mode = disp.get("mode", "pfd")
@@ -4074,11 +4252,15 @@ def render(surf, demo_mode, connected, data_stale=False):
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
     draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
-    # 1b. Airport symbols projected onto AI
+    # 1b. Runway polygons + extended centerlines
+    if _runways is not None and gps_ok:
+        draw_runway_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
+
+    # 1c. Airport symbols projected onto AI
     if _airports is not None and gps_ok:
         draw_airport_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
 
-    # 1c. Obstacle symbols projected onto AI
+    # 1d. Obstacle symbols projected onto AI
     if _obstacles is not None and gps_ok:
         draw_obstacle_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
 
@@ -4421,6 +4603,11 @@ def main():
 
         _seed(roll=0,   pitch=-3, hdg=200, alt=5800, speed=90,  vspeed=-700)
         _save("preview_sedona_approach.png")
+
+        # Short final KSEZ RWY 03: shows runway polygons + extended centerlines
+        _seed(roll=0, pitch=-3, hdg=33, alt=5500, speed=80, vspeed=-500,
+              lat=34.809, lon=-111.823)
+        _save("preview_runway_approach.png")
 
         _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115, hdg_src="gps")
         _save("preview_gps_trk_mode.png")

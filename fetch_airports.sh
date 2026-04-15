@@ -18,32 +18,39 @@
 set -e
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-URL="https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
+APT_URL="https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
+RWY_URL="https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/runways.csv"
 
 VERSIONS=("pi_zero" "pi4")
 if [ $# -gt 0 ]; then
   VERSIONS=("$@")
 fi
 
-for V in "${VERSIONS[@]}"; do
-  DEST_DIR="$REPO_DIR/$V/data/airports"
-  mkdir -p "$DEST_DIR"
-  DEST="$DEST_DIR/airports.csv"
-
-  echo "Downloading airport database → $DEST"
+fetch_one() {
+  local url="$1"
+  local dest="$2"
+  local label="$3"
+  echo "Downloading $label → $dest"
   if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --silent --show-error -o "$DEST" "$URL"
+    curl -L --fail --silent --show-error -o "$dest" "$url"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$DEST" "$URL"
+    wget -q -O "$dest" "$url"
   else
     echo "ERROR: need curl or wget."; exit 1
   fi
-
-  size=$(stat -c%s "$DEST" 2>/dev/null || stat -f%z "$DEST")
+  size=$(stat -c%s "$dest" 2>/dev/null || stat -f%z "$dest")
   echo "  → $(printf '%.1f' $(echo "$size / 1024 / 1024" | bc -l)) MB"
+}
 
-  # Invalidate the old numpy cache so it rebuilds on next launch
-  rm -f "$DEST_DIR/airports_cache.npy"
+for V in "${VERSIONS[@]}"; do
+  DEST_DIR="$REPO_DIR/$V/data/airports"
+  mkdir -p "$DEST_DIR"
+
+  fetch_one "$APT_URL" "$DEST_DIR/airports.csv" "airports"
+  fetch_one "$RWY_URL" "$DEST_DIR/runways.csv"  "runways"
+
+  # Invalidate old numpy caches so they rebuild on next launch
+  rm -f "$DEST_DIR/airports_cache.npy" "$DEST_DIR/runways_cache.npy"
 done
 
 echo ""
