@@ -4196,10 +4196,8 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
         screen_x_raw = rel_brg * PX_PER_DEG
         screen_y_raw = -(vert_deg + pitch_deg) * PX_PER_DEG
-        # Cull airports near or above the horizon — the road-sign post
-        # extends ~35 px above the symbol and during banks it crosses the
-        # tilted horizon line.  A 40 px margin (~3.5°) prevents this.
-        if screen_y_raw < 40:
+        # Cull airports that project above the horizon
+        if screen_y_raw < 0:
             continue
         sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
         sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
@@ -4289,7 +4287,7 @@ def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
     vert_deg = math.degrees(math.atan2(alt_diff, dist_ft))
     sxr = rel_brg * px_per_deg
     syr = -(vert_deg + pitch_deg) * px_per_deg
-    if ground_only and syr < 10:
+    if ground_only and syr < 0:
         return None
     cos_r = math.cos(math.radians(roll_deg))
     sin_r = math.sin(math.radians(roll_deg))

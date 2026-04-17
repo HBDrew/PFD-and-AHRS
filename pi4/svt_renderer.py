@@ -67,7 +67,7 @@ def render_svt(
     alt_ft: float,
     lat: float,
     lon: float,
-    v_fov_deg: float = 40.0,
+    v_fov_deg: float = 48.0,
     h_fov_deg: float = 55.0,
 ) -> pygame.Surface:
     """
