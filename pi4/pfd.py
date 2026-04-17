@@ -46,7 +46,7 @@ from svt_renderer import render_svt as render_svt_pygame
 # Pi 4 hardware — the standalone EGL context locks the V3D GPU and prevents
 # pygame's KMS/DRM display from rendering.  The pygame scanline SVT works
 # at ~17 fps in the meantime.  Set _FORCE_PYGAME_SVT = False to re-test.
-_FORCE_PYGAME_SVT = True
+_FORCE_PYGAME_SVT = False
 try:
     from svt_renderer_gl import render_svt_gl, is_available as _gl_available
     _SVT_GL_AVAILABLE = False if _FORCE_PYGAME_SVT else _gl_available()

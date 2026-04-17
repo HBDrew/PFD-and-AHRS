@@ -286,10 +286,22 @@ def _init_gl(width: int, height: int) -> bool:
         return True
 
     if _ctx is None:
-        try:
-            _ctx = moderngl.create_standalone_context(backend='egl', require=300)
-        except Exception as e:
-            print(f"[SVT-GL] EGL context creation failed: {e}")
+        # Try each EGL device index — on Pi 4 device 0 is typically the
+        # KMS display card (conflicts with pygame) and device 1 is the
+        # render-only node (/dev/dri/renderD128) which can coexist.
+        for dev_idx in (1, 0, None):
+            try:
+                kw = dict(backend='egl', require=300)
+                if dev_idx is not None:
+                    kw['device_index'] = dev_idx
+                _ctx = moderngl.create_standalone_context(**kw)
+                renderer = _ctx.info.get("GL_RENDERER", "?")
+                print(f"[SVT-GL] EGL context OK (device_index={dev_idx}): {renderer}")
+                break
+            except Exception as e:
+                print(f"[SVT-GL] EGL device_index={dev_idx} failed: {e}")
+                _ctx = None
+        if _ctx is None:
             return False
 
     # (Re)allocate FBO at requested size
