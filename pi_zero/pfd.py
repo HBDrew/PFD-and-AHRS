@@ -931,8 +931,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     # Inner: hundreds + tens at same font as drum, cascade-rolling
     _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 24,
-                  power_offset=1, suppress_leading=True,
-                  show_adjacent=True, adj_slot_h=12)
+                  power_offset=1, suppress_leading=True)
     # Drum: units digit, adjacent digits ~50% visible
     _rolling_drum(surf, SPD_X + 48, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 24,
                   show_adjacent=True, adj_slot_h=23)

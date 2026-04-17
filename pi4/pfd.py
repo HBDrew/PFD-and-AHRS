@@ -1057,8 +1057,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     _rolling_drum(surf, _sp + _ptr_r + 1, TAPE_MID - _half_in + 1, _inn_w - 2, _half_in * 2 - 2, speed, 2, spd_col, 24,
-                  power_offset=1, suppress_leading=True,
-                  show_adjacent=True, adj_slot_h=int(12 * _fs))
+                  power_offset=1, suppress_leading=True)
     _rolling_drum(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2, speed, 1, spd_col, 24,
                   show_adjacent=True, adj_slot_h=int(23 * _fs))
     _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2)

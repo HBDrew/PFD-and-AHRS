@@ -45,6 +45,22 @@ Target: symbol overlay in pi4/pi_zero.
 Context: draw 1 nm / 2 nm / 5 nm distance rings on the SVT so pilot
 has spatial reference for nearby airports/obstacles.
 
+### ONES-ROLL-ASYM  Ones drum "1 above 0" invisible when approaching from below
+Status: **OPEN — COSMETIC**
+Target: `_rolling_drum` in pi4/pi_zero pfd.py.
+Context: IIR smoothing on `disp["speed"]`/`disp["alt"]` converges
+*below* the target integer, so at indicated 100 kt the smoothed
+value sits at ~99.98 for many frames. At value=99.98 the drum math
+gives `d_lo=9, d_hi=0, d_prev=8` — no "1" yet, only "9→0" roll with
+"8" peeking below. At value=100.02 (approaching from above) the math
+gives `d_lo=0, d_hi=1, d_prev=9` and the "1" appears correctly.
+Visible symptom: rolling drum looks asymmetric between climbing-into
+an even hundred and descending-into it. Fix options (not trivial):
+(a) use `round(value)` rather than `int(value)` for d_lo and derive
+scroll from the signed fractional part, (b) change smoothing so it
+converges symmetrically around the target, (c) accept as-is since
+the displayed integer value is correct.
+
 ### #9  Pico W firmware — debug AP not appearing
 Status: **OPEN**
 Target: `firmware/main.py`, `firmware/config.py`.
