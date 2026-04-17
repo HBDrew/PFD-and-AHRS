@@ -28,6 +28,7 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared'))
 
 os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")  # overridden by --sim
+os.environ["SDL_AUDIODRIVER"] = "dummy"  # suppress ALSA underrun spam
 
 import pygame
 import pygame.gfxdraw

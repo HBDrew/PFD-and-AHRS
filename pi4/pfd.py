@@ -31,6 +31,7 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared'))
 
 os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")  # overridden by --sim
+os.environ["SDL_AUDIODRIVER"] = "dummy"  # suppress ALSA underrun spam
 
 import pygame
 import pygame.gfxdraw
@@ -2259,16 +2260,28 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "sim_controls"
                 return True
 
-        # Tap on alt bug button → open numpad
+        # Tap on alt bug button (top of alt tape) → open numpad
         if ALT_X <= x <= DISPLAY_W and 2 <= y <= 2 + _BUG_BTN_H:
             _open_numpad("alt_bug")
             return True
-        # Tap on GS bug button → open numpad
+        # Tap on GS bug button (top of speed tape) → open numpad
         if SPD_X <= x <= SPD_X + SPD_W and 2 <= y <= 2 + _BUG_BTN_H:
             _open_numpad("spd_bug")
             return True
+        # Tap on speed VR readout (centre of speed tape) → open speed numpad
+        if SPD_X <= x <= SPD_X + SPD_W and TAPE_MID - 30 <= y <= TAPE_MID + 30:
+            _open_numpad("spd_bug")
+            return True
+        # Tap on alt VR readout (centre of alt tape) → open alt numpad
+        if ALT_X <= x <= DISPLAY_W and TAPE_MID - 30 <= y <= TAPE_MID + 30:
+            _open_numpad("alt_bug")
+            return True
         # Tap on hdg bug button → open numpad
         if SPD_X <= x <= SPD_X + SPD_W and HDG_Y + 2 <= y <= HDG_Y + 2 + _BUG_BTN_H:
+            _open_numpad("hdg_bug")
+            return True
+        # Tap on heading readout box (centre of heading tape) → open hdg numpad
+        if CX - 40 <= x <= CX + 40 and HDG_Y - 40 <= y <= HDG_Y:
             _open_numpad("hdg_bug")
             return True
         # Tap on baro button → open numpad
@@ -2335,8 +2348,8 @@ _BACK_BY = 6
 _BACK_BW = max(72, int(72 * _FS_FOR_BACK + 0.5))
 _BACK_BH = 31
 
-# Bug tap-button height — scaled so touch targets are comfortable on larger displays
-_BUG_BTN_H = max(22, int(22 * _FS_FOR_BACK + 0.5))
+# Bug tap-button height — match the heading tape height for easy touch
+_BUG_BTN_H = HDG_H
 
 
 def _draw_back_button(surf):
