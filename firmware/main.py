@@ -173,8 +173,23 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
             state['vspeed']   = gps.vspeed_fpm
             state['baro_src'] = 'gps'
 
-        # Heartbeat LED: blink every 2 s (100 × 20 ms)
+        # USB serial output: emit $AHRS,{json} at BROADCAST_HZ so the Pi
+        # can read AHRS data over USB without WiFi.  50 Hz poll / broadcast_hz
+        # gives the tick interval.
         tick += 1
+        usb_interval = max(1, 50 // state['_broadcast_hz'])
+        if tick % usb_interval == 0:
+            try:
+                _usb = {k: state[k] for k in (
+                    'roll','pitch','yaw','ay','lat','lon','speed','track',
+                    'fix','sats','alt','gps_alt','vspeed','baro_src','baro_hpa',
+                    'ahrs_ok','gps_ok','baro_ok','pitch_trim','roll_trim','yaw_trim',
+                )}
+                print('$AHRS,' + ujson.dumps(_usb))
+            except Exception:
+                pass
+
+        # Heartbeat LED: blink every 2 s (100 × 20 ms)
         if tick % 100 == 0:
             led.toggle()
 

@@ -5161,9 +5161,20 @@ def main():
 
     if not demo_mode:
         global _sse_client
-        _sse_client = SSEClient(SSE_URL, state, _state_lock)
-        _sse_client.start()
-        print(f"[PFD] Connecting to {SSE_URL}")
+        # Try USB serial first — direct connection, no WiFi needed
+        try:
+            from serial_client import SerialClient
+            _usb_port = SerialClient.find_port()
+        except ImportError:
+            _usb_port = None
+        if _usb_port:
+            _sse_client = SerialClient(_usb_port, state, _state_lock)
+            _sse_client.start()
+            print(f"[PFD] AHRS via USB serial: {_usb_port}")
+        else:
+            _sse_client = SSEClient(SSE_URL, state, _state_lock)
+            _sse_client.start()
+            print(f"[PFD] AHRS via WiFi SSE: {SSE_URL}")
         threading.Thread(target=_poll_wifi_status, daemon=True,
                          name="WiFiPoll").start()
     else:
