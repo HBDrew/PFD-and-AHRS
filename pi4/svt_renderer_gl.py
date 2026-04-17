@@ -561,10 +561,18 @@ def render_svt_gl(
 
 
 def is_available() -> bool:
-    """Return True if the GL backend can be initialised."""
+    """Lightweight check — can we create an EGL context at all?
+    Does NOT keep the context alive (that would lock the GPU and prevent
+    pygame's KMS/DRM display from initialising).  The real context is
+    created lazily on first render via _init_gl()."""
     if not (HAS_MODERNGL and HAS_NUMPY):
         return False
     try:
-        return _init_gl(64, 64)
-    except Exception:
+        ctx = moderngl.create_standalone_context(backend='egl', require=300)
+        renderer = ctx.info.get("GL_RENDERER", "unknown")
+        print(f"[SVT-GL] EGL probe OK: {renderer}")
+        ctx.release()
+        return True
+    except Exception as e:
+        print(f"[SVT-GL] EGL probe failed: {e}")
         return False
