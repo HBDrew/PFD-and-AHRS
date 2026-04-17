@@ -91,7 +91,8 @@ SUN_AMBIENT       = 0.45        # 0.0 = pitch-black shadows, 1.0 = no shadow
 # ── GLSL shaders ──────────────────────────────────────────────────────────────
 
 VERTEX_SHADER = """
-#version 330 core
+#version 310 es
+precision highp float;
 
 in vec3 in_pos;          // world position (East, North, Up) in metres, relative to aircraft
 in float in_clearance;   // aircraft_alt_m - terrain_alt_m at this vertex (metres)
@@ -111,7 +112,8 @@ void main() {
 """
 
 FRAGMENT_SHADER = """
-#version 330 core
+#version 310 es
+precision highp float;
 
 in float v_clearance_ft;
 in vec3 v_world_pos;
@@ -199,7 +201,8 @@ void main() {
 """
 
 SKY_VERTEX_SHADER = """
-#version 330 core
+#version 310 es
+precision highp float;
 
 in vec2 in_pos;          // fullscreen quad in NDC
 out vec2 v_ndc;
@@ -211,7 +214,8 @@ void main() {
 """
 
 SKY_FRAGMENT_SHADER = """
-#version 330 core
+#version 310 es
+precision highp float;
 
 in vec2 v_ndc;
 out vec4 frag_color;
@@ -283,7 +287,7 @@ def _init_gl(width: int, height: int) -> bool:
 
     if _ctx is None:
         try:
-            _ctx = moderngl.create_standalone_context(backend='egl')
+            _ctx = moderngl.create_standalone_context(backend='egl', require=310)
         except Exception as e:
             print(f"[SVT-GL] EGL context creation failed: {e}")
             return False
