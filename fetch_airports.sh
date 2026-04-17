@@ -39,7 +39,7 @@ fetch_one() {
     echo "ERROR: need curl or wget."; exit 1
   fi
   size=$(stat -c%s "$dest" 2>/dev/null || stat -f%z "$dest")
-  echo "  → $(printf '%.1f' $(echo "$size / 1024 / 1024" | bc -l)) MB"
+  echo "  → $(python3 -c "print(f'{$size/1048576:.1f}')" 2>/dev/null || echo "?") MB"
 }
 
 for V in "${VERSIONS[@]}"; do

@@ -4,10 +4,12 @@
 #
 # Tiles: N34W112, N34W111, N35W112, N35W111
 # Size: ~2.8 MB each, ~11 MB total (unzipped .hgt files)
-# Output: pi_display/data/srtm/
+# Output: pi_zero/data/srtm/ and pi4/data/srtm/ (or specify a target)
 #
 # Usage:
-#   bash fetch_sedona_tiles.sh
+#   bash fetch_sedona_tiles.sh                    # downloads to both pi_zero and pi4
+#   bash fetch_sedona_tiles.sh pi4                # only pi4
+#   bash fetch_sedona_tiles.sh pi_zero            # only pi_zero
 #
 # Sources tried in order:
 #   1. Mapzen/Nextzen AWS public bucket (same source as in-app downloader)
@@ -17,7 +19,15 @@
 
 set -e
 
-SRTM_DIR="$(cd "$(dirname "$0")" && pwd)/pi_display/data/srtm"
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+VERSIONS=("pi_zero" "pi4")
+if [ $# -gt 0 ]; then
+  VERSIONS=("$@")
+fi
+
+# Download into the first version's srtm dir, then copy to the rest
+SRTM_DIR="$REPO_DIR/${VERSIONS[0]}/data/srtm"
 mkdir -p "$SRTM_DIR"
 echo "Output directory: $SRTM_DIR"
 echo ""
@@ -116,11 +126,23 @@ for TILE in "${TILES[@]}"; do
     fetch_tile "$TILE" || FAILED=$((FAILED + 1))
 done
 
+# Copy tiles to any additional version directories
+for V in "${VERSIONS[@]:1}"; do
+    OTHER="$REPO_DIR/$V/data/srtm"
+    if [ "$OTHER" != "$SRTM_DIR" ]; then
+        mkdir -p "$OTHER"
+        cp -n "$SRTM_DIR"/*.hgt "$OTHER/" 2>/dev/null || true
+        echo "Copied tiles → $OTHER"
+    fi
+done
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All 4 Sedona SRTM tiles downloaded successfully."
     echo "Demo mode will now show real terrain. Run:"
-    echo "  python3 pi_display/pfd.py --demo --sim"
+    for V in "${VERSIONS[@]}"; do
+        echo "  python3 $V/pfd.py --demo --sim"
+    done
 else
     echo "$FAILED tile(s) failed."
     echo ""
