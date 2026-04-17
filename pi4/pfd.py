@@ -2260,12 +2260,13 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "sim_controls"
                 return True
 
-        # Tap on alt bug button (top of alt tape) → open numpad
-        if ALT_X <= x <= DISPLAY_W and 0 <= y <= TAPE_TOP:
+        # Tap on alt bug button (top of alt tape) — hit region extends to HDG_H
+        # for easy touch even though the visual button only fills TAPE_TOP
+        if ALT_X <= x <= DISPLAY_W and 0 <= y <= HDG_H:
             _open_numpad("alt_bug")
             return True
-        # Tap on GS bug button (top of speed tape) → open numpad
-        if SPD_X <= x <= SPD_X + SPD_W and 0 <= y <= TAPE_TOP:
+        # Tap on GS bug button (top of speed tape) — same extended hit region
+        if SPD_X <= x <= SPD_X + SPD_W and 0 <= y <= HDG_H:
             _open_numpad("spd_bug")
             return True
         # Tap on speed VR readout (centre of speed tape) → open speed numpad
