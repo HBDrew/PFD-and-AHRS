@@ -1590,8 +1590,8 @@ class SimFlyState:
 
         with _state_lock:
             # ── Targets from bugs ──────────────────────────────────────────────
-            tgt_hdg = disp.get("hdg_bug", state["yaw"])  or state["yaw"]
-            tgt_alt = disp.get("alt_bug", state["alt"])  or state["alt"]
+            tgt_hdg = disp["hdg_bug"] if disp.get("hdg_bug") is not None else state["yaw"]
+            tgt_alt = disp["alt_bug"] if disp.get("alt_bug") is not None else state["alt"]
             tgt_spd = disp.get("spd_bug") or 90.0
 
             # ── Heading / bank ─────────────────────────────────────────────────
