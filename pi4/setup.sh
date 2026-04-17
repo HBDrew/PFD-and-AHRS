@@ -44,8 +44,17 @@ apt-get install -y --no-install-recommends \
     2>/dev/null
 
 echo "[4/9] Installing Python packages…"
-pip3 install --quiet --break-system-packages pygame numpy moderngl glcontext 2>/dev/null || \
-pip3 install --quiet pygame numpy moderngl glcontext
+# pygame and numpy are installed via apt (python3-pygame, python3-numpy) above.
+# moderngl + glcontext are not in apt — install via pip with --break-system-packages
+# (required on Bookworm+ due to PEP 668 externally-managed-environment policy).
+pip3 install --break-system-packages moderngl glcontext || {
+    echo "  ⚠  pip3 install failed — trying with --user for $RUN_USER"
+    sudo -u "$RUN_USER" pip3 install --break-system-packages --user moderngl glcontext || {
+        echo "  ⚠  pip --user also failed — trying apt python3-opengl as fallback"
+        apt-get install -y --no-install-recommends python3-opengl 2>/dev/null || true
+        echo "  ⚠  moderngl may not be available — SVT will fall back to pygame renderer"
+    }
+}
 
 echo "[5/9] Configuring display…"
 echo ""

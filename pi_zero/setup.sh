@@ -35,9 +35,11 @@ apt-get install -y --no-install-recommends \
     git curl \
     2>/dev/null
 
-echo "[3/8] Installing Python packages…"
-pip3 install --quiet --break-system-packages pygame numpy 2>/dev/null || \
-pip3 install --quiet pygame numpy
+echo "[3/8] Verifying Python packages…"
+# pygame and numpy are installed via apt (python3-pygame, python3-numpy) above.
+# No pip install needed — avoids PEP 668 "externally managed environment" error
+# on Bookworm+.
+python3 -c "import pygame; import numpy; print(f'  → pygame {pygame.ver}, numpy {numpy.__version__}')"
 
 echo "[4/8] Configuring Waveshare 3.5\" DPI LCD…"
 # Waveshare 3.5inch DPI LCD: 640×480, DPI parallel RGB interface, I2C touch
