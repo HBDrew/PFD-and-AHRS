@@ -1061,7 +1061,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
     spd_box_col = MAGENTA if airspeed_src == "gps" else CYAN
-    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=22, col=spd_box_col)
+    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=_BUG_BTN_H, col=spd_box_col)
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
@@ -1108,7 +1108,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     # ALT bug button — top strip of alt tape; color matches bug triangle
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     alt_box_col = CYAN if baro_ok else MAGENTA
-    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=22, col=alt_box_col)
+    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=_BUG_BTN_H, col=alt_box_col)
 
     # VS bar — 5px wide on the outer (right) edge of the alt tape.
     # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
@@ -2256,19 +2256,19 @@ def handle_event(event, demo_mode):
                 return True
 
         # Tap on alt bug button → open numpad
-        if ALT_X <= x <= DISPLAY_W and 2 <= y <= 24:
+        if ALT_X <= x <= DISPLAY_W and 2 <= y <= 2 + _BUG_BTN_H:
             _open_numpad("alt_bug")
             return True
         # Tap on GS bug button → open numpad
-        if SPD_X <= x <= SPD_X + SPD_W and 2 <= y <= 24:
+        if SPD_X <= x <= SPD_X + SPD_W and 2 <= y <= 2 + _BUG_BTN_H:
             _open_numpad("spd_bug")
             return True
         # Tap on hdg bug button → open numpad
-        if SPD_X <= x <= SPD_X + SPD_W and HDG_Y + 2 <= y <= HDG_Y + 24:
+        if SPD_X <= x <= SPD_X + SPD_W and HDG_Y + 2 <= y <= HDG_Y + 2 + _BUG_BTN_H:
             _open_numpad("hdg_bug")
             return True
         # Tap on baro button → open numpad
-        if ALT_X <= x <= DISPLAY_W and HDG_Y + 2 <= y <= HDG_Y + 24:
+        if ALT_X <= x <= DISPLAY_W and HDG_Y + 2 <= y <= HDG_Y + 2 + _BUG_BTN_H:
             _open_numpad("baro_hpa")
             return True
         # Tap on alt tape → adjust alt bug by position
@@ -2330,6 +2330,9 @@ _BACK_BX = 8
 _BACK_BY = 6
 _BACK_BW = max(72, int(72 * _FS_FOR_BACK + 0.5))
 _BACK_BH = 31
+
+# Bug tap-button height — scaled so touch targets are comfortable on larger displays
+_BUG_BTN_H = max(22, int(22 * _FS_FOR_BACK + 0.5))
 
 
 def _draw_back_button(surf):
@@ -3971,7 +3974,7 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
     # HDG bug — left side of heading strip; color matches heading bug triangle
     _hdg_btn = f"{round(hdg_bug) % 360:03d}\u00b0" if hdg_bug is not None else "---\u00b0"
     hdg_box_col = MAGENTA if hdg_src == "gps" else CYAN
-    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=22, col=hdg_box_col)
+    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=_BUG_BTN_H, col=hdg_box_col)
 
     # Baro — right side of heading strip; CYAN when baro sensor active, MAGENTA when GPS ALT
     # Accept any non-"gps" baro_src as meaning baro sensor is active (firmware uses
@@ -3990,7 +3993,7 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
         baro_fsz = 14
         baro_col = MAGENTA
     _cyan_box(surf, baro_lbl,
-              x=ALT_X + 1, y=y, w=ALT_W - 1, h=22, font_sz=baro_fsz, col=baro_col)
+              x=ALT_X + 1, y=y, w=ALT_W - 1, h=_BUG_BTN_H, font_sz=baro_fsz, col=baro_col)
 
 
 # ── Veil surface for transparent overlay modes (allocated once) ───────────────
@@ -4258,13 +4261,13 @@ _CENTERLINE_DASH_NM        = 0.5    # dash length (nm)
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
                     elev_ft, hdg_deg, pitch_deg, roll_deg,
-                    cx, cy, px_per_deg, max_fov_deg=None):
+                    cx, cy, px_per_deg, max_fov_deg=None,
+                    ground_only=False):
     """Project a lat/lon/elevation point onto the AI screen.
-    Uses the same flat-earth atan2 math as obstacle/airport symbols so
-    everything stays aligned.  Returns (sx, sy), or ``None`` when the point
-    is more than ``max_fov_deg`` off the nose — used by the extended-
-    centerline renderer so far-field dashes behind the aircraft (where the
-    flat-earth projection wraps and would streak across the AI) are culled."""
+    Returns (sx, sy), or None when culled.
+    max_fov_deg: cull points whose bearing is more than this off the nose.
+    ground_only: cull points that project above the pitch-adjusted horizon
+                 (ground features should never float in the sky)."""
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
     dlat_nm = (lat_deg - ref_lat) * nm_per_deg_lat
@@ -4279,10 +4282,12 @@ def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
     dist_ft = dist_nm * 6076.0
     alt_diff = elev_ft - ref_alt_ft
     vert_deg = math.degrees(math.atan2(alt_diff, dist_ft))
-    cos_r = math.cos(math.radians(roll_deg))
-    sin_r = math.sin(math.radians(roll_deg))
     sxr = rel_brg * px_per_deg
     syr = -(vert_deg + pitch_deg) * px_per_deg
+    if ground_only and syr < 0:
+        return None
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
     return (int(cx + sxr * cos_r - syr * sin_r),
             int(cy + sxr * sin_r + syr * cos_r))
 
@@ -4322,7 +4327,7 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     def _proj(la, lo, elev):
         return _project_latlon(la, lo, lat, lon, alt_ft,
                                elev, hdg_deg, pitch_deg, roll_deg,
-                               cx, cy, px_per_deg)
+                               cx, cy, px_per_deg, ground_only=True)
 
     def _in_ai(sx, sy):
         return ax <= sx <= ax + aw and ay_r <= sy <= ay_r + ah
@@ -4360,7 +4365,8 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
             p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, r.he_elev_ft)
             p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, r.he_elev_ft)
             p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
-            # Draw polygon if at least some corner is in the AI
+            if None in (p1, p2, p3, p4):
+                continue
             if _in_ai(*p1) or _in_ai(*p2) or _in_ai(*p3) or _in_ai(*p4):
                 old_clip = surf.get_clip()
                 surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
@@ -4369,7 +4375,8 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                 # Centreline stripe: from LE midpoint to HE midpoint
                 mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
                 mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
-                pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
+                if mid_le is not None and mid_he is not None:
+                    pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
                 surf.set_clip(old_clip)
 
         # ── Extended centerlines from each threshold ──────────────────────
@@ -4431,12 +4438,14 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
             e_lon = thresh_lon + sign * u_dlon * end
             ps = _project_latlon(s_lat, s_lon, lat, lon, alt_ft,
                                  thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg, max_fov_deg=_FOV)
+                                 cx, cy, px_per_deg, max_fov_deg=_FOV,
+                                 ground_only=True)
             if ps is None:
                 continue
             pe = _project_latlon(e_lat, e_lon, lat, lon, alt_ft,
                                  thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg, max_fov_deg=_FOV)
+                                 cx, cy, px_per_deg, max_fov_deg=_FOV,
+                                 ground_only=True)
             if pe is None:
                 continue
             pygame.draw.aaline(surf, col, ps, pe)

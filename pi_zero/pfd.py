@@ -4024,11 +4024,11 @@ _CENTERLINE_DASH_NM        = 0.5
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
                     elev_ft, hdg_deg, pitch_deg, roll_deg,
-                    cx, cy, px_per_deg, max_fov_deg=None):
-    """Project a lat/lon point onto the AI. Returns (sx, sy), or ``None``
-    when the bearing from the aircraft exceeds ``max_fov_deg`` (used by the
-    extended-centerline renderer to cull far-field dashes behind the aircraft
-    where the flat-earth projection would wrap and streak across the AI)."""
+                    cx, cy, px_per_deg, max_fov_deg=None,
+                    ground_only=False):
+    """Project a lat/lon point onto the AI. Returns (sx, sy), or None when culled.
+    max_fov_deg: cull points whose bearing exceeds this off the nose.
+    ground_only: cull points that project above the pitch-adjusted horizon."""
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
     dlat_nm = (lat_deg - ref_lat) * nm_per_deg_lat
@@ -4043,10 +4043,12 @@ def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
     dist_ft = dist_nm * 6076.0
     alt_diff = elev_ft - ref_alt_ft
     vert_deg = math.degrees(math.atan2(alt_diff, dist_ft))
-    cos_r = math.cos(math.radians(roll_deg))
-    sin_r = math.sin(math.radians(roll_deg))
     sxr = rel_brg * px_per_deg
     syr = -(vert_deg + pitch_deg) * px_per_deg
+    if ground_only and syr < 0:
+        return None
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
     return (int(cx + sxr * cos_r - syr * sin_r),
             int(cy + sxr * sin_r + syr * cos_r))
 
@@ -4081,7 +4083,7 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     def _proj(la, lo, elev):
         return _project_latlon(la, lo, lat, lon, alt_ft,
                                elev, hdg_deg, pitch_deg, roll_deg,
-                               cx, cy, px_per_deg)
+                               cx, cy, px_per_deg, ground_only=True)
 
     def _in_ai(sx, sy):
         return ax <= sx <= ax + aw and ay_r <= sy <= ay_r + ah
@@ -4107,6 +4109,8 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
             p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, r.he_elev_ft)
             p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, r.he_elev_ft)
             p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
+            if None in (p1, p2, p3, p4):
+                continue
             if _in_ai(*p1) or _in_ai(*p2) or _in_ai(*p3) or _in_ai(*p4):
                 old_clip = surf.get_clip()
                 surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
@@ -4114,7 +4118,8 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                 pygame.gfxdraw.aapolygon(surf, [p1, p2, p3, p4], STRIPE)
                 mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
                 mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
-                pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
+                if mid_le is not None and mid_he is not None:
+                    pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
                 surf.set_clip(old_clip)
 
         if show_cline and d_nm <= _CENTERLINE_RANGE_NM:
@@ -4165,12 +4170,14 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
             e_lon = thresh_lon + sign * u_dlon * end
             ps = _project_latlon(s_lat, s_lon, lat, lon, alt_ft,
                                  thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg, max_fov_deg=_FOV)
+                                 cx, cy, px_per_deg, max_fov_deg=_FOV,
+                                 ground_only=True)
             if ps is None:
                 continue
             pe = _project_latlon(e_lat, e_lon, lat, lon, alt_ft,
                                  thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg, max_fov_deg=_FOV)
+                                 cx, cy, px_per_deg, max_fov_deg=_FOV,
+                                 ground_only=True)
             if pe is None:
                 continue
             pygame.draw.aaline(surf, col, ps, pe)
