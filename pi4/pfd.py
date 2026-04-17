@@ -1026,26 +1026,29 @@ def draw_speed_tape(surf, speed, gs_bug=None,
         surf.set_clip(None)
 
     # Speed readout box — stepped Veeder-Root style.
-    # Extra tape width distributed across all sections:
-    #   pointer 15→18, inner 32→33, drum 19→30 = total 66→81
+    # Scale widths with font so digits fit on 1024×600 (FONT_SCALE≈1.25).
     _sp = SPD_X
-    _ptr_r  = 18   # pointer tip right edge
-    _inn_r  = 51   # inner section right edge (ptr + inner = 18 + 33)
-    _box_r  = 81   # full box right edge (ptr + inner + drum = 18 + 33 + 30)
+    _fs = getattr(sys.modules[__name__], '_font_scale', 1.0)
+    _ptr_r  = int(18 * _fs)
+    _inn_w  = int(35 * _fs)
+    _drm_sw = int(26 * _fs)
+    _inn_r  = _ptr_r + _inn_w
+    _box_r  = _inn_r + _drm_sw
+    _half_in = int(16 * _fs)
+    _half_out = int(30 * _fs)
     pts_s = _chamfer([(_sp,          TAPE_MID),
-                      (_sp + _ptr_r, TAPE_MID - 15), (_sp + _inn_r, TAPE_MID - 15),
-                      (_sp + _inn_r, TAPE_MID - 29), (_sp + _box_r, TAPE_MID - 29),
-                      (_sp + _box_r, TAPE_MID + 29),
-                      (_sp + _inn_r, TAPE_MID + 29), (_sp + _inn_r, TAPE_MID + 15),
-                      (_sp + _ptr_r, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7}, r=3)
+                      (_sp + _ptr_r, TAPE_MID - _half_in), (_sp + _inn_r, TAPE_MID - _half_in),
+                      (_sp + _inn_r, TAPE_MID - _half_out), (_sp + _box_r, TAPE_MID - _half_out),
+                      (_sp + _box_r, TAPE_MID + _half_out),
+                      (_sp + _inn_r, TAPE_MID + _half_out), (_sp + _inn_r, TAPE_MID + _half_in),
+                      (_sp + _ptr_r, TAPE_MID + _half_in)], {2, 3, 4, 5, 6, 7}, r=3)
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
-    # Inner: hundreds + tens (31px); drum: units digit (28px)
-    _rolling_drum(surf, _sp + _ptr_r + 1, TAPE_MID - 14, 31, 28, speed, 2, spd_col, 24,
+    _rolling_drum(surf, _sp + _ptr_r + 1, TAPE_MID - _half_in + 1, _inn_w - 2, _half_in * 2 - 2, speed, 2, spd_col, 24,
                   power_offset=1, suppress_leading=True)
-    _rolling_drum(surf, _sp + _inn_r + 1, TAPE_MID - 28, 28, 56, speed, 1, spd_col, 24,
-                  show_adjacent=True, adj_slot_h=23)
-    _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - 28, 28, 56)
+    _rolling_drum(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2, speed, 1, spd_col, 24,
+                  show_adjacent=True, adj_slot_h=int(23 * _fs))
+    _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
     pygame.draw.polygon(surf, WHITE, pts_s, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
