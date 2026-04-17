@@ -2063,6 +2063,10 @@ def handle_event(event, demo_mode):
                 disp["ds"].update(spd_unit="kt", alt_unit="ft", baro_unit="inhg",
                                    brightness=8, night_mode=False)
                 disp["ss"].update(pitch_trim=0.0, roll_trim=0.0)
+            elif action == "quit":
+                _settings.flush()
+                pygame.quit()
+                sys.exit(0)
             return True
 
         # ── Sim setup screen taps ─────────────────────────────────────────
@@ -3141,6 +3145,10 @@ def draw_system_setup(surf):
     _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "SIMULATOR", "ok")
     _action_btn(surf, bx+half_w+10,  _SYS_BTN_Y, half_w, _SYS_BTN_H, "RESET DEFAULTS", "danger")
 
+    # QUIT button at the very bottom
+    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
+    _action_btn(surf, bx, quit_y, bw, _SYS_BTN_H, "QUIT PFD", "danger")
+
 
 def system_setup_hit(x, y):
     if _back_hit(x, y):
@@ -3160,6 +3168,9 @@ def system_setup_hit(x, y):
             return "simulator"
         if bx+half_w+10 <= x <= bx+half_w+10+half_w:
             return "reset_defaults"
+    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
+    if quit_y <= y <= quit_y+_SYS_BTN_H and bx <= x <= bx+bw:
+        return "quit"
     return None
 
 

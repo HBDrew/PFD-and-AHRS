@@ -1927,6 +1927,10 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "airport_data"
             elif action == "simulator":
                 disp["mode"] = "sim_setup"
+            elif action == "quit":
+                _settings.flush()
+                pygame.quit()
+                sys.exit(0)
             elif action == "reset_defaults":
                 for k,v in [("vs0",VS0),("vs1",VS1),("vfe",VFE),("vno",VNO),
                              ("vne",VNE),("va",VA),("vy",VY),("vx",VX)]:
@@ -2989,6 +2993,9 @@ def draw_system_setup(surf):
     _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "SIMULATOR", "ok")
     _action_btn(surf, bx+half_w+10,  _SYS_BTN_Y, half_w, _SYS_BTN_H, "RESET DEFAULTS", "danger")
 
+    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
+    _action_btn(surf, bx, quit_y, bw, _SYS_BTN_H, "QUIT PFD", "danger")
+
 
 def system_setup_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
@@ -3008,6 +3015,9 @@ def system_setup_hit(x, y):
             return "simulator"
         if bx+half_w+10 <= x <= bx+half_w+10+half_w:
             return "reset_defaults"
+    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
+    if quit_y <= y <= quit_y+_SYS_BTN_H and bx <= x <= bx+bw:
+        return "quit"
     return None
 
 
