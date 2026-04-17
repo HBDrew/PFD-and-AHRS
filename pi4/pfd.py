@@ -4581,20 +4581,35 @@ def render(surf, demo_mode, connected, data_stale=False):
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
-    # 1b. Runway polygons + extended centerlines (drawn BEFORE airport
-    # symbols so the airport ring sits on top of the runway at the airport
-    # centre).  Use _full_ai for projection so the centre and scale match
-    # the SVT background (not ai_rect which has a different origin/height).
-    if _runways is not None and gps_ok:
-        draw_runway_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
-
-    # 1c. Airport symbols projected onto AI
-    if _airports is not None and gps_ok:
-        draw_airport_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
-
-    # 1d. Obstacle symbols projected onto AI
-    if _obstacles is not None and gps_ok:
-        draw_obstacle_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
+    # 1b. Overlay symbols (airports, runways, obstacles) painted in the
+    # TERRAIN coordinate frame (heading + pitch only, no roll), then the
+    # entire overlay is rotated by the roll angle — exactly matching how
+    # the SVT background rotates.  This locks symbols to the terrain so
+    # they don't slide independently during banked turns.
+    if gps_ok and (_runways is not None or _airports is not None or _obstacles is not None):
+        _ov_w = DISPLAY_W
+        _ov_h = HDG_Y
+        diag = int(math.hypot(_ov_w, _ov_h)) + 4
+        _rw = max(_ov_w, diag)
+        _rh = max(_ov_h, diag)
+        _overlay = pygame.Surface((_rw, _rh), pygame.SRCALPHA)
+        _ox = (_rw - _ov_w) // 2
+        _oy = (_rh - _ov_h) // 2
+        _ov_rect = (_ox, _oy, _ov_w, _ov_h)
+        if _runways is not None:
+            draw_runway_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+        if _airports is not None:
+            draw_airport_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+        if _obstacles is not None:
+            draw_obstacle_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+        if abs(roll) > 0.5:
+            rotated = pygame.transform.rotate(_overlay, roll)
+            rx, ry = rotated.get_size()
+            crop_x = (rx - _ov_w) // 2
+            crop_y = (ry - _ov_h) // 2
+            surf.blit(rotated, (0, 0), area=pygame.Rect(crop_x, crop_y, _ov_w, _ov_h))
+        else:
+            surf.blit(_overlay, (0, 0), area=pygame.Rect(_ox, _oy, _ov_w, _ov_h))
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
