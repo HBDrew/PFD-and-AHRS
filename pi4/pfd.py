@@ -4718,8 +4718,10 @@ def main():
     args = parser.parse_args()
 
     if args.sim or not FULLSCREEN:
-        # Desktop / windowed mode
-        os.environ["SDL_VIDEODRIVER"] = "x11"
+        # Desktop / windowed mode — let SDL auto-detect the display server
+        # (x11 on X.Org, wayland on Wayfire/Weston, etc.) instead of forcing
+        # kmsdrm which is only correct for bare-console fullscreen.
+        os.environ.pop("SDL_VIDEODRIVER", None)
         os.environ.pop("SDL_FBDEV", None)
 
     # Restore persisted user settings (V-speeds, units, brightness, trims,
