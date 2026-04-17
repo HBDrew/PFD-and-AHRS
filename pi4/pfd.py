@@ -50,12 +50,15 @@ from svt_renderer import render_svt as render_svt_pygame
 # import time — so pygame can grab KMS/DRM first without the EGL probe
 # stealing the GPU device.  _SVT_GL_AVAILABLE starts as None (unknown)
 # and gets set to True/False on the first frame.
-_SVT_GL_AVAILABLE = None
+# GL SVT disabled — EGL context creation disrupts KMS/DRM display on
+# this Pi 4 kernel/mesa combination regardless of device_index or timing.
+# Needs further investigation with a different EGL approach (perhaps
+# piglit/gbm backend or sharing pygame's own GL context).
+_SVT_GL_AVAILABLE = False
+_gl_available = None
 try:
-    from svt_renderer_gl import render_svt_gl, is_available as _gl_available
-except Exception as e:
-    print(f"[PFD] OpenGL SVT module unavailable: {e}")
-    _gl_available = None
+    from svt_renderer_gl import render_svt_gl
+except Exception:
     render_svt_gl = None
 
 import obstacles as obs_mod
