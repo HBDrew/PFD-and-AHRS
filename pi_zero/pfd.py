@@ -1474,8 +1474,12 @@ class SimFlyState:
             # ── Altitude / VS / pitch ──────────────────────────────────────────
             alt     = state["alt"]
             alt_err = tgt_alt - alt
-            vs_fpm  = max(-1000.0, min(1000.0, alt_err * 0.5))
-            state["alt"]     = alt + vs_fpm / 60.0 * dt
+            if abs(alt_err) < 5.0:
+                state["alt"] = tgt_alt
+                vs_fpm = 0.0
+            else:
+                vs_fpm  = max(-1500.0, min(1500.0, alt_err * 2.0))
+                state["alt"] = alt + vs_fpm / 60.0 * dt
             state["gps_alt"] = state["alt"]
             state["vspeed"]  = vs_fpm
             state["pitch"]   = max(-10.0, min(10.0, vs_fpm / 100.0)) if not ahrs_fail else 0.0

@@ -78,31 +78,42 @@ def render_svt(
 
     This will be replaced by an OpenGL renderer in Phase 2.
     """
-    surf = pygame.Surface((ai_w, ai_h), pygame.SRCALPHA)
-    cx, cy = ai_w // 2, ai_h // 2
+    # Render onto an oversized surface so that after roll rotation the
+    # corners of the output rect are still covered.  The diagonal of the
+    # output rect is the minimum render dimension; we add a small margin.
+    diag = int(math.hypot(ai_w, ai_h)) + 4
+    rw, rh = max(ai_w, diag), max(ai_h, diag)
+
+    surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
+    rcx, rcy = rw // 2, rh // 2
 
     px_per_deg_v = ai_h / v_fov_deg
     px_per_deg_h = ai_w / h_fov_deg
 
-    horizon_y = cy + pitch_deg * px_per_deg_v
+    horizon_y = rcy + pitch_deg * px_per_deg_v
 
     if HAS_NUMPY:
-        _render_svt_numpy(surf, ai_w, ai_h, cx, cy, horizon_y,
+        _render_svt_numpy(surf, rw, rh, rcx, rcy, horizon_y,
                           pitch_deg, hdg_deg, alt_ft, lat, lon,
                           px_per_deg_v, px_per_deg_h,
                           srtm_dir)
     else:
-        _render_svt_software(surf, ai_w, ai_h, cx, cy, horizon_y,
+        _render_svt_software(surf, rw, rh, rcx, rcy, horizon_y,
                               pitch_deg, hdg_deg, alt_ft, lat, lon,
                               px_per_deg_v, px_per_deg_h,
                               srtm_dir)
 
-    # Apply roll rotation
+    # Apply roll rotation, then crop to the output size
     if abs(roll_deg) > 0.5:
         rotated = pygame.transform.rotate(surf, roll_deg)
         rx, ry = rotated.get_size()
         ox, oy = (rx - ai_w) // 2, (ry - ai_h) // 2
         surf = rotated.subsurface(
+            pygame.Rect(ox, oy, ai_w, ai_h)
+        ).copy()
+    else:
+        ox, oy = (rw - ai_w) // 2, (rh - ai_h) // 2
+        surf = surf.subsurface(
             pygame.Rect(ox, oy, ai_w, ai_h)
         ).copy()
 
