@@ -283,7 +283,7 @@ def _init_gl(width: int, height: int) -> bool:
 
     if _ctx is None:
         try:
-            _ctx = moderngl.create_standalone_context(backend='egl', require=330)
+            _ctx = moderngl.create_standalone_context(backend='egl')
         except Exception as e:
             print(f"[SVT-GL] EGL context creation failed: {e}")
             return False
