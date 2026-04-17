@@ -4583,17 +4583,18 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 1b. Runway polygons + extended centerlines (drawn BEFORE airport
     # symbols so the airport ring sits on top of the runway at the airport
-    # centre).
+    # centre).  Use _full_ai for projection so the centre and scale match
+    # the SVT background (not ai_rect which has a different origin/height).
     if _runways is not None and gps_ok:
-        draw_runway_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
+        draw_runway_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
 
     # 1c. Airport symbols projected onto AI
     if _airports is not None and gps_ok:
-        draw_airport_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
+        draw_airport_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
 
     # 1d. Obstacle symbols projected onto AI
     if _obstacles is not None and gps_ok:
-        draw_obstacle_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
+        draw_obstacle_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
