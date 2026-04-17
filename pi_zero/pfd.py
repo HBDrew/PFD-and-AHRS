@@ -931,7 +931,8 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     # Inner: hundreds + tens at same font as drum, cascade-rolling
     _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 24,
-                  power_offset=1, suppress_leading=True)
+                  power_offset=1, suppress_leading=True,
+                  show_adjacent=True, adj_slot_h=12)
     # Drum: units digit, adjacent digits ~50% visible
     _rolling_drum(surf, SPD_X + 48, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 24,
                   show_adjacent=True, adj_slot_h=23)
@@ -4295,17 +4296,35 @@ def render(surf, demo_mode, connected, data_stale=False):
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
     draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
-    # 1b. Runway polygons + extended centerlines
-    if _runways is not None and gps_ok:
-        draw_runway_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
-
-    # 1c. Airport symbols projected onto AI
-    if _airports is not None and gps_ok:
-        draw_airport_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
-
-    # 1d. Obstacle symbols projected onto AI
-    if _obstacles is not None and gps_ok:
-        draw_obstacle_symbols(surf, ai_rect, lat, lon, alt, hdg, pitch, roll)
+    # 1b. Symbol overlays painted in the TERRAIN coordinate frame
+    # (heading + pitch only, no roll), then the entire overlay is
+    # rotated by the roll angle so symbols stay locked to the terrain
+    # during banked turns.
+    if gps_ok and (
+            _runways is not None or _airports is not None or _obstacles is not None):
+        _ov_w = DISPLAY_W
+        _ov_h = HDG_Y
+        diag = int(math.hypot(_ov_w, _ov_h)) + 4
+        _rw = max(_ov_w, diag)
+        _rh = max(_ov_h, diag)
+        _overlay = pygame.Surface((_rw, _rh), pygame.SRCALPHA)
+        _ox = (_rw - _ov_w) // 2
+        _oy = (_rh - _ov_h) // 2
+        _ov_rect = (_ox, _oy, _ov_w, _ov_h)
+        if _runways is not None:
+            draw_runway_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+        if _airports is not None:
+            draw_airport_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+        if _obstacles is not None:
+            draw_obstacle_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+        if abs(roll) > 0.5:
+            rotated = pygame.transform.rotate(_overlay, roll)
+            rx, ry = rotated.get_size()
+            crop_x = (rx - _ov_w) // 2
+            crop_y = (ry - _ov_h) // 2
+            surf.blit(rotated, (0, 0), area=pygame.Rect(crop_x, crop_y, _ov_w, _ov_h))
+        else:
+            surf.blit(_overlay, (0, 0), area=pygame.Rect(_ox, _oy, _ov_w, _ov_h))
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)

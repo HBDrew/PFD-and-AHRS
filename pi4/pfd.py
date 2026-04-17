@@ -1043,7 +1043,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     _fs = getattr(sys.modules[__name__], '_font_scale', 1.0)
     _ptr_r  = int(18 * _fs)
     _inn_w  = int(35 * _fs)
-    _drm_sw = int(26 * _fs)
+    _drm_sw = int(18 * _fs)
     _inn_r  = _ptr_r + _inn_w
     _box_r  = _inn_r + _drm_sw
     _half_in = int(16 * _fs)
@@ -1057,7 +1057,8 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     _rolling_drum(surf, _sp + _ptr_r + 1, TAPE_MID - _half_in + 1, _inn_w - 2, _half_in * 2 - 2, speed, 2, spd_col, 24,
-                  power_offset=1, suppress_leading=True)
+                  power_offset=1, suppress_leading=True,
+                  show_adjacent=True, adj_slot_h=int(12 * _fs))
     _rolling_drum(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2, speed, 1, spd_col, 24,
                   show_adjacent=True, adj_slot_h=int(23 * _fs))
     _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2)
@@ -4597,13 +4598,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
-    # 1b. Symbol overlays on the AI.
-    # With GL SVT: full overlay (airports, runways, centerlines, obstacles)
-    #   painted in the terrain frame (roll=0) then rotated to match the SVT.
-    # Without SVT: lightweight airport markers only, using simple roll-math
-    #   projection (cheap — a few circles per frame, no surface rotation).
-    _svt_active = SVT_RENDERER == "opengl" and _SVT_GL_AVAILABLE
-    if gps_ok and _svt_active and (
+    # 1b. Symbol overlays on the AI — painted in the TERRAIN coordinate
+    # frame (heading + pitch only, no roll), then the entire overlay is
+    # rotated by the roll angle so symbols stay locked to the terrain
+    # during banked turns.  Applied uniformly to GL and pygame render
+    # paths (pygame.transform.rotate on a sparse overlay is cheap).
+    if gps_ok and (
             _runways is not None or _airports is not None or _obstacles is not None):
         _ov_w = DISPLAY_W
         _ov_h = HDG_Y
@@ -4628,8 +4628,6 @@ def render(surf, demo_mode, connected, data_stale=False):
             surf.blit(rotated, (0, 0), area=pygame.Rect(crop_x, crop_y, _ov_w, _ov_h))
         else:
             surf.blit(_overlay, (0, 0), area=pygame.Rect(_ox, _oy, _ov_w, _ov_h))
-    elif gps_ok and _airports is not None:
-        draw_airport_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
