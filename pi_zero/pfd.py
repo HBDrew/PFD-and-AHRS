@@ -3022,8 +3022,11 @@ _TD_REGIONS = [
     ("US Pacific",   "CA \u00b7 OR \u00b7 WA",                         32, 49, -125, -114),
     ("US Southeast", "FL \u00b7 GA \u00b7 AL \u00b7 NC \u00b7 SC",    24, 37,  -92,  -74),
     ("US Northeast", "NY \u00b7 PA \u00b7 NE states",                  37, 48,  -80,  -66),
+    ("US Midwest",   "OH \u00b7 MI \u00b7 IL \u00b7 MN \u00b7 WI",    37, 49, -103,  -80),
+    ("All CONUS",    "Lower 48 \u2014 ~2 GB",                          24, 49, -125,  -66),
     ("Alaska",       "Southern AK corridor",                            55, 64, -165, -131),
     ("Europe West",  "UK \u00b7 FR \u00b7 DE \u00b7 ES \u00b7 IT",    36, 58,   -9,   15),
+    ("All Europe",   "UK to Turkey \u2014 ~3 GB",                      35, 60,  -12,   30),
 ]
 
 _TD_COLS = 2
