@@ -46,13 +46,16 @@ from svt_renderer import render_svt as render_svt_pygame
 # Pi 4 hardware — the standalone EGL context locks the V3D GPU and prevents
 # pygame's KMS/DRM display from rendering.  The pygame scanline SVT works
 # at ~17 fps in the meantime.  Set _FORCE_PYGAME_SVT = False to re-test.
-_FORCE_PYGAME_SVT = False
+# GL SVT availability is probed LAZILY on first render frame — not at
+# import time — so pygame can grab KMS/DRM first without the EGL probe
+# stealing the GPU device.  _SVT_GL_AVAILABLE starts as None (unknown)
+# and gets set to True/False on the first frame.
+_SVT_GL_AVAILABLE = None
 try:
     from svt_renderer_gl import render_svt_gl, is_available as _gl_available
-    _SVT_GL_AVAILABLE = False if _FORCE_PYGAME_SVT else _gl_available()
 except Exception as e:
-    print(f"[PFD] OpenGL SVT unavailable: {e}")
-    _SVT_GL_AVAILABLE = False
+    print(f"[PFD] OpenGL SVT module unavailable: {e}")
+    _gl_available = None
     render_svt_gl = None
 
 import obstacles as obs_mod
@@ -4571,6 +4574,16 @@ def render(surf, demo_mode, connected, data_stale=False):
     vne_d = fp.get("vne", VNE) * spd_factor
 
     ai_rect = (AI_X, AI_Y, AI_W, AI_H)
+
+    # 0a. Lazy GL SVT probe — runs once on first frame, after pygame display
+    # is already initialised so KMS/DRM is safely held before EGL touches GPU.
+    global _SVT_GL_AVAILABLE
+    if _SVT_GL_AVAILABLE is None:
+        if _gl_available is not None:
+            _SVT_GL_AVAILABLE = _gl_available()
+            print(f"[PFD] OpenGL SVT: {'enabled' if _SVT_GL_AVAILABLE else 'unavailable (pygame fallback)'}")
+        else:
+            _SVT_GL_AVAILABLE = False
 
     # 0. Compute terrain/obstacle alert level for this frame
     _update_terrain_alert(lat, lon, alt, speed, gps_ok)
