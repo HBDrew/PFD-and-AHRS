@@ -4163,6 +4163,10 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
         screen_x_raw = rel_brg * PX_PER_DEG
         screen_y_raw = -(vert_deg + pitch_deg) * PX_PER_DEG
+        # Cull airports that project above the horizon — ground features
+        # floating in blue sky are visually confusing and never useful.
+        if screen_y_raw < 0:
+            continue
         sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
         sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
 
@@ -5120,6 +5124,11 @@ def main():
             else:
                 _link_lost_t = None
                 data_stale   = False
+
+        # Sim or demo provides its own data — SSE link state is irrelevant
+        if _sim_state is not None or demo_mode:
+            connected  = True
+            data_stale = False
 
         # 2-finger hold → enter setup screen (EXIT button returns to PFD)
         if (_multitouch_t0 is not None
