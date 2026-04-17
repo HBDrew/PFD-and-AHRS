@@ -1154,10 +1154,8 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                       (R - _ptr_w,     TAPE_MID + _half_out), (R - _ptr_w, TAPE_MID + _half_in)], {2, 3, 4, 5, 6, 7, 8, 9}, r=3)
     pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
 
-    # VSI readout — drawn BEFORE the outline so the 2px white line frames shared edges
-    _nx   = ALT_X
+    # VSI readout — extends left beyond the tape if the text needs room
     _ny   = TAPE_MID + _half_in
-    _nw   = R - _drm_l - ALT_X
     _nh   = int(22 * _fs)
     if abs(vspeed) > 30:
         _varr = "▲" if vspeed > 0 else "▼"
@@ -1166,6 +1164,11 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     else:
         _vstr = "—"
         _vcol = LTGREY
+    _vf = _get_font(13, bold=True)
+    _vtw = _vf.size(_vstr)[0] + 12
+    _vsi_min_w = R - _drm_l - ALT_X
+    _nw = max(_vsi_min_w, _vtw)
+    _nx = R - _drm_l - _nw
     pygame.draw.rect(surf, (0, 8, 22), (_nx, _ny, _nw, _nh), border_radius=3)
     pygame.draw.rect(surf, (70, 100, 130), (_nx, _ny, _nw, _nh), width=1, border_radius=3)
     _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
