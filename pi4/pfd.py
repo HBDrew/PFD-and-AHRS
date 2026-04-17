@@ -4582,12 +4582,14 @@ def render(surf, demo_mode, connected, data_stale=False):
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
-    # 1b. Overlay symbols (airports, runways, obstacles) painted in the
-    # TERRAIN coordinate frame (heading + pitch only, no roll), then the
-    # entire overlay is rotated by the roll angle — exactly matching how
-    # the SVT background rotates.  This locks symbols to the terrain so
-    # they don't slide independently during banked turns.
-    if gps_ok and (_runways is not None or _airports is not None or _obstacles is not None):
+    # 1b. Symbol overlays on the AI.
+    # With GL SVT: full overlay (airports, runways, centerlines, obstacles)
+    #   painted in the terrain frame (roll=0) then rotated to match the SVT.
+    # Without SVT: lightweight airport markers only, using simple roll-math
+    #   projection (cheap — a few circles per frame, no surface rotation).
+    _svt_active = SVT_RENDERER == "opengl" and _SVT_GL_AVAILABLE
+    if gps_ok and _svt_active and (
+            _runways is not None or _airports is not None or _obstacles is not None):
         _ov_w = DISPLAY_W
         _ov_h = HDG_Y
         diag = int(math.hypot(_ov_w, _ov_h)) + 4
@@ -4611,6 +4613,8 @@ def render(surf, demo_mode, connected, data_stale=False):
             surf.blit(rotated, (0, 0), area=pygame.Rect(crop_x, crop_y, _ov_w, _ov_h))
         else:
             surf.blit(_overlay, (0, 0), area=pygame.Rect(_ox, _oy, _ov_w, _ov_h))
+    elif gps_ok and _airports is not None:
+        draw_airport_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
