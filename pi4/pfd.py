@@ -1135,29 +1135,30 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         pygame.draw.polygon(surf, alt_bug_col, bug)
         surf.set_clip(None)
 
-    # Altitude readout box — stepped Veeder-Root style.
-    # Extra tape width distributed across all sections:
-    #   inner 42→47, drum 24→31, pointer 15→18 = total 81→96
+    # Altitude readout box — stepped Veeder-Root style, scaled with FONT_SCALE.
+    _fs = getattr(sys.modules[__name__], '_font_scale', 1.0)
     R = ALT_X + ALT_W
-    _ptr_w  = 18   # pointer section width
-    _drm_w  = 31   # drum (twenties) section width
-    _inn_w  = 47   # inner (hundreds thru ten-thousands) section width
-    _box_w  = _inn_w + _drm_w + _ptr_w   # 96 total
-    _drm_l  = _ptr_w + _drm_w            # 49 — drum left edge from R
+    _ptr_w  = int(18 * _fs)
+    _drm_w  = int(31 * _fs)
+    _inn_w  = int(47 * _fs)
+    _box_w  = _inn_w + _drm_w + _ptr_w
+    _drm_l  = _ptr_w + _drm_w
+    _half_in = int(16 * _fs)
+    _half_out = int(30 * _fs)
     pts_a = _chamfer([(R,              TAPE_MID),
-                      (R - _ptr_w,     TAPE_MID - 15), (R - _ptr_w, TAPE_MID - 29),
-                      (R - _drm_l,     TAPE_MID - 29), (R - _drm_l, TAPE_MID - 15),
-                      (R - _box_w,     TAPE_MID - 15),
-                      (R - _box_w,     TAPE_MID + 15),
-                      (R - _drm_l,     TAPE_MID + 15), (R - _drm_l, TAPE_MID + 29),
-                      (R - _ptr_w,     TAPE_MID + 29), (R - _ptr_w, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7, 8, 9}, r=3)
+                      (R - _ptr_w,     TAPE_MID - _half_in), (R - _ptr_w, TAPE_MID - _half_out),
+                      (R - _drm_l,     TAPE_MID - _half_out), (R - _drm_l, TAPE_MID - _half_in),
+                      (R - _box_w,     TAPE_MID - _half_in),
+                      (R - _box_w,     TAPE_MID + _half_in),
+                      (R - _drm_l,     TAPE_MID + _half_in), (R - _drm_l, TAPE_MID + _half_out),
+                      (R - _ptr_w,     TAPE_MID + _half_out), (R - _ptr_w, TAPE_MID + _half_in)], {2, 3, 4, 5, 6, 7, 8, 9}, r=3)
     pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
 
     # VSI readout — drawn BEFORE the outline so the 2px white line frames shared edges
     _nx   = ALT_X
-    _ny   = TAPE_MID + 15
+    _ny   = TAPE_MID + _half_in
     _nw   = R - _drm_l - ALT_X
-    _nh   = 22
+    _nh   = int(22 * _fs)
     if abs(vspeed) > 30:
         _varr = "▲" if vspeed > 0 else "▼"
         _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
@@ -1173,25 +1174,25 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
     inner_int  = int(alt_inner)
-    # Inner digits: right-justified against the drum section.
-    _cell = 16                          # px per digit cell
-    _inn_right = R - _drm_l            # right edge of inner section
+    _cell = int(16 * _fs)
+    _inn_right = R - _drm_l
+    _inn_h = _half_in * 2 - 2
     if inner_int < 10:
-        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - 14, _cell, 28, alt_inner, 1, WHITE, 24)
+        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - _half_in + 1, _cell, _inn_h, alt_inner, 1, WHITE, 24)
     elif inner_int < 100:
-        _rolling_drum(surf, _inn_right - _cell * 2, TAPE_MID - 14, _cell, 28, alt_inner, 1, WHITE, 24,
+        _rolling_drum(surf, _inn_right - _cell * 2, TAPE_MID - _half_in + 1, _cell, _inn_h, alt_inner, 1, WHITE, 24,
                       power_offset=1)
-        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - 14, _cell, 28, alt_inner, 1, WHITE, 22)
+        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - _half_in + 1, _cell, _inn_h, alt_inner, 1, WHITE, 22)
     else:
-        _rolling_drum(surf, _inn_right - _cell * 3, TAPE_MID - 14, _cell * 2, 28, alt_inner, 2, WHITE, 22,
+        _rolling_drum(surf, _inn_right - _cell * 3, TAPE_MID - _half_in + 1, _cell * 2, _inn_h, alt_inner, 2, WHITE, 22,
                       suppress_leading=True, power_offset=1)
-        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - 14, _cell, 28, alt_inner, 1, WHITE, 22)
-    # Drum: 20-ft labels
+        _rolling_drum(surf, _inn_right - _cell, TAPE_MID - _half_in + 1, _cell, _inn_h, alt_inner, 1, WHITE, 22)
     _drm_x = R - _drm_l + 1
     _drm_render_w = _drm_w - 2
-    _rolling_drum_alt20(surf, _drm_x, TAPE_MID - 28, _drm_render_w, 56, alt, WHITE, 18,
-                        show_adjacent=True, adj_slot_h=18)
-    _drum_shade(surf, _drm_x, TAPE_MID - 28, _drm_render_w, 56)
+    _drm_h = _half_out * 2 - 2
+    _rolling_drum_alt20(surf, _drm_x, TAPE_MID - _half_out + 1, _drm_render_w, _drm_h, alt, WHITE, 18,
+                        show_adjacent=True, adj_slot_h=int(18 * _fs))
+    _drum_shade(surf, _drm_x, TAPE_MID - _half_out + 1, _drm_render_w, _drm_h)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
     pygame.draw.polygon(surf, WHITE, pts_a, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
