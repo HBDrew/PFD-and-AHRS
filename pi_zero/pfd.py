@@ -1050,7 +1050,9 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
-    inner_int  = int(alt_inner)
+    # round() (not int()) so IIR-smoothed alt of e.g. 9999.99 still
+    # picks the 3-drum branch that renders the leading "1" at 10000.
+    inner_int  = round(alt_inner)
     if inner_int < 10:                      # alt < 1,000 ft — hundreds only
         _rolling_drum(surf, R - 80, TAPE_MID - 14, 41, 28, alt_inner, 1, WHITE, 24)
     elif inner_int < 100:                   # 1,000–9,999 ft — thousands (24pt) + hundreds (22pt)

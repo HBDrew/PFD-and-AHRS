@@ -61,20 +61,6 @@ To verify on Pi: (a) `ls -l /dev/ttyACM0`, (b) `groups` (need dialout),
 (d) `pfd.py` startup log should say "AHRS via USB serial".
 Note: pi_zero does NOT have USB fallback — add if Zero needs wired AHRS.
 
-### ALT-10K  Altitude drum shows "0000" at 10000 ft
-Status: **OPEN — NEEDS REPRO DATA**
-Target: `pi4/pfd.py` `draw_alt_tape` (lines 1184–1200).
-Context: reported during hardware testing but could not reproduce
-from code inspection. At `alt=10000`, `alt_inner=100.0`, `inner_int=100`
-→ else branch → 2-digit drum (hundreds+tens) with
-`suppress_leading=True`, `power_offset=1`. Suppress check:
-`val_int=100 < 10^2=100` → False → digit "1" should render.
-Next step: add a temporary debug print of `alt_inner`, `inner_int`,
-`val_int` when alt ≈ 10000, or capture a screenshot of the bug.
-Could be a layout overflow (3-cell drum in 59 px inner section at
-_fs=1.25 → 60 px needed, 1 px overflow on left) but that's only 1 px,
-wouldn't hide whole digit.
-
 ### PI_DISPLAY  pi_display/pfd.py missing all recent fixes
 Status: **OPEN / DEFERRED** (unclear if pi_display is an active target)
 Context: `pi_display/pfd.py` still has `int(abs(value))` in drum
@@ -108,6 +94,17 @@ Pi4 had `_drm_sw = int(26 * _fs)` (ones cell ~30 px) vs inner cell
 ~20 px. This session reduced to `_drm_sw = int(18 * _fs)` so the
 ones drum matches the inner cell width. pi_zero already had matched
 widths (17 vs 15).
+
+### ALT-10K  Altitude drum shows "0000" at 10000 ft — **FIXED**
+Root cause: IIR smoothing on `disp["alt"]` converges from below —
+at indicated 10000 ft the actual smoothed value is e.g. 9999.998.
+Branch selection used `int(alt_inner)` which returned 99 for any
+`alt_inner < 100.0`, picking the 2-drum elif path that never draws
+the leading "1" column. Only crossing integer 10000 (actually
+10100 observed) promoted to the 3-drum else path.
+Fix: changed branch selection to `round(alt_inner)` so the 3-drum
+path activates at `alt_inner ≥ 99.5`, matching how `val_int` is
+already computed inside `_rolling_drum`. Applied to pi4 and pi_zero.
 
 ---
 
