@@ -1062,7 +1062,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
     spd_box_col = MAGENTA if airspeed_src == "gps" else CYAN
-    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=_BUG_BTN_H, col=spd_box_col)
+    _cyan_box(surf, gs_str, x=SPD_X, y=0, w=SPD_W, h=TAPE_TOP, col=spd_box_col)
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
@@ -1109,7 +1109,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     # ALT bug button — top strip of alt tape; color matches bug triangle
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     alt_box_col = CYAN if baro_ok else MAGENTA
-    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=_BUG_BTN_H, col=alt_box_col)
+    _cyan_box(surf, alt_str, x=ALT_X + 1, y=0, w=ALT_W - 1, h=TAPE_TOP, col=alt_box_col)
 
     # VS bar — 5px wide on the outer (right) edge of the alt tape.
     # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
@@ -2261,11 +2261,11 @@ def handle_event(event, demo_mode):
                 return True
 
         # Tap on alt bug button (top of alt tape) → open numpad
-        if ALT_X <= x <= DISPLAY_W and 2 <= y <= 2 + _BUG_BTN_H:
+        if ALT_X <= x <= DISPLAY_W and 0 <= y <= TAPE_TOP:
             _open_numpad("alt_bug")
             return True
         # Tap on GS bug button (top of speed tape) → open numpad
-        if SPD_X <= x <= SPD_X + SPD_W and 2 <= y <= 2 + _BUG_BTN_H:
+        if SPD_X <= x <= SPD_X + SPD_W and 0 <= y <= TAPE_TOP:
             _open_numpad("spd_bug")
             return True
         # Tap on speed VR readout (centre of speed tape) → open speed numpad
@@ -2277,7 +2277,7 @@ def handle_event(event, demo_mode):
             _open_numpad("alt_bug")
             return True
         # Tap on hdg bug button → open numpad
-        if SPD_X <= x <= SPD_X + SPD_W and HDG_Y + 2 <= y <= HDG_Y + 2 + _BUG_BTN_H:
+        if SPD_X <= x <= SPD_X + SPD_W and HDG_Y <= y <= DISPLAY_H:
             _open_numpad("hdg_bug")
             return True
         # Tap on heading readout box (centre of heading tape) → open hdg numpad
@@ -2285,7 +2285,7 @@ def handle_event(event, demo_mode):
             _open_numpad("hdg_bug")
             return True
         # Tap on baro button → open numpad
-        if ALT_X <= x <= DISPLAY_W and HDG_Y + 2 <= y <= HDG_Y + 2 + _BUG_BTN_H:
+        if ALT_X <= x <= DISPLAY_W and HDG_Y <= y <= DISPLAY_H:
             _open_numpad("baro_hpa")
             return True
         # Tap on alt tape → adjust alt bug by position
@@ -3986,12 +3986,12 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
       • Right (under alt tape)   : Baro setting — CYAN=baro sensor, MAGENTA=GPS ALT
     IAS and ALT bug buttons are drawn at the tops of their own tapes.
     """
-    y = HDG_Y + 2
+    y = HDG_Y
 
     # HDG bug — left side of heading strip; color matches heading bug triangle
     _hdg_btn = f"{round(hdg_bug) % 360:03d}\u00b0" if hdg_bug is not None else "---\u00b0"
     hdg_box_col = MAGENTA if hdg_src == "gps" else CYAN
-    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=_BUG_BTN_H, col=hdg_box_col)
+    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=HDG_H, col=hdg_box_col)
 
     # Baro — right side of heading strip; CYAN when baro sensor active, MAGENTA when GPS ALT
     # Accept any non-"gps" baro_src as meaning baro sensor is active (firmware uses
@@ -4010,7 +4010,7 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
         baro_fsz = 14
         baro_col = MAGENTA
     _cyan_box(surf, baro_lbl,
-              x=ALT_X + 1, y=y, w=ALT_W - 1, h=_BUG_BTN_H, font_sz=baro_fsz, col=baro_col)
+              x=ALT_X + 1, y=y, w=ALT_W - 1, h=HDG_H, font_sz=baro_fsz, col=baro_col)
 
 
 # ── Veil surface for transparent overlay modes (allocated once) ───────────────
