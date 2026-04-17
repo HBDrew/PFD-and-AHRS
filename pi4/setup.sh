@@ -37,6 +37,7 @@ apt-get install -y --no-install-recommends \
 
 echo "[3/9] Installing OpenGL dependencies (for SVT renderer)…"
 apt-get install -y --no-install-recommends \
+    python3-dev \
     libgles2-mesa-dev \
     libegl1-mesa-dev \
     libgl1-mesa-dri \
