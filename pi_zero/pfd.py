@@ -436,7 +436,7 @@ def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz,
     """
     char_w  = bw // n_digits
     f       = _get_font(font_sz, bold=True)
-    val_int = int(abs(value))
+    val_int = round(abs(value))
     slot_h  = ((adj_slot_h if adj_slot_h is not None else bh // 2)
                if show_adjacent else bh)
 
@@ -1105,7 +1105,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
 
     # Heading bug — color reflects source: magenta=GPS track, cyan=magnetic.
     # hdg_bug=0 means "not set" (same convention as alt_bug and spd_bug).
-    if hdg_bug is not None and hdg_bug != 0:
+    if hdg_bug is not None:
         off = ((hdg_bug - hdg + 180) % 360) - 180
         hbx = int(CX + off * PX_PER_DEG)
         hbx = max(SPD_W, min(ALT_X, hbx))   # clamp to inner edges of tap buttons
