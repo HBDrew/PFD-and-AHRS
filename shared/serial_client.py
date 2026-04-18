@@ -36,6 +36,7 @@ class SerialClient(threading.Thread):
         self.lock            = lock
         self.reconnect_delay = reconnect_delay
         self.connected       = False
+        self.paused          = False # when True, skip state.update so sim/demo win
         self.rx_count        = 0     # $AHRS, lines parsed OK
         self.err_count       = 0     # JSON/IO errors
         self.last_err        = ""    # most recent error message
@@ -80,8 +81,12 @@ class SerialClient(threading.Thread):
                 payload = line[len(self.PREFIX):]
                 try:
                     update = json.loads(payload)
-                    with self.lock:
-                        self.state.update(update)
+                    # Keep reading (drain the buffer) but don't merge into
+                    # state while paused — sim/demo owns the state dict
+                    # until unpaused.
+                    if not self.paused:
+                        with self.lock:
+                            self.state.update(update)
                     self.connected = True
                     self.rx_count += 1
                 except json.JSONDecodeError as e:

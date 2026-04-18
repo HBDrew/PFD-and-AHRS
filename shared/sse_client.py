@@ -27,6 +27,7 @@ class SSEClient(threading.Thread):
         self.lock           = lock
         self.reconnect_delay = reconnect_delay
         self.connected      = False
+        self.paused         = False  # when True, skip state.update so sim/demo win
         self._stop_event    = threading.Event()
 
     def stop(self):
@@ -99,8 +100,12 @@ class SSEClient(threading.Thread):
                     payload = line[5:].strip()
                     try:
                         update = json.loads(payload)
-                        with self.lock:
-                            self.state.update(update)
+                        # Keep consuming events (don't let the stream
+                        # buffer) but don't merge into state while paused —
+                        # sim/demo owns the state dict until unpaused.
+                        if not self.paused:
+                            with self.lock:
+                                self.state.update(update)
                         self.connected = True
                     except json.JSONDecodeError:
                         pass

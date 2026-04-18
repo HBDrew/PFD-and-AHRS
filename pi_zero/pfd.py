@@ -2039,6 +2039,10 @@ def handle_event(event, demo_mode):
                 disp["sim"][sensor + "_fail"] = True
             elif action == "start":
                 _sim_state = SimFlyState()
+                # Pause live AHRS transport so its writes don't clobber the
+                # sim's writes to state.  Resumed on exit_sim.
+                if _sse_client is not None:
+                    _sse_client.paused = True
                 disp["mode"] = "pfd"
             elif action == "cancel":
                 disp["mode"] = "system_setup"
@@ -2049,6 +2053,9 @@ def handle_event(event, demo_mode):
             action = sim_controls_hit(x, y)
             if action == "exit_sim":
                 _sim_state = None
+                # Resume live AHRS transport — sim no longer owns state
+                if _sse_client is not None:
+                    _sse_client.paused = False
                 disp["mode"] = "pfd"
             elif action and action.startswith("sensor_on:"):
                 sensor = action.split(":")[1]
