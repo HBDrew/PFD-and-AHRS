@@ -2978,7 +2978,7 @@ def draw_connectivity_setup(surf, cs):
     # Visible even when ahrs_ok=False so the user can tell WHY the link
     # isn't working (port open? lines parsing? specific error?).
     diag_ri = stat_ri + 1
-    bx2, by, _, bh = _setting_row(
+    bx2, by, bw2, bh = _setting_row(
         surf, diag_ri, "AHRS LINK",
         f"{cs.get('ahrs_transport','?').upper()}  {cs.get('ahrs_port','')}")
     rx  = cs.get("ahrs_rx",  0)
@@ -2989,6 +2989,17 @@ def draw_connectivity_setup(surf, cs):
     if lerr:
         shown = lerr if len(lerr) < 44 else lerr[:43] + "\u2026"
         _text(surf, shown, 10, (230,150,80), x=bx2+132, y=by+bh-20)
+
+    # Live AHRS values on the right side of the row — lets the user
+    # confirm sensor output is sane (e.g. RX growing but all zeros =
+    # firmware alive but WT901 silent).
+    live = (f"R {disp.get('roll',0):+5.1f}\u00b0  "
+            f"P {disp.get('pitch',0):+5.1f}\u00b0  "
+            f"Y {disp.get('yaw',0):5.1f}\u00b0  "
+            f"ALT {int(disp.get('alt',0))}'")
+    _text(surf, live, 11, (130,200,230), bold=True,
+          x=bx2+bw2-14-_get_font(11, bold=True).size(live)[0],
+          y=by+bh-20)
 
     # Status messages from last apply / test
     for msg, col, y_off in [
