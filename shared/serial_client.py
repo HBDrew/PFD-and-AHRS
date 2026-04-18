@@ -12,6 +12,9 @@ Usage:
     client = SerialClient("/dev/ttyACM0", state, state_lock)
     client.start()          # starts background thread
     client.connected        # True once first valid line received
+    client.rx_count         # count of $AHRS, lines successfully parsed
+    client.err_count        # count of errors (parse or IO)
+    client.last_err         # string describing the most recent error
     client.stop()           # graceful shutdown
 """
 
@@ -33,6 +36,9 @@ class SerialClient(threading.Thread):
         self.lock            = lock
         self.reconnect_delay = reconnect_delay
         self.connected       = False
+        self.rx_count        = 0     # $AHRS, lines parsed OK
+        self.err_count       = 0     # JSON/IO errors
+        self.last_err        = ""    # most recent error message
         self._stop_event     = threading.Event()
 
     def stop(self):
@@ -51,7 +57,9 @@ class SerialClient(threading.Thread):
             try:
                 self._read_loop()
             except Exception as e:
-                print(f"[Serial] Error: {e}")
+                self.err_count += 1
+                self.last_err = f"{type(e).__name__}: {e}"
+                print(f"[Serial] Error: {self.last_err}")
             self.connected = False
             if not self._stop_event.is_set():
                 print(f"[Serial] Reconnecting in {self.reconnect_delay}s…")
@@ -75,7 +83,9 @@ class SerialClient(threading.Thread):
                     with self.lock:
                         self.state.update(update)
                     self.connected = True
-                except json.JSONDecodeError:
-                    pass
+                    self.rx_count += 1
+                except json.JSONDecodeError as e:
+                    self.err_count += 1
+                    self.last_err = f"JSON: {e.msg} @ col {e.colno}"
         finally:
             ser.close()

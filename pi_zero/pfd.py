@@ -150,6 +150,12 @@ disp["cs"] = {                      # connectivity settings
     "wifi_pass": "",        "wifi_ok":  False,
     "wifi_actual": "",      # SSID actually associated now (from iwgetid -r)
     "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
+    # AHRS link diagnostics (populated by the transport client thread)
+    "ahrs_transport": "",   # "usb" | "wifi" | ""
+    "ahrs_port":      "",   # /dev/ttyACM0 or the SSE URL
+    "ahrs_rx":        0,    # count of $AHRS, lines parsed OK
+    "ahrs_err":       0,    # count of parse / IO errors
+    "ahrs_last_err":  "",   # most recent error message
 }
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
@@ -233,6 +239,19 @@ def _poll_wifi_status():
         disp["cs"]["wifi_actual"] = ssid
         disp["cs"]["wifi_ok"]     = bool(ssid)
         time.sleep(5)
+
+
+def _poll_ahrs_diag():
+    """Background thread: mirror the AHRS transport client's diagnostic
+    counters (rx_count, err_count, last_err) into disp['cs'] so the
+    Connectivity screen can render them."""
+    while True:
+        c = _sse_client
+        if c is not None:
+            disp["cs"]["ahrs_rx"]       = getattr(c, "rx_count",  0)
+            disp["cs"]["ahrs_err"]      = getattr(c, "err_count", 0)
+            disp["cs"]["ahrs_last_err"] = getattr(c, "last_err", "")
+        time.sleep(1)
 
 
 def _apply_wifi(ssid, password):
@@ -2901,7 +2920,7 @@ _CS_FIELDS = [
     ("wifi_ssid", "WiFi SSID",       "Network name to join"),
     ("wifi_pass", "WiFi PASSWORD",   "WPA2 passphrase"),
 ]
-_CS_BTN_Y  = _ss_row_y(len(_CS_FIELDS) + 1) + 4   # below fields + status row
+_CS_BTN_Y  = _ss_row_y(len(_CS_FIELDS) + 2) + 4   # below fields + STATUS + AHRS LINK rows
 _CS_BTN_H  = 50
 
 
@@ -2947,6 +2966,22 @@ def draw_connectivity_setup(surf, cs):
         cy  = by + bh//4 + i*bh//2
         pygame.draw.circle(surf, col, (bx2+238, cy), 6)
         _text(surf, lbl, 13, col, bold=True, x=bx2+252, y=cy-9)
+
+    # AHRS transport diagnostics — shown on a separate row under STATUS.
+    # Visible even when ahrs_ok=False so the user can tell WHY the link
+    # isn't working (port open? lines parsing? specific error?).
+    diag_ri = stat_ri + 1
+    bx2, by, _, bh = _setting_row(
+        surf, diag_ri, "AHRS LINK",
+        f"{cs.get('ahrs_transport','?').upper()}  {cs.get('ahrs_port','')}")
+    rx  = cs.get("ahrs_rx",  0)
+    err = cs.get("ahrs_err", 0)
+    lerr = cs.get("ahrs_last_err", "")
+    _text(surf, f"RX:{rx}  ERR:{err}",
+          12, (180,200,220), bold=True, x=bx2+14, y=by+bh-22)
+    if lerr:
+        shown = lerr if len(lerr) < 44 else lerr[:43] + "\u2026"
+        _text(surf, shown, 10, (230,150,80), x=bx2+132, y=by+bh-20)
 
     # Status messages from last apply / test
     for msg, col, y_off in [
@@ -4931,9 +4966,13 @@ def main():
         global _sse_client
         _sse_client = SSEClient(SSE_URL, state, _state_lock)
         _sse_client.start()
+        disp["cs"]["ahrs_transport"] = "wifi"
+        disp["cs"]["ahrs_port"]      = SSE_URL
         print(f"[PFD] Connecting to {SSE_URL}")
         threading.Thread(target=_poll_wifi_status, daemon=True,
                          name="WiFiPoll").start()
+        threading.Thread(target=_poll_ahrs_diag,  daemon=True,
+                         name="AhrsDiag").start()
     else:
         # Seed initial state for demo
         state["alt"]   = DEMO_ALT
