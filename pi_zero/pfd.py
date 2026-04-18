@@ -468,11 +468,14 @@ def _rolling_drum(surf, bx, by, bw, bh, value, n_digits, color, font_sz,
 
         if show_adjacent:
             d_prev   = (d_lo - 1 + 10) % 10
+            d_hi2    = (d_lo + 2) % 10
             img_prev = f.render(str(d_prev), True, color)
+            img_hi2  = f.render(str(d_hi2),  True, color)
             ty_lo    = bh // 2 - gh // 2 + scroll   # reversed: lo scrolls down
-            cell.blit(img_hi,   (tx, ty_lo - slot_h))   # hi  (higher) above
+            cell.blit(img_hi2,  (tx, ty_lo - 2 * slot_h))  # two steps above
+            cell.blit(img_hi,   (tx, ty_lo - slot_h))       # hi  (higher) above
             cell.blit(img_lo,   (tx, ty_lo))
-            cell.blit(img_prev, (tx, ty_lo + slot_h))   # prev (lower) below
+            cell.blit(img_prev, (tx, ty_lo + slot_h))       # prev (lower) below
         else:
             ty_lo = (bh - gh) // 2 + scroll   # reversed: lo scrolls down
             cell.blit(img_hi, (tx, ty_lo - bh))   # hi (higher) one slot above

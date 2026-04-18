@@ -45,22 +45,6 @@ Target: symbol overlay in pi4/pi_zero.
 Context: draw 1 nm / 2 nm / 5 nm distance rings on the SVT so pilot
 has spatial reference for nearby airports/obstacles.
 
-### ONES-ROLL-ASYM  Ones drum "1 above 0" invisible when approaching from below
-Status: **OPEN — COSMETIC**
-Target: `_rolling_drum` in pi4/pi_zero pfd.py.
-Context: IIR smoothing on `disp["speed"]`/`disp["alt"]` converges
-*below* the target integer, so at indicated 100 kt the smoothed
-value sits at ~99.98 for many frames. At value=99.98 the drum math
-gives `d_lo=9, d_hi=0, d_prev=8` — no "1" yet, only "9→0" roll with
-"8" peeking below. At value=100.02 (approaching from above) the math
-gives `d_lo=0, d_hi=1, d_prev=9` and the "1" appears correctly.
-Visible symptom: rolling drum looks asymmetric between climbing-into
-an even hundred and descending-into it. Fix options (not trivial):
-(a) use `round(value)` rather than `int(value)` for d_lo and derive
-scroll from the signed fractional part, (b) change smoothing so it
-converges symmetrically around the target, (c) accept as-is since
-the displayed integer value is correct.
-
 ### #9  Pico W firmware — debug AP not appearing
 Status: **OPEN**
 Target: `firmware/main.py`, `firmware/config.py`.
@@ -110,6 +94,19 @@ Pi4 had `_drm_sw = int(26 * _fs)` (ones cell ~30 px) vs inner cell
 ~20 px. This session reduced to `_drm_sw = int(18 * _fs)` so the
 ones drum matches the inner cell width. pi_zero already had matched
 widths (17 vs 15).
+
+### ONES-ROLL-ASYM  Ones drum "1 above 0" invisible approaching from below — **FIXED**
+Root cause was NOT IIR smoothing (as initially assumed). It was
+that `_rolling_drum`'s show_adjacent branch only rendered one digit
+above (`d_hi`), while `_rolling_drum_alt20` used by the altimeter
+also rendered a *second* digit two slots above (`d_hi2`). At
+speed=99.8 the math gives `d_lo=9, d_hi=0, d_prev=8` — the "1"
+simply wasn't computed or drawn. The altimeter equivalent at 9998 ft
+gives `d_lo_idx=4("80"), d_hi=0("00"), d_hi2=1("20")` — the "20"
+peeks above correctly.
+Fix: added `d_hi2 = (d_lo + 2) % 10` and its blit at
+`ty_lo - 2 * slot_h` in `_rolling_drum` show_adjacent branch.
+Applied to pi4 and pi_zero.
 
 ### ALT-10K  Altitude drum shows "0000" at 10000 ft — **FIXED**
 Root cause: IIR smoothing on `disp["alt"]` converges from below —
