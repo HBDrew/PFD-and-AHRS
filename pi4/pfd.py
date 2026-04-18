@@ -1926,10 +1926,57 @@ _active_fingers = {}     # finger_id → touch-down time (ms)
 _multitouch_t0  = None   # time when 2nd finger touched down
 
 
+def _current_str_for_numpad(target):
+    """Return the string form of the current value for this numpad target,
+    formatted to match the digits the user would type. Empty string when
+    the value is unset / zero, so the user sees a blank buffer."""
+    def _i(v):
+        if v in (None, 0, 0.0, ""):
+            return ""
+        return str(int(v))
+    if target == "alt_bug":
+        v = disp.get("alt_bug")
+        return _i(v / 100) if v not in (None, 0, 0.0) else ""
+    if target == "hdg_bug":
+        v = disp.get("hdg_bug")
+        return str(int(v)) if v is not None else ""    # allow 0 (north)
+    if target == "spd_bug":
+        return _i(disp.get("spd_bug"))
+    if target == "baro_hpa":
+        v = disp.get("baro_hpa")
+        if v in (None, 0, 0.0):
+            return ""
+        baro_unit = disp["ds"].get("baro_unit", "inhg")
+        if baro_unit == "hpa":
+            return str(int(round(v)))
+        return str(int(round(v / 33.8639 * 100)))      # inHg × 100
+    if target == "sim_init_alt":
+        v = disp.get("sim", {}).get("init_alt")
+        return _i(v / 100) if v not in (None, 0, 0.0) else ""
+    if target == "sim_init_hdg":
+        v = disp.get("sim", {}).get("init_hdg")
+        return str(int(v)) if v is not None else ""
+    if target == "sim_init_spd":
+        return _i(disp.get("sim", {}).get("init_spd"))
+    if target in disp.get("fp", {}):
+        return _i(disp["fp"].get(target))
+    return ""
+
+
+def _current_str_for_kbd(target, prev_mode):
+    """String form of current keyboard-editable value for pre-population."""
+    if prev_mode == "connectivity_setup":
+        v = disp["cs"].get(target, "")
+    else:
+        v = disp["fp"].get(target, "")
+    return str(v) if v not in (None, 0, "") else ""
+
+
 def _open_numpad(target):
-    """Switch to numpad mode for the given bug target."""
+    """Switch to numpad mode for the given bug target, pre-populated with
+    the current value so the user can edit rather than retype."""
     disp["numpad_target"] = target
-    disp["numpad_buf"]    = ""
+    disp["numpad_buf"]    = _current_str_for_numpad(target)
     disp["numpad_prev"]   = disp["mode"]
     disp["mode"]          = "numpad"
 
@@ -2038,8 +2085,8 @@ def handle_event(event, demo_mode):
             elif action and action.startswith("edit:"):
                 key = action.split(":", 1)[1]
                 disp["kbd_target"] = key
-                disp["kbd_buf"]    = ""
                 disp["kbd_prev"]   = "connectivity_setup"
+                disp["kbd_buf"]    = _current_str_for_kbd(key, "connectivity_setup")
                 disp["mode"]       = "keyboard"
             elif action == "apply_wifi":
                 disp["cs"]["apply_msg"] = "Applying…"
@@ -2180,12 +2227,13 @@ def handle_event(event, demo_mode):
                 ftype = next((f[4] for f in _FP_FIELDS if f[0]==key), "num")
                 if ftype == "kbd":
                     disp["kbd_target"] = key
-                    disp["kbd_buf"]    = ""
+                    disp["kbd_prev"]   = "flight_profile"
+                    disp["kbd_buf"]    = _current_str_for_kbd(key, "flight_profile")
                     disp["mode"]       = "keyboard"
                 else:
                     disp["numpad_target"] = key
-                    disp["numpad_buf"]    = ""
                     disp["numpad_prev"]   = "flight_profile"
+                    disp["numpad_buf"]    = _current_str_for_numpad(key)
                     disp["mode"]          = "numpad"
             return True
 
@@ -2231,6 +2279,8 @@ def handle_event(event, demo_mode):
                 if sty == 'n':                # digit
                     if len(disp["numpad_buf"]) < max_digits:
                         disp["numpad_buf"] += lbl
+                elif sty == 'del':            # backspace
+                    disp["numpad_buf"] = disp["numpad_buf"][:-1]
                 elif sty == 'x':              # CANCEL
                     disp["mode"] = disp["numpad_prev"]
                     disp["numpad_buf"] = ""
@@ -2401,7 +2451,9 @@ _NP_KEYS = [
     [('7','n'), ('8','n'), ('9','n')],
     [('4','n'), ('5','n'), ('6','n')],
     [('1','n'), ('2','n'), ('3','n')],
-    [('CANCEL','x'), ('0','n'), ('ENTER','ok')],
+    # Bottom row: 4 keys share the same 384-px row width as the 3-col rows above.
+    # Each tuple's optional 3rd element overrides the default _NP_PW width.
+    [('CANCEL','x',87), ('0','n',87), ('\u232b','del',87), ('ENTER','ok',87)],
 ]
 _NP_PW=120; _NP_PH=64; _NP_GX=12; _NP_GY=10
 _NP_TW = 3*_NP_PW + 2*_NP_GX   # 384
@@ -2409,25 +2461,41 @@ _NP_X0 = (DISPLAY_W - _NP_TW) // 2  # 128
 _NP_Y0 = 118
 
 
-def _numpad_key(surf, col, row, label, style, r=8):
-    bx = _NP_X0 + col*(_NP_PW+_NP_GX)
-    by = _NP_Y0 + row*(_NP_PH+_NP_GY)
+def _np_row_layout(row):
+    """Return [(label, style, bx, bw), ...] for one numpad row, centered.
+    Keys may be 2-tuples (label, style) or 3-tuples (label, style, width);
+    2-tuples default to _NP_PW."""
+    widths = [(k[2] if len(k) >= 3 else _NP_PW) for k in row]
+    total = sum(widths) + _NP_GX * (len(row) - 1)
+    x = (DISPLAY_W - total) // 2
+    out = []
+    for i, k in enumerate(row):
+        out.append((k[0], k[1], x, widths[i]))
+        x += widths[i] + _NP_GX
+    return out
+
+
+def _numpad_key(surf, bx, by, bw, label, style, r=8):
     if style == 'x':
         bg=(28,6,6);  oc=(200,55,55); tc=(220,80,80)
     elif style == 'ok':
         bg=(5,25,10); oc=(50,200,80); tc=(60,220,90)
+    elif style == 'del':
+        bg=(30,18,5); oc=(200,140,40);tc=(220,160,50)
     else:
         bg=(0,12,32); oc=WHITE;       tc=WHITE
-    pygame.draw.rect(surf, bg, (bx, by, _NP_PW, _NP_PH), border_radius=r)
+    pygame.draw.rect(surf, bg, (bx, by, bw, _NP_PH), border_radius=r)
     glow_h = _NP_PH // 5
     for i in range(glow_h):
         t = 1.0 - i / glow_h
         gc = ((int(45+t*55), int(8+t*12),  int(8+t*12))  if style=='x'  else
               (int(5+t*15),  int(40+t*60), int(10+t*20)) if style=='ok' else
+              (int(40+t*50), int(25+t*35), int(5+t*10))  if style=='del' else
               (int(15+t*30), int(20+t*45), int(40+t*75)))
-        pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+_NP_PW-r, by+1+i))
-    pygame.draw.rect(surf, oc, (bx, by, _NP_PW, _NP_PH), width=2, border_radius=r)
-    _text(surf, label, 20, tc, bold=True, cx=bx+_NP_PW//2, cy=by+_NP_PH//2)
+        pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
+    pygame.draw.rect(surf, oc, (bx, by, bw, _NP_PH), width=2, border_radius=r)
+    fs = 18 if len(label) > 3 else 20
+    _text(surf, label, fs, tc, bold=True, cx=bx+bw//2, cy=by+_NP_PH//2)
 
 
 def _fmt_decimal(digits: str, decimal_after: int) -> str:
@@ -2476,17 +2544,19 @@ def draw_numpad(surf, title, current_val, entered="", suffix="",
     cur_display = f"{cur_raw}{suffix}" if suffix else cur_raw
     _text(surf, f"Current: {cur_display}", 10, (110,120,140), cx=DISPLAY_W//2, cy=108)
     for ri, row in enumerate(_NP_KEYS):
-        for ci, (lbl, sty) in enumerate(row):
-            _numpad_key(surf, ci, ri, lbl, sty)
+        by = _NP_Y0 + ri*(_NP_PH+_NP_GY)
+        for lbl, sty, bx, bw in _np_row_layout(row):
+            _numpad_key(surf, bx, by, bw, lbl, sty)
 
 
 def numpad_hit(x, y):
     """Return (label, style) of the tapped numpad key, or None."""
     for ri, row in enumerate(_NP_KEYS):
-        for ci, (lbl, sty) in enumerate(row):
-            bx = _NP_X0 + ci*(_NP_PW+_NP_GX)
-            by = _NP_Y0 + ri*(_NP_PH+_NP_GY)
-            if bx <= x <= bx+_NP_PW and by <= y <= by+_NP_PH:
+        by = _NP_Y0 + ri*(_NP_PH+_NP_GY)
+        if not (by <= y <= by+_NP_PH):
+            continue
+        for lbl, sty, bx, bw in _np_row_layout(row):
+            if bx <= x <= bx+bw:
                 return (lbl, sty)
     return None
 
@@ -2595,9 +2665,13 @@ _KB_ROWS = [
      ('Y',60,'n'),('U',60,'n'),('I',60,'n'),('O',60,'n'),('P',60,'n')],
     [('A',60,'n'),('S',60,'n'),('D',60,'n'),('F',60,'n'),('G',60,'n'),
      ('H',60,'n'),('J',60,'n'),('K',60,'n'),('L',60,'n')],
+    # Row 3: letters Z–M then period, colon, backspace.
+    # 10 keys × 60 + 9 gaps × 4 = 636 px — fits pi_zero 640 and pi4 1024.
     [('Z',60,'n'),('X',60,'n'),('C',60,'n'),('V',60,'n'),('B',60,'n'),
-     ('N',60,'n'),('M',60,'n'),('-',60,'n'),('\u232b',88,'del')],
-    [('CANCEL',108,'x'),('SPACE',292,'n'),('DONE',108,'ok')],
+     ('N',60,'n'),('M',60,'n'),('.',60,'n'),(':',60,'n'),('\u232b',60,'del')],
+    # Row 4: CANCEL, hyphen, SPACE, DONE. Hyphen moved here because row 3
+    # had to drop it to make room for . and : within the pi_zero width budget.
+    [('CANCEL',108,'x'),('-',60,'n'),('SPACE',232,'n'),('DONE',108,'ok')],
 ]
 _KB_ROW_H=66; _KB_GAP_Y=6; _KB_GAP_X=4; _KB_Y0=112
 

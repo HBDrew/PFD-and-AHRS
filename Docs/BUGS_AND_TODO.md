@@ -80,13 +80,6 @@ Notes / open questions for hardware bring-up:
     correct but copies through Python — can swap to `buffer_protocol`
     or PBO later if frame rate is a problem. Unlikely on 1024×600.
 
-### #5  Keyboard fixes (colon, period, backspace, pre-populated values)
-Status: **OPEN**
-Target: pi4 / pi_zero keypad/keyboard modal.
-Context: colon and period keys don't register, backspace doesn't
-delete, and the modal doesn't pre-populate with the current value
-when opened for an existing bug/setting.
-
 ### #6  WiFi SSID — show actual connected network
 Status: **OPEN**
 Target: `_poll_wifi_status` in pi4 / pi_zero.
@@ -167,6 +160,32 @@ peeks above correctly.
 Fix: added `d_hi2 = (d_lo + 2) % 10` and its blit at
 `ty_lo - 2 * slot_h` in `_rolling_drum` show_adjacent branch.
 Applied to pi4 and pi_zero.
+
+### #5  Keyboard fixes (colon, period, backspace, pre-populated values) — **FIXED**
+Three sub-issues diagnosed and fixed in pi4/pi_zero pfd.py:
+
+1. **Colon and period keys missing**: `:` and `.` were not in `_KB_ROWS`
+   at all. Added to row 3 (replacing the position of `-`, which moved to
+   row 4). Row 3 now: `Z X C V B N M . : ⌫`, backspace width reduced
+   from 88 to 60 px so 10 keys at 60 + 9 gaps fit pi_zero's 640 px
+   display (636 px total). Row 4 now: `CANCEL - SPACE DONE`.
+2. **Backspace on numpad missing**: `_NP_KEYS` had no `⌫` key and the
+   event handler had no `del` branch. Added `⌫` as a fourth key on the
+   bottom row (CANCEL, 0, ⌫, ENTER), each 87 px wide so the row still
+   totals 384 px matching the digit rows. `_NP_KEYS` now supports an
+   optional 3rd tuple element for per-key width; new `_np_row_layout()`
+   centers rows by width. Handler gains `elif sty == 'del'` branch
+   that does `numpad_buf = numpad_buf[:-1]`.
+3. **Modal not pre-populated**: all four modal open-sites (numpad for
+   bug targets, numpad for V-speed fields, keyboard for connectivity,
+   keyboard for flight profile) set `numpad_buf = ""` / `kbd_buf = ""`.
+   Added `_current_str_for_numpad(target)` and `_current_str_for_kbd
+   (target, prev_mode)` helpers that return the string form of the
+   current value (with inHg↔hPa conversion for baro_hpa, /100 for
+   alt_bug). All open-sites now pre-populate the buffer. Latent bug
+   also fixed: flight-profile keyboard path was not setting kbd_prev,
+   which could leave it stale from a prior connectivity edit and cause
+   text to go into the wrong dict on DONE.
 
 ### ALT-10K  Altitude drum shows "0000" at 10000 ft — **FIXED**
 Root cause: IIR smoothing on `disp["alt"]` converges from below —
