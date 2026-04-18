@@ -80,12 +80,6 @@ Notes / open questions for hardware bring-up:
     correct but copies through Python — can swap to `buffer_protocol`
     or PBO later if frame rate is a problem. Unlikely on 1024×600.
 
-### #6  WiFi SSID — show actual connected network
-Status: **OPEN**
-Target: `_poll_wifi_status` in pi4 / pi_zero.
-Context: status shows configured SSID, not the actually-connected one.
-Need to read from `iw dev wlan0 link` or `iwgetid -r`.
-
 ### #7  Demo smoothness — sinusoidal interpolation
 Status: **OPEN**
 Target: `DemoState` in pi4/pi_zero.
@@ -186,6 +180,16 @@ Three sub-issues diagnosed and fixed in pi4/pi_zero pfd.py:
    also fixed: flight-profile keyboard path was not setting kbd_prev,
    which could leave it stale from a prior connectivity edit and cause
    text to go into the wrong dict on DONE.
+
+### #6  WiFi SSID — show actual connected network — **FIXED**
+Root cause: `_wifi_ssid_current()` already ran `iwgetid -r` and
+returned the actual SSID, but `_poll_wifi_status()` discarded it —
+only stored `wifi_ok = bool(...)`. The Connectivity "STATUS" row
+showed a generic "WiFi CONNECTED" badge, never the network name.
+Fix: `_poll_wifi_status` now also stashes the SSID into
+`disp["cs"]["wifi_actual"]`; the status row renders
+`"WiFi: <ssid>"` (truncated with ellipsis at 18 chars) when up,
+falling back to "WiFi NO LINK" when down. Applied to pi4 and pi_zero.
 
 ### ALT-10K  Altitude drum shows "0000" at 10000 ft — **FIXED**
 Root cause: IIR smoothing on `disp["alt"]` converges from below —

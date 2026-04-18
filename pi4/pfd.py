@@ -175,6 +175,7 @@ disp["ss"] = {                      # AHRS / sensor settings
 disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
     "wifi_pass": "",        "wifi_ok":  False,
+    "wifi_actual": "",      # SSID actually associated now (from iwgetid -r)
     "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
 }
 disp["sim"] = {                     # flight simulator state
@@ -252,9 +253,12 @@ def _wifi_ssid_current():
 
 
 def _poll_wifi_status():
-    """Background thread: update disp['cs']['wifi_ok'] every 5 s."""
+    """Background thread: update disp['cs']['wifi_ok'] and the actual
+    connected SSID (wifi_actual) every 5 s."""
     while True:
-        disp["cs"]["wifi_ok"] = bool(_wifi_ssid_current())
+        ssid = _wifi_ssid_current()
+        disp["cs"]["wifi_actual"] = ssid
+        disp["cs"]["wifi_ok"]     = bool(ssid)
         time.sleep(5)
 
 
@@ -3108,6 +3112,15 @@ def draw_connectivity_setup(surf, cs):
         ok  = cs.get(ok_key, False)
         col = (60,220,80) if ok else (200,50,50)
         lbl = ok_y_lbl if ok else ok_n_lbl
+        # When WiFi is up, show the actually-connected SSID (truncated)
+        # instead of the generic "CONNECTED" text so the user can see
+        # which network they're on.
+        if ok and ok_key == "wifi_ok":
+            actual = cs.get("wifi_actual", "")
+            if actual:
+                if len(actual) > 18:
+                    actual = actual[:17] + "\u2026"
+                lbl = f"WiFi: {actual}"
         cy  = by + bh//4 + i*bh//2
         pygame.draw.circle(surf, col, (bx2+238, cy), 6)
         _text(surf, lbl, 13, col, bold=True, x=bx2+252, y=cy-9)
