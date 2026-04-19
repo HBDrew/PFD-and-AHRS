@@ -54,9 +54,12 @@ class WT901:
         updated = False
 
         while len(self._buf) >= self.PKT_LEN:
-            # Re-sync: discard bytes until we find the header
+            # Re-sync: discard bytes until we find the header.
+            # NOTE: MicroPython (at least v1.27.0 on Pico W) does NOT
+            # implement `del bytearray[i]` / `del bytearray[a:b]` — use
+            # slice reassignment instead so we work on all builds.
             if self._buf[0] != self.HEADER:
-                del self._buf[0]
+                self._buf = self._buf[1:]
                 continue
 
             pkt = self._buf[:self.PKT_LEN]
@@ -64,7 +67,7 @@ class WT901:
             # Validate checksum
             if self._checksum(pkt) != pkt[10]:
                 # Bad packet – drop the header byte and re-sync
-                del self._buf[0]
+                self._buf = self._buf[1:]
                 continue
 
             ptype = pkt[1]
@@ -86,7 +89,7 @@ class WT901:
                 self.ay = struct.unpack_from('<h', pkt, 4)[0] / 32768.0 * 16.0
                 self.az = struct.unpack_from('<h', pkt, 6)[0] / 32768.0 * 16.0
 
-            del self._buf[:self.PKT_LEN]
+            self._buf = self._buf[self.PKT_LEN:]
 
         return updated
 
