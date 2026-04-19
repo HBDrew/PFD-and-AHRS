@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-The display unit is the pilot-facing component of the Pico-AHRS / PFD system. It runs on a Raspberry Pi Zero 2W connected to a 640×480 DSI touchscreen and is responsible for receiving the flight-state SSE stream from the AHRS unit, rendering a full Primary Flight Display (PFD) at 30 fps directly on the framebuffer, and providing a touch-based interface for pilot configuration and bug setting. The display unit contains all rendering logic, terrain awareness, configuration menus, a built-in flight simulator, and a scripted demo mode. It operates independently of the AHRS unit for configuration and simulation purposes, and degrades gracefully to stale-data indication when the SSE link is interrupted.
+The display unit is the pilot-facing component of the Pico-AHRS / PFD system. It runs on a Raspberry Pi Zero 2W connected to a 640×480 Waveshare 3.5" DPI LCD (parallel RGB over the 40-pin GPIO header) with I2C capacitive touch, and is responsible for receiving the flight-state SSE stream from the AHRS unit, rendering a full Primary Flight Display (PFD) at 30 fps directly on the framebuffer, and providing a touch-based interface for pilot configuration and bug setting. The display unit contains all rendering logic, terrain awareness, configuration menus, a built-in flight simulator, and a scripted demo mode. It operates independently of the AHRS unit for configuration and simulation purposes, and degrades gracefully to stale-data indication when the SSE link is interrupted.
 
 ---
 
@@ -22,7 +22,7 @@ The following requirements define the minimum acceptable hardware configuration 
 
 > **REQ-DISP-HW-001** The processor shall be a Raspberry Pi Zero 2W or a compatible single-board computer providing equivalent or greater CPU performance.
 
-> **REQ-DISP-HW-002** The display shall be a 640×480 DSI touchscreen.
+> **REQ-DISP-HW-002** The display shall be a 640×480 DPI touchscreen — nominally a Waveshare 3.5" DPI LCD using the 40-pin GPIO parallel-RGB interface with I2C capacitive touch and PWM backlight on GPIO 18.
 
 > **REQ-DISP-HW-003** The touchscreen shall support at minimum 2-point simultaneous touch detection to allow two-finger gestures for menu access.
 

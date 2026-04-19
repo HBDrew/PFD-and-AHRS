@@ -10,10 +10,11 @@ SSE_URL    = PICO_URL + "/events"
 SSE_TIMEOUT = 10                         # seconds before reconnect
 
 # ── Display ───────────────────────────────────────────────────────────────────
-DISPLAY_W  = 640
-DISPLAY_H  = 480
-FULLSCREEN = True                        # set False for windowed testing
-TARGET_FPS = 30
+DISPLAY_W      = 640
+DISPLAY_H      = 480
+FULLSCREEN     = True   # set False for windowed testing
+TARGET_FPS     = 30
+DISPLAY_ROTATE = 0      # degrees CCW: 0, 90, 180, 270
 
 # ── Layout (matches preview_640x480.py constants) ────────────────────────────
 SPD_X      = 0
@@ -96,7 +97,7 @@ SIM_PRESETS = [
     ("KSFO", "San Francisco CA", 37.6213, -122.3790,   13),
     ("KLAS", "Las Vegas NV",     36.0840, -115.1537, 2141),
     ("KSEA", "Seattle WA",       47.4502, -122.3088,  433),
-    ("KATL", "Atlanta GA",       33.6407,  -84.4277, 1026),
+    ("KOSH", "Oshkosh WI",       43.9844,  -88.5570,  808),
     ("KJFK", "New York NY",      40.6413,  -73.7781,   13),
     ("KORD", "Chicago IL",       41.9742,  -87.9073,  668),
     ("KDFW", "Dallas TX",        32.8998,  -97.0403,  603),

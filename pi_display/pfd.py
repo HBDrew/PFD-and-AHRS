@@ -19,8 +19,7 @@ import socket
 import subprocess
 import urllib.request
 
-os.environ.setdefault("SDL_FBDEV", "/dev/fb0")
-os.environ.setdefault("SDL_VIDEODRIVER", "fbcon")   # overridden by --sim
+os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")  # overridden by --sim
 
 import pygame
 import pygame.gfxdraw
@@ -541,118 +540,143 @@ def draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon):
 def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     """
     Fallback SVT background (no SRTM tiles loaded).
-    Renders sky gradient + perspective terrain with foreshortening
-    and Sedona-style mesa silhouettes.
+    Draws sky/ground split directly into ai_rect using polygon fill + clipping.
+    No large surface rotation — runs in < 1 ms on Pi Zero 2W.
     """
     ax, ay, aw, ah = ai_rect
-
-    pad = int(max(aw, ah) * 0.85)
-    cw, ch = aw + pad * 2, ah + pad * 2
-    canvas = pygame.Surface((cw, ch))
+    GND_NEAR = ( 80, 110,  40)
+    GND_MID  = (120,  85,  38)
+    GND_FAR  = ( 70,  50,  25)
 
     px_per_deg = 10.0
-    hy = ch // 2 + int(pitch * px_per_deg)  # horizon y in canvas
+    old_clip   = surf.get_clip()
+    surf.set_clip(pygame.Rect(ax, ay, aw, ah))
 
-    # ── Sky gradient ──────────────────────────────────────────────────────────
-    for row in range(max(0, min(ch, hy + 1))):
-        t = max(0.0, min(1.0, 1.0 - (hy - row) / max(1, hy)))
-        col = lerp_col(SKY_TOP, SKY_HOR, t)
-        pygame.draw.line(canvas, col, (0, row), (cw, row))
+    cx  = ax + aw // 2
+    cy  = ay + ah // 2
+    pitch_py = int(pitch * px_per_deg)
 
-    # ── Ground with perspective foreshortening ────────────────────────────────
-    # Near terrain (bottom) is lighter/more saturated; far (near horizon) darker.
-    GND_NEAR = ( 80, 110,  40)  # greener close terrain
-    GND_MID  = (120,  85,  38)  # midrange brownish
-    GND_FAR  = ( 70,  50,  25)  # dark near horizon
-    for row in range(max(0, hy), ch):
-        t = (row - hy) / max(1, ch - hy)          # 0=horizon, 1=bottom
-        # foreshorten: most variation in the top quarter (distant terrain)
-        if t < 0.15:
-            col = lerp_col(GND_FAR, GND_MID, t / 0.15)
-        elif t < 0.5:
-            col = lerp_col(GND_MID, GND_NEAR, (t - 0.15) / 0.35)
-        else:
-            col = GND_NEAR
-        pygame.draw.line(canvas, col, (0, row), (cw, row))
+    # Horizon passes through (hcx, hcy) tilted by roll
+    hcx = cx
+    hcy = cy - pitch_py
+    roll_rad = math.radians(roll)
+    cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
 
-    # ── Horizon line ──────────────────────────────────────────────────────────
-    if 0 < hy < ch:
-        pygame.draw.line(canvas, WHITE, (0, hy), (cw, hy), 2)
+    # Extend horizon line well beyond the rect so clipping takes care of edges
+    R  = aw + ah
+    h1 = (hcx - R * cos_r, hcy + R * sin_r)
+    h2 = (hcx + R * cos_r, hcy - R * sin_r)
 
-    # ── Rotate for roll ───────────────────────────────────────────────────────
-    rotated = pygame.transform.rotate(canvas, roll)
-    rw, rh = rotated.get_size()
-    ox = max(0, (rw - aw) // 2)
-    oy = max(0, (rh - ah) // 2)
-    blit_w = min(aw, rw - ox)
-    blit_h = min(ah, rh - oy)
-    crop = rotated.subsurface(pygame.Rect(ox, oy, blit_w, blit_h))
-    surf.blit(crop, (ax, ay))
+    # Classify each corner: sky side = dot product with "up" normal > 0
+    def _sky_side(px, py):
+        return (hcy - py) * cos_r + (px - hcx) * sin_r > 0
+
+    corners = [(ax, ay), (ax + aw, ay), (ax + aw, ay + ah), (ax, ay + ah)]
+
+    # Build sky polygon: traverse rect corners in order, insert horizon
+    # intersection points where the boundary crosses from sky to ground or vice versa.
+    sky_poly = []
+    for i, c in enumerate(corners):
+        nc = corners[(i + 1) % 4]
+        c_sky  = _sky_side(c[0],  c[1])
+        nc_sky = _sky_side(nc[0], nc[1])
+        if c_sky:
+            sky_poly.append(c)
+        if c_sky != nc_sky:
+            dx, dy = nc[0] - c[0], nc[1] - c[1]
+            denom  = -dy * cos_r + dx * sin_r
+            if abs(denom) > 1e-6:
+                t  = (-(hcy - c[1]) * cos_r - (c[0] - hcx) * sin_r) / denom
+                sky_poly.append((c[0] + t * dx, c[1] + t * dy))
+
+    # Fill ground first (covers whole rect), then paint sky polygon on top
+    surf.fill(GND_MID, (ax, ay, aw, ah))
+    if sky_poly and len(sky_poly) >= 3:
+        pygame.draw.polygon(surf, SKY_HOR, sky_poly)
+    elif all(_sky_side(c[0], c[1]) for c in corners):
+        surf.fill(SKY_HOR, (ax, ay, aw, ah))
+
+    # Horizon line (extended; clipped to AI rect by set_clip above)
+    pygame.draw.line(surf, WHITE,
+                     (int(h1[0]), int(h1[1])), (int(h2[0]), int(h2[1])), 2)
+
+    surf.set_clip(old_clip)
 
 
 # ── Pitch ladder ──────────────────────────────────────────────────────────────
 def draw_pitch_ladder(surf, ai_rect, pitch, roll):
-    """White pitch ladder lines, rotated with roll, overlaid on AI."""
+    """
+    White pitch ladder lines drawn directly in rotated coordinates.
+    No intermediate surface or transform.rotate — fast on Pi Zero 2W.
+    """
     ax, ay, aw, ah = ai_rect
     cx, cy = ax + aw // 2, ay + ah // 2
 
-    px_per_deg = 10.0   # 10 display pixels per degree of pitch
+    px_per_deg = 10.0
+    pitch_px   = int(pitch * px_per_deg)
 
-    # Render on a transparent canvas, then rotate
-    pad = int(max(aw, ah) * 0.75)
-    cw, ch = aw + pad * 2, ah + pad * 2
-    canvas = pygame.Surface((cw, ch), pygame.SRCALPHA)
-    ccx, ccy = cw // 2, ch // 2
-
-    pitch_px = int(pitch * px_per_deg)
-
-    # Line half-widths based on AI width.
-    # GI-275 style: major ~7% each side, minor ~4%.
     major_half = int(aw * 0.07)   # ~34 px
     minor_half = int(aw * 0.04)   # ~19 px
 
+    # Precompute rotation basis (pygame CCW rotation in Y-down screen coords):
+    #   rotated_x = x * cos_r + y * sin_r
+    #   rotated_y = -x * sin_r + y * cos_r
+    roll_rad = math.radians(roll)
+    cos_r    = math.cos(roll_rad)
+    sin_r    = math.sin(roll_rad)
+
+    def _rv(x, y):
+        """Rotate vector (x,y) and offset to surf coords."""
+        return (int(cx + x * cos_r + y * sin_r),
+                int(cy - x * sin_r + y * cos_r))
+
+    # Clip to AI rect so lines don't bleed into tapes / heading tape
+    old_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(ax, ay, aw, ah))
+
     for deg in range(-30, 35, 5):
-        if deg == 0:
+        rel_y = pitch_px - int(deg * px_per_deg)  # y offset from AI center
+
+        # Cull lines too far from the visible window (±185 px from centre)
+        if rel_y < -185 or rel_y > 185:
             continue
-        row_y = ccy + pitch_px - int(deg * px_per_deg)
-        if row_y < ccy - 185:   # don't draw above roll arc area (display y < 44)
-            continue
-        if row_y > ccy + 185:   # don't draw below heading tape (display y > 414)
-            continue
-        if not (10 < row_y < ch - 10):
-            continue
+
         major = (deg % 10 == 0)
         half  = major_half if major else minor_half
-        col   = (255, 255, 255, 220)
+
+        if deg == 0:
+            # Horizon line
+            p1 = _rv(-half, rel_y)
+            p2 = _rv( half, rel_y)
+            pygame.draw.line(surf, (255, 255, 255, 200), p1, p2, 2)
+            continue
+
+        col = (255, 255, 255, 220)
+        p1  = _rv(-half, rel_y)
+        p2  = _rv( half, rel_y)
+
         if major:
-            pygame.draw.line(canvas, col, (ccx - half, row_y), (ccx + half, row_y), 2)
+            pygame.draw.line(surf, col, p1, p2, 2)
         else:
-            pygame.draw.aaline(canvas, col, (ccx - half, row_y), (ccx + half, row_y))
-        # End tick marks (inward — up for positive pitch, down for negative)
-        tick_dir = 8 if deg > 0 else -8
-        pygame.draw.aaline(canvas, col, (ccx - half, row_y), (ccx - half, row_y + tick_dir))
-        pygame.draw.aaline(canvas, col, (ccx + half, row_y), (ccx + half, row_y + tick_dir))
-        # Degree labels at major lines
+            pygame.draw.aaline(surf, col, p1, p2)
+
+        # Tick marks: 8 px inward (toward horizon = toward centre of AI)
+        tick = 8 if deg > 0 else -8
+        pygame.draw.aaline(surf, col, p1, _rv(-half, rel_y + tick))
+        pygame.draw.aaline(surf, col, p2, _rv( half, rel_y + tick))
+
+        # Degree labels at major lines (drawn without rotation for speed)
         if major:
             lbl = str(abs(deg))
             fnt = _get_font(16)
-            img = fnt.render(lbl, True, (255, 255, 255, 220))
-            canvas.blit(img, (ccx - half - img.get_width() - 4, row_y - 9))
-            canvas.blit(img, (ccx + half + 4, row_y - 9))
+            img = fnt.render(lbl, True, (255, 255, 255))
+            # Position label just outside each end of the line
+            lx1, ly1 = _rv(-half - img.get_width() - 4, rel_y - 8)
+            lx2, ly2 = _rv( half + 4,                   rel_y - 8)
+            surf.blit(img, (lx1, ly1))
+            surf.blit(img, (lx2, ly2))
 
-    # Horizon line (0°) — same width as major pitch lines
-    hy = ccy + pitch_px
-    if 0 < hy < ch:
-        pygame.draw.line(canvas, (255, 255, 255, 200),
-                         (ccx - major_half, hy), (ccx + major_half, hy), 2)
-
-    # Rotate with roll
-    rotated = pygame.transform.rotate(canvas, roll)
-    rw, rh = rotated.get_size()
-    ox, oy = (rw - aw) // 2, (rh - ah) // 2
-    crop = pygame.Surface((aw, ah), pygame.SRCALPHA)
-    crop.blit(rotated, (0, 0), pygame.Rect(ox, oy, aw, ah))
-    surf.blit(crop, (ax, ay))
+    surf.set_clip(old_clip)
 
 
 # ── Roll arc ──────────────────────────────────────────────────────────────────
@@ -689,41 +713,39 @@ def _doghouse_pts(cx, cy, ang_rad, r, size=11, inward=True):
 
 def draw_roll_arc(surf, roll):
     """Draw GI-275 style roll scale: arc, tick marks, doghouse zero marker,
-    and doghouse roll pointer."""
+    and doghouse roll pointer.
+    Uses pygame.draw.arc (single C call) instead of 121-iteration Python loop.
+    """
     cx, cy = CX, ROLL_CY
 
-    # Arc (-60° to +60° of bank, mapped to screen top), rotates with roll
-    for a in range(-150, -29):
-        a1, a2 = (a + roll) * DEG, (a + 1 + roll) * DEG
-        x1 = int(cx + ROLL_R * math.cos(a1))
-        y1 = int(cy + ROLL_R * math.sin(a1))
-        x2 = int(cx + ROLL_R * math.cos(a2))
-        y2 = int(cy + ROLL_R * math.sin(a2))
-        # Draw at r and r+1 to approximate 2px AA arc
-        pygame.draw.aaline(surf, LTGREY, (x1, y1), (x2, y2))
-        x1b = int(cx + (ROLL_R + 1) * math.cos(a1))
-        y1b = int(cy + (ROLL_R + 1) * math.sin(a1))
-        x2b = int(cx + (ROLL_R + 1) * math.cos(a2))
-        y2b = int(cy + (ROLL_R + 1) * math.sin(a2))
-        pygame.draw.aaline(surf, LTGREY, (x1b, y1b), (x2b, y2b))
+    # ── Arc: 120° span centred at 12 o'clock, rotated by roll ────────────────
+    # Our angle convention: 0=right, CW positive, Y-down (standard math / pygame cos/sin).
+    # pygame.draw.arc uses mathematical CCW from right (Y-up).  Conversion: negate.
+    # Arc spans -150+roll … -30+roll in our convention → 30-roll … 150-roll in pygame.
+    arc_start = math.radians(30  - roll)
+    arc_stop  = math.radians(150 - roll)
+    arc_rect  = pygame.Rect(cx - ROLL_R - 1, cy - ROLL_R - 1,
+                            (ROLL_R + 1) * 2 + 2, (ROLL_R + 1) * 2 + 2)
+    pygame.draw.arc(surf, LTGREY, arc_rect, arc_start, arc_stop, 2)
 
-    # Tick marks
+    # ── Tick marks (10 trig evaluations instead of 484) ──────────────────────
     for deg2, length in [(10, 9), (20, 9), (30, 13),
                          (-10, 9), (-20, 9), (-30, 13),
                          (45, 9), (-45, 9), (60, 11), (-60, 11)]:
         ang = (-90 + deg2 + roll) * DEG
-        x1 = int(cx + (ROLL_R - length) * math.cos(ang))
-        y1 = int(cy + (ROLL_R - length) * math.sin(ang))
-        x2 = int(cx + ROLL_R * math.cos(ang))
-        y2 = int(cy + ROLL_R * math.sin(ang))
+        cos_a, sin_a = math.cos(ang), math.sin(ang)
+        x1 = int(cx + (ROLL_R - length) * cos_a)
+        y1 = int(cy + (ROLL_R - length) * sin_a)
+        x2 = int(cx + ROLL_R * cos_a)
+        y2 = int(cy + ROLL_R * sin_a)
         pygame.draw.aaline(surf, LTGREY, (x1, y1), (x2, y2))
         # Hollow triangles at ±45
         if abs(deg2) == 45:
             perp = ang + math.pi / 2
             tx2, ty2 = int(5 * math.cos(perp)), int(5 * math.sin(perp))
             mx, my = (x1 + x2) // 2, (y1 + y2) // 2
-            inner_x = int(cx + (ROLL_R - 16) * math.cos(ang))
-            inner_y = int(cy + (ROLL_R - 16) * math.sin(ang))
+            inner_x = int(cx + (ROLL_R - 16) * cos_a)
+            inner_y = int(cy + (ROLL_R - 16) * sin_a)
             tri = [(mx - tx2, my - ty2), (mx + tx2, my + ty2), (inner_x, inner_y)]
             pygame.gfxdraw.aapolygon(surf, tri, LTGREY)
 
@@ -809,15 +831,21 @@ def spd_y(v, speed): return int(TAPE_MID - (v - speed) * PX_PER_KT)
 def alt_y(ft, alt):  return int(TAPE_MID - (ft - alt)  * PX_PER_FT)
 
 
+_spd_tape_bg = None   # cached speed-tape background surface
+_alt_tape_bg = None   # cached alt-tape background surface
+
+
 def draw_speed_tape(surf, speed, gs_bug=None,
                     vs0=VS0, vs1=VS1, vfe=VFE, vno=VNO, vne=VNE,
                     airspeed_src="gps"):
     """Left airspeed tape with GI-275-style V-speed colour bands.
     V-speed params should already be in the same unit as *speed*."""
-    # Background (full height including top strip, matching alt tape)
-    tape_surf = pygame.Surface((SPD_W, TAPE_BOT), pygame.SRCALPHA)
-    tape_surf.fill(TAPE_BG)
-    surf.blit(tape_surf, (SPD_X, 0))
+    # Background — cached to avoid a new SRCALPHA Surface allocation every frame
+    global _spd_tape_bg
+    if _spd_tape_bg is None:
+        _spd_tape_bg = pygame.Surface((SPD_W, TAPE_BOT), pygame.SRCALPHA)
+        _spd_tape_bg.fill(TAPE_BG)
+    surf.blit(_spd_tape_bg, (SPD_X, 0))
     pygame.draw.line(surf, (255, 255, 255, 60), (SPD_X + SPD_W, 0),
                      (SPD_X + SPD_W, TAPE_BOT), 1)
 
@@ -898,9 +926,11 @@ def draw_speed_tape(surf, speed, gs_bug=None,
 # ── Altitude tape ──────────────────────────────────────────────────────────────
 def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=True):
     """Right altitude tape with VSI and baro setting."""
-    tape_surf = pygame.Surface((ALT_W, TAPE_H), pygame.SRCALPHA)
-    tape_surf.fill(TAPE_BG)
-    surf.blit(tape_surf, (ALT_X, TAPE_TOP))
+    global _alt_tape_bg
+    if _alt_tape_bg is None:
+        _alt_tape_bg = pygame.Surface((ALT_W, TAPE_H), pygame.SRCALPHA)
+        _alt_tape_bg.fill(TAPE_BG)
+    surf.blit(_alt_tape_bg, (ALT_X, TAPE_TOP))
     pygame.draw.line(surf, (255, 255, 255, 60), (ALT_X, TAPE_TOP),
                      (ALT_X, TAPE_BOT), 1)
 
@@ -3648,11 +3678,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 0. Compute terrain/obstacle alert level for this frame
     _update_terrain_alert(lat, lon, alt, speed, gps_ok)
 
-    # 1. SVT / AI background
+    # 1. AI background — draw full-width so tapes are transparent over sky/ground
+    _full_ai = (0, 0, DISPLAY_W, HDG_Y)
     if _has_terrain:
-        draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon)
+        draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt, lat, lon)
     else:
-        draw_simple_ai_background(surf, ai_rect, pitch, roll)
+        draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
     # 1b. Obstacle symbols projected onto AI
     if _obstacles is not None and gps_ok:
@@ -3823,16 +3854,64 @@ def main():
     threading.Thread(target=_startup_load_obstacles, daemon=True,
                      name="ObstacleLoad").start()
 
+    # Disable vsync so display.flip() doesn't block waiting for the display's
+    # vsync signal (which was taking ~82 ms at ~12 Hz on KMS/DRM, halving FPS).
+    os.environ.setdefault("SDL_RENDER_VSYNC", "0")
+    os.environ.setdefault("SDL_VIDEO_KMSDRM_VSYNC", "0")
+
     pygame.init()
     pygame.mouse.set_visible(False)
 
     if (not args.sim) and FULLSCREEN:
-        surf = pygame.display.set_mode(
-            (DISPLAY_W, DISPLAY_H),
-            pygame.FULLSCREEN | pygame.NOFRAME
-        )
+        if DISPLAY_ROTATE:
+            # Rotated display: need explicit native-res surface + manual transform.
+            info = pygame.display.Info()
+            _native_w = info.current_w if info.current_w > 0 else DISPLAY_W
+            _native_h = info.current_h if info.current_h > 0 else DISPLAY_H
+            screen = pygame.display.set_mode(
+                (_native_w, _native_h),
+                pygame.FULLSCREEN | pygame.NOFRAME
+            )
+            _scale = min(_native_w / DISPLAY_W, _native_h / DISPLAY_H)
+            _sw = int(DISPLAY_W * _scale)
+            _sh = int(DISPLAY_H * _scale)
+            _sx = (_native_w - _sw) // 2
+            _sy = (_native_h - _sh) // 2
+            surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
+        else:
+            # Use SDL2's built-in logical scaling (pygame.SCALED). SDL2 scales
+            # the 640×480 logical surface to the physical display size in C,
+            # which is ~10× faster than pygame.transform.scale() in Python
+            # (~80 ms saved per frame on Pi Zero 2W scaling to 1080p).
+            # SDL_RENDER_VSYNC=0 (set above) disables vsync on the SDL_Renderer
+            # that SCALED creates internally, removing the vsync-wait overhead.
+            screen = pygame.display.set_mode(
+                (DISPLAY_W, DISPLAY_H),
+                pygame.FULLSCREEN | pygame.SCALED
+            )
+            surf = screen
+            _sw = _sh = _sx = _sy = None
     else:
-        surf = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
+        screen = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
+        surf = screen
+        _sw = _sh = _sx = _sy = None
+
+    def _flip():
+        """Present the PFD surface to the physical display.
+
+        In the normal (non-rotated) fullscreen path, surf IS screen and SDL2
+        handles the logical→physical scaling internally via pygame.SCALED, so
+        this function is just a pygame.display.flip() call.
+
+        The rotated path (DISPLAY_ROTATE != 0) still does an explicit
+        transform+scale because SDL2's logical-size API doesn't handle rotation.
+        """
+        if surf is not screen:
+            # Rotated display — manual transform + scale
+            s = pygame.transform.rotate(surf, DISPLAY_ROTATE)
+            screen.fill((0, 0, 0))
+            screen.blit(pygame.transform.scale(s, (_sw, _sh)), (_sx, _sy))
+        pygame.display.flip()
 
     pygame.display.set_caption("PFD")
     clock = pygame.time.Clock()
@@ -3862,7 +3941,7 @@ def main():
         disp["alt_bug"] = args.ss_alt
         smooth_state()              # now a no-op (disp already matches state)
         render(surf, demo_mode=False, connected=True, data_stale=False)
-        pygame.display.flip()
+        _flip()
         outpath = os.path.abspath(args.screenshot)
         os.makedirs(os.path.dirname(outpath) or ".", exist_ok=True)
         pygame.image.save(surf, outpath)
@@ -3874,7 +3953,7 @@ def main():
     demo       = DemoState() if demo_mode else None
     connected  = False
     data_stale = False
-    global _link_lost_t
+    global _link_lost_t, _multitouch_t0, _active_fingers
 
     if not demo_mode:
         global _sse_client
@@ -3939,9 +4018,22 @@ def main():
             _multitouch_t0 = None
 
         # Render
+        _t0 = time.monotonic()
         render(surf, demo_mode, connected, data_stale=data_stale)
-        pygame.display.flip()
+        _t1 = time.monotonic()
+        _flip()
+        _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
+
+        # Print frame timing every 60 frames so we can diagnose bottlenecks
+        if not hasattr(main, '_frame_n'):
+            main._frame_n = 0
+        main._frame_n += 1
+        if main._frame_n % 60 == 0:
+            render_ms = (_t1 - _t0) * 1000
+            flip_ms   = (_t2 - _t1) * 1000
+            fps       = clock.get_fps()
+            print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  flip={flip_ms:.1f}ms")
 
     if _sse_client:
         _sse_client.stop()

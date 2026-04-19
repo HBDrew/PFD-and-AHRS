@@ -10,3 +10,25 @@ venv/
 # Editor / OS
 .DS_Store
 *.swp
+
+# SRTM terrain tiles (large binary, downloaded at runtime)
+pi_zero/data/srtm/*.hgt
+pi4/data/srtm/*.hgt
+pi_display/data/srtm/*.hgt
+
+# FAA obstacle data (downloaded at runtime)
+pi_zero/data/obstacles/
+pi4/data/obstacles/
+pi_display/data/obstacles/
+
+# OurAirports CSV + cache (downloaded at runtime via fetch_airports.sh)
+pi_zero/data/airports/
+pi4/data/airports/
+pi_display/data/airports/
+
+# User settings persistence file (created at runtime, per-device)
+pi_zero/data/settings.json
+pi4/data/settings.json
+
+# Local config overrides
+config_local.py
