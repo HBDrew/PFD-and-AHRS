@@ -65,6 +65,10 @@ const SIM = {
   pitch_trim:0, roll_trim:0, yaw_trim:0,
 };
 const D = Object.assign({}, SIM);
+// Expose simulator state on window so tools/render_iphone_previews.py can
+// freeze the animation on a specific scenario frame for screenshot capture.
+window._SIM       = SIM;
+window._D         = D;
 
 // ay: lateral acceleration g driving the slip ball.
 // Coordinated flight → ay ≈ 0.  Deliberate slip/skid → non-zero ay.
@@ -98,6 +102,20 @@ const scenarios = [
 ];
 
 let scIdx=0, scStart=null;
+// Screenshot hook: set window._freeze to {idx, t01} to stop scenario cycling
+// and pin SIM to a specific scenario frame.  Cleared by setting back to null.
+window._scenarios = scenarios;
+window._freezeScene = (idx, t01) => {
+  const sc = scenarios[idx];
+  if (!sc) return;
+  Object.assign(SIM, sc.fn(t01));
+  SIM.track = SIM.yaw;
+  SIM.gps_alt = SIM.alt;
+  Object.assign(D, SIM);       // skip smoothing so the screenshot is crisp
+  const scEl = document.getElementById('scenario');
+  if (scEl) scEl.textContent = sc.label + '  (frozen)';
+  window._frozen = true;
+};
 const scEl=document.getElementById('scenario');
 const trnEl=document.getElementById('terrain-status');
 
@@ -476,8 +494,10 @@ let lastTs=null;
 function render(ts){
   if(lastTs===null) lastTs=ts;
   const dt=ts-lastTs; lastTs=ts;
-  tickSim(ts);
-  smooth(Math.min(1,dt/60));
+  if (!window._frozen) {
+    tickSim(ts);
+    smooth(Math.min(1,dt/60));
+  }
   ctx.clearRect(0,0,W,H);
   drawAI();
   Terrain.render(ctx, D, L);   // SVS on top of sky/ground, behind instruments

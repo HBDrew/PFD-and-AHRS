@@ -33,7 +33,7 @@ def _load_index():
         _INDEX_CACHE = (
             '<!DOCTYPE html><html><body>'
             '<h2>index.html not found on Pico W flash.</h2>'
-            '<p>Copy display/index.html to the root of the Pico W filesystem.</p>'
+            '<p>Copy iphone_display/index.html to the root of the Pico W filesystem.</p>'
             '</body></html>'
         )
     return _INDEX_CACHE
