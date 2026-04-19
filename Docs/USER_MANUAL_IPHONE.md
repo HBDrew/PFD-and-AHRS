@@ -17,7 +17,7 @@
 5. [Airspeed Tape](#5-airspeed-tape)
 6. [Altitude Tape and VSI](#6-altitude-tape-and-vsi)
 7. [Heading Tape](#7-heading-tape)
-8. [Slip / Skid Ball](#8-slip--skid-ball)
+8. [Slip / Skid Bar](#8-slip--skid-bar)
 9. [Badges and Status](#9-badges-and-status)
 10. [Baro Setting (QNH)](#10-baro-setting-qnh)
 11. [AHRS Trim](#11-ahrs-trim)
@@ -121,9 +121,14 @@ The fixed aircraft reference is the **amber swept-delta symbol** ported from the
 
 Short white bars at ±10°, ±20°, ±30°, scale matches the horizon projection so pitch bars, horizon, and zero-pitch line all line up at any attitude.
 
-### Roll arc
+### Roll arc — sky-pointer convention
 
-Arc across the top of the AI with ticks at 10°, 20°, 30°, 45°, 60° each side of level. A small doghouse at the arc's apex is the fixed sky pointer — when you bank, the arc rotates with the sky, and the doghouse still indicates "up". Read bank angle by checking where the fixed aircraft reference (at the very top) lines up with the rotating ticks.
+The roll arc follows the **GI-275 sky-pointer convention** ported from the Pi 4 PFD. There are two doghouse pointers:
+
+- **Fixed lower doghouse** — sits inside the arc, fixed at 12 o'clock. Marks the **aircraft's** "up" direction.
+- **Moving upper doghouse** — sits outside the arc with its tip on the arc band. Rotates with the sky, so it always points to the **sky's** "up".
+
+Read bank angle by the angular gap between the two doghouses. At 0° bank they overlap at top centre; at 30° right bank the moving doghouse drifts 30° to the LEFT of the fixed one (the sky has tilted CCW relative to the cabin). The arc itself + all the tick marks (±10°, ±20°, ±30°, ±45°, ±60°) rotate as a rigid unit with the sky.
 
 ![Standard-rate right turn](../iphone_display/previews/preview_right_turn.png)
 
@@ -184,7 +189,7 @@ A **magenta chevron** on the inner edge of the tape tracks the speed bug (GPS gr
 
 ## 6. Altitude Tape and VSI
 
-Altitude scrolls in 50 ft steps with labels every 100 ft. Current value is shown in a **Veeder-Root drum** matching the airspeed drum — five digits with leading-zero suppression, each column cascading smoothly so crossings through 1000 ft and 10000 ft look continuous.
+Altitude scrolls in 50 ft steps with labels every 100 ft. Current value is shown in a **stepped Veeder-Root drum** matching the Pi 4 readout box: a small inner cell holds the hundreds / thousands / ten-thousands columns (cascading per-foot), and a taller outer cell holds the **20-foot label drum** advancing through `00 / 20 / 40 / 60 / 80` as a unit — the same way a real Bendix or G1000 altimeter drum reads. The 20-ft labels make turbulence-induced jitter much easier to read than per-foot digits would.
 
 Under the altitude box, the VSI readout shows vertical speed in feet per minute with a green up / red down triangle. Below it the current QNH setting is displayed in the active unit (hPa or inHg).
 
@@ -211,13 +216,13 @@ A **cyan chevron** on the top edge of the heading tape marks the stored heading 
 
 Bug value stored in `localStorage['bugs'].hdg_bug`.
 
-## 8. Slip / Skid Ball
+## 8. Slip / Skid Bar
 
-A small ball slides left / right below the roll arc. Centred = coordinated flight. Deflected = uncoordinated — step on the rudder toward the ball to re-centre it.
+A short white bar slides left / right immediately under the fixed lower doghouse on the roll arc — the same pi4 / FAA-panel style. **Step on the rudder TOWARD the bar to re-centre it.** When the bar is centred under the doghouse you're flying coordinated.
 
 ![Turbulence with intermittent slip](../iphone_display/previews/preview_turbulence_slip.png)
 
-The ball reacts to lateral acceleration (`ay`) from the IMU, not to the AHRS-computed bank angle, so it catches slips and skids independently of your attitude.
+The bar reacts to lateral acceleration (`ay`) from the IMU, not to the AHRS-computed bank angle, so it catches slips and skids independently of your attitude. Maximum deflection is ±12 px at 0.2 g lateral.
 
 ## 9. Badges and Status
 
@@ -265,6 +270,10 @@ If the horizon isn't level on the ground with the aircraft wings level, open the
 Pitch, roll, and heading each have **−0.5°**, **−0.1°**, **+0.1°**, **+0.5°** buttons. Values are pushed to the Pico W and applied to the raw sensor output before the PFD sees them, so the same trim persists across all displays (iPhone, Pi Zero, Pi 4) connected to the same Pico.
 
 **Reset All** zeroes all three axes. The panel also provides a current-value readout on the right of each row.
+
+### Zero Phone (when running on phone sensors)
+
+When the phone-sensor fallback is active (see §14), the TRIM panel also has a **○ Zero Phone** button. Tap it with the aircraft on the ground, wings level, and the phone in its cradle: the current raw DeviceOrientation reading is captured as the zero reference. From then on, roll/pitch reflect the **aircraft's** attitude regardless of how the phone is angled in its cradle. Yaw is **not** zeroed — it keeps its absolute compass reference. The zero point persists in `localStorage['phone_zero']` so you don't need to recalibrate after every launch.
 
 ## 12. Terrain Download
 
