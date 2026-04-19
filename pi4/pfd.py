@@ -284,6 +284,45 @@ def _poll_wifi_status():
         time.sleep(5)
 
 
+def _SPD_DISP_FACTOR():
+    """Current speed display conversion factor (kt → display unit)."""
+    return {"kt": 1.0, "mph": 1.15078, "kph": 1.852}.get(
+        disp["ds"].get("spd_unit", "kt"), 1.0)
+
+
+def _ALT_DISP_FACTOR():
+    """Current altitude display conversion factor (ft → display unit)."""
+    return {"ft": 1.0, "m": 0.3048}.get(disp["ds"].get("alt_unit", "ft"), 1.0)
+
+
+def _push_baro_to_pico(qnh_hpa: float):
+    """Fire-and-forget HTTP GET to the Pico W's /baro?qnh=X endpoint.
+
+    The firmware uses this to update its internal BME280 QNH so future
+    altitude samples are computed against the pilot's altimeter setting.
+    Without this call, the PFD would show the pilot's entered baro
+    locally but the AHRS-derived altitude would still reflect the
+    firmware's default QNH — a silent miscalibration.
+
+    Runs in a background thread because the Pico's HTTP handler can
+    take 100–300 ms to respond and must not block the PFD frame loop.
+    Failures are logged but don't alter disp — the local baro value
+    sticks regardless of whether the Pico is reachable.
+    """
+    base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+    url  = f"{base}/baro?qnh={qnh_hpa:.2f}"
+
+    def _worker():
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=3) as resp:
+                resp.read()
+        except Exception as e:
+            print(f"[PFD] /baro push failed ({url}): {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="BaroPush").start()
+
+
 def _poll_ahrs_diag():
     """Background thread: mirror the AHRS transport client's diagnostic
     counters (rx_count, err_count, last_err) into disp['cs'] so the
@@ -401,9 +440,13 @@ def smooth_state():
     # Heading: handle 0/360 wraparound
     dh = ((snap["yaw"] - disp["yaw"] + 180) % 360) - 180
     disp["yaw"] = (disp["yaw"] + dh * SMOOTH_K) % 360
-    # Boolean / discrete fields: copy directly
+    # Boolean / discrete fields: copy directly.
+    # NOTE: baro_hpa is NOT copied here — it's a user-set Kollsman-window value
+    # owned by disp[] and pushed outward to the Pico W via _push_baro_to_pico().
+    # Copying it from state every frame would clobber numpad/± button entries
+    # whenever the SSE stream carried a stale QNH echo back from the firmware.
     for k in ("lat", "lon", "track", "fix", "sats",
-              "gps_alt", "baro_src", "baro_hpa",
+              "gps_alt", "baro_src",
               "ahrs_ok", "gps_ok", "baro_ok",
               "pitch_trim", "roll_trim", "yaw_trim"):
         disp[k] = snap[k]
@@ -2300,25 +2343,45 @@ def handle_event(event, demo_mode):
                     buf = disp["numpad_buf"]
                     if buf:
                         val = int(buf)
+                        # Unit factors: user types values in whatever unit is
+                        # currently displayed, but bugs are stored canonically
+                        # (kt for speed, ft for altitude).  Divide by the
+                        # factor to convert display → canonical.
+                        ds = disp["ds"]
+                        spd_factor = {"kt": 1.0, "mph": 1.15078,
+                                      "kph": 1.852}.get(ds.get("spd_unit", "kt"), 1.0)
+                        alt_factor = {"ft": 1.0,
+                                      "m":  0.3048}.get(ds.get("alt_unit", "ft"), 1.0)
                         if target == "alt_bug":
-                            disp["alt_bug"] = float(val * 100)   # input is hundreds of ft
+                            # Input is hundreds of display-unit altitude.
+                            disp["alt_bug"] = float(val * 100) / alt_factor
                         elif target == "hdg_bug":
                             disp["hdg_bug"] = float(val % 360)
                         elif target == "spd_bug":
-                            disp["spd_bug"] = float(val)
+                            disp["spd_bug"] = float(val) / spd_factor
                         elif target == "baro_hpa":
-                            baro_unit = disp["ds"].get("baro_unit", "inhg")
+                            baro_unit = ds.get("baro_unit", "inhg")
                             if baro_unit == "hpa":
-                                disp["baro_hpa"] = float(val)
+                                new_hpa = float(val)
                             else:   # inHg: 4 digits → insert decimal after 2
-                                disp["baro_hpa"] = round(val / 100.0 * 33.8639, 2)
+                                new_hpa = round(val / 100.0 * 33.8639, 2)
+                            # baro_hpa is a user-set value.  Write it into disp
+                            # (immediate UI feedback), into state (so other
+                            # readers see it) and push to the Pico W so the
+                            # firmware recomputes altitude against the new QNH.
+                            disp["baro_hpa"] = new_hpa
+                            with _state_lock:
+                                state["baro_hpa"] = new_hpa
+                            _push_baro_to_pico(new_hpa)
                         elif target == "sim_init_alt":
-                            disp["sim"]["init_alt"] = float(val * 100)
+                            disp["sim"]["init_alt"] = float(val * 100) / alt_factor
                         elif target == "sim_init_hdg":
                             disp["sim"]["init_hdg"] = float(val % 360)
                         elif target == "sim_init_spd":
+                            # sim_init_spd title is explicitly "(kt)" so no
+                            # conversion here — entered value is already kt.
                             disp["sim"]["init_spd"] = float(val)
-                        elif target in disp["fp"]:   # V-speed field
+                        elif target in disp["fp"]:   # V-speed field (always kt)
                             disp["fp"][target] = val
                         _settings.mark_dirty()
                     disp["mode"] = disp["numpad_prev"]
@@ -4855,19 +4918,29 @@ def render(surf, demo_mode, connected, data_stale=False):
             baro_cur  = int(round(disp["baro_hpa"] / 33.8639 * 100))  # e.g. 2992
             baro_title = "SET BARO  (in Hg)"
             baro_dec   = 2
-        spd_bug_title = "SET IAS BUG" if airspeed_src == "ias" else "SET GS BUG"
-        titles  = {"alt_bug":   "SET ALTITUDE BUG  (\u00d7100 ft)",
+        # Bug entries are shown (and entered) in current display unit.  Storage
+        # stays canonical (kt/ft) — conversion is applied at commit time.
+        spd_unit_lbl = {"kt": "kt", "mph": "mph", "kph": "kph"}.get(
+            disp["ds"].get("spd_unit", "kt"), "kt")
+        alt_unit_lbl = {"ft": "ft", "m": "m"}.get(
+            disp["ds"].get("alt_unit", "ft"), "ft")
+        spd_bug_src  = "IAS" if airspeed_src == "ias" else "GS"
+        spd_bug_title = f"SET {spd_bug_src} BUG  ({spd_unit_lbl})"
+        titles  = {"alt_bug":   f"SET ALTITUDE BUG  (\u00d7100 {alt_unit_lbl})",
                    "hdg_bug":   "SET HEADING BUG",
                    "spd_bug":   spd_bug_title,
                    "baro_hpa":  baro_title,
-                   "sim_init_alt": "SET INITIAL ALTITUDE  (\u00d7100 ft)",
+                   "sim_init_alt": f"SET INITIAL ALTITUDE  (\u00d7100 {alt_unit_lbl})",
                    "sim_init_hdg": "SET INITIAL HEADING",
-                   "sim_init_spd": "SET INITIAL SPEED (kt)"}
-        curvals = {"alt_bug":   int(disp.get("alt_bug", 0)) // 100,
+                   "sim_init_spd": "SET INITIAL SPEED  (kt)"}
+        curvals = {"alt_bug":   int(round(disp.get("alt_bug", 0)
+                                          * _ALT_DISP_FACTOR())) // 100,
                    "hdg_bug":   int(disp.get("hdg_bug", 0)),
-                   "spd_bug":   int(disp.get("spd_bug", 0)),
+                   "spd_bug":   int(round(disp.get("spd_bug", 0)
+                                          * _SPD_DISP_FACTOR())),
                    "baro_hpa":  baro_cur,
-                   "sim_init_alt": int(disp["sim"]["init_alt"]) // 100,
+                   "sim_init_alt": int(round(disp["sim"]["init_alt"]
+                                             * _ALT_DISP_FACTOR())) // 100,
                    "sim_init_hdg": int(disp["sim"]["init_hdg"]),
                    "sim_init_spd": int(disp["sim"]["init_spd"])}
         for fkey, flabel, *rest in _FP_FIELDS:

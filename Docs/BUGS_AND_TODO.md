@@ -119,6 +119,37 @@ still used, otherwise delete the directory.
 
 ## Completed
 
+### UNIT-BUG  Bug values entered in display units not converted — **FIXED**
+Numpad ENTER for `spd_bug` and `alt_bug` stored the user's raw
+integer without converting from the current display unit.  Typing
+"90" in mph mode stored 90 (interpreted as kt everywhere), so the
+tape re-rendered it as 90×1.15 = 104 mph — looked like "the bug
+didn't change to what I entered".  Also affected `sim_init_alt`.
+Fix: divide entered value by the current spd/alt factor at commit;
+multiply by factor for the "Current: N" placeholder and the
+(×100 ft/m) / (kt/mph/kph) title suffix.  V-speeds unchanged (they're
+entered in kt by design — the Flight Profile screen header reads
+"V-SPEEDS (knots)"). pi4 and pi_zero both.
+
+### BARO-ENTER  Baro numpad ENTER did nothing — **FIXED**
+Root cause: two bugs compounding. `smooth_state()` copied
+`state["baro_hpa"]` → `disp["baro_hpa"]` every frame; numpad ENTER
+wrote only to `disp[]`, so the SSE echo from the firmware (at
+~20 Hz) overwrote the pilot's entry within 50 ms.  Additionally,
+the firmware had no way to know the new QNH, so even if the local
+display had held the value, the AHRS-derived altitude would remain
+computed against the old QNH — a silent miscalibration.
+Fix:
+  - Remove `baro_hpa` from `smooth_state()`'s state→disp copy list
+    (it's a user-owned Kollsman-window value, not a sensor field).
+  - Numpad ENTER now writes `disp["baro_hpa"]`, `state["baro_hpa"]`
+    (under lock), and fires an HTTP GET to the Pico W's
+    `/baro?qnh=X` endpoint in a background thread so the firmware
+    recomputes altitude against the new QNH.
+  - The Connectivity screen's `ahrs_url` field is used as the base
+    URL so USB-connected or alternate-AP setups work.
+pi4 and pi_zero both.
+
 ### #2  Speed drum leading 1 at 100 — **FIXED**
 Commits: `6eab95f` (round vs int), plus this session
 (`show_adjacent=True` + `adj_slot_h` on inner drum so the "1" above
