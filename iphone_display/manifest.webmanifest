@@ -1,0 +1,25 @@
+{
+  "name": "AHRS PFD",
+  "short_name": "PFD",
+  "description": "Attitude / Heading / Altitude / Airspeed display.  Connects to a Pico W AHRS unit over Wi-Fi; falls back to the phone's built-in IMU + GPS when the AHRS isn't available.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

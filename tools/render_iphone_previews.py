@@ -160,6 +160,7 @@ PANEL_SHOTS = [
     ("preview_panel_terrain.png",   "terrain-panel",  {}, False),
     ("preview_panel_trim.png",      "trim-panel",     {"pitch_trim": 0.5, "roll_trim": -0.5}, False),
     ("preview_sensors_enabled.png", None,             {"_phone_sensors": True, "baro_ok": True}, False),
+    ("preview_standalone.png",      None,             {"_standalone": True}, True),
 ]
 
 
@@ -181,7 +182,10 @@ def _render_panel(page, port, fname, panel_id, state_override, show_link_dead=Fa
     else:
         page.unroute("**/events")
 
-    page.goto(f"http://127.0.0.1:{port}/index.html")
+    url = f"http://127.0.0.1:{port}/index.html"
+    if state_override.get("_standalone"):
+        url += "?standalone=1"
+    page.goto(url)
     page.wait_for_load_state("domcontentloaded")
     # Let the SSE frames arrive and the render loop settle.
     page.wait_for_timeout(1200)

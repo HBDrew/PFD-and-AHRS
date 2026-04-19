@@ -1,0 +1,56 @@
+name: Deploy iPhone PFD to GitHub Pages
+
+# Publishes iphone_display/ as a static site at
+#   https://<user>.github.io/<repo>/
+# so pilots can open the PFD on their phone without needing the Pico W
+# web server running.  The deployed page auto-detects *.github.io in
+# its own URL and switches into STANDALONE mode (skips /events, nudges
+# the user to tap PHONE to enable the phone sensors).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'iphone_display/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage iphone_display for Pages
+        run: |
+          mkdir -p _site
+          cp -R iphone_display/* _site/
+          # GitHub Pages serves /index.html at /, but some users may
+          # land on /preview.html or paste a link — make sure both
+          # files sit at the site root.
+          ls -la _site/
+
+      - uses: actions/configure-pages@v4
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
