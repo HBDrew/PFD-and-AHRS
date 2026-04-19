@@ -197,6 +197,25 @@ let qnhUnit  =localStorage.getItem('qnhUnit')  ||'hpa';
 function toDisplaySpd(kt)  { return speedUnit==='mph'  ? kt*1.15078     : kt;  }
 function toDisplayQNH(hpa) { return qnhUnit  ==='inhg' ? hpa*HPA_TO_INHG : hpa; }
 
+// V-speeds (knots, always).  Matches Cessna 172S POH; override via
+// localStorage 'vspeeds' JSON if user edits in a future flight-profile UI.
+const V_DEFAULTS = { vs0:48, vs1:55, vfe:85, vno:129, vne:163, va:105, vy:74, vx:62 };
+let V = Object.assign({}, V_DEFAULTS);
+try { Object.assign(V, JSON.parse(localStorage.getItem('vspeeds')||'{}')); }
+catch(e) {}
+// Colours used for V-speed bands and drum-overspeed warnings.  Match the
+// pi4 palette so all three displays (iPhone / Pi Zero / Pi 4) read the same.
+const V_COL = { white:'#ffffff', green:'#1ec832', yellow:'#f0c800', red:'#dc1e1e' };
+
+// User-set bugs — speed (kt), altitude (ft), heading (deg).  Stored in
+// localStorage so they persist across reloads.  Numeric null ⇒ bug hidden.
+const BUG_DEFAULTS = { spd_bug: 110, alt_bug: 8500, hdg_bug: 210 };
+const B = Object.assign({}, BUG_DEFAULTS);
+try { Object.assign(B, JSON.parse(localStorage.getItem('bugs') || '{}')); }
+catch(e) {}
+const BUG_MAGENTA = '#e100e1';   // GPS-derived (ground speed, GPS alt, GPS TRK)
+const BUG_CYAN    = '#00dcdc';   // sensor-derived (IAS pitot, baro altimeter, MAG heading)
+
 // ── Maths ──────────────────────────────────────────────────────────────────
 const DEG=Math.PI/180;
 function lerp(a,b,t){return a+(b-a)*t;}
@@ -385,6 +404,26 @@ function drawSpeedTape(){
   ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(spdX,tapeTopY,spdW,tapeH);
   ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(spdX+spdW,tapeTopY); ctx.lineTo(spdX+spdW,tapeTopY+tapeH); ctx.stroke();
+
+  // V-speed colour arcs (right edge of tape) — ported from pi4/pfd.py
+  // draw_speed_tape().  V-speeds are stored in kt; convert to display unit
+  // with the same factor applied to `spd` above so band positions track
+  // correctly when the user toggles kt ↔ mph.
+  const _band=(vLoKt, vHiKt, col, barX, barW)=>{
+    const y1=tapeMidY-(toDisplaySpd(vHiKt)-spd)*pxPerSpd;
+    const y2=tapeMidY-(toDisplaySpd(vLoKt)-spd)*pxPerSpd;
+    const y1c=Math.max(tapeTopY, Math.min(tapeTopY+tapeH, y1));
+    const y2c=Math.max(tapeTopY, Math.min(tapeTopY+tapeH, y2));
+    if (y1c<y2c) { ctx.fillStyle=col; ctx.fillRect(barX, y1c, barW, y2c-y1c); }
+  };
+  _band(V.vs0, V.vfe, V_COL.white,  spdX+spdW-10, 3);   // flap range
+  _band(V.vs1, V.vno, V_COL.green,  spdX+spdW-5,  4);   // normal ops
+  _band(V.vno, V.vne, V_COL.yellow, spdX+spdW-5,  4);   // caution range
+  const vneY=tapeMidY-(toDisplaySpd(V.vne)-spd)*pxPerSpd;
+  if (vneY>tapeTopY && vneY<tapeTopY+tapeH) {
+    ctx.strokeStyle=V_COL.red; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(spdX+spdW-16, vneY); ctx.lineTo(spdX+spdW, vneY); ctx.stroke();
+  }
   const spdLabel=speedUnit==='mph'?'GS MPH\u25be':'GS KT\u25be';
   ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
   ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText(spdLabel,spdX+spdW/2,tapeTopY+4);
@@ -407,10 +446,33 @@ function drawSpeedTape(){
   ctx.lineTo(bx+spdW+ptr,tapeMidY); ctx.lineTo(bx+spdW,by+boxH); ctx.lineTo(bx,by+boxH);
   ctx.closePath();
   ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
-  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(17,H*.042)}px monospace`;
+  // Drum digit colour reflects over-speed state: red above VNE, amber above VNO.
+  const spdKt=D.speed;
+  const drumCol = spdKt>V.vne ? V_COL.red
+                 : spdKt>V.vno ? V_COL.yellow : '#fff';
+  ctx.fillStyle=drumCol; ctx.font=`bold ${Math.max(17,H*.042)}px monospace`;
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(Math.round(spd).toString(),bx+spdW/2,tapeMidY);
   ctx.textBaseline='alphabetic';
+
+  // Speed bug chevron — inward-facing V-notch, clamped to the tape.
+  // Matches pi4/pfd.py shape exactly: body x=[spdX..spdX+14], V-notch
+  // on the right edge pointing into the body toward spdX+7.
+  if (B.spd_bug != null) {
+    const bugY = Math.max(tapeTopY, Math.min(tapeTopY+tapeH,
+                   tapeMidY-(toDisplaySpd(B.spd_bug)-spd)*pxPerSpd));
+    const x = spdX, w = 14, h = 17;
+    ctx.fillStyle = BUG_MAGENTA;       // GPS groundspeed — the only iPhone source today
+    ctx.beginPath();
+    ctx.moveTo(x,     bugY-h);
+    ctx.lineTo(x+w,   bugY-h);
+    ctx.lineTo(x+w,   bugY-5);
+    ctx.lineTo(x+7,   bugY);
+    ctx.lineTo(x+w,   bugY+5);
+    ctx.lineTo(x+w,   bugY+h);
+    ctx.lineTo(x,     bugY+h);
+    ctx.closePath(); ctx.fill();
+  }
 }
 
 // ── Altitude tape ──────────────────────────────────────────────────────────
@@ -466,6 +528,25 @@ function drawAltTape(){
   ctx.fillText(isInHg?qnhDisp.toFixed(2)+'\u2033':qnhDisp.toFixed(2),altX+altW/2,qnhY);
   ctx.fillText(isInHg?(isBaro?'Hg B':'Hg G'):(isBaro?'hPa B':'hPa G'),altX+altW/2,qnhY+Math.max(10,H*.017));
   ctx.textBaseline='alphabetic';
+
+  // Altitude bug chevron — mirror of the speed bug, sits on the right
+  // edge of the altitude tape with V-notch pointing toward the AI.
+  if (B.alt_bug != null) {
+    const bugY = Math.max(tapeTopY, Math.min(tapeTopY+tapeH,
+                   tapeMidY-(B.alt_bug-alt)*pxPerFt));
+    const x = altX+altW, w = 14, h = 17;
+    // Cyan = baro-referenced altitude; magenta = GPS-derived.
+    ctx.fillStyle = D.baro_src === 'bme280' ? BUG_CYAN : BUG_MAGENTA;
+    ctx.beginPath();
+    ctx.moveTo(x,     bugY-h);
+    ctx.lineTo(x-w,   bugY-h);
+    ctx.lineTo(x-w,   bugY-5);
+    ctx.lineTo(x-7,   bugY);
+    ctx.lineTo(x-w,   bugY+5);
+    ctx.lineTo(x-w,   bugY+h);
+    ctx.lineTo(x,     bugY+h);
+    ctx.closePath(); ctx.fill();
+  }
 }
 
 // ── Heading tape ───────────────────────────────────────────────────────────
@@ -500,6 +581,26 @@ function drawHeadingTape(){
   ctx.fillStyle='#ffd700';
   ctx.beginPath(); ctx.moveTo(cx,hdgY-1); ctx.lineTo(cx-7,hdgY-9); ctx.lineTo(cx+7,hdgY-9);
   ctx.closePath(); ctx.fill(); ctx.textBaseline='alphabetic';
+
+  // Heading bug chevron — downward-pointing V along the top of the heading
+  // strip, clamped between the speed and altitude tapes.  Port of pi4.
+  if (B.hdg_bug != null) {
+    const off = ((B.hdg_bug - hdg + 540) % 360) - 180;
+    let hbx = cx + off * pxPerDeg;
+    hbx = Math.max(L.spdX+L.spdW+20, Math.min(L.altX-20, hbx));
+    if (Math.abs(off) <= 30) {   // only show when within visible arc
+      ctx.fillStyle = BUG_CYAN;   // MAG heading source (default on iPhone)
+      ctx.beginPath();
+      ctx.moveTo(hbx-17, hdgY+14);
+      ctx.lineTo(hbx-17, hdgY);
+      ctx.lineTo(hbx-5,  hdgY);
+      ctx.lineTo(hbx,    hdgY+7);
+      ctx.lineTo(hbx+5,  hdgY);
+      ctx.lineTo(hbx+17, hdgY);
+      ctx.lineTo(hbx+17, hdgY+14);
+      ctx.closePath(); ctx.fill();
+    }
+  }
 }
 
 // ── GPS status ─────────────────────────────────────────────────────────────
