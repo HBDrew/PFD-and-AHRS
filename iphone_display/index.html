@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>AHRS PFD</title>
 <style>
   :root {
@@ -211,11 +214,22 @@ const TARGET = { roll:0, pitch:0, yaw:0, lat:0, lon:0, alt:0,
 const D = Object.assign({}, TARGET);
 
 // ── SSE ────────────────────────────────────────────────────────────────────
+// Standalone mode: ?standalone=1 (or #standalone) in the URL skips the
+// SSE connection entirely and auto-enables the phone sensors on first
+// render.  Useful for hosting the PFD on GitHub Pages or any static host
+// where the Pico W's /events endpoint doesn't exist.  Also kicks in when
+// the page is loaded from file:// or github.io (no same-origin AHRS).
+const _qs         = new URLSearchParams(location.search);
+const STANDALONE  = _qs.has('standalone')
+                 || location.hash === '#standalone'
+                 || location.protocol === 'file:'
+                 || location.hostname.endsWith('.github.io');
 const linkEl    = document.getElementById('link-status');
 const trnEl     = document.getElementById('terrain-status');
 let lastMsgMs   = 0, es = null;
 
 function connectSSE() {
+  if (STANDALONE) return;     // no AHRS to talk to — skip
   if (es) { try { es.close(); } catch(e){} }
   es = new EventSource('/events');
   es.onmessage = e => {
@@ -225,7 +239,22 @@ function connectSSE() {
 }
 connectSSE();
 
+// Service-worker registration: pins the three app files + downloaded
+// terrain tiles for offline use.  Skips when served from file:// (SW
+// isn't available there) and when running inside a development tooling
+// viewport (Playwright etc.) where we don't want cache pollution.
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(e => {
+      console.warn('[PFD] Service worker registration failed:', e);
+    });
+  });
+}
+
 function updateLinkStatus() {
+  if (STANDALONE) {
+    linkEl.textContent='STANDALONE'; linkEl.className='link-warn'; return;
+  }
   const age = performance.now() - lastMsgMs;
   if (!lastMsgMs)      { linkEl.textContent='CONNECTING'; linkEl.className='link-warn'; }
   else if (age < 3000) { linkEl.textContent='LINK OK';    linkEl.className='link-ok';   }
@@ -345,7 +374,9 @@ function _onGeolocation(pos) {
 // back the phone values are simply overwritten by the stream.
 function applyPhoneSensors() {
   if (!PS.enabled) return;
-  const linkDead = (performance.now() - lastMsgMs) > 5000;
+  // In standalone mode the SSE link was never attempted, so treat it as
+  // dead immediately.  Otherwise require 5 s of silence before taking over.
+  const linkDead = STANDALONE || (performance.now() - lastMsgMs) > 5000;
   if (!linkDead) {
     if (sensorEl.className === 'sensor-act') {
       sensorEl.className   = 'sensor-on';
@@ -371,6 +402,16 @@ function applyPhoneSensors() {
 }
 
 sensorEl.addEventListener('click', togglePhoneSensors);
+
+// In standalone mode (GitHub Pages / file:// / ?standalone=1), nudge the
+// user to tap PHONE immediately — there's no SSE stream and the sim-only
+// page has nothing else to show.  We can't auto-enable because iOS 13+
+// needs an explicit user gesture to grant sensor permission.
+if (STANDALONE) {
+  sensorEl.textContent = 'TAP TO START';
+  sensorEl.className   = 'sensor-on';
+  sensorEl.title       = 'Tap to enable the phone\u2019s IMU + GPS as the AHRS source.';
+}
 
 // ── Terrain UI ─────────────────────────────────────────────────────────────
 const panel    = document.getElementById('terrain-panel');
