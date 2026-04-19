@@ -129,12 +129,18 @@ class Compositor:
 
     Reuses the texture object across frames (resized only if the
     surface size changes) to avoid per-frame allocation.
+
+    rotate_deg: 0, 90, 180, or 270. Applied to the fullscreen quad so
+    the composite matches a display that's physically mounted rotated.
+    (pygame.OPENGL mode bypasses SDL2's KMS rotation path, so we have
+    to apply it here.)
     """
 
-    def __init__(self, ctx, width: int, height: int):
+    def __init__(self, ctx, width: int, height: int, rotate_deg: int = 0):
         self.ctx = ctx
         self.width = width
         self.height = height
+        self.rotate_deg = rotate_deg % 360
 
         self.prog = ctx.program(
             vertex_shader=_VERTEX_SHADER,
@@ -142,15 +148,32 @@ class Compositor:
         )
 
         # Fullscreen quad as two triangles — NDC positions + UVs.
-        # UV.y is flipped (0 at bottom, 1 at top) to match pygame's
-        # top-left origin after we upload the surface as-is.
-        verts = np.array([
-            # x,   y,    u, v
-            -1.0, -1.0,  0.0, 1.0,   # bottom-left
-             1.0, -1.0,  1.0, 1.0,   # bottom-right
-            -1.0,  1.0,  0.0, 0.0,   # top-left
-             1.0,  1.0,  1.0, 0.0,   # top-right
-        ], dtype=np.float32)
+        # Upload step uses pygame.image.tostring(..., flipped=True) so
+        # the byte stream's first row is the surface's BOTTOM row; once
+        # uploaded as a GL texture, V=0 corresponds to the surface's
+        # bottom. Matching UV.v=0 to NDC y=-1 therefore paints the
+        # surface right-side-up on screen at rotate_deg=0.
+        #
+        # To rotate the displayed image, we rotate the NDC POSITIONS
+        # (not the UVs): UVs stay tied to the surface's own orientation.
+        # 0°: (-1,-1)=BL, (+1,-1)=BR, (-1,+1)=TL, (+1,+1)=TR
+        # 180°: flip both NDC axes.
+        if self.rotate_deg == 0:
+            corners_ndc = [(-1,-1), ( 1,-1), (-1, 1), ( 1, 1)]
+        elif self.rotate_deg == 180:
+            corners_ndc = [( 1, 1), (-1, 1), ( 1,-1), (-1,-1)]
+        elif self.rotate_deg == 90:   # CCW
+            corners_ndc = [( 1,-1), ( 1, 1), (-1,-1), (-1, 1)]
+        elif self.rotate_deg == 270:
+            corners_ndc = [(-1, 1), (-1,-1), ( 1, 1), ( 1,-1)]
+        else:
+            raise ValueError(f"rotate_deg must be 0/90/180/270, got {rotate_deg}")
+
+        uvs = [(0, 0), (1, 0), (0, 1), (1, 1)]
+        verts_list = []
+        for (px, py), (u, v) in zip(corners_ndc, uvs):
+            verts_list.extend([px, py, u, v])
+        verts = np.array(verts_list, dtype=np.float32)
         self.vbo = ctx.buffer(verts.tobytes())
         self.vao = ctx.vertex_array(
             self.prog,

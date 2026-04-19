@@ -87,6 +87,10 @@ def main():
                     help="Run in a window (for desktop dev); default is fullscreen.")
     ap.add_argument("--seconds", type=float, default=5.0,
                     help="How long to run before auto-exiting.")
+    ap.add_argument("--rotate", type=int, default=0, choices=(0, 90, 180, 270),
+                    help="Rotate the composite output N degrees to match a "
+                         "physically-rotated display. pygame.OPENGL bypasses "
+                         "KMS rotation so we have to apply it at the GL layer.")
     args = ap.parse_args()
 
     os.environ.setdefault("SDL_RENDER_VSYNC", "0")
@@ -101,7 +105,7 @@ def main():
         pygame.quit()
         sys.exit(1)
 
-    compositor = Compositor(ctx, W, H)
+    compositor = Compositor(ctx, W, H, rotate_deg=args.rotate)
     pfd_layer = build_fake_pfd_layer(W, H)
 
     import moderngl
