@@ -595,6 +595,18 @@ function drawTerrainAlert() {
 
 // ── Veeder-Root rolling drum ──────────────────────────────────────────────
 // Mirror of preview.html drawDrum().  See that file for algorithm notes.
+// Overlay a top-and-bottom fade-to-black gradient on a drum cell so the
+// rolling digits fade out at the clip edges — matches pi4 _drum_shade.
+function _drumShade(x, y, w, h){
+  const cut = Math.max(3, h * 0.24);
+  const g1 = ctx.createLinearGradient(0, y, 0, y + cut);
+  g1.addColorStop(0, 'rgba(0,0,0,.75)'); g1.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g1; ctx.fillRect(x, y, w, cut);
+  const g2 = ctx.createLinearGradient(0, y + h - cut, 0, y + h);
+  g2.addColorStop(0, 'rgba(0,0,0,0)'); g2.addColorStop(1, 'rgba(0,0,0,.75)');
+  ctx.fillStyle = g2; ctx.fillRect(x, y + h - cut, w, cut);
+}
+
 function drawDrum(x, y, w, h, value, nDigits, color, fontSz, opts){
   opts = opts || {};
   const suppressLeading = !!opts.suppressLeading;
@@ -1036,18 +1048,41 @@ function drawSpeedTape() {
   }
   ctx.restore();
 
-  const bx=spdX, by=tapeMidY-boxHalf, ptr=9;
+  // Veeder-Root stepped readout box (pi4 style).  See preview.html
+  // drawSpeedTape() for dimension derivation.
+  const drumFs  = Math.max(16, H * 0.042);
+  const halfIn  = Math.round(drumFs * 0.72);
+  const halfOut = Math.round(drumFs * 1.20);
+  const ptrR    = Math.round(drumFs * 0.78);
+  const innW    = Math.round(drumFs * 1.55);
+  const drmSw   = Math.round(drumFs * 0.95);
+  const innR    = ptrR + innW;
+  const boxR    = innR + drmSw;
+  const sp      = spdX;
+  const mid     = tapeMidY;
   ctx.beginPath();
-  ctx.moveTo(bx,by); ctx.lineTo(bx+spdW,by);
-  ctx.lineTo(bx+spdW+ptr,tapeMidY); ctx.lineTo(bx+spdW,by+boxH); ctx.lineTo(bx,by+boxH);
+  ctx.moveTo(sp,         mid);
+  ctx.lineTo(sp + ptrR,  mid - halfIn);
+  ctx.lineTo(sp + innR,  mid - halfIn);
+  ctx.lineTo(sp + innR,  mid - halfOut);
+  ctx.lineTo(sp + boxR,  mid - halfOut);
+  ctx.lineTo(sp + boxR,  mid + halfOut);
+  ctx.lineTo(sp + innR,  mid + halfOut);
+  ctx.lineTo(sp + innR,  mid + halfIn);
+  ctx.lineTo(sp + ptrR,  mid + halfIn);
   ctx.closePath();
-  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
-  // Veeder-Root rolling drum.  Red above Vne, amber above Vno, else white.
+  ctx.fillStyle='#000a1e'; ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.lineJoin='miter'; ctx.stroke();
+
   const drumCol = D.speed > V.vne ? V_COL.red
                 : D.speed > V.vno ? V_COL.yellow : '#fff';
-  const drumFs = Math.max(17, H*.042);
-  drawDrum(bx+2, by+2, spdW-4, boxH-4, spd, 3, drumCol, drumFs,
-           {suppressLeading:true});
+  drawDrum(sp + ptrR + 1, mid - halfIn + 1, innW - 2, halfIn * 2 - 2,
+           spd, 2, drumCol, drumFs,
+           {suppressLeading: true, powerOffset: 1});
+  drawDrum(sp + innR + 1, mid - halfOut + 1, drmSw - 2, halfOut * 2 - 2,
+           spd, 1, drumCol, drumFs,
+           {showAdjacent: true, adjSlotH: Math.round(drumFs * 1.15)});
+  _drumShade(sp + innR + 1, mid - halfOut + 1, drmSw - 2, halfOut * 2 - 2);
   ctx.textBaseline='alphabetic';
 
   // Speed bug chevron — see preview.html drawSpeedTape() for shape derivation.
@@ -1096,18 +1131,43 @@ function drawAltTape() {
   }
   ctx.restore();
 
-  const by=tapeMidY-boxHalf, ptr=9;
+  // Veeder-Root stepped readout box — mirror of speed.  See preview.html
+  // drawAltTape() for dimension derivation.
+  const altDrumFs = Math.max(15, H * 0.040);
+  const aHalfIn  = Math.round(altDrumFs * 0.72);
+  const aHalfOut = Math.round(altDrumFs * 1.20);
+  const aPtrW    = Math.round(altDrumFs * 0.78);
+  const aDrmW    = Math.round(altDrumFs * 1.10);
+  const aInnW    = Math.round(altDrumFs * 2.70);
+  const aDrmL    = aPtrW + aDrmW;
+  const aBoxW    = aInnW + aDrmW + aPtrW;
+  const R        = altX + altW;
+  const midA     = tapeMidY;
   ctx.beginPath();
-  ctx.moveTo(altX+altW,by); ctx.lineTo(altX,by);
-  ctx.lineTo(altX-ptr,tapeMidY); ctx.lineTo(altX,by+boxH); ctx.lineTo(altX+altW,by+boxH);
+  ctx.moveTo(R,             midA);
+  ctx.lineTo(R - aPtrW,     midA - aHalfIn);
+  ctx.lineTo(R - aPtrW,     midA - aHalfOut);
+  ctx.lineTo(R - aDrmL,     midA - aHalfOut);
+  ctx.lineTo(R - aDrmL,     midA - aHalfIn);
+  ctx.lineTo(R - aBoxW,     midA - aHalfIn);
+  ctx.lineTo(R - aBoxW,     midA + aHalfIn);
+  ctx.lineTo(R - aDrmL,     midA + aHalfIn);
+  ctx.lineTo(R - aDrmL,     midA + aHalfOut);
+  ctx.lineTo(R - aPtrW,     midA + aHalfOut);
+  ctx.lineTo(R - aPtrW,     midA + aHalfIn);
   ctx.closePath();
-  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
-  // Veeder-Root altitude drum — 5 digits, leading-zero suppression.
-  const altDrumFs = Math.max(15, H*.038);
-  drawDrum(altX+2, tapeMidY-boxHalf+2, altW-4, boxH-4, alt, 5, '#fff', altDrumFs,
-           {suppressLeading:true});
+  ctx.fillStyle='#000a1e'; ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.lineJoin='miter'; ctx.stroke();
 
-  const vsiY=by+boxH+5, arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
+  drawDrum(R - aBoxW + 1, midA - aHalfIn + 1, aInnW - 2, aHalfIn * 2 - 2,
+           alt, 3, '#fff', altDrumFs,
+           {suppressLeading: true, powerOffset: 2});
+  drawDrum(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2,
+           alt, 2, '#fff', altDrumFs,
+           {showAdjacent: true, adjSlotH: Math.round(altDrumFs * 1.15)});
+  _drumShade(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2);
+
+  const vsiY=midA+aHalfOut+5, arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
   const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
   ctx.fillStyle=vcol; ctx.font=`${Math.max(10,H*.022)}px monospace`;
   ctx.textAlign='center'; ctx.textBaseline='top';

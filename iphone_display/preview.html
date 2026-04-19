@@ -451,6 +451,21 @@ function drawDrum(x, y, w, h, value, nDigits, color, fontSz, opts){
 }
 
 
+// ── Drum shading ──────────────────────────────────────────────────────────
+// Overlay a top-and-bottom fade to dark on a drum cell so the rolling
+// digits fade out at the clip edges — matches the pi4 _drum_shade pygame
+// helper and sells the "physical drum behind a window" illusion.
+function _drumShade(x, y, w, h){
+  const cut = Math.max(3, h * 0.24);
+  const g1 = ctx.createLinearGradient(0, y, 0, y + cut);
+  g1.addColorStop(0, 'rgba(0,0,0,.75)'); g1.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g1; ctx.fillRect(x, y, w, cut);
+  const g2 = ctx.createLinearGradient(0, y + h - cut, 0, y + h);
+  g2.addColorStop(0, 'rgba(0,0,0,0)'); g2.addColorStop(1, 'rgba(0,0,0,.75)');
+  ctx.fillStyle = g2; ctx.fillRect(x, y + h - cut, w, cut);
+}
+
+
 // ── Aircraft symbol ────────────────────────────────────────────────────────
 function drawAircraftSymbol(){
   // Amber swept-delta reference airplane ported from pi4/pfd.py.
@@ -555,20 +570,56 @@ function drawSpeedTape(){
     ctx.fillText(v.toString(),spdX+spdW-17,y);
   }
   ctx.restore();
-  const bx=spdX,by=tapeMidY-boxHalf,ptr=9;
+
+  // ── Veeder-Root stepped readout box (pi4 style) ────────────────────────
+  // Speed tape layout (left→right across the tape):
+  //   • pointer apex on LEFT  (at spdX)
+  //   • inner cell — shorter — holds the tens+hundreds drum
+  //   • outer cell — taller  — holds the ones drum with show_adjacent
+  // Digit-size driven dimensions so everything scales with viewport.
+  const drumFs    = Math.max(16, H * 0.042);
+  const halfIn    = Math.round(drumFs * 0.72);     // inner cell half-height
+  const halfOut   = Math.round(drumFs * 1.20);     // outer cell half-height
+  const ptrR      = Math.round(drumFs * 0.78);     // pointer reach
+  const innW      = Math.round(drumFs * 1.55);     // tens/hundreds cell width
+  const drmSw     = Math.round(drumFs * 0.95);     // ones cell width
+  const innR      = ptrR + innW;
+  const boxR      = innR + drmSw;
+  const sp        = spdX;
+  const mid       = tapeMidY;
+  // Stepped polygon — sharp corners everywhere; the pi4 _chamfer is cosmetic
+  // and the 2 px white stroke with lineJoin='miter' already reads cleanly.
   ctx.beginPath();
-  ctx.moveTo(bx,by); ctx.lineTo(bx+spdW,by);
-  ctx.lineTo(bx+spdW+ptr,tapeMidY); ctx.lineTo(bx+spdW,by+boxH); ctx.lineTo(bx,by+boxH);
+  ctx.moveTo(sp,         mid);
+  ctx.lineTo(sp + ptrR,  mid - halfIn);
+  ctx.lineTo(sp + innR,  mid - halfIn);
+  ctx.lineTo(sp + innR,  mid - halfOut);
+  ctx.lineTo(sp + boxR,  mid - halfOut);
+  ctx.lineTo(sp + boxR,  mid + halfOut);
+  ctx.lineTo(sp + innR,  mid + halfOut);
+  ctx.lineTo(sp + innR,  mid + halfIn);
+  ctx.lineTo(sp + ptrR,  mid + halfIn);
   ctx.closePath();
-  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
-  // Veeder-Root rolling drum.  Digit colour reflects over-speed state:
-  // red above Vne, amber above Vno, white otherwise.
-  const spdKt=D.speed;
-  const drumCol = spdKt>V.vne ? V_COL.red
-                 : spdKt>V.vno ? V_COL.yellow : '#fff';
-  const drumFs = Math.max(17, H*.042);
-  drawDrum(bx+2, by+2, spdW-4, boxH-4, spd, 3, drumCol, drumFs,
-           {suppressLeading:true});
+  ctx.fillStyle='#000a1e'; ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.lineJoin='miter'; ctx.stroke();
+
+  // Digit colour reflects over-speed state: red > Vne, amber > Vno.
+  const spdKt   = D.speed;
+  const drumCol = spdKt > V.vne ? V_COL.red
+                : spdKt > V.vno ? V_COL.yellow : '#fff';
+
+  // Main drum (tens+hundreds) — 2 digits, power_offset=1 so column 0 is
+  // hundreds and column 1 is tens; ones come from the second drum below.
+  drawDrum(sp + ptrR + 1, mid - halfIn + 1, innW - 2, halfIn * 2 - 2,
+           spd, 2, drumCol, drumFs,
+           {suppressLeading: true, powerOffset: 1});
+  // Ones drum with adjacent-digit preview — tall outer cell.
+  drawDrum(sp + innR + 1, mid - halfOut + 1, drmSw - 2, halfOut * 2 - 2,
+           spd, 1, drumCol, drumFs,
+           {showAdjacent: true, adjSlotH: Math.round(drumFs * 1.15)});
+  // Top + bottom fade — makes the rolling digits look like a physical drum.
+  _drumShade(sp + innR + 1, mid - halfOut + 1, drmSw - 2, halfOut * 2 - 2);
+
   ctx.textBaseline='alphabetic';
 
   // Speed bug chevron — inward-facing V-notch, clamped to the tape.
@@ -618,19 +669,52 @@ function drawAltTape(){
     }
   }
   ctx.restore();
-  const by=tapeMidY-boxHalf,ptr=9;
+
+  // ── Veeder-Root stepped readout box (pi4 style) ────────────────────────
+  // Mirror of the speed box: pointer apex on RIGHT (at altX+altW), then
+  // going LEFT we get the ones-drum outer cell (tall) and the main drum
+  // inner cell (hundreds+thousands+ten-thousands).  Altimeter rolls in
+  // 20 ft steps inside the ones cell so integer crossings cascade
+  // through the hundreds column smoothly.
+  const altDrumFs = Math.max(15, H * 0.040);
+  const aHalfIn  = Math.round(altDrumFs * 0.72);
+  const aHalfOut = Math.round(altDrumFs * 1.20);
+  const aPtrW    = Math.round(altDrumFs * 0.78);
+  const aDrmW    = Math.round(altDrumFs * 1.10);     // ones cell width
+  const aInnW    = Math.round(altDrumFs * 2.70);     // main drum cell width (3-4 digits)
+  const aDrmL    = aPtrW + aDrmW;
+  const aBoxW    = aInnW + aDrmW + aPtrW;
+  const R        = altX + altW;
+  const midA     = tapeMidY;
   ctx.beginPath();
-  ctx.moveTo(altX+altW,by); ctx.lineTo(altX,by);
-  ctx.lineTo(altX-ptr,tapeMidY); ctx.lineTo(altX,by+boxH); ctx.lineTo(altX+altW,by+boxH);
+  ctx.moveTo(R,             midA);
+  ctx.lineTo(R - aPtrW,     midA - aHalfIn);
+  ctx.lineTo(R - aPtrW,     midA - aHalfOut);
+  ctx.lineTo(R - aDrmL,     midA - aHalfOut);
+  ctx.lineTo(R - aDrmL,     midA - aHalfIn);
+  ctx.lineTo(R - aBoxW,     midA - aHalfIn);
+  ctx.lineTo(R - aBoxW,     midA + aHalfIn);
+  ctx.lineTo(R - aDrmL,     midA + aHalfIn);
+  ctx.lineTo(R - aDrmL,     midA + aHalfOut);
+  ctx.lineTo(R - aPtrW,     midA + aHalfOut);
+  ctx.lineTo(R - aPtrW,     midA + aHalfIn);
   ctx.closePath();
-  ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
-  // Veeder-Root altitude drum — 5 digits with leading-zero suppression so
-  // readings under 10 000 ft keep a clean look.  The ones column advances
-  // continuously with alt so crossings through 100/1000/10000 ft cascade.
-  const altDrumFs = Math.max(15, H*.038);
-  drawDrum(altX+2, tapeMidY-boxHalf+2, altW-4, boxH-4, alt, 5, '#fff', altDrumFs,
-           {suppressLeading:true});
-  const vsiY=by+boxH+5,arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
+  ctx.fillStyle='#000a1e'; ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.lineJoin='miter'; ctx.stroke();
+
+  // Main drum (thousands / ten-thousands) — 3 digits, power_offset=2 so
+  // column 0 is ten-thousands, col 1 is thousands, col 2 is hundreds.
+  drawDrum(R - aBoxW + 1, midA - aHalfIn + 1, aInnW - 2, aHalfIn * 2 - 2,
+           alt, 3, '#fff', altDrumFs,
+           {suppressLeading: true, powerOffset: 2});
+  // Ones/tens drum — taller cell with adjacent preview.  Altimeter
+  // increments in 20-ft steps; we show the low-order pair as a
+  // continuous rolling drum so integer crossings cascade smoothly.
+  drawDrum(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2,
+           alt, 2, '#fff', altDrumFs,
+           {showAdjacent: true, adjSlotH: Math.round(altDrumFs * 1.15)});
+  _drumShade(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2);
+  const vsiY=midA+aHalfOut+5,arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
   const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
   ctx.fillStyle=vcol; ctx.font=`${Math.max(10,H*.022)}px monospace`;
   ctx.textAlign='center'; ctx.textBaseline='top';
