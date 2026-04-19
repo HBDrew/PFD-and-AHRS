@@ -99,15 +99,6 @@ Context: when `AP_SSID = "AHRS-Link-DEBUG"` or similar diagnostic
 values, the AP doesn't come up. Works with default SSID. Possible
 channel/password-length edge case.
 
-### #4  USB AHRS — hardware bring-up
-Status: **CODE DONE, HARDWARE NOT VERIFIED** (commit `0044215`)
-Context: firmware emits `$AHRS,{json}` over USB CDC; `SerialClient`
-reads from `/dev/ttyACM0`; pi4 tries USB first, falls back to WiFi.
-To verify on Pi: (a) `ls -l /dev/ttyACM0`, (b) `groups` (need dialout),
-(c) `screen /dev/ttyACM0 115200` should show `$AHRS,…` lines,
-(d) `pfd.py` startup log should say "AHRS via USB serial".
-Note: pi_zero does NOT have USB fallback — add if Zero needs wired AHRS.
-
 ### PI_DISPLAY  pi_display/pfd.py missing all recent fixes
 Status: **OPEN / DEFERRED** (unclear if pi_display is an active target)
 Context: `pi_display/pfd.py` still has `int(abs(value))` in drum
@@ -190,6 +181,23 @@ Fix: `_poll_wifi_status` now also stashes the SSID into
 `disp["cs"]["wifi_actual"]`; the status row renders
 `"WiFi: <ssid>"` (truncated with ellipsis at 18 chars) when up,
 falling back to "WiFi NO LINK" when down. Applied to pi4 and pi_zero.
+
+### #4  USB AHRS — end-to-end working — **FIXED**
+Full path Pico W → USB CDC → Pi 4 → PFD display verified live on
+hardware. Commits across the work:
+  - `0044215` — transport: firmware emits `$AHRS,{json}`, shared
+    SerialClient reads /dev/ttyACM0, pi4 tries USB before SSE.
+  - `e4a4c42` — Connectivity STATUS row diagnostics: transport,
+    port, RX/ERR counters, last error.
+  - `4e3a99c` — live R/P/Y/ALT readout on STATUS row.
+  - `f80059b` — pause live AHRS while sim runs so sim writes win.
+  - `63c2852` — wt901 driver: avoid `del bytearray` (MicroPython
+    doesn't implement it). Crash surfaced only once the sensor
+    was wired correctly and bytes actually started arriving.
+Wiring note: WT901 pin 4 (TX) → Pico pin 2 (GP1 / UART0 RX).
+WT901 pin 3 is RX; connecting pin 3 to Pico RX gives two listeners
+and no talker. Easy mistake.
+pi_zero does NOT have USB fallback yet — pending if needed.
 
 ### ALT-10K  Altitude drum shows "0000" at 10000 ft — **FIXED**
 Root cause: IIR smoothing on `disp["alt"]` converges from below —
