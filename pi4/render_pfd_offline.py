@@ -38,6 +38,18 @@ except pygame.error:
 # Now import pfd module — it'll see SVT_RENDERER from config
 import pfd
 
+# pfd.py hard-codes _SVT_GL_AVAILABLE = False to avoid disrupting KMS/DRM
+# on live Pi 4 hardware.  In this offline tool we're using SDL_VIDEODRIVER=dummy
+# so there's no KMS/DRM to conflict with — manually probe + enable GL SVT so
+# preview PNGs render with the 3D terrain mesh instead of falling back to the
+# flat 2D scanline path.
+try:
+    from svt_renderer_gl import is_available as _gl_probe
+    if _gl_probe():
+        pfd._SVT_GL_AVAILABLE = True
+except Exception:
+    pass
+
 from config import (DISPLAY_W, DISPLAY_H, BARO_DEFAULT_HPA,
                     DEMO_LAT, DEMO_LON)
 
