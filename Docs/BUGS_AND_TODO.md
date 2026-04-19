@@ -108,13 +108,6 @@ Context: when `AP_SSID = "AHRS-Link-DEBUG"` or similar diagnostic
 values, the AP doesn't come up. Works with default SSID. Possible
 channel/password-length edge case.
 
-### PI_DISPLAY  pi_display/pfd.py missing all recent fixes
-Status: **OPEN / DEFERRED** (unclear if pi_display is an active target)
-Context: `pi_display/pfd.py` still has `int(abs(value))` in drum
-(line 406) and the old `-(vert_deg + pitch_deg)` airport projection
-bug (line 3546). Port recent pi4/pi_zero fixes if pi_display is
-still used, otherwise delete the directory.
-
 ---
 
 ## Completed

@@ -40,8 +40,7 @@ PFD-and-AHRS/
 │   ├── setup.sh       # One-shot install for Pi 4
 │   ├── data/          # SRTM tiles + obstacles + airports + settings.json
 │   └── previews/      # Screenshots (setup screens + pfd_gl/ OpenGL flight scenes)
-├── pi_display/        # Original combined codebase (preserved for reference)
-├── display/           # Pico W browser-based preview UI
+├── display/           # Pico W browser-based iPhone PFD (served from AHRS AP)
 ├── tools/             # Preview image generator
 ├── fetch_sedona_tiles.sh   # Quick-start: download KSEZ area SRTM tiles
 ├── fetch_airports.sh       # Download OurAirports CSV + runways CSV
