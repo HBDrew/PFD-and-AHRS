@@ -159,6 +159,7 @@ PANEL_SHOTS = [
     ("preview_panel_baro_inhg.png", "baro-panel",     {"_qnh_unit": "inHg", "baro_ok": True}, False),
     ("preview_panel_terrain.png",   "terrain-panel",  {}, False),
     ("preview_panel_trim.png",      "trim-panel",     {"pitch_trim": 0.5, "roll_trim": -0.5}, False),
+    ("preview_sensors_enabled.png", None,             {"_phone_sensors": True, "baro_ok": True}, False),
 ]
 
 
@@ -187,6 +188,21 @@ def _render_panel(page, port, fname, panel_id, state_override, show_link_dead=Fa
 
     if state_override.get("_qnh_unit") == "inHg":
         page.evaluate("toggleQNHUnit();")
+
+    if state_override.get("_phone_sensors"):
+        # Fake the sensor-enabled UI without going through the iOS permission
+        # gate (Chromium headless has no sensor APIs).  Mode "active" also
+        # fakes a live fallback.
+        active = state_override["_phone_sensors"] == "active"
+        page.evaluate(
+            """(active) => {
+              const el = document.getElementById('sensor-status');
+              if (!el) return;
+              el.className   = active ? 'sensor-act' : 'sensor-on';
+              el.textContent = 'PHONE';
+            }""",
+            active,
+        )
 
     if panel_id:
         page.evaluate(
