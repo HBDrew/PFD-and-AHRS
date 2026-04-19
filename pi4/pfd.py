@@ -57,9 +57,25 @@ from svt_renderer import render_svt as render_svt_pygame
 _SVT_GL_AVAILABLE = False
 _gl_available = None
 try:
-    from svt_renderer_gl import render_svt_gl
+    from svt_renderer_gl import render_svt_gl, render_svt_into_current_fb
 except Exception:
     render_svt_gl = None
+    render_svt_into_current_fb = None
+
+# Shared-context composite path (pygame.OPENGL + moderngl).  Imported lazily
+# because it's only needed when SVT_RENDERER == "opengl_shared".
+try:
+    from svt_composite_gl import setup_gl_display, Compositor
+    HAS_SHARED_GL = True
+except Exception:
+    setup_gl_display = None
+    Compositor = None
+    HAS_SHARED_GL = False
+
+# Populated by main() when opengl_shared setup succeeds.  render() and _flip()
+# check `_shared_gl_ctx is not None` to take the GL composite path.
+_shared_gl_ctx = None
+_shared_gl_compositor = None
 
 import obstacles as obs_mod
 import airports as apt_mod
@@ -4590,6 +4606,18 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
 def render(surf, demo_mode, connected, data_stale=False):
     mode = disp.get("mode", "pfd")
 
+    # In shared-GL composite mode, surf is an SRCALPHA overlay — pre-clear
+    # it each frame so stale pixels from the previous frame don't leak
+    # through transparent regions.  The GL framebuffer gets a safe clear
+    # below (before any terrain render) so setup screens (which return
+    # early) show on top of a blank background instead of last frame's
+    # terrain.
+    if _shared_gl_ctx is not None:
+        surf.fill((0, 0, 0, 0))
+        _shared_gl_ctx.screen.use()
+        _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
+        _shared_gl_ctx.clear(0.0, 0.0, 0.0, 1.0)
+
     # ── Full-screen replacement screens (no PFD behind them) ─────────────────
     if mode == "setup":
         draw_setup_screen(surf); return
@@ -4613,7 +4641,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_sim_setup(surf); return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
-    surf.fill((0, 0, 0))
+    # Shared-GL path already cleared surf to transparent at the top of
+    # render() — skip the opaque fill here so the AI region can show
+    # terrain through the compositor.
+    if _shared_gl_ctx is None:
+        surf.fill((0, 0, 0))
 
     roll    = disp["roll"]
     pitch   = disp["pitch"]
@@ -4701,9 +4733,23 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 0. Compute terrain/obstacle alert level for this frame
     _update_terrain_alert(lat, lon, alt, speed, gps_ok)
 
-    # 1. AI background — draw full-width so tapes are transparent over sky/ground
+    # 1. AI background — draw full-width so tapes are transparent over sky/ground.
+    # Shared-GL composite path renders sky+terrain directly into the default
+    # framebuffer instead of blitting a pygame surface; the 2D overlay here
+    # leaves the AI region transparent so terrain shows through.
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
-    if _has_terrain:
+    if _shared_gl_ctx is not None:
+        # Render terrain into the AI region of the default framebuffer.
+        # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
+        # GL rows HDG_H..DISPLAY_H.
+        _shared_gl_ctx.viewport = (0, HDG_H, DISPLAY_W, HDG_Y)
+        render_svt_into_current_fb(
+            _shared_gl_ctx, SRTM_DIR,
+            DISPLAY_W, HDG_Y,
+            pitch, roll, hdg, alt, lat, lon,
+        )
+        _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
+    elif _has_terrain:
         draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt, lat, lon)
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
@@ -4742,7 +4788,9 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
     # 3D SVT because high terrain shifts the visible horizon away from 0°.
-    if SVT_RENDERER == "opengl" and _SVT_GL_AVAILABLE:
+    _svt_3d_active = ((SVT_RENDERER == "opengl" and _SVT_GL_AVAILABLE)
+                      or _shared_gl_ctx is not None)
+    if _svt_3d_active:
         draw_zero_pitch_line(surf, ai_rect, pitch, roll)
 
     # 2. Pitch ladder (with roll rotation)
@@ -4947,39 +4995,80 @@ def main():
     pygame.init()
     pygame.mouse.set_visible(False)
 
-    if (not args.sim) and FULLSCREEN:
-        if DISPLAY_ROTATE:
-            # Rotated display: need explicit native-res surface + manual transform.
-            info = pygame.display.Info()
-            _native_w = info.current_w if info.current_w > 0 else DISPLAY_W
-            _native_h = info.current_h if info.current_h > 0 else DISPLAY_H
-            screen = pygame.display.set_mode(
-                (_native_w, _native_h),
-                pygame.FULLSCREEN | pygame.NOFRAME
+    # ── Shared-context GL composite path ─────────────────────────────────────
+    # When SVT_RENDERER == "opengl_shared", pygame owns the display in
+    # pygame.OPENGL mode and moderngl attaches to that context.  Terrain
+    # renders directly into the default framebuffer; the 2D PFD layer is
+    # drawn onto a separate SRCALPHA surface and uploaded as a GL texture
+    # for alpha-blended composite each frame.  Falls back to the normal
+    # pygame-display path on any setup failure.  Disabled in screenshot
+    # modes since those read pixels back from `surf`, which in shared-GL
+    # mode contains only the 2D overlay (no terrain).
+    _use_shared_gl = False
+    gl_ctx = None
+    gl_compositor = None
+    use_shared_req = (SVT_RENDERER == "opengl_shared"
+                      and HAS_SHARED_GL
+                      and render_svt_into_current_fb is not None
+                      and not args.screenshot
+                      and not args.screenshots)
+    if use_shared_req:
+        try:
+            screen, gl_ctx = setup_gl_display(
+                DISPLAY_W, DISPLAY_H,
+                fullscreen=(not args.sim) and FULLSCREEN,
             )
-            _scale = min(_native_w / DISPLAY_W, _native_h / DISPLAY_H)
-            _sw = int(DISPLAY_W * _scale)
-            _sh = int(DISPLAY_H * _scale)
-            _sx = (_native_w - _sw) // 2
-            _sy = (_native_h - _sh) // 2
-            surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
+            gl_compositor = Compositor(
+                gl_ctx, DISPLAY_W, DISPLAY_H,
+                rotate_deg=DISPLAY_ROTATE,
+            )
+            surf = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+            _sw = _sh = _sx = _sy = None
+            _use_shared_gl = True
+            global _shared_gl_ctx, _shared_gl_compositor
+            _shared_gl_ctx = gl_ctx
+            _shared_gl_compositor = gl_compositor
+            print("[PFD] SVT renderer: opengl_shared (pygame.OPENGL composite)")
+        except Exception as e:
+            print(f"[PFD] opengl_shared setup failed ({e}); falling back to pygame display")
+            _use_shared_gl = False
+            gl_ctx = None
+            gl_compositor = None
+
+    if not _use_shared_gl:
+        if (not args.sim) and FULLSCREEN:
+            if DISPLAY_ROTATE:
+                # Rotated display: need explicit native-res surface + manual transform.
+                info = pygame.display.Info()
+                _native_w = info.current_w if info.current_w > 0 else DISPLAY_W
+                _native_h = info.current_h if info.current_h > 0 else DISPLAY_H
+                screen = pygame.display.set_mode(
+                    (_native_w, _native_h),
+                    pygame.FULLSCREEN | pygame.NOFRAME
+                )
+                _scale = min(_native_w / DISPLAY_W, _native_h / DISPLAY_H)
+                _sw = int(DISPLAY_W * _scale)
+                _sh = int(DISPLAY_H * _scale)
+                _sx = (_native_w - _sw) // 2
+                _sy = (_native_h - _sh) // 2
+                surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
+            else:
+                # Use SDL2's built-in logical scaling (pygame.SCALED). SDL2 scales
+                # the 640×480 logical surface to the physical display size in C,
+                # which is ~10× faster than pygame.transform.scale() in Python
+                # (~80 ms saved per frame on Pi Zero 2W scaling to 1080p).
+                # SDL_RENDER_VSYNC=0 (set above) disables vsync on the SDL_Renderer
+                # that SCALED creates internally, removing the vsync-wait overhead.
+                screen = pygame.display.set_mode(
+                    (DISPLAY_W, DISPLAY_H),
+                    pygame.FULLSCREEN | pygame.SCALED
+                )
+                surf = screen
+                _sw = _sh = _sx = _sy = None
         else:
-            # Use SDL2's built-in logical scaling (pygame.SCALED). SDL2 scales
-            # the 640×480 logical surface to the physical display size in C,
-            # which is ~10× faster than pygame.transform.scale() in Python
-            # (~80 ms saved per frame on Pi Zero 2W scaling to 1080p).
-            # SDL_RENDER_VSYNC=0 (set above) disables vsync on the SDL_Renderer
-            # that SCALED creates internally, removing the vsync-wait overhead.
-            screen = pygame.display.set_mode(
-                (DISPLAY_W, DISPLAY_H),
-                pygame.FULLSCREEN | pygame.SCALED
-            )
+            screen = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
             surf = screen
             _sw = _sh = _sx = _sy = None
-    else:
-        screen = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
-        surf = screen
-        _sw = _sh = _sx = _sy = None
 
     def _flip():
         """Present the PFD surface to the physical display.
@@ -4990,7 +5079,15 @@ def main():
 
         The rotated path (DISPLAY_ROTATE != 0) still does an explicit
         transform+scale because SDL2's logical-size API doesn't handle rotation.
+
+        In shared-GL composite mode, terrain has already been rendered into
+        the default framebuffer by render(); here we just upload the 2D
+        overlay surface as a texture and draw it as a fullscreen quad.
         """
+        if _use_shared_gl:
+            gl_compositor.upload_and_draw(surf)
+            pygame.display.flip()
+            return
         if surf is not screen:
             # Rotated display — manual transform + scale
             s = pygame.transform.rotate(surf, DISPLAY_ROTATE)

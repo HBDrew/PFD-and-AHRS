@@ -588,3 +588,199 @@ def is_available() -> bool:
     except Exception as e:
         print(f"[SVT-GL] EGL probe failed: {e}")
         return False
+
+
+# ── Shared-context path (pygame.OPENGL composite) ─────────────────────────────
+# Companion to render_svt_gl() above.  Instead of creating its own standalone
+# EGL context and rendering to an offscreen FBO, this path assumes the caller
+# already owns a moderngl Context (typically attached to pygame's GL surface
+# via moderngl.create_context()) and renders directly into the currently-bound
+# framebuffer (usually the default screen framebuffer).  There is NO pixel
+# readback — the output stays on the GPU, ready to be composited with the 2D
+# PFD overlay by svt_composite_gl.Compositor.
+#
+# State is cached per-context in _SharedState (keyed by id(ctx)) so multiple
+# ctxs won't cross-contaminate; in practice pfd.py creates exactly one.
+_shared_state = {}
+
+
+class _SharedState:
+    __slots__ = ("ctx", "terrain_prog", "sky_prog", "sky_vao",
+                 "terrain_vao", "terrain_vbo_pos", "terrain_vbo_clr",
+                 "terrain_ibo", "mesh_key", "mesh_radius_m")
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.terrain_prog = ctx.program(vertex_shader=VERTEX_SHADER,
+                                        fragment_shader=FRAGMENT_SHADER)
+        self.sky_prog = ctx.program(vertex_shader=SKY_VERTEX_SHADER,
+                                    fragment_shader=SKY_FRAGMENT_SHADER)
+        sky_verts = np.array([
+            -1, -1,   1, -1,   1,  1,
+            -1, -1,   1,  1,  -1,  1,
+        ], dtype=np.float32)
+        sky_vbo = ctx.buffer(sky_verts.tobytes())
+        self.sky_vao = ctx.vertex_array(self.sky_prog,
+                                        [(sky_vbo, '2f', 'in_pos')])
+        self.terrain_vao = None
+        self.terrain_vbo_pos = None
+        self.terrain_vbo_clr = None
+        self.terrain_ibo = None
+        self.mesh_key = None
+        self.mesh_radius_m = MESH_RADIUS_NM * NM_TO_M
+
+    def build_mesh(self, srtm_dir, lat, lon, alt_ft):
+        """Same mesh-building logic as the module-level _build_mesh, but
+        operating on this instance's ctx/buffers instead of module globals."""
+        key = (round(lat, 3), round(lon, 3), round(alt_ft / 200) * 200)
+        if key == self.mesh_key and self.terrain_vao is not None:
+            return
+
+        if MESH_SIZE_MODE == "altitude":
+            r_nm = max(MESH_RADIUS_MIN_NM,
+                       min(MESH_RADIUS_MAX_NM,
+                           6.0 * math.sqrt(max(100.0, alt_ft) / 1000.0)))
+        else:
+            r_nm = MESH_RADIUS_NM
+        radius_m = r_nm * NM_TO_M
+        self.mesh_radius_m = radius_m
+        n = MESH_GRID_N
+        alt_m = alt_ft * FT_TO_M
+
+        grid_1d = np.linspace(-radius_m, radius_m, n, dtype=np.float32)
+        east, north = np.meshgrid(grid_1d, grid_1d)
+
+        cos_lat = max(1e-6, math.cos(math.radians(lat)))
+        dlat = north / NM_TO_M / 60.0
+        dlon = east  / NM_TO_M / 60.0 / cos_lat
+        sample_lat = lat + dlat
+        sample_lon = lon + dlon
+
+        elev_ft = np.zeros((n, n), dtype=np.float32)
+        lat_int_arr = np.floor(sample_lat).astype(np.int32)
+        lon_int_arr = np.floor(sample_lon).astype(np.int32)
+        enc = ((lat_int_arr.astype(np.int64) + 90) * 1000 +
+               (lon_int_arr.astype(np.int64) + 360))
+        for tile_key in np.unique(enc):
+            tla = int(tile_key) // 1000 - 90
+            tlo = int(tile_key) %  1000 - 360
+            result = load_tile(srtm_dir, tla, tlo)
+            if result is None:
+                continue
+            tile_data, n_s = result
+            mask = (lat_int_arr == tla) & (lon_int_arr == tlo)
+            if not mask.any():
+                continue
+            step = 1.0 / (n_s - 1)
+            row_i = np.clip(np.round((tla + 1 - sample_lat) / step).astype(np.int32),
+                            0, n_s - 1)
+            col_i = np.clip(np.round((sample_lon - tlo) / step).astype(np.int32),
+                            0, n_s - 1)
+            elev_ft[mask] = tile_data[row_i, col_i][mask]
+
+        elev_m = elev_ft * FT_TO_M
+
+        positions = np.stack([east, north, elev_m - alt_m], axis=-1).astype(np.float32)
+        clearances = (alt_m - elev_m).astype(np.float32)
+
+        i, j = np.meshgrid(np.arange(n - 1), np.arange(n - 1), indexing='ij')
+        v0 = (i     * n + j    ).astype(np.uint32)
+        v1 = (i     * n + j + 1).astype(np.uint32)
+        v2 = ((i+1) * n + j    ).astype(np.uint32)
+        v3 = ((i+1) * n + j + 1).astype(np.uint32)
+        tri1 = np.stack([v0, v2, v1], axis=-1).reshape(-1)
+        tri2 = np.stack([v1, v2, v3], axis=-1).reshape(-1)
+        indices = np.concatenate([tri1, tri2]).astype(np.uint32)
+
+        if self.terrain_vbo_pos is not None:
+            self.terrain_vao.release()
+            self.terrain_vbo_pos.release()
+            self.terrain_vbo_clr.release()
+            self.terrain_ibo.release()
+
+        self.terrain_vbo_pos = self.ctx.buffer(positions.tobytes())
+        self.terrain_vbo_clr = self.ctx.buffer(clearances.tobytes())
+        self.terrain_ibo     = self.ctx.buffer(indices.tobytes())
+        self.terrain_vao = self.ctx.vertex_array(
+            self.terrain_prog,
+            [(self.terrain_vbo_pos, '3f', 'in_pos'),
+             (self.terrain_vbo_clr, '1f', 'in_clearance')],
+            index_buffer=self.terrain_ibo,
+        )
+
+        self.mesh_key = key
+
+
+def render_svt_into_current_fb(
+    ctx,
+    srtm_dir: str,
+    ai_w: int,
+    ai_h: int,
+    pitch_deg: float,
+    roll_deg: float,
+    hdg_deg: float,
+    alt_ft: float,
+    lat: float,
+    lon: float,
+    v_fov_deg: float = V_FOV_DEG,
+) -> bool:
+    """Render the SVT terrain+sky directly into the currently-bound
+    framebuffer using the caller-provided moderngl context.
+
+    Unlike render_svt_gl(), this does NOT create an EGL context, does NOT
+    allocate an FBO, and does NOT read pixels back.  Intended for the
+    pygame.OPENGL shared-context composite path: pfd.py owns the GL
+    context via pygame.display.set_mode(..., pygame.OPENGL) and moderngl
+    attached to it via create_context().
+
+    The caller is responsible for binding the framebuffer (e.g.
+    ctx.screen.use()) and setting the viewport BEFORE calling this —
+    that way a single render can target the full display or a sub-region.
+
+    Returns True on success, False if moderngl/numpy unavailable.
+    """
+    if not (HAS_MODERNGL and HAS_NUMPY):
+        return False
+
+    st = _shared_state.get(id(ctx))
+    if st is None:
+        st = _SharedState(ctx)
+        _shared_state[id(ctx)] = st
+
+    st.build_mesh(srtm_dir, lat, lon, alt_ft)
+
+    fwd, up = _attitude_basis(pitch_deg, roll_deg, hdg_deg)
+    eye = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    target = eye + fwd
+    view = _look_at(eye, target, up)
+    proj = _perspective(v_fov_deg, ai_w / ai_h, NEAR_PLANE_M, FAR_PLANE_M)
+    mvp = proj @ view
+
+    ctx.enable(moderngl.DEPTH_TEST)
+    ctx.clear(0.04, 0.16, 0.31, 1.0)
+
+    horizon_y = _horizon_y_ndc(pitch_deg, v_fov_deg)
+    st.sky_prog['u_horizon_y'].value = horizon_y
+    st.sky_prog['u_roll_rad'].value  = math.radians(roll_deg)
+    st.sky_prog['u_aspect'].value    = ai_w / ai_h
+    ctx.disable(moderngl.DEPTH_TEST)
+    st.sky_vao.render()
+    ctx.enable(moderngl.DEPTH_TEST)
+
+    if st.terrain_vao is not None:
+        st.terrain_prog['u_mvp'].write(mvp.T.tobytes())
+        st.terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
+        st.terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
+        st.terrain_prog['u_grid_max_dist_m'].value  = st.mesh_radius_m
+        az_rad = math.radians(SUN_AZIMUTH_DEG)
+        el_rad = math.radians(SUN_ELEVATION_DEG)
+        sun_x = math.cos(el_rad) * math.sin(az_rad)
+        sun_y = math.cos(el_rad) * math.cos(az_rad)
+        sun_z = math.sin(el_rad)
+        st.terrain_prog['u_sun_dir'].value       = (sun_x, sun_y, sun_z)
+        st.terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
+        st.terrain_prog['u_ambient'].value       = SUN_AMBIENT
+        st.terrain_vao.render()
+
+    ctx.disable(moderngl.DEPTH_TEST)
+    return True
