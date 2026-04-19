@@ -55,7 +55,7 @@ Everything is rendered at 30 fps directly on the framebuffer — there is no ope
 
 ### Reading the tape
 
-The tape scrolls so that current airspeed is always at the centred Veeder-Root drum readout. The drum shows two-digit resolution; the tenths digit rolls smoothly so over-speed trends are obvious at a glance.
+The tape scrolls so that current airspeed is always at the centred **Veeder-Root drum** readout. The drum shows two-digit resolution: the **ones** digit rolls smoothly on a narrow inner cell to the right, and the **tens** digit cascades one slot up when the ones cross 9 → 0. A faint preview of the next digit (and the digit two slots above) peeks in from the top of the box so crossings through 10 / 100 are obvious at a glance.
 
 ### Colour arcs (right edge of tape)
 
@@ -87,7 +87,9 @@ The bug and its readout button are **colour-coded by data source**:
 
 ### Altitude tape
 
-Current altitude is shown in the Veeder-Root drum on the right side. The tape scrolls in 50 ft increments with labels every 100 ft.
+![Altitude drum passing 10000 ft — the leading "1" is visible above the "0" before integer roll-over](../pi_zero/previews/preview_vr_cascade.png)
+
+Current altitude is shown in the Veeder-Root drum on the right side. The tape scrolls in 50 ft increments with labels every 100 ft. The drum renders as two (below 100 ft) or three (above) independent cells that cascade at the correct rates — the altitude value is always the number vertically centred in the large outer cell, and the leading column reveals the next digit one slot above so transitions through 1000 / 10000 ft stay readable.
 
 The **altitude bug** chevron marks the selected target altitude. Tap the bug button at the **top** of the alt tape to change it. Entry is in hundreds of feet — type `85` and the display shows `8500 ft`.
 
@@ -194,32 +196,46 @@ Badges appear **only when something requires attention** — the strip is blank 
 
 ## 7. Setting Bugs
 
-Three settable bugs — altitude, heading, and ground-speed.
+Three settable bugs — altitude, heading, and ground-speed — plus the baro setting. All four use the same numpad overlay.
+
+### Bug buttons on the PFD
+
+The bug buttons fill the full heading-strip height so they're easy to hit without looking away from the horizon.
+
+| Button | Location | Opens |
+|--------|----------|-------|
+| **Speed bug** | Top of airspeed tape | SET SPD BUG |
+| **Altitude bug** | Top of altitude tape | SET ALTITUDE BUG |
+| **HDG bug** | Bottom-left of heading strip | SET HDG BUG |
+| **Baro** | Bottom-right of heading strip | SET BARO inHg / SET BARO hPa |
 
 ### Numpad entry
 
-![Altitude bug numpad](../pi_zero/previews/preview_numpad_alt.png)
+![Altitude bug numpad — current value 8500 shown as placeholder](../pi_zero/previews/preview_numpad_alt.png)
 
-Tap the readout button for the bug you want to change. The numpad overlays the live PFD.
+Tap the readout button for the bug you want to change. The numpad overlays the live PFD. **The current value is shown as a dim placeholder** under the entry field — the input starts empty so tapping ENTER without typing keeps the previous value.
 
 | Key | Action |
 |-----|--------|
-| `0–9` | Append digit |
+| `0–9` | Append digit to buffer |
 | `⌫` | Delete last digit |
-| `ENTER` | Accept |
+| `ENTER` | Commit (or keep current value if buffer empty) |
 | `CANCEL` | Discard |
 
-**Altitude bug** entry is in hundreds of feet. Type `85` for `8500 ft`.
-
-**Heading bug** is 3 digits (0–360).
-
-**GS bug** is whole-number knots.
+| Target | Entry | Example |
+|--------|-------|---------|
+| Altitude | hundreds of feet | `85` → `8500 ft` |
+| Heading | 3 digits | `270` → `270°` |
+| Speed | whole knots | `90` → `90 kt` |
 
 ### Adjusting baro
 
 ![Baro numpad — inHg](../pi_zero/previews/preview_numpad_baro_inhg.png)
 
-Tap the baro button. **inHg mode**: type four digits, decimal auto-inserted after second digit (e.g. `2992` → `29.92`). **hPa mode**: plain four-digit integer.
+Tap the baro button. The numpad title switches between **SET BARO inHg** and **SET BARO hPa** based on the unit selected in Display Settings, and pre-populates the placeholder with the current baro value.
+
+- **inHg mode**: type four digits, decimal auto-inserted after second digit (`2992` → `29.92`).
+- **hPa mode**: plain four-digit integer (`1013`).
 
 ### Tapping the tape directly
 
@@ -227,7 +243,7 @@ Tap the **heading tape** to jump the bug to that bearing. Tap the **altitude tap
 
 ### Clearing a bug
 
-Enter `0` and press `ENTER`.
+Enter `0` and press `ENTER`. (Baro resets to 29.92 in / 1013 hPa.)
 
 ---
 
@@ -265,11 +281,20 @@ Two-finger press-and-hold anywhere on the PFD for 0.8 seconds.
 
 Defaults are Cessna 172S. Tap any V-speed box to enter a new value. **RESET DEFAULTS** restores all values.
 
-### Aircraft callsign
+### Aircraft callsign and A/C type
 
-![Keyboard screen](../pi_zero/previews/preview_keyboard.png)
+![Keyboard — QWERTY with period and colon on row 3](../pi_zero/previews/preview_keyboard.png)
 
-Tap the CALLSIGN box to open the keyboard. Type the tail number and tap DONE.
+Tap the **CALLSIGN** or **A/C TYPE** box to open the on-screen keyboard. The current field value is pre-populated so you can edit in place.
+
+Rows:
+
+1. `1 2 3 4 5 6 7 8 9 0`
+2. `Q W E R T Y U I O P`
+3. `A S D F G H J K L`
+4. `Z X C V B N M . : ⌫`
+
+Action row: **CANCEL**, hyphen (`-`), **SPACE**, **DONE**. The period (`.`) and colon (`:`) keys are useful when editing the AHRS URL from the Connectivity screen, which uses this same keyboard. **⌫** deletes one character from the end of the buffer.
 
 ---
 
@@ -324,16 +349,31 @@ Corrects horizon tilt. ±0.5° steps.
 
 ## 12. Connectivity
 
-![Connectivity screen](../pi_zero/previews/preview_setup_connectivity.png)
+![Connectivity screen — editable fields, live STATUS badges, AHRS LINK diagnostics, live R/P/Y/ALT](../pi_zero/previews/preview_setup_connectivity.png)
 
 ### AHRS URL
-Default `http://192.168.4.1`. Tap to edit. SSE stream reconnects on DONE.
+Default `http://192.168.4.1`. Tap to edit — the keyboard lets you enter URLs directly (`.` and `:` are on the main QWERTY). The SSE stream reconnects when you tap DONE.
 
 ### WiFi SSID / PASSWORD
-Tap **APPLY WIFI** to write config and switch networks.
+Tap either box to edit. Tap **APPLY WIFI** to write the config and switch networks. The Wi-Fi password is intentionally **not** persisted in `settings.json` — it must be re-entered when joining a new network.
+
+### STATUS row
+Two coloured badges:
+
+- **AHRS** — green "CONNECTED" when the SSE link is up; red "NO LINK" otherwise.
+- **WiFi** — when up, shows `WiFi: <ssid>` with the actual network name the Pi is associated to (from `iwgetid`, truncated with `…` if longer than 18 chars); red "NO LINK" otherwise.
+
+### AHRS LINK diagnostics row
+Second status row, visible even when the AHRS badge is red so you can see **why**:
+
+- Transport + port on the left (typically `WIFI http://192.168.4.1` on the Pi Zero 2W — USB serial fallback is Pi 4 only).
+- **RX:** counter — frames received since boot (should tick ~20×/s on a healthy link).
+- **ERR:** counter — parse failures.
+- Last error string (truncated).
+- Live **R / P / Y / ALT** on the right — confirms sensor output is sane. If RX climbs but R/P/Y stay at `+0.0°` the firmware is alive but the WT901 isn't talking (check TX→RX wiring).
 
 ### TEST AHRS
-Attempts TCP connection to AHRS URL. Shows success/failure message.
+Issues a one-shot HTTP GET to the AHRS URL and reports success/failure. Use after APPLY WIFI to verify the Pi actually reaches the Pico W.
 
 ---
 
@@ -359,13 +399,25 @@ Tiles are stored in `pi_zero/data/srtm/` as `.hgt` files (~1 MB each).
 
 ![Terrain downloading](../pi_zero/previews/preview_terrain_downloading.png)
 
-Six preset regions: US Southwest, US Pacific, US Southeast, US Northeast, Alaska, Canada.
+Nine preset regions. Each tile shows coverage, approximate tile count, and estimated disk size:
 
-Tap the region button to start. Progress bar and tile count update during download. **CANCEL** aborts; already-downloaded tiles are kept.
+| Region | Coverage | ~Tiles | ~Size |
+|--------|----------|-------:|------:|
+| US Southwest | AZ · NM · NV · UT · CO | 132 | 198 MB |
+| US Pacific | CA · OR · WA | 187 | 280 MB |
+| US Southeast | FL · GA · AL · NC · SC | 234 | 351 MB |
+| US Northeast | NY · PA · NE states | 154 | 231 MB |
+| US Midwest | OH · MI · IL · MN · WI | 276 | 414 MB |
+| All CONUS | Lower 48 — single-tap | ~1,475 | ~2 GB |
+| Alaska | Southern AK corridor | 306 | 459 MB |
+| Europe West | UK · FR · DE · ES · IT | 528 | 792 MB |
+| All Europe | UK to Turkey | ~1,050 | ~3 GB |
+
+Tap the region button to start. Progress bar and tile count update during download. **CANCEL** aborts; already-downloaded tiles are kept. Re-tapping a region after a partial download resumes (existing tiles are skipped).
 
 ### Current area
 
-**CURRENT AREA** downloads ±2° around the current GPS position. Requires GPS fix.
+**DOWNLOAD CURRENT AREA** at the top of the screen downloads a 5°×5° box (~25 tiles, ~35 MB) centred on the current GPS position — the fastest way to get alerting data for an unfamiliar area. Requires GPS fix.
 
 ### WiFi requirement
 

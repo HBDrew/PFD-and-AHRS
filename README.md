@@ -261,16 +261,21 @@ bash wifi_switch.sh status
 | Action | Effect |
 |--------|--------|
 | Tap altitude tape | Set altitude bug to tapped position |
-| Tap top of alt tape | Open altitude bug numpad |
-| Tap top of speed tape | Open speed bug numpad |
+| Tap top of alt tape | Open altitude bug numpad (full-height hit region) |
+| Tap top of speed tape | Open speed bug numpad (full-height hit region) |
 | Tap heading tape | Set heading bug to tapped position |
 | Tap bottom-left of heading strip | Open heading bug numpad |
 | Tap bottom-right of heading strip | Open baro setting numpad |
 | Two-finger hold (0.8 s) | Open setup menu |
+| Setup → **CONNECTIVITY** | Live AHRS diagnostics — transport, RX/ERR counters, last error, live R/P/Y/ALT, actual WiFi SSID |
+| Setup → System → **TERRAIN** | SRTM region grid: 9 presets (US SW / Pacific / SE / NE / Midwest / All CONUS / Alaska / Europe West / All Europe) + DOWNLOAD CURRENT AREA |
+| Setup → System → OBSTACLES | FAA DOF download; 28-day expiry |
 | Setup → System → AIRPORTS | Airport data screen (filters, runway/centerline toggles, UPDATE) |
 | Tap SIM watermark (during sim) | Open SIM CONTROLS overlay (failure injection + EXIT) |
 | (keyboard) D | Toggle demo mode |
 | (keyboard) Esc | Quit |
+
+**Numpad** overlay shows the current value as a dim placeholder — pressing ENTER with an empty buffer keeps the previous value. ⌫ backspace is on the numpad. **Keyboard** overlay includes `.`, `:`, and ⌫ keys for editing URLs and tail numbers. Both open pre-populated with the current field value visible.
 
 See `Docs/USER_MANUAL_ZERO.md` or `Docs/USER_MANUAL_PI4.md` for full operational documentation. Filter states, bug values, brightness, baro unit, and every other user-set value persist across power cycles in `data/settings.json`.
 
