@@ -356,6 +356,65 @@ try { Object.assign(V, JSON.parse(localStorage.getItem('vspeeds') || '{}')); }
 catch(e) {}
 const V_COL = { white:'#ffffff', green:'#1ec832', yellow:'#f0c800', red:'#dc1e1e' };
 
+// User-set bugs — stored canonical (kt/ft/deg) in localStorage 'bugs'.
+const BUG_DEFAULTS = { spd_bug: null, alt_bug: null, hdg_bug: null };
+const B = Object.assign({}, BUG_DEFAULTS);
+try { Object.assign(B, JSON.parse(localStorage.getItem('bugs') || '{}')); }
+catch(e) {}
+const BUG_MAGENTA = '#e100e1';
+const BUG_CYAN    = '#00dcdc';
+
+// ── Veeder-Root rolling drum ──────────────────────────────────────────────
+// Mirror of preview.html drawDrum().  See that file for algorithm notes.
+function drawDrum(x, y, w, h, value, nDigits, color, fontSz, opts){
+  opts = opts || {};
+  const suppressLeading = !!opts.suppressLeading;
+  const powerOffset     = opts.powerOffset || 0;
+  const showAdjacent    = !!opts.showAdjacent;
+  const slotH           = showAdjacent ? (opts.adjSlotH || h * 0.45) : h;
+  const charW = w / nDigits;
+  const absV  = Math.abs(value);
+  const valInt= Math.round(absV);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.font = `bold ${fontSz}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+
+  for (let col = 0; col < nDigits; col++) {
+    const power = powerOffset + nDigits - 1 - col;
+    if (suppressLeading && power > 0 && valInt < Math.pow(10, power)) continue;
+
+    let dCont;
+    if (power === 0) {
+      dCont = absV % 10;
+    } else {
+      const lowerCont = (absV % Math.pow(10, power)) / Math.pow(10, power - 1);
+      const carry     = Math.max(0, lowerCont - 9);
+      const dLoInt    = Math.floor(absV / Math.pow(10, power)) % 10;
+      dCont = dLoInt + carry;
+    }
+    const dLo   = Math.floor(dCont);
+    const frac  = dCont - dLo;
+    const dHi   = (dLo + 1) % 10;
+    const scroll= frac * slotH;
+    const cxCol = x + col * charW + charW / 2;
+    const tyLo  = y + h / 2 + scroll;
+
+    ctx.fillText(String(dLo), cxCol, tyLo);
+    ctx.fillText(String(dHi), cxCol, tyLo - slotH);
+    if (showAdjacent) {
+      const dPrev = (dLo + 9) % 10;
+      const dHi2  = (dLo + 2) % 10;
+      ctx.fillText(String(dPrev), cxCol, tyLo + slotH);
+      ctx.fillText(String(dHi2),  cxCol, tyLo - 2 * slotH);
+    }
+  }
+  ctx.restore();
+}
+
 function toggleSpeedUnit() {
   speedUnit = speedUnit === 'kt' ? 'mph' : 'kt';
   localStorage.setItem('speedUnit', speedUnit);
@@ -754,12 +813,12 @@ function drawSpeedTape() {
   ctx.lineTo(bx+spdW+ptr,tapeMidY); ctx.lineTo(bx+spdW,by+boxH); ctx.lineTo(bx,by+boxH);
   ctx.closePath();
   ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
-  // Drum digit colour reflects over-speed state: red above VNE, amber above VNO.
+  // Veeder-Root rolling drum.  Red above Vne, amber above Vno, else white.
   const drumCol = D.speed > V.vne ? V_COL.red
                 : D.speed > V.vno ? V_COL.yellow : '#fff';
-  ctx.fillStyle=drumCol; ctx.font=`bold ${Math.max(17,H*.042)}px monospace`;
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(Math.round(spd).toString(),bx+spdW/2,tapeMidY);
+  const drumFs = Math.max(17, H*.042);
+  drawDrum(bx+2, by+2, spdW-4, boxH-4, spd, 3, drumCol, drumFs,
+           {suppressLeading:true});
   ctx.textBaseline='alphabetic';
 
   // Speed bug chevron — see preview.html drawSpeedTape() for shape derivation.
@@ -814,9 +873,10 @@ function drawAltTape() {
   ctx.lineTo(altX-ptr,tapeMidY); ctx.lineTo(altX,by+boxH); ctx.lineTo(altX+altW,by+boxH);
   ctx.closePath();
   ctx.fillStyle='#000c1e'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
-  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(15,H*.038)}px monospace`;
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(Math.round(alt).toString(),altX+altW/2,tapeMidY);
+  // Veeder-Root altitude drum — 5 digits, leading-zero suppression.
+  const altDrumFs = Math.max(15, H*.038);
+  drawDrum(altX+2, tapeMidY-boxHalf+2, altW-4, boxH-4, alt, 5, '#fff', altDrumFs,
+           {suppressLeading:true});
 
   const vsiY=by+boxH+5, arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
   const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
