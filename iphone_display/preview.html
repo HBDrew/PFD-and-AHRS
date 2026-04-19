@@ -336,6 +336,62 @@ function drawSlipBall(){
   ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(cx+defl,ballY,r,0,Math.PI*2); ctx.fill();
 }
 
+// ── TAWS proximity alert ──────────────────────────────────────────────────
+// Ported from pi4/pfd.py _update_terrain_alert + draw_terrain_alert.
+// Thresholds match the Pi displays: 500 ft clearance → amber TERRAIN
+// CAUTION (steady), 100 ft clearance → red PULL UP (1 Hz flash).
+const TAWS = { level: 0, lastCheckMs: 0 };
+const FT_PER_M = 3.28084;
+// Screenshot hook: tools/render_iphone_previews.py pokes this from Playwright
+// to capture banner-on scenes without needing actual terrain data loaded.
+window._forceTawsLevel = (n) => {
+  TAWS.level = n;
+  TAWS.lastCheckMs = performance.now() + 5000;   // lock out the real update
+  window._tawsNoFlash = true;                    // disable flash in screenshots
+};
+
+function updateTerrainAlert() {
+  // Throttle to ~5 Hz — elevation lookup is cheap but still not free.
+  const now = performance.now();
+  if (now - TAWS.lastCheckMs < 200) return;
+  TAWS.lastCheckMs = now;
+  if (!D.fix || D.fix === 0) { TAWS.level = 0; return; }
+  if (typeof Terrain === 'undefined' || !Terrain.elevationAt) return;
+  const elevM = Terrain.elevationAt(D.lat, D.lon);
+  if (elevM === null || elevM === undefined || !isFinite(elevM)) {
+    TAWS.level = 0; return;
+  }
+  const clearanceFt = D.alt - elevM * FT_PER_M;
+  TAWS.level = clearanceFt < 100 ? 2
+             : clearanceFt < 500 ? 1 : 0;
+}
+
+function drawTerrainAlert() {
+  if (TAWS.level === 0) return;
+  // Flash red warning at 1 Hz (disabled when _tawsNoFlash is set — used by
+  // the screenshot tool to capture a definite on-phase for documentation).
+  if (TAWS.level === 2 && !window._tawsNoFlash
+      && (Math.floor(performance.now() / 500) % 2) === 1) return;
+  const bw = Math.max(140, W * 0.18);
+  const bh = Math.max(22, H * 0.06);
+  const bx = W / 2 - bw / 2;
+  const by = L.safeT + 30;
+  const warn = TAWS.level === 2;
+  ctx.fillStyle   = warn ? '#b40000' : '#a06e00';
+  ctx.strokeStyle = warn ? '#ffffff' : '#ffe000';
+  ctx.lineWidth   = 1.5;
+  roundRect(bx, by, bw, bh, 4);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle    = warn ? '#ffffff' : '#ffe000';
+  ctx.font         = `bold ${Math.max(14, H * 0.034)}px monospace`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(warn ? 'PULL UP  TERRAIN' : 'TERRAIN  CAUTION',
+               bx + bw / 2, by + bh / 2);
+  ctx.textBaseline = 'alphabetic';
+}
+
+
 // ── Veeder-Root rolling drum ──────────────────────────────────────────────
 // Ported from pi4/pfd.py _rolling_drum().  Renders n_digits of `value` as
 // independent vertical drums that cascade smoothly — when the ones digit
@@ -709,6 +765,7 @@ function render(ts){
     tickSim(ts);
     smooth(Math.min(1,dt/60));
   }
+  updateTerrainAlert();
   ctx.clearRect(0,0,W,H);
   drawAI();
   Terrain.render(ctx, D, L);   // SVS on top of sky/ground, behind instruments
@@ -719,6 +776,7 @@ function render(ts){
   drawAltTape();
   drawHeadingTape();
   drawGPSStatus();
+  drawTerrainAlert();
   if(!D.ahrs_ok){
     drawRedX(L.spdX+L.spdW,L.tapeTopY,L.altX-(L.spdX+L.spdW),L.tapeH,'AHRS');
     drawRedX(0,L.hdgY,W,H-L.hdgY,'HDG');

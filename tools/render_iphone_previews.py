@@ -116,13 +116,15 @@ def _serve(directory, port=0):
 # preview.html maps to these: 0=level, 1=right turn, 2=climb left, 3=bank 45,
 # 4=descent, 5=turbulence.
 SCENES = [
-    # (filename,                               scenario_idx, t01, post-set-overrides)
-    ("preview_level_cruise.png",               0, 0.50, {}),
-    ("preview_right_turn.png",                 1, 0.40, {}),
-    ("preview_climb_left.png",                 2, 0.60, {}),
-    ("preview_steep_bank_45.png",              3, 0.35, {}),
-    ("preview_descent_valley.png",             4, 0.70, {}),
-    ("preview_turbulence_slip.png",            5, 0.45, {}),
+    # (filename, scenario_idx, t01, taws_level)
+    ("preview_level_cruise.png",     0, 0.50, 0),
+    ("preview_right_turn.png",       1, 0.40, 0),
+    ("preview_climb_left.png",       2, 0.60, 0),
+    ("preview_steep_bank_45.png",    3, 0.35, 0),
+    ("preview_descent_valley.png",   4, 0.70, 0),
+    ("preview_turbulence_slip.png",  5, 0.45, 0),
+    ("preview_taws_caution.png",     4, 0.60, 1),   # descent scenario + amber
+    ("preview_taws_pullup.png",      4, 0.80, 2),   # descent scenario + red
 ]
 
 
@@ -134,12 +136,14 @@ def _freeze_scene(page, scenario_idx, t01):
     )
 
 
-def _render_preview(page, port, fname, scenario_idx, t01):
+def _render_preview(page, port, fname, scenario_idx, t01, taws_level=0):
     page.goto(f"http://127.0.0.1:{port}/preview.html")
     page.wait_for_load_state("networkidle")
     # Let the page run a few frames so terrain.js finishes initialising.
     page.wait_for_timeout(800)
     _freeze_scene(page, scenario_idx, t01)
+    if taws_level:
+        page.evaluate(f"window._forceTawsLevel({taws_level})")
     page.wait_for_timeout(300)
     out = os.path.join(_OUT_DIR, fname)
     page.screenshot(path=out, full_page=False)
@@ -222,8 +226,8 @@ def main():
             page = ctx.new_page()
 
             print("\nFlight scenes (preview.html)")
-            for fname, idx, t01, _ in SCENES:
-                _render_preview(page, port, fname, idx, t01)
+            for fname, idx, t01, taws_level in SCENES:
+                _render_preview(page, port, fname, idx, t01, taws_level)
 
             print("\nLive view + overlays (index.html)")
             for fname, panel_id, overrides, link_dead in PANEL_SHOTS:
