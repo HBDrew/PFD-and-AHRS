@@ -1949,43 +1949,6 @@ _active_fingers = {}     # finger_id → touch-down time (ms)
 _multitouch_t0  = None   # time when 2nd finger touched down
 
 
-def _current_str_for_numpad(target):
-    """Return the string form of the current value for this numpad target,
-    formatted to match the digits the user would type. Empty string when
-    the value is unset / zero, so the user sees a blank buffer."""
-    def _i(v):
-        if v in (None, 0, 0.0, ""):
-            return ""
-        return str(int(v))
-    if target == "alt_bug":
-        v = disp.get("alt_bug")
-        return _i(v / 100) if v not in (None, 0, 0.0) else ""
-    if target == "hdg_bug":
-        v = disp.get("hdg_bug")
-        return str(int(v)) if v is not None else ""    # allow 0 (north)
-    if target == "spd_bug":
-        return _i(disp.get("spd_bug"))
-    if target == "baro_hpa":
-        v = disp.get("baro_hpa")
-        if v in (None, 0, 0.0):
-            return ""
-        baro_unit = disp["ds"].get("baro_unit", "inhg")
-        if baro_unit == "hpa":
-            return str(int(round(v)))
-        return str(int(round(v / 33.8639 * 100)))      # inHg × 100
-    if target == "sim_init_alt":
-        v = disp.get("sim", {}).get("init_alt")
-        return _i(v / 100) if v not in (None, 0, 0.0) else ""
-    if target == "sim_init_hdg":
-        v = disp.get("sim", {}).get("init_hdg")
-        return str(int(v)) if v is not None else ""
-    if target == "sim_init_spd":
-        return _i(disp.get("sim", {}).get("init_spd"))
-    if target in disp.get("fp", {}):
-        return _i(disp["fp"].get(target))
-    return ""
-
-
 def _current_str_for_kbd(target, prev_mode):
     """String form of current keyboard-editable value for pre-population."""
     if prev_mode == "connectivity_setup":
@@ -1996,10 +1959,13 @@ def _current_str_for_kbd(target, prev_mode):
 
 
 def _open_numpad(target):
-    """Switch to numpad mode for the given bug target, pre-populated with
-    the current value so the user can edit rather than retype."""
+    """Switch to numpad mode for the given bug target.  The buffer
+    starts empty; draw_numpad falls back to showing the current value
+    as a placeholder until the user types.  First digit replaces the
+    placeholder naturally (because buf was empty), and backspace is a
+    no-op until something is actually typed."""
     disp["numpad_target"] = target
-    disp["numpad_buf"]    = _current_str_for_numpad(target)
+    disp["numpad_buf"]    = ""
     disp["numpad_prev"]   = disp["mode"]
     disp["mode"]          = "numpad"
 
@@ -2263,7 +2229,7 @@ def handle_event(event, demo_mode):
                 else:
                     disp["numpad_target"] = key
                     disp["numpad_prev"]   = "flight_profile"
-                    disp["numpad_buf"]    = _current_str_for_numpad(key)
+                    disp["numpad_buf"]    = ""
                     disp["mode"]          = "numpad"
             return True
 
