@@ -272,7 +272,12 @@ function drawAI(){
   ctx.shadowColor='rgba(0,0,0,.8)'; ctx.shadowBlur=4;
   ctx.beginPath(); ctx.moveTo(-W*2,pitchOff); ctx.lineTo(W*2,pitchOff); ctx.stroke();
   ctx.shadowBlur=0;
-  const shortL=W*.10, longL=W*.18;
+  // Pitch-ladder line widths matched to pi4 (major_half = 7% of AI width,
+  // minor_half = 4%).  AI width on iPhone landscape ≈ W minus the two tapes;
+  // approximate as W*0.85 to avoid pulling layout deps in.
+  const aiW = W - L.spdW - L.altW;
+  const longL  = aiW * 0.07;
+  const shortL = aiW * 0.04;
   ctx.font=`${Math.max(11,H*.025)}px monospace`;
   for(let deg=-30;deg<=30;deg+=5){
     if(deg===0) continue;
@@ -296,47 +301,115 @@ function drawAI(){
   ctx.textBaseline='alphabetic'; ctx.restore();
 }
 
-// ── Roll arc ───────────────────────────────────────────────────────────────
-function drawRollIndicator(){
-  const{cx,rollR,rollCY}=L;
-  ctx.save(); ctx.translate(cx,rollCY);
-  ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.arc(0,0,rollR,-150*DEG,-30*DEG); ctx.stroke();
-  [0,10,20,30,45,60].forEach(deg=>{
-    [-deg,deg].forEach(a=>{
-      const angle=(-90+a)*DEG, len=deg===0?18:deg%30===0?14:10;
-      ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=deg===0?2:1.2;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(angle)*(rollR-len),Math.sin(angle)*(rollR-len));
-      ctx.lineTo(Math.cos(angle)*rollR,      Math.sin(angle)*rollR);
-      ctx.stroke();
-    });
-  });
-  const ra=(-90-D.roll)*DEG;
-  ctx.save();
-  ctx.translate(Math.cos(ra)*(rollR-2),Math.sin(ra)*(rollR-2));
-  ctx.rotate(ra+Math.PI/2);
-  ctx.fillStyle='#fff'; ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=.6;
-  ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(-6,0); ctx.lineTo(6,0);
+// ── Roll arc — sky-pointer convention (pi4 style) ──────────────────────────
+// The ARC + tick marks rotate with the sky/horizon.  At the top sits a
+// FIXED inward-pointing doghouse marking the aircraft's "up".  An OUTER
+// MOVING doghouse rotates with the sky — when the aircraft banks right
+// by +30°, the moving doghouse appears 30° to the LEFT of the fixed
+// one (because the sky has tilted CCW relative to the cabin).  Read
+// bank by the angular gap between the two doghouses.
+function _doghousePts(cx, cy, ang, r, size, inward){
+  const ox = Math.cos(ang), oy = Math.sin(ang);
+  const px = -oy, py = ox;
+  let tipR, baseR, roofR;
+  if (inward) {
+    tipR  = r;
+    baseR = r + size * 1.3;
+    roofR = r + size * 0.6;
+  } else {
+    tipR  = r;
+    baseR = r - size * 1.3;
+    roofR = r - size * 0.6;
+  }
+  const halfW = size * 0.7, roofHw = size * 0.35;
+  return [
+    [cx + baseR * ox - halfW * px,  cy + baseR * oy - halfW * py],
+    [cx + roofR * ox - roofHw * px, cy + roofR * oy - roofHw * py],
+    [cx + tipR  * ox,                cy + tipR  * oy],
+    [cx + roofR * ox + roofHw * px, cy + roofR * oy + roofHw * py],
+    [cx + baseR * ox + halfW * px,  cy + baseR * oy + halfW * py],
+  ];
+}
+function _fillDoghouse(pts){
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0], pts[i][1]);
   ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.restore(); ctx.restore();
+}
+function drawRollIndicator(){
+  const{cx, rollR, rollCY} = L;
+  const r = rollR;
+  // Arc sweeps 120° centred at top (12 o'clock).  In Canvas Y-down,
+  // 12 o'clock is angle = -π/2.  Rotate the arc (and ticks) by the
+  // current bank: a right bank (+roll) tilts the sky CCW visually,
+  // which in Canvas screen-space is a NEGATIVE angle delta.
+  const rollRad = -D.roll * DEG;
+  // Filled band (2 px thick) — drawn as a wedge between two arcs.
+  ctx.beginPath();
+  ctx.arc(cx, rollCY, r + 2, -Math.PI/2 + rollRad - 60*DEG,
+                              -Math.PI/2 + rollRad + 60*DEG);
+  ctx.arc(cx, rollCY, r,      -Math.PI/2 + rollRad + 60*DEG,
+                              -Math.PI/2 + rollRad - 60*DEG, true);
+  ctx.closePath();
+  ctx.fillStyle = '#fff'; ctx.fill();
+
+  // Tick marks rotate with the sky.
+  const TICKS = [
+    [10, 9], [20, 9], [30, 13],
+    [-10, 9], [-20, 9], [-30, 13],
+    [45, 9], [-45, 9], [60, 11], [-60, 11],
+  ];
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  for (const [deg, len] of TICKS) {
+    const ang = -Math.PI/2 + rollRad + deg * DEG;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    const x1 = cx + (r - len) * ca, y1 = rollCY + (r - len) * sa;
+    const x2 = cx + (r + 2)   * ca, y2 = rollCY + (r + 2)   * sa;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    // Hollow grey 45-degree triangle pointers.
+    if (Math.abs(deg) === 45) {
+      const perp = ang + Math.PI/2;
+      const mx = (x1 + x2)/2, my = (y1 + y2)/2;
+      const t = 5;
+      const ix = cx + (r - 16) * ca, iy = rollCY + (r - 16) * sa;
+      ctx.beginPath();
+      ctx.moveTo(mx - t*Math.cos(perp), my - t*Math.sin(perp));
+      ctx.lineTo(mx + t*Math.cos(perp), my + t*Math.sin(perp));
+      ctx.lineTo(ix, iy);
+      ctx.closePath();
+      ctx.strokeStyle = 'rgba(220,220,230,.85)'; ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    }
+  }
+
+  // Moving "sky" doghouse — outside the arc, tip touching it, rotates
+  // with the sky.  For a right bank the moving doghouse drifts LEFT
+  // (the sky's "up" relative to the cabin).
+  const upperAng = -Math.PI/2 + rollRad;
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 1;
+  _fillDoghouse(_doghousePts(cx, rollCY, upperAng, r + 2, 10, true));
+
+  // Fixed aircraft doghouse — inside the arc, fixed at 12 o'clock.
+  // The angular offset between the two doghouses IS the bank angle.
+  ctx.fillStyle = '#fff';
+  _fillDoghouse(_doghousePts(cx, rollCY, -Math.PI/2, r - 8, 10, false));
 }
 
-// ── Slip ball ──────────────────────────────────────────────────────────────
+// ── Slip indicator (pi4 style) ─────────────────────────────────────────────
+// Thin sliding white bar that lives directly under the fixed-aircraft
+// doghouse.  Step on the rudder TOWARD the bar to re-centre it.
+// Matches pi4/pfd.py draw_slip_ball geometry exactly: bar is 16 px wide
+// × 4 px tall on a 600 px display, deflects ±12 px max.
 function drawSlipBall(){
-  const{cx,ballY}=L; const bw=54,bh=16,r=6;
-  pillRect(cx-bw/2,ballY-bh/2,bw,bh);
-  ctx.fillStyle='rgba(0,0,0,.60)'; ctx.fill();
-  ctx.strokeStyle='rgba(255,255,255,.65)'; ctx.lineWidth=1.2; ctx.stroke();
-  // Fixed reference lines (gap slightly wider than ball diameter)
-  const mark=r+4;
-  ctx.strokeStyle='rgba(255,255,255,.95)'; ctx.lineWidth=1.8;
-  ctx.beginPath();
-  ctx.moveTo(cx-mark,ballY-bh/2+2); ctx.lineTo(cx-mark,ballY+bh/2-2);
-  ctx.moveTo(cx+mark,ballY-bh/2+2); ctx.lineTo(cx+mark,ballY+bh/2-2);
-  ctx.stroke();
-  const defl=Math.max(-1,Math.min(1,D.ay/0.2))*(bw/2-r-2);
-  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(cx+defl,ballY,r,0,Math.PI*2); ctx.fill();
+  const{cx, rollR, rollCY} = L;
+  // 24 px below the lower fixed doghouse base, scale with rollR/148 so
+  // it tracks the indicator size on smaller viewports.
+  const slipY = rollCY - rollR + 24;
+  const maxD  = 12;
+  const defl  = Math.max(-maxD, Math.min(maxD, (D.ay / 0.2) * maxD));
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(cx + defl - 8, slipY, 16, 4);
 }
 
 // ── TAWS proximity alert ──────────────────────────────────────────────────
@@ -449,6 +522,42 @@ function drawDrum(x, y, w, h, value, nDigits, color, fontSz, opts){
       ctx.fillText(String(dPrev), cxCol, tyLo + slotH);
       ctx.fillText(String(dHi2),  cxCol, tyLo - 2 * slotH);
     }
+  }
+  ctx.restore();
+}
+
+
+// ── Altimeter ones-cell drum (20-ft steps) ───────────────────────────────
+// Real altimeter drums advance in 20 ft steps showing the labels
+// '00','20','40','60','80' as a unit, not as independent digit cascades.
+// Ported from pi4/pfd.py _rolling_drum_alt20.  show_adjacent=true also
+// renders the next-up + previous labels above/below for the d_hi2 preview.
+function drawAlt20Drum(x, y, w, h, alt, color, fontSz, opts){
+  opts = opts || {};
+  const showAdjacent = !!opts.showAdjacent;
+  const slotH = showAdjacent ? (opts.adjSlotH || h * 0.45) : h;
+  const LABELS = ['00','20','40','60','80'];
+
+  const drumPos = ((alt % 100) + 100) % 100 / 20;   // 0..5 continuous
+  const dLoIdx  = Math.floor(drumPos) % 5;
+  const frac    = drumPos - Math.floor(drumPos);
+  const scroll  = frac * slotH;
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.font = `bold ${fontSz}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+
+  const cx   = x + w / 2;
+  const tyLo = y + h / 2 + scroll;
+
+  ctx.fillText(LABELS[dLoIdx],            cx, tyLo);
+  ctx.fillText(LABELS[(dLoIdx + 1) % 5],  cx, tyLo - slotH);
+  if (showAdjacent) {
+    ctx.fillText(LABELS[(dLoIdx + 4) % 5], cx, tyLo + slotH);   // prev (lower)
+    ctx.fillText(LABELS[(dLoIdx + 2) % 5], cx, tyLo - 2 * slotH);
   }
   ctx.restore();
 }
@@ -751,9 +860,13 @@ function drawAltTape(){
   drawDrum(R - aBoxW + 1, midA - aHalfIn + 1, aInnW - 2, aHalfIn * 2 - 2,
            alt, 3, '#fff', altDrumFs,
            {suppressLeading: true, powerOffset: 2});
-  drawDrum(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2,
-           alt, 2, '#fff', altDrumFs,
-           {showAdjacent: true, adjSlotH: Math.round(altDrumFs * 1.20)});
+  // Outer cell — altimeter convention: the ones+tens labels advance in
+  // 20-ft steps as a unit (00, 20, 40, 60, 80) rather than as two
+  // independent digit drums.  Real altimeter drums work this way and
+  // the label cycling is much easier to read in turbulence.
+  drawAlt20Drum(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2,
+                alt, '#fff', altDrumFs,
+                {showAdjacent: true, adjSlotH: Math.round(altDrumFs * 1.20)});
   _drumShade(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2);
   const vsiY=midA+aHalfOut+5,arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
   const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
