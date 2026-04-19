@@ -319,14 +319,61 @@ function drawSlipBall(){
 
 // ── Aircraft symbol ────────────────────────────────────────────────────────
 function drawAircraftSymbol(){
-  const{cx,tapeMidY}=L; const ws=Math.min(W*.12,88);
-  ctx.save(); ctx.translate(cx,tapeMidY);
-  ctx.strokeStyle='#ffd700'; ctx.lineWidth=3; ctx.lineCap='round';
-  ctx.shadowColor='rgba(0,0,0,.9)'; ctx.shadowBlur=5;
-  ctx.beginPath(); ctx.moveTo(-ws,0); ctx.lineTo(-ws*.22,0); ctx.lineTo(-ws*.22,9); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo( ws,0); ctx.lineTo( ws*.22,0); ctx.lineTo( ws*.22,9); ctx.stroke();
-  ctx.fillStyle='#ffd700'; ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2); ctx.fill();
-  ctx.shadowBlur=0; ctx.restore();
+  // Amber swept-delta reference airplane ported from pi4/pfd.py.
+  // Apex at AI centre; trailing edges slope back and down to wingtips.
+  // Each wing has two triangular strips (lighter outer / darker inner) so the
+  // shape reads at a glance against any terrain background, and a pair of
+  // engine nacelles outboard of the wingtips reinforce the silhouette.
+  const {cx, tapeMidY} = L;
+  const ws = Math.min(W * 0.10, 88);   // wingtip half-span
+  const wi = ws * 0.613;                // inner trailing-edge x
+  const wm = ws * 0.806;                // colour-split x along trailing edge
+  const wh = ws * 0.473;                // wing vertical drop to trailing edge
+  const nac = ws * 1.484;               // nacelle outer x
+  const nin = ws * 1.065;               // nacelle inboard x (angled tip)
+  const nh  = Math.max(3, ws * 0.065);  // nacelle half-height
+  const AMBER      = '#ffbe1e';
+  const AMBER_DARK = '#b47800';
+
+  ctx.save();
+  ctx.translate(cx, tapeMidY);
+  ctx.lineJoin = 'miter';
+
+  // Wing trailing-edge strips — inner (darker) + outer (lighter) per side
+  function fillTri(pts, col){
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath(); ctx.fill();
+  }
+  fillTri([[0,0], [-wm, wh], [-wi, wh]], AMBER_DARK);
+  fillTri([[0,0], [-ws, wh], [-wm, wh]], AMBER);
+  fillTri([[0,0], [ wi, wh], [ wm, wh]], AMBER_DARK);
+  fillTri([[0,0], [ wm, wh], [ ws, wh]], AMBER);
+
+  // Engine nacelles — upper half lighter amber, lower half darker
+  fillTri([[-ws, 0], [-nin, -nh], [-nac, -nh], [-nac, 0]], AMBER);
+  fillTri([[-ws, 0], [-nac, 0], [-nac,  nh], [-nin,  nh]], AMBER_DARK);
+  fillTri([[ ws, 0], [ nin, -nh], [ nac, -nh], [ nac, 0]], AMBER);
+  fillTri([[ ws, 0], [ nac, 0], [ nac,  nh], [ nin,  nh]], AMBER_DARK);
+
+  // Perimeter outlines — skip the inner colour-split edge so the amber
+  // stays crisp across the fill boundary.
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth   = 1;
+  function strokePath(pts){
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath(); ctx.stroke();
+  }
+  strokePath([[0,0], [-ws, wh], [-wi, wh]]);
+  strokePath([[0,0], [ wi, wh], [ ws, wh]]);
+  strokePath([[-ws, 0], [-nin, -nh], [-nac, -nh], [-nac, nh], [-nin, nh]]);
+  strokePath([[ ws, 0], [ nin, -nh], [ nac, -nh], [ nac, nh], [ nin, nh]]);
+
+  ctx.restore();
 }
 
 // ── Speed tape ─────────────────────────────────────────────────────────────
