@@ -39,12 +39,59 @@ Everything you see is rendered by the phone's browser from a single HTML file (`
 
 ## 2. Connecting
 
+There are three ways to launch the iPhone PFD:
+
+### 2.1  With the Pico W AHRS (primary — full-fidelity live data)
+
 1. Power the Pico W AHRS unit.
 2. After ~5 s, a Wi-Fi AP named **`AHRS-Link`** appears. Join it with your phone. DHCP assigns you an address on `192.168.4.x`.
-3. Open `http://192.168.4.1` in Safari / Chrome / Firefox. The PFD fills the screen.
-4. **Add to Home Screen** (Safari → Share → Add to Home Screen) so it launches fullscreen without the address bar. The `apple-mobile-web-app-capable` and safe-area-inset metadata are already in place — the PFD runs edge-to-edge on iPhones with a notch or Dynamic Island.
+3. Open `http://192.168.4.1` in Safari / Chrome / Firefox. The PFD fills the screen and starts drawing the moment the first SSE frame arrives.
+4. **Add to Home Screen** (Safari → Share → Add to Home Screen) so it launches fullscreen without the address bar. The `apple-mobile-web-app-capable` metadata and safe-area-insets are in place — the PFD runs edge-to-edge on iPhones with a notch or Dynamic Island.
 
-Lock your phone into portrait orientation, dim the screen for night flying, and you have a three-axis PFD with no extra hardware.
+Rotate the phone to **landscape**, dim the screen for night flying, and you have a three-axis PFD with no extra hardware.
+
+### 2.2  Standalone — without the Pico W
+
+![Standalone mode on first launch — LINK reads STANDALONE, PHONE reads TAP TO START](../iphone_display/previews/preview_standalone.png)
+
+When the AHRS isn't attached (pre-flight bench, demo on the ground, or unit being reprogrammed), the iPhone can run the PFD on its own internal IMU + GPS.
+
+**Option A — GitHub Pages (recommended):**
+The repo ships a `.github/workflows/pages.yml` workflow that deploys `iphone_display/` to GitHub Pages on every push to `main`. Once enabled in the repo settings (Settings → Pages → Source: GitHub Actions) the PFD is available at:
+
+```
+https://<your-github-user>.github.io/PFD-and-AHRS/
+```
+
+Open the URL in Safari, tap **TAP TO START** (the sensor badge starts in that state because `*.github.io` auto-triggers standalone mode), grant the iOS Motion & Orientation permission, and the phone's IMU + GPS drive the PFD.
+
+**Option B — Local dev server on your laptop:**
+For quick iteration without pushing to GitHub, serve the `iphone_display/` directory from a laptop on the same Wi-Fi as the phone:
+
+```bash
+cd iphone_display
+python3 -m http.server 8080
+```
+
+Then open `http://<laptop-ip>:8080/?standalone=1` on the phone. The `?standalone=1` flag skips the SSE probe so the PFD is ready the instant the page loads.
+
+**Option C — Standalone flag on a Pico-served page:**
+If you're already connected to the Pico W but want to bypass its SSE stream (e.g. testing the phone-sensor fallback without shutting the Pico down), append `#standalone` or `?standalone=1` to the URL: `http://192.168.4.1/?standalone=1`.
+
+### 2.3  Installing as a Progressive Web App (offline use)
+
+The iPhone PFD registers a service worker (`sw.js`) that caches the app shell (`index.html`, `preview.html`, `terrain.js`, the manifest, both icons) plus any terrain tiles you've downloaded. Once cached, the PFD launches **in airplane mode** — no cellular, no Wi-Fi, nothing. The terrain-aware ground-shading keeps working in any area you've overflown before because those SRTM tiles sit in the tile cache (capped at 200 entries LRU).
+
+Install steps:
+
+1. Open the PFD URL in Safari (Pi or GitHub Pages — doesn't matter which).
+2. Tap the Share icon → **Add to Home Screen** → Add.
+3. The PWA icon (amber swept-delta on navy) appears on the home screen.
+4. Tap to launch — fullscreen, no browser chrome, landscape orientation forced by the manifest.
+
+On next launch, even without a network, the cached shell is served and the phone sensors take over automatically.
+
+**Updating the cached copy:** bump `CACHE_VERSION` in `sw.js` and redeploy. The next time the phone is online the old cache is evicted and the new shell replaces it.
 
 ## 3. Screen Overview
 
