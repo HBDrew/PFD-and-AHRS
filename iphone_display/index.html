@@ -651,15 +651,42 @@ function drawSlipBall() {
 
 // ── Aircraft symbol ────────────────────────────────────────────────────────
 function drawAircraftSymbol() {
+  // Amber swept-delta reference airplane ported from pi4/pfd.py.  See
+  // preview.html drawAircraftSymbol() for the geometry derivation.
   const { cx, tapeMidY } = L;
-  const ws=Math.min(W*.12,88);
-  ctx.save(); ctx.translate(cx,tapeMidY);
-  ctx.strokeStyle='#ffd700'; ctx.lineWidth=3; ctx.lineCap='round';
-  ctx.shadowColor='rgba(0,0,0,.9)'; ctx.shadowBlur=5;
-  ctx.beginPath(); ctx.moveTo(-ws,0); ctx.lineTo(-ws*.22,0); ctx.lineTo(-ws*.22,9); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo( ws,0); ctx.lineTo( ws*.22,0); ctx.lineTo( ws*.22,9); ctx.stroke();
-  ctx.fillStyle='#ffd700'; ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2); ctx.fill();
-  ctx.shadowBlur=0; ctx.restore();
+  const ws = Math.min(W * 0.10, 88);
+  const wi = ws * 0.613, wm = ws * 0.806, wh = ws * 0.473;
+  const nac = ws * 1.484, nin = ws * 1.065, nh = Math.max(3, ws * 0.065);
+  const AMBER = '#ffbe1e', AMBER_DARK = '#b47800';
+
+  ctx.save(); ctx.translate(cx, tapeMidY); ctx.lineJoin = 'miter';
+  const fillTri = (pts, col) => {
+    ctx.fillStyle = col; ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath(); ctx.fill();
+  };
+  fillTri([[0,0], [-wm, wh], [-wi, wh]], AMBER_DARK);
+  fillTri([[0,0], [-ws, wh], [-wm, wh]], AMBER);
+  fillTri([[0,0], [ wi, wh], [ wm, wh]], AMBER_DARK);
+  fillTri([[0,0], [ wm, wh], [ ws, wh]], AMBER);
+  fillTri([[-ws, 0], [-nin, -nh], [-nac, -nh], [-nac, 0]], AMBER);
+  fillTri([[-ws, 0], [-nac, 0], [-nac,  nh], [-nin,  nh]], AMBER_DARK);
+  fillTri([[ ws, 0], [ nin, -nh], [ nac, -nh], [ nac, 0]], AMBER);
+  fillTri([[ ws, 0], [ nac, 0], [ nac,  nh], [ nin,  nh]], AMBER_DARK);
+
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+  const strokePath = (pts) => {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath(); ctx.stroke();
+  };
+  strokePath([[0,0], [-ws, wh], [-wi, wh]]);
+  strokePath([[0,0], [ wi, wh], [ ws, wh]]);
+  strokePath([[-ws, 0], [-nin, -nh], [-nac, -nh], [-nac, nh], [-nin, nh]]);
+  strokePath([[ ws, 0], [ nin, -nh], [ nac, -nh], [ nac, nh], [ nin, nh]]);
+  ctx.restore();
 }
 
 // ── Speed tape ─────────────────────────────────────────────────────────────

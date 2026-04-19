@@ -31,10 +31,11 @@ _ROOT = os.path.dirname(_HERE)
 _DISPLAY_DIR = os.path.join(_ROOT, "iphone_display")
 _OUT_DIR = os.path.join(_DISPLAY_DIR, "previews")
 
-# iPhone 14 logical viewport (390×844 CSS px, 3× DPR) — the canvas renders at
-# physical pixels so 1170×2532 is what the user actually sees in portrait.
-VIEWPORT_W = 390
-VIEWPORT_H = 844
+# iPhone 14 physical pixels in LANDSCAPE orientation (the natural attitude for
+# a cockpit-mounted phone PFD).  The render code reads canvas dims dynamically
+# so all instruments scale correctly to this viewport.
+VIEWPORT_W = 844
+VIEWPORT_H = 390
 DEVICE_SCALE = 3
 
 # Playwright browser path (fallback for environments where chromium is
