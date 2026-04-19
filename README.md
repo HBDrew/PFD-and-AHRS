@@ -40,7 +40,7 @@ PFD-and-AHRS/
 │   ├── setup.sh       # One-shot install for Pi 4
 │   ├── data/          # SRTM tiles + obstacles + airports + settings.json
 │   └── previews/      # Screenshots (setup screens + pfd_gl/ OpenGL flight scenes)
-├── display/           # Pico W browser-based iPhone PFD (served from AHRS AP)
+├── iphone_display/    # iPhone / browser PFD (served over AHRS-Link AP by the Pico W)
 ├── tools/             # Preview image generator
 ├── fetch_sedona_tiles.sh   # Quick-start: download KSEZ area SRTM tiles
 ├── fetch_airports.sh       # Download OurAirports CSV + runways CSV
@@ -287,6 +287,7 @@ See `Docs/USER_MANUAL_ZERO.md` or `Docs/USER_MANUAL_PI4.md` for full operational
 | `Docs/REQUIREMENTS_AHRS.md` | AHRS unit high-level requirements (shared) |
 | `Docs/REQUIREMENTS_DISPLAY_ZERO.md` | Pi Zero 2W display HLRs (no SVT) |
 | `Docs/REQUIREMENTS_DISPLAY_PI4.md` | Pi 4 display HLRs (full SVT + OpenGL) |
+| `Docs/USER_MANUAL_IPHONE.md` | iPhone / browser PFD pilot's user manual |
 | `Docs/USER_MANUAL_ZERO.md` | Pi Zero 2W pilot's user manual |
 | `Docs/USER_MANUAL_PI4.md` | Pi 4 pilot's user manual |
 | `Docs/TEST_PROCEDURE_ZERO.md` | Pi Zero 2W bench test procedure (TP-ZERO-001) |
