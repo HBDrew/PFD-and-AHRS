@@ -43,17 +43,21 @@
   #trn-progress-txt  { color:rgba(180,210,255,.85); font-size:11px; margin-top:4px; }
 
   /* ── Status badges ── */
-  #link-status, #terrain-status {
+  #link-status, #terrain-status, #sensor-status {
     position:absolute; font:bold 11px/1 monospace;
     padding:3px 7px; border-radius:3px;
     pointer-events:none; z-index:10; letter-spacing:.04em;
   }
   #link-status    { top:6px; right:8px; }
   #terrain-status { top:6px; right:78px; cursor:pointer; pointer-events:auto; }
+  #sensor-status  { top:6px; right:310px; cursor:pointer; pointer-events:auto; }
 
   .link-ok     { background:rgba(0,170,0,.75);    color:#fff; }
   .link-warn   { background:rgba(210,130,0,.75);  color:#fff; }
   .link-dead   { background:rgba(190,0,0,.75);    color:#fff; }
+  .sensor-off  { background:rgba(60,60,80,.80);   color:#aac; }
+  .sensor-on   { background:rgba(0,120,180,.80);  color:#fff; }
+  .sensor-act  { background:rgba(0,150,120,.85);  color:#fff; }
   .trn-ready   { background:rgba(0,130,60,.75);   color:#fff; }
   .trn-partial { background:rgba(160,100,0,.75);  color:#fff; }
   .trn-idle    { background:rgba(60,60,80,.80);   color:#aac; }
@@ -117,6 +121,7 @@
 <div id="baro-status"    title="Tap to set QNH / calibrate barometer">QNH ···</div>
 <div id="trim-status"    title="Tap to adjust AHRS trim">TRIM</div>
 <div id="terrain-status" class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
+<div id="sensor-status"  class="sensor-off" title="Use phone IMU + GPS as AHRS fallback">PHONE</div>
 <div id="link-status"    class="link-dead">NO LINK</div>
 
 <div id="terrain-panel">
@@ -227,6 +232,145 @@ function updateLinkStatus() {
   else if (age < 8000) { linkEl.textContent='LINK WARN';  linkEl.className='link-warn'; }
   else                 { linkEl.textContent='NO LINK';    linkEl.className='link-dead'; }
 }
+
+// ── iPhone internal-sensor fallback ────────────────────────────────────────
+// When the SSE link is down, the pilot can tap the PHONE badge to enable
+// the phone's own DeviceOrientation + Geolocation APIs as a degraded AHRS.
+// Key limitations (document in USER_MANUAL_IPHONE.md):
+//   1. iOS 13+ requires a user gesture to call requestPermission() — hence
+//      the badge-tap design rather than auto-enable.
+//   2. Mobile Safari has no API for the internal barometer — baro stays
+//      unavailable; altitude falls back to GPS.
+//   3. DeviceOrientation alpha (yaw) is true-north only when the device
+//      supports 'deviceorientationabsolute'; otherwise it's arbitrary.
+//      The badge flashes a warning if absolute yaw isn't available.
+//   4. Expects phone held in LANDSCAPE with top-of-phone pointing toward
+//      the right wing.  Other orientations would need a selector.
+const PS = {
+  enabled: false, granted: false, absolute: false,
+  lastOrient: 0, lastGps: 0,
+  // Sensor offsets so user can zero the horizon when phone is in a
+  // cradle that isn't exactly level.
+  roll0: 0, pitch0: 0,
+};
+const sensorEl = document.getElementById('sensor-status');
+
+async function togglePhoneSensors() {
+  if (PS.enabled) {
+    _disablePhoneSensors();
+    return;
+  }
+  // iOS 13+ gate
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const resp = await DeviceOrientationEvent.requestPermission();
+      if (resp !== 'granted') {
+        _sensorFlash('DENIED', 1500);
+        return;
+      }
+    } catch (e) {
+      _sensorFlash('FAIL', 1500);
+      return;
+    }
+  }
+  PS.granted = true;
+  // Prefer absolute yaw when available (true-north referenced on iOS).
+  if ('ondeviceorientationabsolute' in window) {
+    window.addEventListener('deviceorientationabsolute', _onOrient, true);
+    PS.absolute = true;
+  } else {
+    window.addEventListener('deviceorientation', _onOrient, true);
+    PS.absolute = false;
+  }
+  // Geolocation — streaming updates, request best accuracy.
+  if (navigator.geolocation) {
+    PS.gpsWatchId = navigator.geolocation.watchPosition(
+      _onGeolocation, e => _sensorFlash('GPS', 1500),
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
+    );
+  }
+  PS.enabled = true;
+  sensorEl.className   = 'sensor-on';
+  sensorEl.textContent = PS.absolute ? 'PHONE' : 'PHONE*';
+}
+
+function _disablePhoneSensors() {
+  window.removeEventListener('deviceorientationabsolute', _onOrient, true);
+  window.removeEventListener('deviceorientation',         _onOrient, true);
+  if (PS.gpsWatchId != null) navigator.geolocation.clearWatch(PS.gpsWatchId);
+  PS.enabled = false;
+  sensorEl.className   = 'sensor-off';
+  sensorEl.textContent = 'PHONE';
+}
+
+function _sensorFlash(msg, ms) {
+  sensorEl.textContent = msg;
+  setTimeout(() => {
+    sensorEl.textContent = PS.enabled ? (PS.absolute ? 'PHONE' : 'PHONE*') : 'PHONE';
+  }, ms);
+}
+
+// Phone held LANDSCAPE, top pointing RIGHT:
+//   gamma  = roll   (left-right tilt of the long edge)  — already -90..+90 CW
+//   beta   = pitch  (tilt of the long edge forward/back)
+//   alpha  = yaw    (compass, 0 = north, absolute only)
+// Sign conventions match the pi4 AHRS stream so the same rendering code
+// works without any additional sign flips.
+function _onOrient(e) {
+  if (e.alpha == null) return;
+  PS.lastOrient = performance.now();
+  // For a phone held in landscape with top-of-phone to the right:
+  //   aircraft roll  =  gamma  (right wing down → gamma positive)
+  //   aircraft pitch =  -beta  (nose up → beta negative when top is right)
+  //   aircraft yaw   =  alpha
+  PS.roll  =  (e.gamma || 0) - PS.roll0;
+  PS.pitch = -(e.beta  || 0) - PS.pitch0;
+  PS.yaw   =  (e.alpha || 0);
+}
+
+function _onGeolocation(pos) {
+  PS.lastGps = performance.now();
+  PS.lat   = pos.coords.latitude;
+  PS.lon   = pos.coords.longitude;
+  PS.alt   = pos.coords.altitude != null ? pos.coords.altitude * 3.28084 : 0;
+  PS.speed = pos.coords.speed    != null ? pos.coords.speed * 1.94384    : 0;
+  PS.track = pos.coords.heading  != null ? pos.coords.heading            : 0;
+  PS.fix   = 3; PS.sats = 9;  // navigator API doesn't expose sat count
+}
+
+// Poll-style integration: when the SSE link has been dead for >5 s and the
+// pilot has enabled phone sensors, feed the sensor values into TARGET so
+// the rest of the render pipeline keeps working unchanged.  When SSE comes
+// back the phone values are simply overwritten by the stream.
+function applyPhoneSensors() {
+  if (!PS.enabled) return;
+  const linkDead = (performance.now() - lastMsgMs) > 5000;
+  if (!linkDead) {
+    if (sensorEl.className === 'sensor-act') {
+      sensorEl.className   = 'sensor-on';
+      sensorEl.textContent = PS.absolute ? 'PHONE' : 'PHONE*';
+    }
+    return;
+  }
+  // Live link is gone — take over.
+  sensorEl.className   = 'sensor-act';
+  sensorEl.textContent = PS.absolute ? 'PHONE' : 'PHONE*';
+  if (PS.lastOrient) {
+    TARGET.roll = PS.roll; TARGET.pitch = PS.pitch; TARGET.yaw = PS.yaw;
+    TARGET.ahrs_ok = true;
+  }
+  if (PS.lastGps) {
+    TARGET.lat = PS.lat; TARGET.lon = PS.lon;
+    TARGET.alt = PS.alt; TARGET.gps_alt = PS.alt;
+    TARGET.speed = PS.speed; TARGET.track = PS.track;
+    TARGET.fix = PS.fix; TARGET.sats = PS.sats;
+    TARGET.gps_ok = true;
+  }
+  TARGET.baro_ok = false;  // no phone baro API on iOS
+}
+
+sensorEl.addEventListener('click', togglePhoneSensors);
 
 // ── Terrain UI ─────────────────────────────────────────────────────────────
 const panel    = document.getElementById('terrain-panel');
@@ -1043,6 +1187,10 @@ function drawRedX(x, y, w, h, label) {
 let lastTs = null, lastBaroRefresh = 0;
 function render(ts) {
   if (lastTs===null) lastTs=ts;
+  // Phone-sensor fallback runs before smoothing so its values flow into
+  // TARGET (and then D via smooth()).  When the SSE link is alive this is
+  // a near-no-op.
+  applyPhoneSensors();
   smooth(Math.min(1,(ts-lastTs)/60));
   lastTs=ts;
 
