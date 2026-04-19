@@ -159,8 +159,11 @@ function computeLayout() {
   L.hdgH=Math.max(38,H*0.10); L.hdgY=H-L.hdgH-L.safeB;
   L.tapeTopY=L.safeT+26; L.tapeBotY=L.hdgY;
   L.tapeH=L.tapeBotY-L.tapeTopY; L.tapeMidY=(L.tapeTopY+L.tapeBotY)/2;
-  L.spdW=68; L.spdX=L.safeL;
-  L.altW=78; L.altX=W-L.safeR-L.altW;
+  // Tape widths match pi4 ratios (SPD_W=89 / ALT_W=97 on 1024 wide ≈
+  // 8.7% / 9.5% of display width).  Clamped so portrait viewports
+  // don't collapse below the original iPhone dimensions.
+  L.spdW=Math.max(72, Math.round(W*0.087)); L.spdX=L.safeL;
+  L.altW=Math.max(82, Math.round(W*0.095)); L.altX=W-L.safeR-L.altW;
   L.rollR=Math.min(H*0.36,155);
   L.rollCY=L.rollR+Math.max(12,L.safeT+6);
   L.ballY=L.hdgY-36;
@@ -451,6 +454,31 @@ function drawDrum(x, y, w, h, value, nDigits, color, fontSz, opts){
 }
 
 
+// ── Rounded polygon path ─────────────────────────────────────────────────
+// Build a Canvas path from a list of [x, y] vertices, rounding the corners
+// at the indices in roundSet with radius r (sharp elsewhere).  Matches the
+// pi4 _chamfer helper used on the stepped Veeder-Root boxes.  The path is
+// closed after the last vertex; caller calls ctx.fill() / ctx.stroke().
+function roundedPolyPath(verts, roundSet, r){
+  const n = verts.length;
+  // Start at a non-rounded vertex so the initial moveTo isn't inside a
+  // fillet — arcTo(x1,y1,x2,y2,r) needs a known current-point tangent.
+  let start = 0;
+  for (let i = 0; i < n; i++) if (!roundSet.has(i)) { start = i; break; }
+  ctx.beginPath();
+  ctx.moveTo(verts[start][0], verts[start][1]);
+  for (let k = 1; k <= n; k++) {
+    const i = (start + k) % n;
+    if (roundSet.has(i)) {
+      const nx = verts[(i + 1) % n];
+      ctx.arcTo(verts[i][0], verts[i][1], nx[0], nx[1], r);
+    } else {
+      ctx.lineTo(verts[i][0], verts[i][1]);
+    }
+  }
+  ctx.closePath();
+}
+
 // ── Drum shading ──────────────────────────────────────────────────────────
 // Overlay a top-and-bottom fade to dark on a drum cell so the rolling
 // digits fade out at the clip edges — matches the pi4 _drum_shade pygame
@@ -529,8 +557,10 @@ function drawAircraftSymbol(){
 function drawSpeedTape(){
   const{spdX,spdW,tapeTopY,tapeH,tapeMidY}=L;
   const spd=toDisplaySpd(D.speed);
-  const spdRange=speedUnit==='mph'?175:150, pxPerSpd=tapeH/spdRange;
-  const boxH=Math.max(28,H*.065),boxHalf=boxH/2,fs=Math.max(10,H*.021);
+  // Visible tape range matches pi4 (PX_PER_KT = TAPE_H / 120).  MPH mode
+  // widens to 140 so the same physical speed range stays on screen.
+  const spdRange=speedUnit==='mph'?140:120, pxPerSpd=tapeH/spdRange;
+  const fs=Math.max(10,H*.021);
   ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(spdX,tapeTopY,spdW,tapeH);
   ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(spdX+spdW,tapeTopY); ctx.lineTo(spdX+spdW,tapeTopY+tapeH); ctx.stroke();
@@ -562,7 +592,10 @@ function drawSpeedTape(){
   for(let v=spdBase-120;v<=spdBase+120;v+=20){
     if(v<0) continue;
     const y=tapeMidY-(v-spd)*pxPerSpd;
-    if(Math.abs(y-tapeMidY)<boxHalf+4) continue;
+    // Skip the central strip occluded by the stepped readout box (halfOut
+    // is the outer-cell half-height declared just below — we pre-compute
+    // it here so the tick skip region matches exactly).
+    if(Math.abs(y-tapeMidY)<Math.max(18,H*0.057)+4) continue;
     ctx.strokeStyle='rgba(255,255,255,.80)'; ctx.lineWidth=1.5;
     ctx.beginPath(); ctx.moveTo(spdX+spdW,y); ctx.lineTo(spdX+spdW-14,y); ctx.stroke();
     ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
@@ -571,65 +604,13 @@ function drawSpeedTape(){
   }
   ctx.restore();
 
-  // ── Veeder-Root stepped readout box (pi4 style) ────────────────────────
-  // Speed tape layout (left→right across the tape):
-  //   • pointer apex on LEFT  (at spdX)
-  //   • inner cell — shorter — holds the tens+hundreds drum
-  //   • outer cell — taller  — holds the ones drum with show_adjacent
-  // Digit-size driven dimensions so everything scales with viewport.
-  const drumFs    = Math.max(16, H * 0.042);
-  const halfIn    = Math.round(drumFs * 0.72);     // inner cell half-height
-  const halfOut   = Math.round(drumFs * 1.20);     // outer cell half-height
-  const ptrR      = Math.round(drumFs * 0.78);     // pointer reach
-  const innW      = Math.round(drumFs * 1.55);     // tens/hundreds cell width
-  const drmSw     = Math.round(drumFs * 0.95);     // ones cell width
-  const innR      = ptrR + innW;
-  const boxR      = innR + drmSw;
-  const sp        = spdX;
-  const mid       = tapeMidY;
-  // Stepped polygon — sharp corners everywhere; the pi4 _chamfer is cosmetic
-  // and the 2 px white stroke with lineJoin='miter' already reads cleanly.
-  ctx.beginPath();
-  ctx.moveTo(sp,         mid);
-  ctx.lineTo(sp + ptrR,  mid - halfIn);
-  ctx.lineTo(sp + innR,  mid - halfIn);
-  ctx.lineTo(sp + innR,  mid - halfOut);
-  ctx.lineTo(sp + boxR,  mid - halfOut);
-  ctx.lineTo(sp + boxR,  mid + halfOut);
-  ctx.lineTo(sp + innR,  mid + halfOut);
-  ctx.lineTo(sp + innR,  mid + halfIn);
-  ctx.lineTo(sp + ptrR,  mid + halfIn);
-  ctx.closePath();
-  ctx.fillStyle='#000a1e'; ctx.fill();
-  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.lineJoin='miter'; ctx.stroke();
-
-  // Digit colour reflects over-speed state: red > Vne, amber > Vno.
-  const spdKt   = D.speed;
-  const drumCol = spdKt > V.vne ? V_COL.red
-                : spdKt > V.vno ? V_COL.yellow : '#fff';
-
-  // Main drum (tens+hundreds) — 2 digits, power_offset=1 so column 0 is
-  // hundreds and column 1 is tens; ones come from the second drum below.
-  drawDrum(sp + ptrR + 1, mid - halfIn + 1, innW - 2, halfIn * 2 - 2,
-           spd, 2, drumCol, drumFs,
-           {suppressLeading: true, powerOffset: 1});
-  // Ones drum with adjacent-digit preview — tall outer cell.
-  drawDrum(sp + innR + 1, mid - halfOut + 1, drmSw - 2, halfOut * 2 - 2,
-           spd, 1, drumCol, drumFs,
-           {showAdjacent: true, adjSlotH: Math.round(drumFs * 1.15)});
-  // Top + bottom fade — makes the rolling digits look like a physical drum.
-  _drumShade(sp + innR + 1, mid - halfOut + 1, drmSw - 2, halfOut * 2 - 2);
-
-  ctx.textBaseline='alphabetic';
-
-  // Speed bug chevron — inward-facing V-notch, clamped to the tape.
-  // Matches pi4/pfd.py shape exactly: body x=[spdX..spdX+14], V-notch
-  // on the right edge pointing into the body toward spdX+7.
+  // ── Speed bug chevron — drawn BEFORE the readout box so the box covers
+  // the bug when it's near the current-speed value (matches pi4 layer order).
   if (B.spd_bug != null) {
     const bugY = Math.max(tapeTopY, Math.min(tapeTopY+tapeH,
                    tapeMidY-(toDisplaySpd(B.spd_bug)-spd)*pxPerSpd));
     const x = spdX, w = 14, h = 17;
-    ctx.fillStyle = BUG_MAGENTA;       // GPS groundspeed — the only iPhone source today
+    ctx.fillStyle = BUG_MAGENTA;
     ctx.beginPath();
     ctx.moveTo(x,     bugY-h);
     ctx.lineTo(x+w,   bugY-h);
@@ -640,13 +621,61 @@ function drawSpeedTape(){
     ctx.lineTo(x,     bugY+h);
     ctx.closePath(); ctx.fill();
   }
+
+  // ── Veeder-Root stepped readout box (pi4 style, rounded at the steps) ──
+  // Speed tape layout (left→right across the tape):
+  //   • pointer apex on LEFT  (at spdX)
+  //   • inner cell — shorter — holds the tens+hundreds drum
+  //   • outer cell — taller  — holds the ones drum with show_adjacent
+  // Dimensions grown from the previous iteration; rounded corners at the
+  // inner/outer step joins + the outer-cell far corners (r=3) match the
+  // pi4 _chamfer applied to the same polygon.
+  const drumFs    = Math.max(18, H * 0.050);
+  const halfIn    = Math.round(drumFs * 0.85);
+  const halfOut   = Math.round(drumFs * 1.40);
+  const ptrR      = Math.round(drumFs * 0.78);
+  const innW      = Math.round(drumFs * 1.70);
+  const drmSw     = Math.round(drumFs * 1.05);
+  const innR      = ptrR + innW;
+  const boxR      = innR + drmSw;
+  const sp        = spdX;
+  const mid       = tapeMidY;
+  const boxVerts = [
+    [sp,         mid],             // 0 — pointer tip (SHARP)
+    [sp + ptrR,  mid - halfIn],    // 1 — pointer → inner cell (SHARP)
+    [sp + innR,  mid - halfIn],    // 2 — inner top-right (ROUND)
+    [sp + innR,  mid - halfOut],   // 3 — step up (ROUND)
+    [sp + boxR,  mid - halfOut],   // 4 — outer top-right (ROUND)
+    [sp + boxR,  mid + halfOut],   // 5 — outer bottom-right (ROUND)
+    [sp + innR,  mid + halfOut],   // 6 — step down (ROUND)
+    [sp + innR,  mid + halfIn],    // 7 — inner bottom-right (ROUND)
+    [sp + ptrR,  mid + halfIn],    // 8 — pointer bottom (SHARP)
+  ];
+  roundedPolyPath(boxVerts, new Set([2,3,4,5,6,7]), 3);
+  ctx.fillStyle='#000a1e'; ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.lineJoin='miter'; ctx.stroke();
+
+  // Digit colour reflects over-speed state: red > Vne, amber > Vno.
+  const spdKt   = D.speed;
+  const drumCol = spdKt > V.vne ? V_COL.red
+                : spdKt > V.vno ? V_COL.yellow : '#fff';
+
+  drawDrum(sp + ptrR + 1, mid - halfIn + 1, innW - 2, halfIn * 2 - 2,
+           spd, 2, drumCol, drumFs,
+           {suppressLeading: true, powerOffset: 1});
+  drawDrum(sp + innR + 1, mid - halfOut + 1, drmSw - 2, halfOut * 2 - 2,
+           spd, 1, drumCol, drumFs,
+           {showAdjacent: true, adjSlotH: Math.round(drumFs * 1.20)});
+  _drumShade(sp + innR + 1, mid - halfOut + 1, drmSw - 2, halfOut * 2 - 2);
+
+  ctx.textBaseline='alphabetic';
 }
 
 // ── Altitude tape ──────────────────────────────────────────────────────────
 function drawAltTape(){
   const{altX,altW,tapeTopY,tapeH,tapeMidY}=L;
   const pxPerFt=tapeH/600,alt=D.alt;
-  const boxH=Math.max(28,H*.065),boxHalf=boxH/2,fs=Math.max(10,H*.021);
+  const fs=Math.max(10,H*.021);
   ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(altX,tapeTopY,altW,tapeH);
   ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(altX,tapeTopY); ctx.lineTo(altX,tapeTopY+tapeH); ctx.stroke();
@@ -656,7 +685,7 @@ function drawAltTape(){
   const baseAlt=Math.round(alt/100)*100;
   for(let ft=baseAlt-300;ft<=baseAlt+300;ft+=100){
     const y=tapeMidY-(ft-alt)*pxPerFt;
-    if(Math.abs(y-tapeMidY)<boxHalf+4) continue;
+    if(Math.abs(y-tapeMidY)<Math.max(21,H*0.067)+4) continue;
     const isMaj=ft%500===0,tlen=isMaj?16:8;
     ctx.strokeStyle=isMaj?'rgba(255,255,255,.85)':'rgba(255,255,255,.45)';
     ctx.lineWidth=isMaj?1.8:1;
@@ -670,49 +699,61 @@ function drawAltTape(){
   }
   ctx.restore();
 
-  // ── Veeder-Root stepped readout box (pi4 style) ────────────────────────
+  // ── Altitude bug chevron — drawn BEFORE the readout box (matches pi4
+  // layer order: box covers the bug when it's near current altitude).
+  if (B.alt_bug != null) {
+    const bugY = Math.max(tapeTopY, Math.min(tapeTopY+tapeH,
+                   tapeMidY-(B.alt_bug-alt)*pxPerFt));
+    const x = altX+altW, w = 14, h = 17;
+    ctx.fillStyle = D.baro_src === 'bme280' ? BUG_CYAN : BUG_MAGENTA;
+    ctx.beginPath();
+    ctx.moveTo(x,     bugY-h);
+    ctx.lineTo(x-w,   bugY-h);
+    ctx.lineTo(x-w,   bugY-5);
+    ctx.lineTo(x-7,   bugY);
+    ctx.lineTo(x-w,   bugY+5);
+    ctx.lineTo(x-w,   bugY+h);
+    ctx.lineTo(x,     bugY+h);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // ── Veeder-Root stepped readout box (pi4 style, rounded at the steps) ──
   // Mirror of the speed box: pointer apex on RIGHT (at altX+altW), then
   // going LEFT we get the ones-drum outer cell (tall) and the main drum
-  // inner cell (hundreds+thousands+ten-thousands).  Altimeter rolls in
-  // 20 ft steps inside the ones cell so integer crossings cascade
-  // through the hundreds column smoothly.
-  const altDrumFs = Math.max(15, H * 0.040);
-  const aHalfIn  = Math.round(altDrumFs * 0.72);
-  const aHalfOut = Math.round(altDrumFs * 1.20);
+  // inner cell (hundreds+thousands+ten-thousands).
+  const altDrumFs = Math.max(18, H * 0.048);
+  const aHalfIn  = Math.round(altDrumFs * 0.85);
+  const aHalfOut = Math.round(altDrumFs * 1.40);
   const aPtrW    = Math.round(altDrumFs * 0.78);
-  const aDrmW    = Math.round(altDrumFs * 1.10);     // ones cell width
-  const aInnW    = Math.round(altDrumFs * 2.70);     // main drum cell width (3-4 digits)
+  const aDrmW    = Math.round(altDrumFs * 1.20);
+  const aInnW    = Math.round(altDrumFs * 3.00);
   const aDrmL    = aPtrW + aDrmW;
   const aBoxW    = aInnW + aDrmW + aPtrW;
   const R        = altX + altW;
   const midA     = tapeMidY;
-  ctx.beginPath();
-  ctx.moveTo(R,             midA);
-  ctx.lineTo(R - aPtrW,     midA - aHalfIn);
-  ctx.lineTo(R - aPtrW,     midA - aHalfOut);
-  ctx.lineTo(R - aDrmL,     midA - aHalfOut);
-  ctx.lineTo(R - aDrmL,     midA - aHalfIn);
-  ctx.lineTo(R - aBoxW,     midA - aHalfIn);
-  ctx.lineTo(R - aBoxW,     midA + aHalfIn);
-  ctx.lineTo(R - aDrmL,     midA + aHalfIn);
-  ctx.lineTo(R - aDrmL,     midA + aHalfOut);
-  ctx.lineTo(R - aPtrW,     midA + aHalfOut);
-  ctx.lineTo(R - aPtrW,     midA + aHalfIn);
-  ctx.closePath();
+  const altVerts = [
+    [R,             midA],              // 0 — pointer tip (SHARP)
+    [R - aPtrW,     midA - aHalfIn],    // 1 — pointer base (SHARP)
+    [R - aPtrW,     midA - aHalfOut],   // 2 — step up (ROUND)
+    [R - aDrmL,     midA - aHalfOut],   // 3 — ones cell top-left (ROUND)
+    [R - aDrmL,     midA - aHalfIn],    // 4 — step down (ROUND)
+    [R - aBoxW,     midA - aHalfIn],    // 5 — main cell top-left (ROUND)
+    [R - aBoxW,     midA + aHalfIn],    // 6 — main cell bottom-left (ROUND)
+    [R - aDrmL,     midA + aHalfIn],    // 7 — step up (ROUND)
+    [R - aDrmL,     midA + aHalfOut],   // 8 — ones cell bottom-left (ROUND)
+    [R - aPtrW,     midA + aHalfOut],   // 9 — step down (ROUND)
+    [R - aPtrW,     midA + aHalfIn],    // 10 — pointer base bottom (SHARP)
+  ];
+  roundedPolyPath(altVerts, new Set([2,3,4,5,6,7,8,9]), 3);
   ctx.fillStyle='#000a1e'; ctx.fill();
   ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.lineJoin='miter'; ctx.stroke();
 
-  // Main drum (thousands / ten-thousands) — 3 digits, power_offset=2 so
-  // column 0 is ten-thousands, col 1 is thousands, col 2 is hundreds.
   drawDrum(R - aBoxW + 1, midA - aHalfIn + 1, aInnW - 2, aHalfIn * 2 - 2,
            alt, 3, '#fff', altDrumFs,
            {suppressLeading: true, powerOffset: 2});
-  // Ones/tens drum — taller cell with adjacent preview.  Altimeter
-  // increments in 20-ft steps; we show the low-order pair as a
-  // continuous rolling drum so integer crossings cascade smoothly.
   drawDrum(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2,
            alt, 2, '#fff', altDrumFs,
-           {showAdjacent: true, adjSlotH: Math.round(altDrumFs * 1.15)});
+           {showAdjacent: true, adjSlotH: Math.round(altDrumFs * 1.20)});
   _drumShade(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2);
   const vsiY=midA+aHalfOut+5,arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
   const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
@@ -731,25 +772,6 @@ function drawAltTape(){
   ctx.fillText(isInHg?qnhDisp.toFixed(2)+'\u2033':qnhDisp.toFixed(2),altX+altW/2,qnhY);
   ctx.fillText(isInHg?(isBaro?'Hg B':'Hg G'):(isBaro?'hPa B':'hPa G'),altX+altW/2,qnhY+Math.max(10,H*.017));
   ctx.textBaseline='alphabetic';
-
-  // Altitude bug chevron — mirror of the speed bug, sits on the right
-  // edge of the altitude tape with V-notch pointing toward the AI.
-  if (B.alt_bug != null) {
-    const bugY = Math.max(tapeTopY, Math.min(tapeTopY+tapeH,
-                   tapeMidY-(B.alt_bug-alt)*pxPerFt));
-    const x = altX+altW, w = 14, h = 17;
-    // Cyan = baro-referenced altitude; magenta = GPS-derived.
-    ctx.fillStyle = D.baro_src === 'bme280' ? BUG_CYAN : BUG_MAGENTA;
-    ctx.beginPath();
-    ctx.moveTo(x,     bugY-h);
-    ctx.lineTo(x-w,   bugY-h);
-    ctx.lineTo(x-w,   bugY-5);
-    ctx.lineTo(x-7,   bugY);
-    ctx.lineTo(x-w,   bugY+5);
-    ctx.lineTo(x-w,   bugY+h);
-    ctx.lineTo(x,     bugY+h);
-    ctx.closePath(); ctx.fill();
-  }
 }
 
 // ── Heading tape ───────────────────────────────────────────────────────────
