@@ -117,15 +117,38 @@
   .trim-row      { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
   .trim-lbl      { color:rgba(180,210,255,.85); font:bold 12px monospace; min-width:48px; }
   .trim-val      { color:#fff; font:bold 14px monospace; min-width:52px; text-align:right; }
+
+  /* ── Sensor readout badge ── */
+  #sensor-readout-status {
+    position:absolute; top:6px; right:358px;
+    background:rgba(60,60,80,.80); color:#aac;
+    font:bold 11px/1 monospace; padding:3px 7px; border-radius:3px;
+    cursor:pointer; pointer-events:auto; z-index:10; letter-spacing:.04em;
+  }
+
+  /* ── Sensor readout panel ── */
+  #sensor-readout-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.92);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
+    max-height:70vh; overflow-y:auto;
+  }
+  #sensor-readout-panel p { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+  .sensor-row { display:flex; justify-content:space-between; margin-bottom:4px; }
+  .sensor-lbl { color:rgba(180,210,255,.85); font:bold 11px monospace; min-width:100px; }
+  .sensor-val { color:#fff; font:bold 11px monospace; text-align:right; min-width:80px; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="baro-status"    title="Tap to set QNH / calibrate barometer">QNH ···</div>
-<div id="trim-status"    title="Tap to adjust AHRS trim">TRIM</div>
-<div id="terrain-status" class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
-<div id="sensor-status"  class="sensor-off" title="Use phone IMU + GPS as AHRS fallback">PHONE</div>
-<div id="link-status"    class="link-dead">NO LINK</div>
+<div id="baro-status"           title="Tap to set QNH / calibrate barometer">QNH ···</div>
+<div id="trim-status"           title="Tap to adjust AHRS trim">TRIM</div>
+<div id="sensor-readout-status" title="Tap to view raw sensor data">SENSORS</div>
+<div id="terrain-status"        class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
+<div id="sensor-status"         class="sensor-off" title="Use phone IMU + GPS as AHRS fallback">PHONE</div>
+<div id="link-status"           class="link-dead">NO LINK</div>
 
 <div id="terrain-panel">
   <p>Download terrain tiles once over WiFi — used offline in flight.<br>
@@ -202,6 +225,55 @@
     </button>
     <button class="trn-btn" onclick="resetAllTrims()">&#8635; Reset All</button>
     <button class="trn-btn" onclick="closeTrimPanel()">&#x2715; Close</button>
+  </div>
+</div>
+
+<div id="sensor-readout-panel">
+  <p>Raw iPhone sensor data (when PHONE sensors enabled)</p>
+  <div class="sensor-row">
+    <span class="sensor-lbl">Alpha (Yaw):</span>
+    <span class="sensor-val" id="sensor-alpha">—</span>
+  </div>
+  <div class="sensor-row">
+    <span class="sensor-lbl">Beta (Pitch):</span>
+    <span class="sensor-val" id="sensor-beta">—</span>
+  </div>
+  <div class="sensor-row">
+    <span class="sensor-lbl">Gamma (Roll):</span>
+    <span class="sensor-val" id="sensor-gamma">—</span>
+  </div>
+  <div class="sensor-row">
+    <span class="sensor-lbl">Compass Heading:</span>
+    <span class="sensor-val" id="sensor-compass">—</span>
+  </div>
+  <hr style="border:none; border-top:1px solid rgba(100,150,200,.3); margin:8px 0;">
+  <div class="sensor-row">
+    <span class="sensor-lbl">Processed Roll:</span>
+    <span class="sensor-val" id="sensor-roll">—</span>
+  </div>
+  <div class="sensor-row">
+    <span class="sensor-lbl">Processed Pitch:</span>
+    <span class="sensor-val" id="sensor-pitch">—</span>
+  </div>
+  <div class="sensor-row">
+    <span class="sensor-lbl">Processed Yaw:</span>
+    <span class="sensor-val" id="sensor-yaw">—</span>
+  </div>
+  <hr style="border:none; border-top:1px solid rgba(100,150,200,.3); margin:8px 0;">
+  <div class="sensor-row">
+    <span class="sensor-lbl">Roll Trim:</span>
+    <span class="sensor-val" id="sensor-roll-trim">—</span>
+  </div>
+  <div class="sensor-row">
+    <span class="sensor-lbl">Pitch Trim:</span>
+    <span class="sensor-val" id="sensor-pitch-trim">—</span>
+  </div>
+  <div class="sensor-row">
+    <span class="sensor-lbl">Screen Orientation:</span>
+    <span class="sensor-val" id="sensor-orient">—</span>
+  </div>
+  <div class="trn-btns" style="margin-top:8px">
+    <button class="trn-btn" onclick="closeSensorReadoutPanel()">✕ Close</button>
   </div>
 </div>
 
@@ -286,6 +358,10 @@ const PS = {
   // Sensor offsets so user can zero the horizon when phone is in a
   // cradle that isn't exactly level.
   roll0: 0, pitch0: 0,
+  // Raw sensor values for debugging
+  alpha: 0, beta: 0, gamma: 0,
+  compassHeading: null,
+  screenAngle: 0,
 };
 const sensorEl = document.getElementById('sensor-status');
 
@@ -359,9 +435,16 @@ function _onOrient(e) {
     ? screen.orientation.angle
     : (window.orientation || 0);
 
-  const a = (e.alpha || 0) * Math.PI / 180;
-  const b = (e.beta  || 0) * Math.PI / 180;
-  const g = (e.gamma || 0) * Math.PI / 180;
+  // Store raw sensor values for debugging
+  PS.alpha = e.alpha || 0;
+  PS.beta = e.beta || 0;
+  PS.gamma = e.gamma || 0;
+  PS.compassHeading = typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading : null;
+  PS.screenAngle = ang;
+
+  const a = PS.alpha * Math.PI / 180;
+  const b = PS.beta  * Math.PI / 180;
+  const g = PS.gamma * Math.PI / 180;
   const sa = Math.sin(a), ca = Math.cos(a);
   const sb = Math.sin(b), cb = Math.cos(b);
   const sg = Math.sin(g), cg = Math.cos(g);
@@ -568,6 +651,49 @@ trimEl.addEventListener('click', () => {
 });
 
 function closeTrimPanel() { trimPanel.style.display = 'none'; }
+
+// ── Sensor readout panel ───────────────────────────────────────────────────
+const sensorReadoutEl    = document.getElementById('sensor-readout-status');
+const sensorReadoutPanel = document.getElementById('sensor-readout-panel');
+
+sensorReadoutEl.addEventListener('click', () => {
+  const opening = sensorReadoutPanel.style.display !== 'block';
+  sensorReadoutPanel.style.display = opening ? 'block' : 'none';
+  panel.style.display     = 'none';
+  baroPanel.style.display = 'none';
+  trimPanel.style.display = 'none';
+  if (opening) updateSensorReadoutUI();
+});
+
+function closeSensorReadoutPanel() { sensorReadoutPanel.style.display = 'none'; }
+
+function updateSensorReadoutUI() {
+  if (PS.enabled) {
+    document.getElementById('sensor-alpha').textContent = PS.alpha.toFixed(2) + '°';
+    document.getElementById('sensor-beta').textContent = PS.beta.toFixed(2) + '°';
+    document.getElementById('sensor-gamma').textContent = PS.gamma.toFixed(2) + '°';
+    document.getElementById('sensor-compass').textContent = PS.compassHeading != null
+      ? PS.compassHeading.toFixed(1) + '°' : '(not available)';
+    document.getElementById('sensor-roll').textContent = PS.roll.toFixed(2) + '°';
+    document.getElementById('sensor-pitch').textContent = PS.pitch.toFixed(2) + '°';
+    document.getElementById('sensor-yaw').textContent = PS.yaw.toFixed(1) + '°';
+    document.getElementById('sensor-roll-trim').textContent = PS.roll0.toFixed(2) + '°';
+    document.getElementById('sensor-pitch-trim').textContent = PS.pitch0.toFixed(2) + '°';
+    const orientLabels = {0:'Portrait', 90:'Landscape (Right)', 180:'Upside-down', 270:'Landscape (Left)', '-90':'Landscape (Left)'};
+    document.getElementById('sensor-orient').textContent = orientLabels[PS.screenAngle] || PS.screenAngle + '°';
+  } else {
+    document.getElementById('sensor-alpha').textContent = '—';
+    document.getElementById('sensor-beta').textContent = '—';
+    document.getElementById('sensor-gamma').textContent = '—';
+    document.getElementById('sensor-compass').textContent = '—';
+    document.getElementById('sensor-roll').textContent = '—';
+    document.getElementById('sensor-pitch').textContent = '—';
+    document.getElementById('sensor-yaw').textContent = '—';
+    document.getElementById('sensor-roll-trim').textContent = '—';
+    document.getElementById('sensor-pitch-trim').textContent = '—';
+    document.getElementById('sensor-orient').textContent = '—';
+  }
+}
 
 function updateTrimUI() {
   document.getElementById('trim-pitch-val').textContent = TARGET.pitch_trim.toFixed(1) + '\u00b0';
@@ -1445,6 +1571,7 @@ function render(ts) {
   if (ts - lastBaroRefresh > 1000) {
     updateBaroUI();
     if (trimPanel.style.display === 'block') updateTrimUI();
+    if (sensorReadoutPanel.style.display === 'block') updateSensorReadoutUI();
     lastBaroRefresh=ts;
   }
   updateTerrainAlert();
