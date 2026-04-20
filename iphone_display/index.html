@@ -48,22 +48,21 @@
   #trn-progress-txt  { color:rgba(180,210,255,.85); font-size:11px; margin-top:4px; }
 
   /* ── Status badges ── */
-  #link-status, #terrain-status, #data-status, #baro-status {
+  #link-status, #terrain-status, #sensor-status {
     position:absolute; font:bold 11px/1 monospace;
     padding:3px 7px; border-radius:3px;
-    pointer-events:none; z-index:10; letter-spacing:.04em; top:6px;
+    pointer-events:none; z-index:10; letter-spacing:.04em;
   }
-  #link-status    { right:8px; }
-  #data-status    { right:70px; }
-  #baro-status    { right:140px; cursor:pointer; pointer-events:auto; }
-  #terrain-status { right:230px; cursor:pointer; pointer-events:auto; }
+  #link-status    { top:6px; right:8px; }
+  #terrain-status { top:6px; right:78px; cursor:pointer; pointer-events:auto; }
+  #sensor-status  { top:6px; right:310px; cursor:pointer; pointer-events:auto; }
 
   .link-ok     { background:rgba(0,170,0,.75);    color:#fff; }
   .link-warn   { background:rgba(210,130,0,.75);  color:#fff; }
   .link-dead   { background:rgba(190,0,0,.75);    color:#fff; }
-  .data-ahrs   { background:rgba(0,120,180,.80);  color:#fff; }
-  .data-phone  { background:rgba(0,150,120,.85);  color:#fff; }
-  .data-only   { background:rgba(60,60,80,.80);   color:#aac; }
+  .sensor-off  { background:rgba(60,60,80,.80);   color:#aac; }
+  .sensor-on   { background:rgba(0,120,180,.80);  color:#fff; }
+  .sensor-act  { background:rgba(0,150,120,.85);  color:#fff; }
   .trn-ready   { background:rgba(0,130,60,.75);   color:#fff; }
   .trn-partial { background:rgba(160,100,0,.75);  color:#fff; }
   .trn-idle    { background:rgba(60,60,80,.80);   color:#aac; }
@@ -100,6 +99,14 @@
   }
   #cal-alt-input::placeholder { color:rgba(180,200,230,.4); }
 
+  /* ── Trim badge ── */
+  #trim-status {
+    position:absolute; top:6px; right:252px;
+    background:rgba(40,30,0,.80); color:#fd8;
+    font:bold 11px/1 monospace; padding:3px 7px; border-radius:3px;
+    cursor:pointer; pointer-events:auto; z-index:10; letter-spacing:.04em;
+  }
+
   /* ── Trim panel ── */
   #trim-panel {
     display:none;
@@ -112,6 +119,14 @@
   .trim-row      { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
   .trim-lbl      { color:rgba(180,210,255,.85); font:bold 12px monospace; min-width:48px; }
   .trim-val      { color:#fff; font:bold 14px monospace; min-width:52px; text-align:right; }
+
+  /* ── Sensor readout badge ── */
+  #sensor-readout-status {
+    position:absolute; top:6px; right:358px;
+    background:rgba(60,60,80,.80); color:#aac;
+    font:bold 11px/1 monospace; padding:3px 7px; border-radius:3px;
+    cursor:pointer; pointer-events:auto; z-index:10; letter-spacing:.04em;
+  }
 
   /* ── Sensor readout panel ── */
   #sensor-readout-panel {
@@ -166,10 +181,12 @@
   <button id="setup-close" onclick="closeSetupMenu()">✕ CLOSE</button>
 </div>
 
-<div id="baro-status"      title="Tap to set QNH / calibrate barometer">QNH ···</div>
-<div id="data-status"      title="Data source">DATA</div>
-<div id="terrain-status"   class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
-<div id="link-status"      class="link-dead">NO LINK</div>
+<div id="baro-status"           title="Tap to set QNH / calibrate barometer">QNH ···</div>
+<div id="trim-status"           title="Tap to adjust AHRS trim">TRIM</div>
+<div id="sensor-readout-status" title="Tap to view raw sensor data">SENSORS</div>
+<div id="terrain-status"        class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
+<div id="sensor-status"         class="sensor-off" title="Use phone IMU + GPS as AHRS fallback">PHONE</div>
+<div id="link-status"           class="link-dead">NO LINK</div>
 
 <div id="terrain-panel">
   <p>Download terrain tiles once over WiFi — used offline in flight.<br>
@@ -665,8 +682,6 @@ function onTerrainStatus(status, count) {
                    ready:'trn-ready', partial:'trn-partial', error:'link-dead' };
   trnEl.textContent = labels[status] || status.toUpperCase();
   trnEl.className   = cls[status]    || 'trn-idle';
-  // Hide terrain badge if terrain is loaded (ready or partial)
-  trnEl.style.display = (status === 'ready' || status === 'partial') ? 'none' : 'block';
 }
 
 function setProgress(pct, txt) {
@@ -721,31 +736,33 @@ baroEl.addEventListener('click', () => {
 function closeBaroPanel() { baroPanel.style.display = 'none'; }
 
 // ── Trim panel ─────────────────────────────────────────────────────────────
+const trimEl    = document.getElementById('trim-status');
 const trimPanel = document.getElementById('trim-panel');
+
+trimEl.addEventListener('click', () => {
+  const opening = trimPanel.style.display !== 'block';
+  trimPanel.style.display = opening ? 'block' : 'none';
+  panel.style.display     = 'none';
+  baroPanel.style.display = 'none';
+  if (opening) updateTrimUI();
+});
 
 function closeTrimPanel() { trimPanel.style.display = 'none'; }
 
 // ── Sensor readout panel ───────────────────────────────────────────────────
+const sensorReadoutEl    = document.getElementById('sensor-readout-status');
 const sensorReadoutPanel = document.getElementById('sensor-readout-panel');
 
+sensorReadoutEl.addEventListener('click', () => {
+  const opening = sensorReadoutPanel.style.display !== 'block';
+  sensorReadoutPanel.style.display = opening ? 'block' : 'none';
+  panel.style.display     = 'none';
+  baroPanel.style.display = 'none';
+  trimPanel.style.display = 'none';
+  if (opening) updateSensorReadoutUI();
+});
+
 function closeSensorReadoutPanel() { sensorReadoutPanel.style.display = 'none'; }
-
-// ── Data source indicator ──────────────────────────────────────────────────
-const dataStatusEl = document.getElementById('data-status');
-
-function updateDataStatus() {
-  const ahrsOk = D.ahrs_ok && (performance.now() - lastMsgMs) < 5000;
-  if (ahrsOk) {
-    dataStatusEl.textContent = 'AHRS';
-    dataStatusEl.className = 'data-ahrs';
-  } else if (PS.enabled) {
-    dataStatusEl.textContent = PS.absolute ? 'PHONE' : 'PHONE*';
-    dataStatusEl.className = 'data-phone';
-  } else {
-    dataStatusEl.textContent = 'DATA';
-    dataStatusEl.className = 'data-only';
-  }
-}
 
 function updateSensorReadoutUI() {
   if (PS.enabled) {
@@ -1672,7 +1689,6 @@ function render(ts) {
   lastTs=ts;
 
   updateLinkStatus();
-  updateDataStatus();
   if (ts - lastBaroRefresh > 1000) {
     updateBaroUI();
     if (trimPanel.style.display === 'block') updateTrimUI();
