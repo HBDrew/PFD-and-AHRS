@@ -434,11 +434,11 @@ function _onOrient(e) {
   const qRelZ = qRefInvW*qz + qRefInvX*qy - qRefInvY*qx + qRefInvZ*qw;
   const qRelW = qRefInvW*qw - qRefInvX*qx - qRefInvY*qy - qRefInvZ*qz;
 
-  // Rotate reference frame by -90° pitch to avoid gimbal lock in flight orientation.
+  // Rotate reference frame by +90° pitch to avoid gimbal lock in flight orientation.
   // This maps flight position (naturally 90° pitch) to 0° pitch, keeping extraction away from singularity.
-  // Rotate quaternion by -90° around Y axis: multiply by q_rot = [0, -sin(45°), 0, cos(45°)]
+  // Rotate quaternion by +90° around Y axis: multiply by q_rot = [0, sin(45°), 0, cos(45°)]
   const rot45 = Math.sqrt(0.5);  // sin(45°) = cos(45°) = sqrt(0.5)
-  const qRotX = 0, qRotY = -rot45, qRotZ = 0, qRotW = rot45;
+  const qRotX = 0, qRotY = rot45, qRotZ = 0, qRotW = rot45;
 
   // Multiply: q_rotated = q_rot * q_rel (apply frame rotation first)
   const qRotX_result = qRotW*qRelX + qRotX*qRelW + qRotY*qRelZ - qRotZ*qRelY;
