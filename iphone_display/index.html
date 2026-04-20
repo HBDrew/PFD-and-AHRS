@@ -54,7 +54,7 @@
     pointer-events:none; z-index:10; letter-spacing:.04em;
   }
   #link-status    { right:8px; }
-  #baro-status    { right:70px; cursor:pointer; pointer-events:auto; background:rgba(0,55,115,.80); color:#cef; }
+  #baro-status    { right:90px; cursor:pointer; pointer-events:auto; background:rgba(0,55,115,.80); color:#cef; }
   #terrain-status { right:150px; cursor:pointer; pointer-events:auto; }
   #sensor-status  { right:230px; cursor:pointer; pointer-events:auto; }
 
@@ -360,9 +360,6 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 function updateLinkStatus() {
-  if (STANDALONE) {
-    linkEl.textContent='STANDALONE'; linkEl.className='link-warn'; return;
-  }
   const age = performance.now() - lastMsgMs;
   if (!lastMsgMs)      { linkEl.textContent='CONNECTING'; linkEl.className='link-warn'; }
   else if (age < 3000) { linkEl.textContent='LINK OK';    linkEl.className='link-ok';   }
