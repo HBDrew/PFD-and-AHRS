@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no, orientation=landscape">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
@@ -454,12 +454,11 @@ function _onOrient(e) {
   const ry = -sa*sg + ca*sb*cg;
   const rz = -cb*cg;
 
-  // M·(rx,ry,rz): mount matrix M = [[0,0,−1],[0,s,0],[1,0,0]]
-  // s = +1 when phone top points to right wing (ang=90), −1 for left (ang=270).
-  const s   = (ang === 270 || ang === -90) ? -1 : 1;
-  const gax = -rz;      // gravity component along aircraft nose-tail (pitch axis)
-  const gay =  s * ry;  // gravity component along aircraft right wing
-  const gaz =  rx;      // gravity component pointing down through aircraft floor
+  // Landscape-right mount (phone flat on panel, back to nose, top to right wing)
+  // For landscape right: map axes directly
+  const gax = -rz;      // gravity component along aircraft nose-tail (pitch axis) — from beta
+  const gay =  -ry;     // gravity component along aircraft right wing (roll axis) — from gamma
+  const gaz =   rx;     // gravity component pointing down through aircraft floor
 
   const pitch = -Math.asin(Math.max(-1, Math.min(1, gax))) * 180 / Math.PI;
   const roll  =  Math.atan2(gay, gaz) * 180 / Math.PI;
