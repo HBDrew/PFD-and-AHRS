@@ -344,22 +344,41 @@ function _sensorFlash(msg, ms) {
   }, ms);
 }
 
-// Phone held LANDSCAPE, top pointing RIGHT:
-//   gamma  = roll   (left-right tilt of the long edge)  — already -90..+90 CW
-//   beta   = pitch  (tilt of the long edge forward/back)
-//   alpha  = yaw    (compass, 0 = north, absolute only)
-// Sign conventions match the pi4 AHRS stream so the same rendering code
-// works without any additional sign flips.
+// DeviceOrientation alpha/beta/gamma are always expressed in the device's
+// body frame, regardless of how the screen is currently rotated. We remap
+// them into the aircraft frame based on screen.orientation.angle so the PFD
+// behaves correctly whether the phone is in portrait or either landscape.
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
-  // For a phone held in landscape with top-of-phone to the right:
-  //   aircraft roll  =  gamma  (right wing down → gamma positive)
-  //   aircraft pitch =  -beta  (nose up → beta negative when top is right)
-  //   aircraft yaw   =  alpha
-  PS.roll  =  (e.gamma || 0) - PS.roll0;
-  PS.pitch = -(e.beta  || 0) - PS.pitch0;
-  PS.yaw   =  (e.alpha || 0);
+  const ang = (screen.orientation && screen.orientation.angle != null)
+    ? screen.orientation.angle
+    : (window.orientation || 0);
+  const beta  = e.beta  || 0;
+  const gamma = e.gamma || 0;
+  let roll, pitch;
+  if (ang === 90) {                       // landscape, top-of-phone to RIGHT
+    roll  =  gamma;
+    pitch = -beta;
+  } else if (ang === 270 || ang === -90) { // landscape, top-of-phone to LEFT
+    roll  = -gamma;
+    pitch =  beta;
+  } else if (ang === 180) {                // portrait, upside down
+    roll  = -beta;
+    pitch = -gamma;
+  } else {                                 // portrait, normal (ang === 0)
+    roll  =  beta;
+    pitch =  gamma;
+  }
+  PS.roll  = roll  - PS.roll0;
+  PS.pitch = pitch - PS.pitch0;
+  // iOS exposes webkitCompassHeading — true-north compass heading in the
+  // world frame, independent of how the device is held. Prefer it when
+  // available; otherwise fall back to raw alpha (only meaningful when the
+  // device is flat and supports 'deviceorientationabsolute').
+  PS.yaw = (typeof e.webkitCompassHeading === 'number')
+    ? e.webkitCompassHeading
+    : (e.alpha || 0);
 }
 
 function _onGeolocation(pos) {
