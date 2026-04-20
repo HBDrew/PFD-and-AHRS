@@ -48,14 +48,15 @@
   #trn-progress-txt  { color:rgba(180,210,255,.85); font-size:11px; margin-top:4px; }
 
   /* ── Status badges ── */
-  #link-status, #terrain-status, #sensor-status {
-    position:absolute; font:bold 11px/1 monospace;
+  #link-status, #baro-status, #terrain-status, #sensor-status {
+    position:absolute; top:6px; font:bold 11px/1 monospace;
     padding:3px 7px; border-radius:3px;
     pointer-events:none; z-index:10; letter-spacing:.04em;
   }
-  #link-status    { top:6px; right:8px; }
-  #terrain-status { top:6px; right:78px; cursor:pointer; pointer-events:auto; }
-  #sensor-status  { top:6px; right:310px; cursor:pointer; pointer-events:auto; }
+  #link-status    { right:8px; }
+  #baro-status    { right:70px; cursor:pointer; pointer-events:auto; background:rgba(0,55,115,.80); color:#cef; }
+  #terrain-status { right:150px; cursor:pointer; pointer-events:auto; }
+  #sensor-status  { right:230px; cursor:pointer; pointer-events:auto; }
 
   .link-ok     { background:rgba(0,170,0,.75);    color:#fff; }
   .link-warn   { background:rgba(210,130,0,.75);  color:#fff; }
@@ -67,14 +68,6 @@
   .trn-partial { background:rgba(160,100,0,.75);  color:#fff; }
   .trn-idle    { background:rgba(60,60,80,.80);   color:#aac; }
   .trn-loading { background:rgba(30,60,120,.80);  color:#adf; }
-
-  /* ── Baro badge ── */
-  #baro-status {
-    position:absolute; top:6px; right:170px;
-    background:rgba(0,55,115,.80); color:#cef;
-    font:bold 11px/1 monospace; padding:3px 7px; border-radius:3px;
-    cursor:pointer; pointer-events:auto; z-index:10; letter-spacing:.04em;
-  }
 
   /* ── Baro panel ── */
   #baro-panel {
