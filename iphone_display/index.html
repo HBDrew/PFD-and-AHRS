@@ -344,38 +344,69 @@ function _sensorFlash(msg, ms) {
   }, ms);
 }
 
-// DeviceOrientation alpha/beta/gamma are always expressed in the device's
-// body frame, regardless of how the screen is currently rotated. We remap
-// them into the aircraft frame based on screen.orientation.angle so the PFD
-// behaves correctly whether the phone is in portrait or either landscape.
+// iPhone panel-mounted: screen faces pilot, back faces nose, flat on panel.
+// Uses proper rotation matrix approach: build the rotation from alpha/beta/gamma
+// (device orientation in device body frame), apply the mount transform to convert
+// to aircraft frame, then extract roll/pitch/yaw. This correctly handles the
+// specific physical mounting regardless of screen orientation.
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
-  const ang = (screen.orientation && screen.orientation.angle != null)
-    ? screen.orientation.angle
-    : (window.orientation || 0);
-  const beta  = e.beta  || 0;
-  const gamma = e.gamma || 0;
-  let roll, pitch;
-  if (ang === 90) {                       // landscape, top-of-phone to RIGHT
-    roll  =  gamma;
-    pitch = -beta;
-  } else if (ang === 270 || ang === -90) { // landscape, top-of-phone to LEFT
-    roll  = -gamma;
-    pitch =  beta;
-  } else if (ang === 180) {                // portrait, upside down
-    roll  = -beta;
-    pitch = -gamma;
-  } else {                                 // portrait, normal (ang === 0)
-    roll  =  beta;
-    pitch =  gamma;
+
+  const DEG_TO_RAD = Math.PI / 180;
+  const alpha = (e.alpha || 0) * DEG_TO_RAD;
+  const beta  = (e.beta  || 0) * DEG_TO_RAD;
+  const gamma = (e.gamma || 0) * DEG_TO_RAD;
+
+  // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
+  // Build rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
+  const ca = Math.cos(alpha), sa = Math.sin(alpha);
+  const cb = Math.cos(beta),  sb = Math.sin(beta);
+  const cg = Math.cos(gamma), sg = Math.sin(gamma);
+
+  const R = [
+    [ca*cg - sa*sb*sg,  -ca*sg - sa*sb*cg,  -sa*cb],
+    [sa*cg + ca*sb*sg,  -sa*sg + ca*sb*cg,   ca*cb],
+    [cb*sg,              cb*cg,               sb]
+  ];
+
+  // Mount transform: phone mounted with back towards nose, screen facing pilot.
+  // Converts from phone body frame to aircraft frame.
+  const M = [
+    [0,  1,  0],
+    [-1, 0,  0],
+    [0,  0,  1]
+  ];
+
+  // R_aircraft = M * R_device
+  const RA = [];
+  for (let i = 0; i < 3; i++) {
+    RA[i] = [];
+    for (let j = 0; j < 3; j++) {
+      RA[i][j] = M[i][0]*R[0][j] + M[i][1]*R[1][j] + M[i][2]*R[2][j];
+    }
   }
-  PS.roll  = roll  - PS.roll0;
-  PS.pitch = pitch - PS.pitch0;
+
+  // Extract Euler angles (ZYX order): roll, pitch, yaw from R_aircraft.
+  // pitch = -asin(RA[2][0]), roll = atan2(RA[1][0], RA[0][0]), yaw = atan2(RA[2][1], RA[2][2])
+  const sinPitch = -RA[2][0];
+  const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
+  const cosPitch = Math.cos(pitch);
+  let roll, yaw;
+
+  if (Math.abs(cosPitch) > 1e-6) {
+    roll = Math.atan2(RA[1][0], RA[0][0]);
+    yaw = Math.atan2(RA[2][1], RA[2][2]);
+  } else {
+    roll = Math.atan2(-RA[0][1], RA[1][1]);
+    yaw = 0;
+  }
+
+  PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
+  PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
   // iOS exposes webkitCompassHeading — true-north compass heading in the
   // world frame, independent of how the device is held. Prefer it when
-  // available; otherwise fall back to raw alpha (only meaningful when the
-  // device is flat and supports 'deviceorientationabsolute').
+  // available; otherwise fall back to computed yaw.
   PS.yaw = (typeof e.webkitCompassHeading === 'number')
     ? e.webkitCompassHeading
     : (e.alpha || 0);
