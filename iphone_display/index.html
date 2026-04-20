@@ -367,11 +367,12 @@ function _onOrient(e) {
     [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: phone mounted horizontally (table-top position)
+  // Mount transform: table-top pitched 90° to flight position.
+  // Roll and yaw swap from table-top; pitch stays the same.
   const M = [
-    [0,  1,  0],
+    [0,  0, -1],
     [-1, 0,  0],
-    [0,  0,  1]
+    [0,  1,  0]
   ];
 
   // R_aircraft = M * R
