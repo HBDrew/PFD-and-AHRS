@@ -360,6 +360,11 @@ function _onOrient(e) {
   PS.lastBeta = e.beta || 0;
   PS.lastGamma = e.gamma || 0;
 
+  // Display raw sensor values on screen
+  if (sensorRawEl) {
+    sensorRawEl.textContent = `α=${(e.alpha||0).toFixed(1)}° β=${(e.beta||0).toFixed(1)}° γ=${(e.gamma||0).toFixed(1)}°`;
+  }
+
   // Detect mount orientation on first read: table-top or flight
   if (!PS.mountOrientation) {
     const beta = e.beta || 0;
