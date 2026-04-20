@@ -444,15 +444,17 @@ function _onOrient(e) {
 
   const a = PS.alpha * Math.PI / 180;
   const b = PS.beta  * Math.PI / 180;
-  const g = (PS.gamma + 90) * Math.PI / 180;  // shift by 90° to avoid gimbal lock at ±90°
+  const g = PS.gamma * Math.PI / 180;
   const sa = Math.sin(a), ca = Math.cos(a);
   const sb = Math.sin(b), cb = Math.cos(b);
   const sg = Math.sin(g), cg = Math.cos(g);
 
+  // Try Z-Y-X rotation order instead of Z-X-Y to avoid gimbal lock
+  // R = Rz(α)·Ry(γ)·Rx(β)
   // R·(0,0,−1) — gravity in device frame:
-  const rx = -ca*sg - sa*sb*cg;
-  const ry = -sa*sg + ca*sb*cg;
-  const rz = -cb*cg;
+  const rx = -sa*cg - ca*sb*sg;
+  const ry = -cb*sg;
+  const rz = ca*cg - sa*sb*sg;
 
   // Landscape-right mount (phone flat on panel, back to nose, top to right wing)
   // For landscape right: map axes directly
@@ -670,7 +672,7 @@ function updateSensorReadoutUI() {
   if (PS.enabled) {
     document.getElementById('sensor-alpha').textContent = PS.alpha.toFixed(2) + '°';
     document.getElementById('sensor-beta').textContent = PS.beta.toFixed(2) + '°';
-    document.getElementById('sensor-gamma').textContent = (PS.gamma + 90).toFixed(2) + '°';
+    document.getElementById('sensor-gamma').textContent = PS.gamma.toFixed(2) + '°';
     document.getElementById('sensor-compass').textContent = PS.compassHeading != null
       ? PS.compassHeading.toFixed(1) + '°' : '(not available)';
     document.getElementById('sensor-roll').textContent = PS.roll.toFixed(2) + '°';
