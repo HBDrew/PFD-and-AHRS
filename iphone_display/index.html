@@ -460,7 +460,7 @@ function _onOrient(e) {
   const gay =  -ry;     // gravity component along aircraft right wing (roll axis) — from gamma
   const gaz =   rx;     // gravity component pointing down through aircraft floor
 
-  const pitch = -Math.asin(Math.max(-1, Math.min(1, gax))) * 180 / Math.PI;
+  const pitch = Math.asin(Math.max(-1, Math.min(1, gax))) * 180 / Math.PI;
   const roll  = (PS.beta || 0);  // use beta directly to avoid alpha coupling
 
   PS.roll  = roll  - PS.roll0;
