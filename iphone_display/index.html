@@ -181,12 +181,10 @@
   <button id="setup-close" onclick="closeSetupMenu()">✕ CLOSE</button>
 </div>
 
-<div id="baro-status"           title="Tap to set QNH / calibrate barometer">QNH ···</div>
-<div id="trim-status"           title="Tap to adjust AHRS trim">TRIM</div>
-<div id="sensor-readout-status" title="Tap to view raw sensor data">SENSORS</div>
-<div id="terrain-status"        class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
-<div id="sensor-status"         class="sensor-off" title="Use phone IMU + GPS as AHRS fallback">PHONE</div>
-<div id="link-status"           class="link-dead">NO LINK</div>
+<div id="baro-status"    title="Tap to set QNH / calibrate barometer">QNH ···</div>
+<div id="terrain-status" class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
+<div id="sensor-status"  class="sensor-off" title="Use phone IMU + GPS as AHRS fallback">PHONE</div>
+<div id="link-status"    class="link-dead">NO LINK</div>
 
 <div id="terrain-panel">
   <p>Download terrain tiles once over WiFi — used offline in flight.<br>
@@ -736,32 +734,11 @@ baroEl.addEventListener('click', () => {
 function closeBaroPanel() { baroPanel.style.display = 'none'; }
 
 // ── Trim panel ─────────────────────────────────────────────────────────────
-const trimEl    = document.getElementById('trim-status');
 const trimPanel = document.getElementById('trim-panel');
-
-trimEl.addEventListener('click', () => {
-  const opening = trimPanel.style.display !== 'block';
-  trimPanel.style.display = opening ? 'block' : 'none';
-  panel.style.display     = 'none';
-  baroPanel.style.display = 'none';
-  if (opening) updateTrimUI();
-});
-
 function closeTrimPanel() { trimPanel.style.display = 'none'; }
 
 // ── Sensor readout panel ───────────────────────────────────────────────────
-const sensorReadoutEl    = document.getElementById('sensor-readout-status');
 const sensorReadoutPanel = document.getElementById('sensor-readout-panel');
-
-sensorReadoutEl.addEventListener('click', () => {
-  const opening = sensorReadoutPanel.style.display !== 'block';
-  sensorReadoutPanel.style.display = opening ? 'block' : 'none';
-  panel.style.display     = 'none';
-  baroPanel.style.display = 'none';
-  trimPanel.style.display = 'none';
-  if (opening) updateSensorReadoutUI();
-});
-
 function closeSensorReadoutPanel() { sensorReadoutPanel.style.display = 'none'; }
 
 function updateSensorReadoutUI() {
