@@ -446,15 +446,12 @@ function _onOrient(e) {
   const cosPitch = Math.cos(pitch);
 
   let roll, yaw;
-  if (Math.abs(cosPitch) > 0.1) {
-    // Normal extraction when not at gimbal lock
+  if (Math.abs(cosPitch) > 1e-6) {
     roll = Math.atan2(2*(qRelW*qRelX + qRelY*qRelZ), 1 - 2*(qRelX*qRelX + qRelY*qRelY));
     yaw = Math.atan2(2*(qRelW*qRelZ + qRelX*qRelY), 1 - 2*(qRelY*qRelY + qRelZ*qRelZ));
   } else {
-    // At gimbal lock: swap roll and yaw to avoid singularity
-    // When pitch ≈ ±90°, what was yaw becomes roll and vice versa
-    roll = Math.atan2(2*(qRelW*qRelZ + qRelX*qRelY), 1 - 2*(qRelY*qRelY + qRelZ*qRelZ));
-    yaw = Math.atan2(2*(qRelW*qRelX + qRelY*qRelZ), 1 - 2*(qRelX*qRelX + qRelY*qRelY));
+    roll = 0;
+    yaw = Math.atan2(2*(qRelX*qRelY - qRelZ*qRelW), qRelX*qRelX - qRelY*qRelY - qRelZ*qRelZ + qRelW*qRelW);
   }
 
   PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
