@@ -355,6 +355,10 @@ function _onOrient(e) {
   const alpha = (e.alpha || 0) * DEG_TO_RAD;
   const beta  = (e.beta  || 0) * DEG_TO_RAD;
   const gamma = (e.gamma || 0) * DEG_TO_RAD;
+  // Store raw sensor values for zeroPhoneAttitude to use
+  PS.lastAlpha = e.alpha || 0;
+  PS.lastBeta = e.beta || 0;
+  PS.lastGamma = e.gamma || 0;
 
   // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
   // Build rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
@@ -506,18 +510,71 @@ function zeroPhoneAttitude() {
     return;
   }
   // Capture the CURRENT raw phone reading as the new zero reference.
-  // We replay the inverse of _onOrient's formula: PS.roll/pitch have
-  // already had roll0/pitch0 subtracted, so reset those first, then
-  // re-apply so the new zero lines up with right-now.
-  const rawRoll  = PS.roll  + PS.roll0;
-  const rawPitch = PS.pitch + PS.pitch0;
-  PS.roll0  = rawRoll;
-  PS.pitch0 = rawPitch;
+  // For quaternion-based extraction, reset the reference quaternion to the
+  // current attitude so subsequent angles are computed from this point.
+  if (PS.refQuaternion) {
+    // Recompute current quaternion to use as new reference
+    const DEG_TO_RAD = Math.PI / 180;
+    const alpha = (PS.lastAlpha || 0) * DEG_TO_RAD;
+    const beta  = (PS.lastBeta || 0) * DEG_TO_RAD;
+    const gamma = (PS.lastGamma || 0) * DEG_TO_RAD;
+
+    const ca = Math.cos(alpha), sa = Math.sin(alpha);
+    const cb = Math.cos(beta),  sb = Math.sin(beta);
+    const cg = Math.cos(gamma), sg = Math.sin(gamma);
+
+    const R = [
+      [ca*cg - sa*sb*sg,  -ca*sg - sa*sb*cg,  -sa*cb],
+      [sa*cg + ca*sb*sg,  -sa*sg + ca*sb*cg,   ca*cb],
+      [cb*sg,              cb*cg,               sb]
+    ];
+
+    const M = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]];
+    const RA = [];
+    for (let i = 0; i < 3; i++) {
+      RA[i] = [];
+      for (let j = 0; j < 3; j++) {
+        RA[i][j] = M[i][0]*R[0][j] + M[i][1]*R[1][j] + M[i][2]*R[2][j];
+      }
+    }
+
+    const trace = RA[0][0] + RA[1][1] + RA[2][2];
+    let qx, qy, qz, qw;
+    if (trace > 0) {
+      const s = 0.5 / Math.sqrt(trace + 1);
+      qw = 0.25 / s;
+      qx = (RA[2][1] - RA[1][2]) * s;
+      qy = (RA[0][2] - RA[2][0]) * s;
+      qz = (RA[1][0] - RA[0][1]) * s;
+    } else if (RA[0][0] > RA[1][1] && RA[0][0] > RA[2][2]) {
+      const s = 2 * Math.sqrt(1 + RA[0][0] - RA[1][1] - RA[2][2]);
+      qw = (RA[2][1] - RA[1][2]) / s;
+      qx = 0.25 * s;
+      qy = (RA[0][1] + RA[1][0]) / s;
+      qz = (RA[0][2] + RA[2][0]) / s;
+    } else if (RA[1][1] > RA[2][2]) {
+      const s = 2 * Math.sqrt(1 + RA[1][1] - RA[0][0] - RA[2][2]);
+      qw = (RA[0][2] - RA[2][0]) / s;
+      qx = (RA[0][1] + RA[1][0]) / s;
+      qy = 0.25 * s;
+      qz = (RA[1][2] + RA[2][1]) / s;
+    } else {
+      const s = 2 * Math.sqrt(1 + RA[2][2] - RA[0][0] - RA[1][1]);
+      qw = (RA[1][0] - RA[0][1]) / s;
+      qx = (RA[0][2] + RA[2][0]) / s;
+      qy = (RA[1][2] + RA[2][1]) / s;
+      qz = 0.25 * s;
+    }
+    PS.refQuaternion = [qx, qy, qz, qw];
+  }
+
+  PS.roll0  = 0;
+  PS.pitch0 = 0;
   PS.roll   = 0;
   PS.pitch  = 0;
   try {
     localStorage.setItem('phone_zero',
-      JSON.stringify({roll0: PS.roll0, pitch0: PS.pitch0}));
+      JSON.stringify({roll0: 0, pitch0: 0}));
   } catch (e) {}
   _sensorFlash('ZEROED', 1200);
 }
