@@ -670,7 +670,7 @@ function updateSensorReadoutUI() {
   if (PS.enabled) {
     document.getElementById('sensor-alpha').textContent = PS.alpha.toFixed(2) + '°';
     document.getElementById('sensor-beta').textContent = PS.beta.toFixed(2) + '°';
-    document.getElementById('sensor-gamma').textContent = PS.gamma.toFixed(2) + '°';
+    document.getElementById('sensor-gamma').textContent = (PS.gamma + 90).toFixed(2) + '°';
     document.getElementById('sensor-compass').textContent = PS.compassHeading != null
       ? PS.compassHeading.toFixed(1) + '°' : '(not available)';
     document.getElementById('sensor-roll').textContent = PS.roll.toFixed(2) + '°';
