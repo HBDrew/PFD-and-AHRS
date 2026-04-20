@@ -360,17 +360,10 @@ function _onOrient(e) {
   PS.lastBeta = e.beta || 0;
   PS.lastGamma = e.gamma || 0;
 
-  // Detect mount orientation on first read: table-top or flight
-  if (!PS.mountOrientation) {
-    const beta = e.beta || 0;
-    // If beta near ±90°, phone is vertical (flight); if near 0°, phone is level (table-top)
-    PS.mountOrientation = Math.abs(beta) > 45 ? 'flight' : 'tabletop';
-  }
-
   // Log raw sensor values to help diagnose orientation issue
   if (!PS.sensorLogCount) PS.sensorLogCount = 0;
   if (PS.sensorLogCount++ % 20 === 0) {
-    sensorEl.title = `${PS.mountOrientation} α=${(e.alpha||0).toFixed(0)}° β=${(e.beta||0).toFixed(0)}° γ=${(e.gamma||0).toFixed(0)}°`;
+    sensorEl.title = `α=${(e.alpha||0).toFixed(0)}° β=${(e.beta||0).toFixed(0)}° γ=${(e.gamma||0).toFixed(0)}°`;
   }
 
   // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
@@ -385,23 +378,12 @@ function _onOrient(e) {
     [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: use appropriate matrix based on detected orientation
-  let M;
-  if (PS.mountOrientation === 'flight') {
-    // Phone mounted vertically: back towards nose, screen facing pilot, top pointing up
-    M = [
-      [0,  0, -1],
-      [1,  0,  0],
-      [0,  1,  0]
-    ];
-  } else {
-    // Phone mounted horizontally (table-top): back towards nose, screen facing up
-    M = [
-      [0,  1,  0],
-      [-1, 0,  0],
-      [0,  0,  1]
-    ];
-  }
+  // Mount transform: use table-top matrix for now (flight matrix needs calibration)
+  const M = [
+    [0,  1,  0],
+    [-1, 0,  0],
+    [0,  0,  1]
+  ];
 
   // R_aircraft = M * R_device
   const RA = [];
