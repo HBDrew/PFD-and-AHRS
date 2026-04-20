@@ -367,13 +367,11 @@ function _onOrient(e) {
     [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: table-top position pitched up 90° to reach flight position.
-  // In flight: device +Y→up, device +X→left, device +Z→back.
-  // Roll now comes from alpha (was yaw), yaw from gamma (was roll), pitch from beta.
+  // Mount transform: phone mounted horizontally (table-top position)
   const M = [
-    [0,  0, -1],
+    [0,  1,  0],
     [-1, 0,  0],
-    [0,  1,  0]
+    [0,  0,  1]
   ];
 
   // R_aircraft = M * R
@@ -400,7 +398,7 @@ function _onOrient(e) {
   }
 
   PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
-  PS.pitch = -pitch * (180 / Math.PI) - PS.pitch0;
+  PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
   PS.yaw = (typeof e.webkitCompassHeading === 'number')
     ? e.webkitCompassHeading
     : (e.alpha || 0);
