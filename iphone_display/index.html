@@ -443,8 +443,8 @@ function _onOrient(e) {
   PS.screenAngle = ang;
 
   const a = PS.alpha * Math.PI / 180;
-  const b = PS.beta  * Math.PI / 180;
-  const g = PS.gamma * Math.PI / 180;
+  const b = PS.gamma * Math.PI / 180;    // swap: use gamma where beta was
+  const g = PS.beta  * Math.PI / 180;    // swap: use beta where gamma was
   const sa = Math.sin(a), ca = Math.cos(a);
   const sb = Math.sin(b), cb = Math.cos(b);
   const sg = Math.sin(g), cg = Math.cos(g);
