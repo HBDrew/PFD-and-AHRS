@@ -440,22 +440,20 @@ function _onOrient(e) {
   const cosPitch = Math.cos(pitch);
 
   let roll, yaw;
-  if (Math.abs(cosPitch) > 1e-6) {
+  if (Math.abs(cosPitch) > 0.1) {
+    // Normal extraction when not at gimbal lock
     roll = Math.atan2(2*(qRelW*qRelX + qRelY*qRelZ), 1 - 2*(qRelX*qRelX + qRelY*qRelY));
     yaw = Math.atan2(2*(qRelW*qRelZ + qRelX*qRelY), 1 - 2*(qRelY*qRelY + qRelZ*qRelZ));
   } else {
-    roll = 0;
-    yaw = Math.atan2(2*(qRelX*qRelY - qRelZ*qRelW), qRelX*qRelX - qRelY*qRelY - qRelZ*qRelZ + qRelW*qRelW);
+    // At gimbal lock: swap roll and yaw to avoid singularity
+    // When pitch ≈ ±90°, what was yaw becomes roll and vice versa
+    roll = Math.atan2(2*(qRelW*qRelZ + qRelX*qRelY), 1 - 2*(qRelY*qRelY + qRelZ*qRelZ));
+    yaw = Math.atan2(2*(qRelW*qRelX + qRelY*qRelZ), 1 - 2*(qRelX*qRelX + qRelY*qRelY));
   }
 
-  // Shift pitch by -90° to move gimbal lock out of normal flight range
-  const pitchShifted = pitch - Math.PI / 2;
-
   PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
-  PS.pitch = pitchShifted * (180 / Math.PI) - PS.pitch0;
+  PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
   PS.yaw   = e.alpha || 0;
-
-  console.log('_onOrient:', {rawPitch: pitch*(180/Math.PI), shiftedPitch: pitchShifted*(180/Math.PI), finalPitch: PS.pitch});
 }
 
 function _onGeolocation(pos) {
