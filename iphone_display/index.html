@@ -426,9 +426,8 @@ function _onOrient(e) {
     yaw = Math.atan2(-RA[0][1], RA[1][1]);
   }
 
-  // Swap roll and pitch since axes were swapped in input
-  PS.roll  = -pitch * (180 / Math.PI) - PS.roll0;
-  PS.pitch = roll  * (180 / Math.PI) - PS.pitch0;
+  PS.roll  = -roll  * (180 / Math.PI) - PS.roll0;
+  PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
   PS.yaw = (typeof e.webkitCompassHeading === 'number')
     ? e.webkitCompassHeading
     : (e.alpha || 0);
