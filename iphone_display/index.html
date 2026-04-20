@@ -64,6 +64,9 @@
   .sensor-off  { background:rgba(60,60,80,.80);   color:#aac; }
   .sensor-on   { background:rgba(0,120,180,.80);  color:#fff; }
   .sensor-act  { background:rgba(0,150,120,.85);  color:#fff; }
+  .ahrs-ok     { background:rgba(0,120,180,.80);  color:#fff; }
+  .phone-ok    { background:rgba(0,150,120,.85);  color:#fff; }
+  .no-data     { background:rgba(60,60,80,.80);   color:#aac; }
   .trn-ready   { background:rgba(0,130,60,.75);   color:#fff; }
   .trn-partial { background:rgba(160,100,0,.75);  color:#fff; }
   .trn-idle    { background:rgba(60,60,80,.80);   color:#aac; }
@@ -365,6 +368,20 @@ function updateLinkStatus() {
   else if (age < 3000) { linkEl.textContent='LINK OK';    linkEl.className='link-ok';   }
   else if (age < 8000) { linkEl.textContent='LINK WARN';  linkEl.className='link-warn'; }
   else                 { linkEl.textContent='NO LINK';    linkEl.className='link-dead'; }
+}
+
+function updateDataSource() {
+  const ahrsOk = D.ahrs_ok && (performance.now() - lastMsgMs) < 5000;
+  if (ahrsOk) {
+    sensorEl.textContent = 'AHRS';
+    sensorEl.className = 'ahrs-ok';
+  } else if (PS.enabled) {
+    sensorEl.textContent = PS.absolute ? 'PHONE' : 'PHONE*';
+    sensorEl.className = 'phone-ok';
+  } else {
+    sensorEl.textContent = 'NO DATA';
+    sensorEl.className = 'no-data';
+  }
 }
 
 // ── iPhone internal-sensor fallback ────────────────────────────────────────
@@ -1660,6 +1677,7 @@ function render(ts) {
   lastTs=ts;
 
   updateLinkStatus();
+  updateDataSource();
   if (ts - lastBaroRefresh > 1000) {
     updateBaroUI();
     if (trimPanel.style.display === 'block') updateTrimUI();
