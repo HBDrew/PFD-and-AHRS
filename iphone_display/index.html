@@ -373,16 +373,16 @@ function _onOrient(e) {
     sensorEl.title = `${PS.mountOrientation} α=${(e.alpha||0).toFixed(0)}° β=${(e.beta||0).toFixed(0)}° γ=${(e.gamma||0).toFixed(0)}°`;
   }
 
-  // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
-  // Build rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
+  // Device orientation: alpha=Z rotation, but on this device gamma=pitch(X) and beta=roll(Y)
+  // Build rotation matrix: Rz(alpha) * Rx(gamma) * Ry(beta) [swapped from standard spec]
   const ca = Math.cos(alpha), sa = Math.sin(alpha);
-  const cb = Math.cos(beta),  sb = Math.sin(beta);
-  const cg = Math.cos(gamma), sg = Math.sin(gamma);
+  const cb = Math.cos(beta),  sb = Math.sin(beta);   // Now beta is Y (roll)
+  const cg = Math.cos(gamma), sg = Math.sin(gamma);  // Now gamma is X (pitch)
 
   const R = [
-    [ca*cg - sa*sb*sg,  -ca*sg - sa*sb*cg,  -sa*cb],
-    [sa*cg + ca*sb*sg,  -sa*sg + ca*sb*cg,   ca*cb],
-    [cb*sg,              cb*cg,               sb]
+    [ca*cb - sa*sg*sb,  -ca*sb - sa*sg*cb,  -sa*cg],
+    [sa*cb + ca*sg*sb,  -sa*sb + ca*sg*cb,   ca*cg],
+    [cg*sb,              cg*cb,               sg]
   ];
 
   // Mount transform: use appropriate matrix based on detected orientation
