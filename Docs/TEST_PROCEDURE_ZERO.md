@@ -72,14 +72,27 @@
 
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
-| 1.4.1 | Tap alt bug box (top-right of alt tape) | Numpad overlay appears, title "SET ALT" | | |
-| 1.4.2 | Type `85` then tap **ENTER** | Numpad closes; alt bug readout shows `8500`; bug chevron moves to 8500 ft | | |
-| 1.4.3 | Tap HDG bug box (bottom-left) | Numpad overlay appears, title "SET HDG" | | |
-| 1.4.4 | Type `270` then tap **ENTER** | HDG bug readout shows `270°`; bug chevron moves on tape | | |
-| 1.4.5 | Tap speed bug box (top-left) | Numpad overlay appears, title "SET SPD" | | |
-| 1.4.6 | Type `90` then tap **ENTER** | Speed bug readout shows `90`; bug chevron visible on tape | | |
-| 1.4.7 | Tap anywhere on heading tape | HDG bug jumps to tapped heading | | |
-| 1.4.8 | Tap anywhere on altitude tape | Alt bug jumps to nearest 100 ft | | |
+| 1.4.1 | Tap alt bug box (top-right of alt tape) | Numpad overlay appears, title "SET ALTITUDE BUG (×100 ft)"; current value shown as dim `Current: <n>` placeholder below an empty entry line | | |
+| 1.4.2 | Tap **ENTER** with empty buffer | Numpad closes; alt bug value unchanged (placeholder-not-pre-populated check) | | |
+| 1.4.3 | Re-open; type `85` then tap **ENTER** | Numpad closes; alt bug readout shows `8500`; bug chevron moves to 8500 ft | | |
+| 1.4.4 | Re-open; type `9` then tap **⌫** | Buffer empties one digit (backspace present on numpad) | | |
+| 1.4.5 | Tap HDG bug box (bottom-left of heading strip) | Numpad "SET HDG BUG"; hit region extends full heading-strip height | | |
+| 1.4.6 | Type `270` then tap **ENTER** | HDG bug readout shows `270°` | | |
+| 1.4.7 | Tap speed bug box (top of speed tape) | Numpad "SET SPD BUG" | | |
+| 1.4.8 | Type `90` then tap **ENTER** | Speed bug readout shows `90` | | |
+| 1.4.9 | Tap baro box (bottom-right of heading strip) | Numpad title "SET BARO inHg" or "SET BARO hPa" matching Display Settings unit | | |
+| 1.4.10 | Tap heading tape | HDG bug jumps to tapped heading | | |
+| 1.4.11 | Tap altitude tape | Alt bug jumps to nearest 100 ft | | |
+
+### 1.4.5 Touch — Keyboard Entry
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 1.4.5.1 | Open Flight Profile; tap **CALLSIGN** | Keyboard overlay appears; current tail shown as placeholder, buffer empty | | |
+| 1.4.5.2 | Verify row 4 contents | `Z X C V B N M . : ⌫` — period, colon, and backspace present | | |
+| 1.4.5.3 | Type `N.1`; tap **⌫** twice | Period and digit removed; "N" remains | | |
+| 1.4.5.4 | Tap **CANCEL** | Keyboard closes; callsign unchanged | | |
+| 1.4.5.5 | Connectivity → tap AHRS URL | Keyboard opens pre-populated with current URL (e.g. `http://192.168.4.1`); `:` and `.` keys usable for URL editing | | |
 
 ### 1.5 Touch — AHRS / Sensors Screen
 
@@ -206,6 +219,16 @@
 | 3.5.2 | Observe tapes | Values freeze at last received value | | |
 | 3.5.3 | Power AHRS unit back on | Within 5 s: `NO LINK` badge clears; tapes resume | | |
 
+### 3.6 Connectivity Screen Diagnostics
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 3.6.1 | Setup → **CONNECTIVITY** with link up | STATUS row: AHRS green "CONNECTED"; WiFi green "WiFi: `<ssid>`" showing the actual network name the Pi is associated to | | |
+| 3.6.2 | Observe AHRS LINK diagnostics row | Transport + port on the left (typically `WIFI http://192.168.4.1` on Pi Zero 2W); RX counter increments ~20×/s | | |
+| 3.6.3 | Observe live **R / P / Y / ALT** on the right | Values match the main PFD; tilt the AHRS and confirm they update here | | |
+| 3.6.4 | Power-cycle AHRS unit | RX pauses, then resumes; ERR may increment once; last-error string may briefly show | | |
+| 3.6.5 | Tap **TEST AHRS** | Blue status message confirms reachability (or shows the specific error) | | |
+
 ---
 
 ## Phase 4 — Baro Setting Verification
@@ -230,11 +253,13 @@ Requires Pi to be on an internet-reachable WiFi (use `sudo bash wifi_switch.sh h
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
 | 5.1.1 | Setup → System → **TERRAIN** | Terrain data screen opens; idle state if no tiles present | | |
-| 5.1.2 | Tap preset region **US Southwest** | Region highlights | | |
-| 5.1.3 | Tap **DOWNLOAD** | Progress bar advances; per-tile status updates | | |
-| 5.1.4 | Wait for completion | Done ✓ message; record count and MB displayed | | |
-| 5.1.5 | Return to PFD, observe status badges | `NO TER` badge clears | | |
-| 5.1.6 | If on Pico W AP (no internet): tap DOWNLOAD | "WiFi (home network) required" guard message appears | | |
+| 5.1.2 | Observe region grid | Nine preset tiles visible: US Southwest, US Pacific, US Southeast, US Northeast, US Midwest, All CONUS, Alaska, Europe West, All Europe — each with tile count + size estimate | | |
+| 5.1.3 | Observe top tile | **DOWNLOAD CURRENT AREA** — 5°×5° box (~25 tiles, ~35 MB) around GPS position | | |
+| 5.1.4 | Tap preset **US Southwest** | Download starts; progress bar advances at top of screen | | |
+| 5.1.5 | Tap **CANCEL** mid-download; re-tap region | Existing tiles skipped; remaining ones fetch (resumable) | | |
+| 5.1.6 | Wait for completion | Done ✓ message; disk tile count + MB updates | | |
+| 5.1.7 | Return to PFD, observe status badges | `NO TER` badge clears | | |
+| 5.1.8 | If on Pico W AP (no internet): tap any region | "WiFi (home network) required" guard message appears | | |
 
 ### 5.2 Obstacle Data (FAA DOF)
 

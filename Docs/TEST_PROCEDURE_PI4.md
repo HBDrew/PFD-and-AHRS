@@ -74,14 +74,29 @@
 
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
-| 1.4.1 | Tap alt bug box (top-right of alt tape) | Numpad overlay appears, title "SET ALT" | | |
-| 1.4.2 | Type `85` then tap **ENTER** | Numpad closes; alt bug readout shows `8500`; bug chevron moves to 8500 ft | | |
-| 1.4.3 | Tap HDG bug box (bottom-left) | Numpad overlay appears, title "SET HDG" | | |
-| 1.4.4 | Type `270` then tap **ENTER** | HDG bug readout shows `270°`; bug chevron moves on tape | | |
-| 1.4.5 | Tap speed bug box (top-left) | Numpad overlay appears, title "SET SPD" | | |
-| 1.4.6 | Type `90` then tap **ENTER** | Speed bug readout shows `90`; bug chevron visible on tape | | |
-| 1.4.7 | Tap anywhere on heading tape | HDG bug jumps to tapped heading | | |
-| 1.4.8 | Tap anywhere on altitude tape | Alt bug jumps to nearest 100 ft | | |
+| 1.4.1 | Tap alt bug box (top-right of alt tape) | Numpad overlay appears, title "SET ALTITUDE BUG (×100 ft)"; current value shown as dim `Current: <n>` placeholder below the empty entry line | | |
+| 1.4.2 | Tap **ENTER** without typing | Numpad closes; alt bug value unchanged (placeholder-not-pre-populated UX check) | | |
+| 1.4.3 | Re-open numpad; type `85` then tap **ENTER** | Numpad closes; alt bug readout shows `8500`; bug chevron moves to 8500 ft | | |
+| 1.4.4 | Re-open numpad; type `9` then tap **⌫** (backspace) | Buffer empties one digit at a time — numpad still open | | |
+| 1.4.5 | Tap HDG bug box (bottom-left of heading strip) | Numpad overlay appears, title "SET HDG BUG"; full heading-strip-height hit region (regression check) | | |
+| 1.4.6 | Type `270` then tap **ENTER** | HDG bug readout shows `270°`; bug chevron moves on tape | | |
+| 1.4.7 | Tap speed bug box (top of speed tape) | Numpad overlay appears, title "SET SPD BUG" | | |
+| 1.4.8 | Type `90` then tap **ENTER** | Speed bug readout shows `90`; bug chevron visible on tape | | |
+| 1.4.9 | Tap baro box (bottom-right of heading strip) | Numpad title "SET BARO inHg" or "SET BARO hPa" matching Display Settings unit | | |
+| 1.4.10 | Tap anywhere on heading tape | HDG bug jumps to tapped heading | | |
+| 1.4.11 | Tap anywhere on altitude tape | Alt bug jumps to nearest 100 ft | | |
+
+### 1.4.5 Touch — Keyboard Entry
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 1.4.5.1 | Open Flight Profile; tap **CALLSIGN** | Keyboard overlay appears; current tail shown as placeholder, buffer empty | | |
+| 1.4.5.2 | Verify row 4 contents | `Z X C V B N M . : ⌫` — period, colon, and backspace must all be present | | |
+| 1.4.5.3 | Type `N` then `.` then `1` | Buffer accepts period character (regression check) | | |
+| 1.4.5.4 | Tap **⌫** three times | Three chars removed from buffer end | | |
+| 1.4.5.5 | Tap **CANCEL** | Keyboard closes; callsign unchanged | | |
+| 1.4.5.6 | Connectivity → tap AHRS URL | Keyboard opens pre-populated with current URL (`http://192.168.4.1` by default) | | |
+| 1.4.5.7 | Confirm `:` key enters colon | Buffer accepts colon — needed for URLs | | |
 
 ### 1.5 Touch — AHRS / Sensors Screen
 
@@ -208,6 +223,18 @@
 | 3.5.2 | Observe tapes | Values freeze at last received value | | |
 | 3.5.3 | Power AHRS unit back on | Within 5 s: `NO LINK` badge clears; tapes resume | | |
 
+### 3.6 Connectivity Screen Diagnostics
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 3.6.1 | Setup → **CONNECTIVITY** with link up | STATUS row: AHRS green "CONNECTED"; WiFi green "WiFi: `<ssid>`" showing the actual network name the Pi is associated to (not the AHRS URL) | | |
+| 3.6.2 | Observe AHRS LINK row | Subtitle shows transport + port (`USB /dev/ttyACM0` if Pico is USB-connected, otherwise `WIFI http://192.168.4.1`) | | |
+| 3.6.3 | Observe RX: counter | Increments ~20×/s while link is healthy | | |
+| 3.6.4 | Observe live R / P / Y / ALT on right-hand side | Values match the current AHRS readings; tilt the AHRS unit and confirm R and P change here as on the main PFD | | |
+| 3.6.5 | Power off AHRS unit for 5 s then back on | RX counter pauses, then resumes; ERR may tick up once; last error string may briefly show | | |
+| 3.6.6 | Disconnect WT901 TX line, reconnect | RX still increments (firmware alive) but R/P/Y freeze at last values — confirms the diagnostic catches "transport OK, sensor dead" | | |
+| 3.6.7 | Tap **TEST AHRS** | Blue status message appears below the buttons — success or specific error | | |
+
 ---
 
 ## Phase 4 — Baro Setting Verification
@@ -232,11 +259,15 @@ Requires Pi to be on an internet-reachable WiFi (use `sudo bash wifi_switch.sh h
 | Step | Action | Expected Result | Result | Notes |
 |------|--------|----------------|--------|-------|
 | 5.1.1 | Setup → System → **TERRAIN** | Terrain data screen opens; idle state if no tiles present | | |
-| 5.1.2 | Tap preset region **US Southwest** | Region highlights | | |
-| 5.1.3 | Tap **DOWNLOAD** | Progress bar advances; per-tile status updates | | |
-| 5.1.4 | Wait for completion | Done ✓ message; record count and MB displayed | | |
-| 5.1.5 | Return to PFD, observe status badges | `NO TER` badge clears | | |
-| 5.1.6 | If on Pico W AP (no internet): tap DOWNLOAD | "WiFi (home network) required" guard message appears | | |
+| 5.1.2 | Observe region grid | Nine preset region tiles visible: US Southwest, US Pacific, US Southeast, US Northeast, US Midwest, All CONUS, Alaska, Europe West, All Europe. Each shows tile count + size estimate | | |
+| 5.1.3 | Observe top tile | **DOWNLOAD CURRENT AREA** tile shows `~25 tiles around <lat>°N <lon>°W  ≈ 35 MB` (actual counts vary with latitude) | | |
+| 5.1.4 | Tap preset region **US Southwest** | Download starts immediately (no separate DOWNLOAD button); progress strip appears at top | | |
+| 5.1.5 | Observe progress | Per-tile status updates; current-of-total counter advances | | |
+| 5.1.6 | Tap **CANCEL** mid-download | Download halts; already-downloaded tiles retained on disk | | |
+| 5.1.7 | Tap same region again | Download resumes — already-present tiles are skipped, only missing ones fetch | | |
+| 5.1.8 | Wait for completion | Done ✓ message; disk tile count + MB updates at top of screen | | |
+| 5.1.9 | Return to PFD, observe status badges | `NO TER` badge clears | | |
+| 5.1.10 | If on Pico W AP (no internet): tap any region | "WiFi (home network) required" guard message appears | | |
 
 ### 5.2 Obstacle Data (FAA DOF)
 
@@ -276,6 +307,20 @@ Requires SRTM tiles loaded (Phase 5.1 complete). Use `pi4/pfd.py --demo --sim` o
 | 5.5.9 | Delete or rename `pi4/data/srtm` directory; relaunch | SVT falls back to blue/brown split; `NO TER` badge appears | | |
 | 5.5.10 | Restore SRTM directory; relaunch | Terrain mesh returns | | |
 | 5.5.11 | Observe sustained frame rate during continuous demo | 30 fps target; no visible stutter on ROADOM 1024×600 panel | | |
+
+---
+
+## Phase 5.6 — Veeder-Root Drum Cascade
+
+These checks verify the rolling-drum regressions fixed during software v0.2 development (speed `1` at 100 kt, altitude `1` at 10000 ft, airspeed ones-drum "1 above 0" visibility). Runs in the flight simulator using the preview generator states.
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 5.6.1 | Sim at 99 kt, continue accelerating | Airspeed drum at 99 shows "0" and "9" stacked; a faint "1" is visible ABOVE the "0" before the crossing to 100 (d_hi2 preview slot) | | |
+| 5.6.2 | Continue through 100 kt | Tens digit cascades from "9" to "0"; leading "1" column emerges smoothly; no blank slot | | |
+| 5.6.3 | Sim at 9980 ft, climb at 500 fpm | Altitude drum shows "99" and "80" stacked; leading column reveals "1" peeking above the "99" before the crossing to 10000 | | |
+| 5.6.4 | Continue through 10000 ft | Leading column cascades 9→0; new "1" column appears; tens row advances to "00" — no "0000" flash or missing-digit visual defect | | |
+| 5.6.5 | Sim descends from 100 ft to 90 ft | Airspeed/altitude drums narrow from three cells to two without snapping (the two-drum path is entered at `alt_inner ≥ 99.5`, not at integer 100, so the transition is smooth) | | |
 
 ---
 
@@ -366,6 +411,7 @@ Use this table to record any unexpected behaviour for later investigation.
 | Phase 4 — Baro verification | Y / N | | |
 | Phase 5 — Data downloads | Y / N | | |
 | Phase 5.5 — OpenGL SVT | Y / N | | |
+| Phase 5.6 — Drum cascade | Y / N | | |
 | Phase 6 — AI overlays | Y / N | | |
 | Phase 7 — Settings persistence | Y / N | | |
 

@@ -57,9 +57,25 @@ from svt_renderer import render_svt as render_svt_pygame
 _SVT_GL_AVAILABLE = False
 _gl_available = None
 try:
-    from svt_renderer_gl import render_svt_gl
+    from svt_renderer_gl import render_svt_gl, render_svt_into_current_fb
 except Exception:
     render_svt_gl = None
+    render_svt_into_current_fb = None
+
+# Shared-context composite path (pygame.OPENGL + moderngl).  Imported lazily
+# because it's only needed when SVT_RENDERER == "opengl_shared".
+try:
+    from svt_composite_gl import setup_gl_display, Compositor
+    HAS_SHARED_GL = True
+except Exception:
+    setup_gl_display = None
+    Compositor = None
+    HAS_SHARED_GL = False
+
+# Populated by main() when opengl_shared setup succeeds.  render() and _flip()
+# check `_shared_gl_ctx is not None` to take the GL composite path.
+_shared_gl_ctx = None
+_shared_gl_compositor = None
 
 import obstacles as obs_mod
 import airports as apt_mod
@@ -268,6 +284,45 @@ def _poll_wifi_status():
         time.sleep(5)
 
 
+def _SPD_DISP_FACTOR():
+    """Current speed display conversion factor (kt → display unit)."""
+    return {"kt": 1.0, "mph": 1.15078, "kph": 1.852}.get(
+        disp["ds"].get("spd_unit", "kt"), 1.0)
+
+
+def _ALT_DISP_FACTOR():
+    """Current altitude display conversion factor (ft → display unit)."""
+    return {"ft": 1.0, "m": 0.3048}.get(disp["ds"].get("alt_unit", "ft"), 1.0)
+
+
+def _push_baro_to_pico(qnh_hpa: float):
+    """Fire-and-forget HTTP GET to the Pico W's /baro?qnh=X endpoint.
+
+    The firmware uses this to update its internal BME280 QNH so future
+    altitude samples are computed against the pilot's altimeter setting.
+    Without this call, the PFD would show the pilot's entered baro
+    locally but the AHRS-derived altitude would still reflect the
+    firmware's default QNH — a silent miscalibration.
+
+    Runs in a background thread because the Pico's HTTP handler can
+    take 100–300 ms to respond and must not block the PFD frame loop.
+    Failures are logged but don't alter disp — the local baro value
+    sticks regardless of whether the Pico is reachable.
+    """
+    base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+    url  = f"{base}/baro?qnh={qnh_hpa:.2f}"
+
+    def _worker():
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=3) as resp:
+                resp.read()
+        except Exception as e:
+            print(f"[PFD] /baro push failed ({url}): {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="BaroPush").start()
+
+
 def _poll_ahrs_diag():
     """Background thread: mirror the AHRS transport client's diagnostic
     counters (rx_count, err_count, last_err) into disp['cs'] so the
@@ -385,9 +440,13 @@ def smooth_state():
     # Heading: handle 0/360 wraparound
     dh = ((snap["yaw"] - disp["yaw"] + 180) % 360) - 180
     disp["yaw"] = (disp["yaw"] + dh * SMOOTH_K) % 360
-    # Boolean / discrete fields: copy directly
+    # Boolean / discrete fields: copy directly.
+    # NOTE: baro_hpa is NOT copied here — it's a user-set Kollsman-window value
+    # owned by disp[] and pushed outward to the Pico W via _push_baro_to_pico().
+    # Copying it from state every frame would clobber numpad/± button entries
+    # whenever the SSE stream carried a stale QNH echo back from the firmware.
     for k in ("lat", "lon", "track", "fix", "sats",
-              "gps_alt", "baro_src", "baro_hpa",
+              "gps_alt", "baro_src",
               "ahrs_ok", "gps_ok", "baro_ok",
               "pitch_trim", "roll_trim", "yaw_trim"):
         disp[k] = snap[k]
@@ -2284,25 +2343,45 @@ def handle_event(event, demo_mode):
                     buf = disp["numpad_buf"]
                     if buf:
                         val = int(buf)
+                        # Unit factors: user types values in whatever unit is
+                        # currently displayed, but bugs are stored canonically
+                        # (kt for speed, ft for altitude).  Divide by the
+                        # factor to convert display → canonical.
+                        ds = disp["ds"]
+                        spd_factor = {"kt": 1.0, "mph": 1.15078,
+                                      "kph": 1.852}.get(ds.get("spd_unit", "kt"), 1.0)
+                        alt_factor = {"ft": 1.0,
+                                      "m":  0.3048}.get(ds.get("alt_unit", "ft"), 1.0)
                         if target == "alt_bug":
-                            disp["alt_bug"] = float(val * 100)   # input is hundreds of ft
+                            # Input is hundreds of display-unit altitude.
+                            disp["alt_bug"] = float(val * 100) / alt_factor
                         elif target == "hdg_bug":
                             disp["hdg_bug"] = float(val % 360)
                         elif target == "spd_bug":
-                            disp["spd_bug"] = float(val)
+                            disp["spd_bug"] = float(val) / spd_factor
                         elif target == "baro_hpa":
-                            baro_unit = disp["ds"].get("baro_unit", "inhg")
+                            baro_unit = ds.get("baro_unit", "inhg")
                             if baro_unit == "hpa":
-                                disp["baro_hpa"] = float(val)
+                                new_hpa = float(val)
                             else:   # inHg: 4 digits → insert decimal after 2
-                                disp["baro_hpa"] = round(val / 100.0 * 33.8639, 2)
+                                new_hpa = round(val / 100.0 * 33.8639, 2)
+                            # baro_hpa is a user-set value.  Write it into disp
+                            # (immediate UI feedback), into state (so other
+                            # readers see it) and push to the Pico W so the
+                            # firmware recomputes altitude against the new QNH.
+                            disp["baro_hpa"] = new_hpa
+                            with _state_lock:
+                                state["baro_hpa"] = new_hpa
+                            _push_baro_to_pico(new_hpa)
                         elif target == "sim_init_alt":
-                            disp["sim"]["init_alt"] = float(val * 100)
+                            disp["sim"]["init_alt"] = float(val * 100) / alt_factor
                         elif target == "sim_init_hdg":
                             disp["sim"]["init_hdg"] = float(val % 360)
                         elif target == "sim_init_spd":
+                            # sim_init_spd title is explicitly "(kt)" so no
+                            # conversion here — entered value is already kt.
                             disp["sim"]["init_spd"] = float(val)
-                        elif target in disp["fp"]:   # V-speed field
+                        elif target in disp["fp"]:   # V-speed field (always kt)
                             disp["fp"][target] = val
                         _settings.mark_dirty()
                     disp["mode"] = disp["numpad_prev"]
@@ -4590,6 +4669,18 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
 def render(surf, demo_mode, connected, data_stale=False):
     mode = disp.get("mode", "pfd")
 
+    # In shared-GL composite mode, surf is an SRCALPHA overlay — pre-clear
+    # it each frame so stale pixels from the previous frame don't leak
+    # through transparent regions.  The GL framebuffer gets a safe clear
+    # below (before any terrain render) so setup screens (which return
+    # early) show on top of a blank background instead of last frame's
+    # terrain.
+    if _shared_gl_ctx is not None:
+        surf.fill((0, 0, 0, 0))
+        _shared_gl_ctx.screen.use()
+        _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
+        _shared_gl_ctx.clear(0.0, 0.0, 0.0, 1.0)
+
     # ── Full-screen replacement screens (no PFD behind them) ─────────────────
     if mode == "setup":
         draw_setup_screen(surf); return
@@ -4613,7 +4704,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_sim_setup(surf); return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
-    surf.fill((0, 0, 0))
+    # Shared-GL path already cleared surf to transparent at the top of
+    # render() — skip the opaque fill here so the AI region can show
+    # terrain through the compositor.
+    if _shared_gl_ctx is None:
+        surf.fill((0, 0, 0))
 
     roll    = disp["roll"]
     pitch   = disp["pitch"]
@@ -4701,9 +4796,23 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 0. Compute terrain/obstacle alert level for this frame
     _update_terrain_alert(lat, lon, alt, speed, gps_ok)
 
-    # 1. AI background — draw full-width so tapes are transparent over sky/ground
+    # 1. AI background — draw full-width so tapes are transparent over sky/ground.
+    # Shared-GL composite path renders sky+terrain directly into the default
+    # framebuffer instead of blitting a pygame surface; the 2D overlay here
+    # leaves the AI region transparent so terrain shows through.
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
-    if _has_terrain:
+    if _shared_gl_ctx is not None:
+        # Render terrain into the AI region of the default framebuffer.
+        # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
+        # GL rows HDG_H..DISPLAY_H.
+        _shared_gl_ctx.viewport = (0, HDG_H, DISPLAY_W, HDG_Y)
+        render_svt_into_current_fb(
+            _shared_gl_ctx, SRTM_DIR,
+            DISPLAY_W, HDG_Y,
+            pitch, roll, hdg, alt, lat, lon,
+        )
+        _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
+    elif _has_terrain:
         draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt, lat, lon)
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
@@ -4742,7 +4851,9 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
     # 3D SVT because high terrain shifts the visible horizon away from 0°.
-    if SVT_RENDERER == "opengl" and _SVT_GL_AVAILABLE:
+    _svt_3d_active = ((SVT_RENDERER == "opengl" and _SVT_GL_AVAILABLE)
+                      or _shared_gl_ctx is not None)
+    if _svt_3d_active:
         draw_zero_pitch_line(surf, ai_rect, pitch, roll)
 
     # 2. Pitch ladder (with roll rotation)
@@ -4807,19 +4918,29 @@ def render(surf, demo_mode, connected, data_stale=False):
             baro_cur  = int(round(disp["baro_hpa"] / 33.8639 * 100))  # e.g. 2992
             baro_title = "SET BARO  (in Hg)"
             baro_dec   = 2
-        spd_bug_title = "SET IAS BUG" if airspeed_src == "ias" else "SET GS BUG"
-        titles  = {"alt_bug":   "SET ALTITUDE BUG  (\u00d7100 ft)",
+        # Bug entries are shown (and entered) in current display unit.  Storage
+        # stays canonical (kt/ft) — conversion is applied at commit time.
+        spd_unit_lbl = {"kt": "kt", "mph": "mph", "kph": "kph"}.get(
+            disp["ds"].get("spd_unit", "kt"), "kt")
+        alt_unit_lbl = {"ft": "ft", "m": "m"}.get(
+            disp["ds"].get("alt_unit", "ft"), "ft")
+        spd_bug_src  = "IAS" if airspeed_src == "ias" else "GS"
+        spd_bug_title = f"SET {spd_bug_src} BUG  ({spd_unit_lbl})"
+        titles  = {"alt_bug":   f"SET ALTITUDE BUG  (\u00d7100 {alt_unit_lbl})",
                    "hdg_bug":   "SET HEADING BUG",
                    "spd_bug":   spd_bug_title,
                    "baro_hpa":  baro_title,
-                   "sim_init_alt": "SET INITIAL ALTITUDE  (\u00d7100 ft)",
+                   "sim_init_alt": f"SET INITIAL ALTITUDE  (\u00d7100 {alt_unit_lbl})",
                    "sim_init_hdg": "SET INITIAL HEADING",
-                   "sim_init_spd": "SET INITIAL SPEED (kt)"}
-        curvals = {"alt_bug":   int(disp.get("alt_bug", 0)) // 100,
+                   "sim_init_spd": "SET INITIAL SPEED  (kt)"}
+        curvals = {"alt_bug":   int(round(disp.get("alt_bug", 0)
+                                          * _ALT_DISP_FACTOR())) // 100,
                    "hdg_bug":   int(disp.get("hdg_bug", 0)),
-                   "spd_bug":   int(disp.get("spd_bug", 0)),
+                   "spd_bug":   int(round(disp.get("spd_bug", 0)
+                                          * _SPD_DISP_FACTOR())),
                    "baro_hpa":  baro_cur,
-                   "sim_init_alt": int(disp["sim"]["init_alt"]) // 100,
+                   "sim_init_alt": int(round(disp["sim"]["init_alt"]
+                                             * _ALT_DISP_FACTOR())) // 100,
                    "sim_init_hdg": int(disp["sim"]["init_hdg"]),
                    "sim_init_spd": int(disp["sim"]["init_spd"])}
         for fkey, flabel, *rest in _FP_FIELDS:
@@ -4947,39 +5068,80 @@ def main():
     pygame.init()
     pygame.mouse.set_visible(False)
 
-    if (not args.sim) and FULLSCREEN:
-        if DISPLAY_ROTATE:
-            # Rotated display: need explicit native-res surface + manual transform.
-            info = pygame.display.Info()
-            _native_w = info.current_w if info.current_w > 0 else DISPLAY_W
-            _native_h = info.current_h if info.current_h > 0 else DISPLAY_H
-            screen = pygame.display.set_mode(
-                (_native_w, _native_h),
-                pygame.FULLSCREEN | pygame.NOFRAME
+    # ── Shared-context GL composite path ─────────────────────────────────────
+    # When SVT_RENDERER == "opengl_shared", pygame owns the display in
+    # pygame.OPENGL mode and moderngl attaches to that context.  Terrain
+    # renders directly into the default framebuffer; the 2D PFD layer is
+    # drawn onto a separate SRCALPHA surface and uploaded as a GL texture
+    # for alpha-blended composite each frame.  Falls back to the normal
+    # pygame-display path on any setup failure.  Disabled in screenshot
+    # modes since those read pixels back from `surf`, which in shared-GL
+    # mode contains only the 2D overlay (no terrain).
+    _use_shared_gl = False
+    gl_ctx = None
+    gl_compositor = None
+    use_shared_req = (SVT_RENDERER == "opengl_shared"
+                      and HAS_SHARED_GL
+                      and render_svt_into_current_fb is not None
+                      and not args.screenshot
+                      and not args.screenshots)
+    if use_shared_req:
+        try:
+            screen, gl_ctx = setup_gl_display(
+                DISPLAY_W, DISPLAY_H,
+                fullscreen=(not args.sim) and FULLSCREEN,
             )
-            _scale = min(_native_w / DISPLAY_W, _native_h / DISPLAY_H)
-            _sw = int(DISPLAY_W * _scale)
-            _sh = int(DISPLAY_H * _scale)
-            _sx = (_native_w - _sw) // 2
-            _sy = (_native_h - _sh) // 2
-            surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
+            gl_compositor = Compositor(
+                gl_ctx, DISPLAY_W, DISPLAY_H,
+                rotate_deg=DISPLAY_ROTATE,
+            )
+            surf = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+            _sw = _sh = _sx = _sy = None
+            _use_shared_gl = True
+            global _shared_gl_ctx, _shared_gl_compositor
+            _shared_gl_ctx = gl_ctx
+            _shared_gl_compositor = gl_compositor
+            print("[PFD] SVT renderer: opengl_shared (pygame.OPENGL composite)")
+        except Exception as e:
+            print(f"[PFD] opengl_shared setup failed ({e}); falling back to pygame display")
+            _use_shared_gl = False
+            gl_ctx = None
+            gl_compositor = None
+
+    if not _use_shared_gl:
+        if (not args.sim) and FULLSCREEN:
+            if DISPLAY_ROTATE:
+                # Rotated display: need explicit native-res surface + manual transform.
+                info = pygame.display.Info()
+                _native_w = info.current_w if info.current_w > 0 else DISPLAY_W
+                _native_h = info.current_h if info.current_h > 0 else DISPLAY_H
+                screen = pygame.display.set_mode(
+                    (_native_w, _native_h),
+                    pygame.FULLSCREEN | pygame.NOFRAME
+                )
+                _scale = min(_native_w / DISPLAY_W, _native_h / DISPLAY_H)
+                _sw = int(DISPLAY_W * _scale)
+                _sh = int(DISPLAY_H * _scale)
+                _sx = (_native_w - _sw) // 2
+                _sy = (_native_h - _sh) // 2
+                surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
+            else:
+                # Use SDL2's built-in logical scaling (pygame.SCALED). SDL2 scales
+                # the 640×480 logical surface to the physical display size in C,
+                # which is ~10× faster than pygame.transform.scale() in Python
+                # (~80 ms saved per frame on Pi Zero 2W scaling to 1080p).
+                # SDL_RENDER_VSYNC=0 (set above) disables vsync on the SDL_Renderer
+                # that SCALED creates internally, removing the vsync-wait overhead.
+                screen = pygame.display.set_mode(
+                    (DISPLAY_W, DISPLAY_H),
+                    pygame.FULLSCREEN | pygame.SCALED
+                )
+                surf = screen
+                _sw = _sh = _sx = _sy = None
         else:
-            # Use SDL2's built-in logical scaling (pygame.SCALED). SDL2 scales
-            # the 640×480 logical surface to the physical display size in C,
-            # which is ~10× faster than pygame.transform.scale() in Python
-            # (~80 ms saved per frame on Pi Zero 2W scaling to 1080p).
-            # SDL_RENDER_VSYNC=0 (set above) disables vsync on the SDL_Renderer
-            # that SCALED creates internally, removing the vsync-wait overhead.
-            screen = pygame.display.set_mode(
-                (DISPLAY_W, DISPLAY_H),
-                pygame.FULLSCREEN | pygame.SCALED
-            )
+            screen = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
             surf = screen
             _sw = _sh = _sx = _sy = None
-    else:
-        screen = pygame.display.set_mode((DISPLAY_W, DISPLAY_H))
-        surf = screen
-        _sw = _sh = _sx = _sy = None
 
     def _flip():
         """Present the PFD surface to the physical display.
@@ -4990,7 +5152,15 @@ def main():
 
         The rotated path (DISPLAY_ROTATE != 0) still does an explicit
         transform+scale because SDL2's logical-size API doesn't handle rotation.
+
+        In shared-GL composite mode, terrain has already been rendered into
+        the default framebuffer by render(); here we just upload the 2D
+        overlay surface as a texture and draw it as a fullscreen quad.
         """
+        if _use_shared_gl:
+            gl_compositor.upload_and_draw(surf)
+            pygame.display.flip()
+            return
         if surf is not screen:
             # Rotated display — manual transform + scale
             s = pygame.transform.rotate(surf, DISPLAY_ROTATE)

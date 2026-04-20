@@ -33,9 +33,8 @@
   .trn-btns         { display:flex; gap:8px; flex-wrap:wrap; }
   .trn-btn {
     flex:1; min-width:120px; background:#1a4a80; color:#fff;
-    border:1px solid #4a8adf; border-radius:4px; padding:18px 12px;
-    font:bold 16px monospace; cursor:pointer; text-align:center;
-    min-height:54px; display:flex; align-items:center; justify-content:center;
+    border:1px solid #4a8adf; border-radius:4px; padding:7px 10px;
+    font:bold 12px monospace; cursor:pointer; text-align:center;
   }
   .trn-btn:active   { background:#2a6ab0; }
   .trn-btn:disabled { opacity:.4; cursor:default; }
@@ -345,8 +344,9 @@ function _sensorFlash(msg, ms) {
   }, ms);
 }
 
-// iPhone mounted vertically on instrument panel (landscape only).
-// Back faces nose, screen faces pilot. Proper rotation matrix extraction.
+// iPhone panel-mounted: screen faces pilot, back faces nose, flat on panel.
+// Quaternion-based extraction avoids gimbal lock by working with small relative
+// rotations from an initial reference orientation.
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
@@ -355,8 +355,26 @@ function _onOrient(e) {
   const alpha = (e.alpha || 0) * DEG_TO_RAD;
   const beta  = (e.beta  || 0) * DEG_TO_RAD;
   const gamma = (e.gamma || 0) * DEG_TO_RAD;
+  // Store raw sensor values for zeroPhoneAttitude to use
+  PS.lastAlpha = e.alpha || 0;
+  PS.lastBeta = e.beta || 0;
+  PS.lastGamma = e.gamma || 0;
 
-  // Device orientation rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
+  // Detect mount orientation on first read: table-top or flight
+  if (!PS.mountOrientation) {
+    const beta = e.beta || 0;
+    // If beta near ±90°, phone is vertical (flight); if near 0°, phone is level (table-top)
+    PS.mountOrientation = Math.abs(beta) > 45 ? 'flight' : 'tabletop';
+  }
+
+  // Log raw sensor values to help diagnose orientation issue
+  if (!PS.sensorLogCount) PS.sensorLogCount = 0;
+  if (PS.sensorLogCount++ % 20 === 0) {
+    sensorEl.title = `${PS.mountOrientation} α=${(e.alpha||0).toFixed(0)}° β=${(e.beta||0).toFixed(0)}° γ=${(e.gamma||0).toFixed(0)}°`;
+  }
+
+  // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
+  // Build rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
   const ca = Math.cos(alpha), sa = Math.sin(alpha);
   const cb = Math.cos(beta),  sb = Math.sin(beta);
   const cg = Math.cos(gamma), sg = Math.sin(gamma);
@@ -367,14 +385,25 @@ function _onOrient(e) {
     [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: phone mounted horizontally (table-top position).
-  const M = [
-    [0,  1,  0],
-    [-1, 0,  0],
-    [0,  0,  1]
-  ];
+  // Mount transform: use appropriate matrix based on detected orientation
+  let M;
+  if (PS.mountOrientation === 'flight') {
+    // Phone mounted vertically: back towards nose, screen facing pilot, top pointing up
+    M = [
+      [0, 0, 1],
+      [1, 0, 0],
+      [0, 1, 0]
+    ];
+  } else {
+    // Phone mounted horizontally (table-top): back towards nose, screen facing up
+    M = [
+      [0,  1,  0],
+      [-1, 0,  0],
+      [0,  0,  1]
+    ];
+  }
 
-  // R_aircraft = M * R
+  // R_aircraft = M * R_device
   const RA = [];
   for (let i = 0; i < 3; i++) {
     RA[i] = [];
@@ -383,25 +412,72 @@ function _onOrient(e) {
     }
   }
 
-  // Extract ZYX Euler angles
-  const sinPitch = -RA[2][0];
+  // Convert rotation matrix to quaternion (Shepperd's method for numerical stability)
+  const trace = RA[0][0] + RA[1][1] + RA[2][2];
+  let qx, qy, qz, qw;
+
+  if (trace > 0) {
+    const s = 0.5 / Math.sqrt(trace + 1);
+    qw = 0.25 / s;
+    qx = (RA[2][1] - RA[1][2]) * s;
+    qy = (RA[0][2] - RA[2][0]) * s;
+    qz = (RA[1][0] - RA[0][1]) * s;
+  } else if (RA[0][0] > RA[1][1] && RA[0][0] > RA[2][2]) {
+    const s = 2 * Math.sqrt(1 + RA[0][0] - RA[1][1] - RA[2][2]);
+    qw = (RA[2][1] - RA[1][2]) / s;
+    qx = 0.25 * s;
+    qy = (RA[0][1] + RA[1][0]) / s;
+    qz = (RA[0][2] + RA[2][0]) / s;
+  } else if (RA[1][1] > RA[2][2]) {
+    const s = 2 * Math.sqrt(1 + RA[1][1] - RA[0][0] - RA[2][2]);
+    qw = (RA[0][2] - RA[2][0]) / s;
+    qx = (RA[0][1] + RA[1][0]) / s;
+    qy = 0.25 * s;
+    qz = (RA[1][2] + RA[2][1]) / s;
+  } else {
+    const s = 2 * Math.sqrt(1 + RA[2][2] - RA[0][0] - RA[1][1]);
+    qw = (RA[1][0] - RA[0][1]) / s;
+    qx = (RA[0][2] + RA[2][0]) / s;
+    qy = (RA[1][2] + RA[2][1]) / s;
+    qz = 0.25 * s;
+  }
+
+  // Store current quaternion for potential reference updates (e.g., when zeroing)
+  PS.currentQuaternion = [qx, qy, qz, qw];
+
+  // Store reference quaternion on first sensor read (captures initial orientation)
+  if (!PS.refQuaternion) {
+    PS.refQuaternion = [qx, qy, qz, qw];
+  }
+
+  // Compute relative quaternion: q_rel = q_ref_inv * q_current
+  // Inverse of unit quaternion is its conjugate
+  const [qRefX, qRefY, qRefZ, qRefW] = PS.refQuaternion;
+  const qRefInvX = -qRefX, qRefInvY = -qRefY, qRefInvZ = -qRefZ, qRefInvW = qRefW;
+
+  // Quaternion multiplication: qRefInv * q
+  const qRelX = qRefInvW*qx + qRefInvX*qw + qRefInvY*qz - qRefInvZ*qy;
+  const qRelY = qRefInvW*qy - qRefInvX*qz + qRefInvY*qw + qRefInvZ*qx;
+  const qRelZ = qRefInvW*qz + qRefInvX*qy - qRefInvY*qx + qRefInvZ*qw;
+  const qRelW = qRefInvW*qw - qRefInvX*qx - qRefInvY*qy - qRefInvZ*qz;
+
+  // Extract Euler angles from relative quaternion
+  const sinPitch = 2 * (qRelW*qRelY - qRelZ*qRelX);
   const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
   const cosPitch = Math.cos(pitch);
 
   let roll, yaw;
   if (Math.abs(cosPitch) > 1e-6) {
-    roll = Math.atan2(RA[2][1], RA[2][2]);
-    yaw = Math.atan2(RA[1][0], RA[0][0]);
+    roll = Math.atan2(2*(qRelW*qRelX + qRelY*qRelZ), 1 - 2*(qRelX*qRelX + qRelY*qRelY));
+    yaw = Math.atan2(2*(qRelW*qRelZ + qRelX*qRelY), 1 - 2*(qRelY*qRelY + qRelZ*qRelZ));
   } else {
     roll = 0;
-    yaw = Math.atan2(-RA[0][1], RA[1][1]);
+    yaw = Math.atan2(2*(qRelX*qRelY - qRelZ*qRelW), qRelX*qRelX - qRelY*qRelY - qRelZ*qRelZ + qRelW*qRelW);
   }
 
-  PS.roll  = -roll  * (180 / Math.PI) - PS.roll0;
+  PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
   PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
-  PS.yaw = (typeof e.webkitCompassHeading === 'number')
-    ? e.webkitCompassHeading
-    : (e.alpha || 0);
+  PS.yaw   = e.alpha || 0;
 }
 
 function _onGeolocation(pos) {
@@ -460,19 +536,19 @@ function zeroPhoneAttitude() {
     _sensorFlash('PHONE OFF', 1500);
     return;
   }
-  // Capture the CURRENT raw phone reading as the new zero reference.
-  // We replay the inverse of _onOrient's formula: PS.roll/pitch have
-  // already had roll0/pitch0 subtracted, so reset those first, then
-  // re-apply so the new zero lines up with right-now.
-  const rawRoll  = PS.roll  + PS.roll0;
-  const rawPitch = PS.pitch + PS.pitch0;
-  PS.roll0  = rawRoll;
-  PS.pitch0 = rawPitch;
+  // Reset the reference quaternion to current attitude so subsequent angles
+  // are computed relative to this new zero point.
+  if (PS.currentQuaternion) {
+    PS.refQuaternion = PS.currentQuaternion;
+  }
+
+  PS.roll0  = 0;
+  PS.pitch0 = 0;
   PS.roll   = 0;
   PS.pitch  = 0;
   try {
     localStorage.setItem('phone_zero',
-      JSON.stringify({roll0: PS.roll0, pitch0: PS.pitch0}));
+      JSON.stringify({roll0: 0, pitch0: 0}));
   } catch (e) {}
   _sensorFlash('ZEROED', 1200);
 }

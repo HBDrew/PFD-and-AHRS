@@ -110,10 +110,18 @@ _HERE         = os.path.dirname(os.path.abspath(__file__))
 SRTM_DIR      = os.path.join(_HERE, "data", "srtm")
 
 # ── SVT renderer selection ────────────────────────────────────────────────────
-# "opengl" — full 3D synthetic vision via moderngl + EGL (Pi 4 default).
-#            Renders true perspective terrain, including peaks above horizon.
-# "pygame" — legacy 2D scanline renderer (fallback for testing/debug).
-# Auto-falls back to "pygame" at runtime if EGL/moderngl unavailable.
+# "opengl"        — full 3D synthetic vision via moderngl + standalone EGL
+#                    context.  Renders into an offscreen FBO, reads pixels
+#                    back, blits onto the pygame display.  Known to disrupt
+#                    KMS/DRM on Pi 4 kernel 6.12 + mesa 25.0 V3D; lazy-probed.
+# "opengl_shared" — pygame owns the display via pygame.OPENGL | DOUBLEBUF,
+#                    moderngl attaches to pygame's GL context (NOT standalone),
+#                    terrain renders directly into the default framebuffer
+#                    and is composited under a 2D overlay surface uploaded
+#                    as a GL texture.  Avoids the standalone-EGL/KMS conflict.
+#                    Opt-in; bring-up on Pi 4 pending hardware validation.
+# "pygame"        — legacy 2D scanline renderer (fallback for testing/debug).
+# Auto-falls back to "pygame" at runtime if the chosen GL path fails.
 SVT_RENDERER = "opengl"
 
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
