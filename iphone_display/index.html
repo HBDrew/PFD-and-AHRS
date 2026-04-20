@@ -673,6 +673,7 @@ function onTerrainStatus(status, count) {
                    ready:'trn-ready', partial:'trn-partial', error:'link-dead' };
   trnEl.textContent = labels[status] || status.toUpperCase();
   trnEl.className   = cls[status]    || 'trn-idle';
+  trnEl.style.display = (status === 'ready' || status === 'partial') ? 'none' : 'block';
 }
 
 function setProgress(pct, txt) {
