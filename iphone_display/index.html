@@ -345,8 +345,8 @@ function _sensorFlash(msg, ms) {
   }, ms);
 }
 
-// iPhone panel-mounted landscape only: screen faces pilot, back faces nose.
-// Proper rotation matrix with corrected Euler angle extraction.
+// iPhone mounted vertically on instrument panel (landscape only).
+// Back faces nose, screen faces pilot. Proper rotation matrix extraction.
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
@@ -367,11 +367,12 @@ function _onOrient(e) {
     [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: device +Y→nose, device +X→left, device +Z→up
+  // Mount transform: vertical panel mount, landscape, back→nose, screen→pilot
+  // Device +X (left) → Aircraft -Y, Device +Y (down) → Aircraft -Z, Device +Z (out) → Aircraft +X
   const M = [
-    [0,  1,  0],
+    [0,  0,  1],
     [-1, 0,  0],
-    [0,  0,  1]
+    [0, -1,  0]
   ];
 
   // R_aircraft = M * R
@@ -383,8 +384,7 @@ function _onOrient(e) {
     }
   }
 
-  // Extract ZYX Euler angles: pitch = -asin(RA[2][0]),
-  // roll = atan2(RA[2][1], RA[2][2]), yaw = atan2(RA[1][0], RA[0][0])
+  // Extract ZYX Euler angles
   const sinPitch = -RA[2][0];
   const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
   const cosPitch = Math.cos(pitch);
