@@ -434,18 +434,30 @@ function _onOrient(e) {
   const qRelZ = qRefInvW*qz + qRefInvX*qy - qRefInvY*qx + qRefInvZ*qw;
   const qRelW = qRefInvW*qw - qRefInvX*qx - qRefInvY*qy - qRefInvZ*qz;
 
-  // Extract Euler angles from relative quaternion (small rotations near identity, no gimbal lock)
-  const sinPitch = 2 * (qRelW*qRelY - qRelZ*qRelX);
+  // Rotate reference frame by -90° pitch to avoid gimbal lock in flight orientation.
+  // This maps flight position (naturally 90° pitch) to 0° pitch, keeping extraction away from singularity.
+  // Rotate quaternion by -90° around Y axis: multiply by q_rot = [0, -sin(45°), 0, cos(45°)]
+  const rot45 = Math.sqrt(0.5);  // sin(45°) = cos(45°) = sqrt(0.5)
+  const qRotX = 0, qRotY = -rot45, qRotZ = 0, qRotW = rot45;
+
+  // Multiply: q_rotated = q_rel * q_rot
+  const qRotX_result = qRelW*qRotX + qRelX*qRotW + qRelY*qRotZ - qRelZ*qRotY;
+  const qRotY_result = qRelW*qRotY - qRelX*qRotZ + qRelY*qRotW + qRelZ*qRotX;
+  const qRotZ_result = qRelW*qRotZ + qRelX*qRotY - qRelY*qRotX + qRelZ*qRotW;
+  const qRotW_result = qRelW*qRotW - qRelX*qRotX - qRelY*qRotY - qRelZ*qRotZ;
+
+  // Extract Euler angles from frame-rotated quaternion (now safe from gimbal lock)
+  const sinPitch = 2 * (qRotW_result*qRotY_result - qRotZ_result*qRotX_result);
   const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
   const cosPitch = Math.cos(pitch);
 
   let roll, yaw;
   if (Math.abs(cosPitch) > 1e-6) {
-    roll = Math.atan2(2*(qRelW*qRelX + qRelY*qRelZ), 1 - 2*(qRelX*qRelX + qRelY*qRelY));
-    yaw = Math.atan2(2*(qRelW*qRelZ + qRelX*qRelY), 1 - 2*(qRelY*qRelY + qRelZ*qRelZ));
+    roll = Math.atan2(2*(qRotW_result*qRotX_result + qRotY_result*qRotZ_result), 1 - 2*(qRotX_result*qRotX_result + qRotY_result*qRotY_result));
+    yaw = Math.atan2(2*(qRotW_result*qRotZ_result + qRotX_result*qRotY_result), 1 - 2*(qRotY_result*qRotY_result + qRotZ_result*qRotZ_result));
   } else {
     roll = 0;
-    yaw = Math.atan2(2*(qRelX*qRelY - qRelZ*qRelW), qRelX*qRelX - qRelY*qRelY - qRelZ*qRelZ + qRelW*qRelW);
+    yaw = Math.atan2(2*(qRotX_result*qRotY_result - qRotZ_result*qRotW_result), qRotX_result*qRotX_result - qRotY_result*qRotY_result - qRotZ_result*qRotZ_result + qRotW_result*qRotW_result);
   }
 
   PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
