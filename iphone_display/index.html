@@ -141,10 +141,46 @@
   .sensor-row { display:flex; justify-content:space-between; margin-bottom:4px; }
   .sensor-lbl { color:rgba(180,210,255,.85); font:bold 11px monospace; min-width:100px; }
   .sensor-val { color:#fff; font:bold 11px monospace; text-align:right; min-width:80px; }
+
+  /* ── Setup menu ── */
+  #setup-menu {
+    display:none;
+    position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,.95); z-index:100;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    font-family:monospace; overflow-y:auto;
+  }
+  #setup-menu h1 {
+    color:#cef; font-size:18px; margin:20px 16px 30px;
+    text-align:center; font-weight:bold;
+  }
+  .setup-btn {
+    display:block; width:calc(100% - 32px); margin:0 16px 12px;
+    padding:24px 16px; background:#1a4a80; border:1px solid #4a8adf;
+    border-radius:8px; color:#fff; font:bold 16px monospace;
+    cursor:pointer; text-align:center;
+  }
+  .setup-btn:active { background:#2a6ab0; }
+  #setup-close {
+    display:block; width:calc(100% - 32px); margin:20px 16px 16px;
+    padding:16px; background:#444; border:1px solid #666;
+    border-radius:8px; color:#fff; font:bold 14px monospace;
+    cursor:pointer; text-align:center;
+  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+
+<div id="setup-menu">
+  <h1>SETUP</h1>
+  <button class="setup-btn" onclick="openTerrainMenu()">⬇ TERRAIN</button>
+  <button class="setup-btn" onclick="openBaroMenu()">📊 BAROMETER</button>
+  <button class="setup-btn" onclick="openTrimMenu()">✈ TRIM</button>
+  <button class="setup-btn" onclick="openSensorMenu()">📡 SENSORS</button>
+  <button id="setup-close" onclick="closeSetupMenu()">✕ CLOSE</button>
+</div>
+
 <div id="baro-status"           title="Tap to set QNH / calibrate barometer">QNH ···</div>
 <div id="trim-status"           title="Tap to adjust AHRS trim">TRIM</div>
 <div id="sensor-readout-status" title="Tap to view raw sensor data">SENSORS</div>
@@ -520,6 +556,64 @@ function applyPhoneSensors() {
 }
 
 sensorEl.addEventListener('click', togglePhoneSensors);
+
+// ── Two-finger hold to open setup ──────────────────────────────────────────
+let touchStartTime = 0;
+let touchCount = 0;
+const SETUP_HOLD_TIME = 800;  // ms
+
+document.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) {
+    touchStartTime = performance.now();
+    touchCount = 2;
+  } else {
+    touchCount = 0;
+  }
+});
+
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length !== 2) touchCount = 0;
+});
+
+document.addEventListener('touchend', (e) => {
+  if (touchCount === 2 && performance.now() - touchStartTime >= SETUP_HOLD_TIME) {
+    openSetupMenu();
+    e.preventDefault();
+  }
+  touchCount = 0;
+});
+
+function openSetupMenu() {
+  const setupDiv = document.getElementById('setup-menu');
+  if (setupDiv) setupDiv.style.display = 'block';
+}
+
+function closeSetupMenu() {
+  const setupDiv = document.getElementById('setup-menu');
+  if (setupDiv) setupDiv.style.display = 'none';
+}
+
+function openTerrainMenu() {
+  closeSetupMenu();
+  panel.style.display = 'block';
+}
+
+function openBaroMenu() {
+  closeSetupMenu();
+  baroPanel.style.display = 'block';
+}
+
+function openTrimMenu() {
+  closeSetupMenu();
+  trimPanel.style.display = 'block';
+  updateTrimUI();
+}
+
+function openSensorMenu() {
+  closeSetupMenu();
+  sensorReadoutPanel.style.display = 'block';
+  updateSensorReadoutUI();
+}
 
 // "Zero Phone" — capture the current raw device-orientation readings as
 // the mounted-level reference.  Subsequent roll/pitch outputs are
