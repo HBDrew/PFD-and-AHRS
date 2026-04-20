@@ -360,6 +360,12 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 function updateLinkStatus() {
+  // Hide link status when using phone sensors
+  if (PS.enabled) {
+    linkEl.style.display = 'none';
+    return;
+  }
+  linkEl.style.display = 'block';
   const age = performance.now() - lastMsgMs;
   if (!lastMsgMs)      { linkEl.textContent='CONNECTING'; linkEl.className='link-warn'; }
   else if (age < 3000) { linkEl.textContent='LINK OK';    linkEl.className='link-ok';   }
