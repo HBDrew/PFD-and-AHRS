@@ -454,6 +454,8 @@ function _onOrient(e) {
   PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
   PS.pitch = pitchShifted * (180 / Math.PI) - PS.pitch0;
   PS.yaw   = e.alpha || 0;
+
+  console.log('_onOrient:', {rawPitch: pitch*(180/Math.PI), shiftedPitch: pitchShifted*(180/Math.PI), finalPitch: PS.pitch});
 }
 
 function _onGeolocation(pos) {
