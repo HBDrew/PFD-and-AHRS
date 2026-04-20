@@ -354,9 +354,20 @@ function _onOrient(e) {
   PS.lastOrient = performance.now();
 
   const DEG_TO_RAD = Math.PI / 180;
-  const alpha = (e.alpha || 0) * DEG_TO_RAD;
-  const beta  = (e.beta  || 0) * DEG_TO_RAD;
-  const gamma = (e.gamma || 0) * DEG_TO_RAD;
+  // Normalize angles: if in flight position (beta near ±180°), adjust to table-top range
+  let alpha = e.alpha || 0;
+  let beta  = e.beta  || 0;
+  let gamma = e.gamma || 0;
+
+  if (Math.abs(beta) > 90) {
+    // In flight position: subtract 180 from beta, adjust alpha and gamma
+    beta = beta - 180;
+    gamma = gamma - 90;
+  }
+
+  alpha = alpha * DEG_TO_RAD;
+  beta  = beta  * DEG_TO_RAD;
+  gamma = gamma * DEG_TO_RAD;
   // Store raw sensor values for zeroPhoneAttitude to use
   PS.lastAlpha = e.alpha || 0;
   PS.lastBeta = e.beta || 0;
