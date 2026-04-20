@@ -1301,6 +1301,30 @@ function drawSpeedTape() {
     ctx.beginPath(); ctx.moveTo(spdX+spdW-16, vneY); ctx.lineTo(spdX+spdW, vneY); ctx.stroke();
   }
 
+  // V-speed labels on the tape
+  const vLabels = [
+    {spd: V.vs0, label: 'VS0', col: V_COL.white},
+    {spd: V.vs1, label: 'VS1', col: V_COL.green},
+    {spd: V.vfe, label: 'VFE', col: V_COL.white},
+    {spd: V.va,  label: 'VA',  col: '#88f'},
+    {spd: V.vno, label: 'VNO', col: V_COL.yellow},
+    {spd: V.vne, label: 'VNE', col: V_COL.red},
+    {spd: V.vy,  label: 'VY',  col: '#8f8'},
+    {spd: V.vx,  label: 'VX',  col: '#8f8'},
+  ];
+  ctx.save();
+  ctx.beginPath(); ctx.rect(spdX, tapeTopY, spdW, tapeH); ctx.clip();
+  ctx.font = `${Math.max(8, H*0.016)}px monospace`;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (const v of vLabels) {
+    const y = tapeMidY - (toDisplaySpd(v.spd) - spd) * pxPerSpd;
+    if (y > tapeTopY && y < tapeTopY+tapeH) {
+      ctx.fillStyle = v.col;
+      ctx.fillText(v.label, spdX+spdW-18, y);
+    }
+  }
+  ctx.restore();
+
   // Label shows current unit; ▾ hints it's tappable
   const spdLabel = speedUnit === 'mph' ? 'GS MPH\u25be' : 'GS KT\u25be';
   ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
