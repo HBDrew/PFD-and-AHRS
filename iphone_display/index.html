@@ -344,22 +344,66 @@ function _sensorFlash(msg, ms) {
   }, ms);
 }
 
-// Phone held LANDSCAPE, top pointing RIGHT:
-//   gamma  = roll   (left-right tilt of the long edge)  — already -90..+90 CW
-//   beta   = pitch  (tilt of the long edge forward/back)
-//   alpha  = yaw    (compass, 0 = north, absolute only)
-// Sign conventions match the pi4 AHRS stream so the same rendering code
-// works without any additional sign flips.
+// iPhone panel-mounted: screen faces pilot, back faces nose, flat on panel.
+// This requires a proper rotation matrix approach: build the rotation from
+// alpha/beta/gamma (device orientation), apply the mount transform, extract
+// aircraft roll/pitch/yaw.  Yaw comes from compass heading only (webkitCompassHeading).
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
-  // For a phone held in landscape with top-of-phone to the right:
-  //   aircraft roll  =  gamma  (right wing down → gamma positive)
-  //   aircraft pitch =  -beta  (nose up → beta negative when top is right)
-  //   aircraft yaw   =  alpha
-  PS.roll  =  (e.gamma || 0) - PS.roll0;
-  PS.pitch = -(e.beta  || 0) - PS.pitch0;
-  PS.yaw   =  (e.alpha || 0);
+
+  const DEG_TO_RAD = Math.PI / 180;
+  const alpha = (e.alpha || 0) * DEG_TO_RAD;
+  const beta  = (e.beta  || 0) * DEG_TO_RAD;
+  const gamma = (e.gamma || 0) * DEG_TO_RAD;
+
+  // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
+  // Build rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
+  const ca = Math.cos(alpha), sa = Math.sin(alpha);
+  const cb = Math.cos(beta),  sb = Math.sin(beta);
+  const cg = Math.cos(gamma), sg = Math.sin(gamma);
+
+  const R = [
+    [ca*cg - sa*sb*sg,  -ca*sg - sa*sb*cg,  -sa*cb],
+    [sa*cg + ca*sb*sg,  -sa*sg + ca*sb*cg,   ca*cb],
+    [cb*sg,              cb*cg,               sb]
+  ];
+
+  // Mount transform: phone mounted with back towards nose, screen facing pilot.
+  // Converts from phone body frame to aircraft frame.
+  const M = [
+    [0,  1,  0],
+    [-1, 0,  0],
+    [0,  0,  1]
+  ];
+
+  // R_aircraft = M * R_device
+  const RA = [];
+  for (let i = 0; i < 3; i++) {
+    RA[i] = [];
+    for (let j = 0; j < 3; j++) {
+      RA[i][j] = M[i][0]*R[0][j] + M[i][1]*R[1][j] + M[i][2]*R[2][j];
+    }
+  }
+
+  // Extract Euler angles (ZYX order): roll, pitch, yaw from R_aircraft.
+  // pitch = -asin(RA[2][0]), roll = atan2(RA[1][0], RA[0][0]), yaw = atan2(RA[2][1], RA[2][2])
+  const sinPitch = -RA[2][0];
+  const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
+  const cosPitch = Math.cos(pitch);
+  let roll, yaw;
+
+  if (Math.abs(cosPitch) > 1e-6) {
+    roll = Math.atan2(RA[1][0], RA[0][0]);
+    yaw = Math.atan2(RA[2][1], RA[2][2]);
+  } else {
+    roll = Math.atan2(-RA[0][1], RA[1][1]);
+    yaw = 0;
+  }
+
+  PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
+  PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
+  PS.yaw   = e.alpha || 0;
 }
 
 function _onGeolocation(pos) {
