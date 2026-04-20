@@ -390,9 +390,9 @@ function _onOrient(e) {
   if (PS.mountOrientation === 'flight') {
     // Phone mounted vertically: back towards nose, screen facing pilot, top pointing up
     M = [
-      [0, 0, 1],
-      [1, 0, 0],
-      [0, 1, 0]
+      [0,  0, -1],
+      [1,  0,  0],
+      [0,  1,  0]
     ];
   } else {
     // Phone mounted horizontally (table-top): back towards nose, screen facing up
