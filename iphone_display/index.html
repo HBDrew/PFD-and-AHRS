@@ -444,7 +444,7 @@ function _onOrient(e) {
 
   const a = PS.alpha * Math.PI / 180;
   const b = PS.beta  * Math.PI / 180;
-  const g = PS.gamma * Math.PI / 180;
+  const g = (PS.gamma + 90) * Math.PI / 180;  // shift by 90° to avoid gimbal lock at ±90°
   const sa = Math.sin(a), ca = Math.cos(a);
   const sb = Math.sin(b), cb = Math.cos(b);
   const sg = Math.sin(g), cg = Math.cos(g);
