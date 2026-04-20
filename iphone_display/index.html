@@ -346,20 +346,16 @@ function _sensorFlash(msg, ms) {
 
 // iPhone panel-mounted: screen faces pilot, back faces nose, flat on panel.
 // Device +Y axis points towards nose, +X axis points left, +Z axis points up.
-// Direct mapping avoids gimbal lock issues near level flight.
+// Direct axis mapping: beta (X rotation) → pitch, gamma (Y rotation) → roll.
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
 
-  const beta  = e.beta  || 0;  // rotation around device X (pitch-like)
-  const gamma = e.gamma || 0;  // rotation around device Y (roll-like)
+  const beta  = e.beta  || 0;  // rotation around device X
+  const gamma = e.gamma || 0;  // rotation around device Y
 
-  // For panel-mounted config: device Y→nose, device X→left, device Z→up
-  // Aircraft roll (about nose-tail) comes from device Z rotation
-  // Aircraft pitch (about wing) comes from device X rotation
-  // This mapping avoids gimbal lock by using the axes directly
-  PS.roll  = -gamma - PS.roll0;
-  PS.pitch = -beta  - PS.pitch0;
+  PS.roll  = gamma - PS.roll0;
+  PS.pitch = -beta - PS.pitch0;
 
   // iOS exposes webkitCompassHeading — true-north compass heading in the
   // world frame, independent of how the device is held. Prefer it when
