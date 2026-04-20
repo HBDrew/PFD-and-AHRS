@@ -328,7 +328,7 @@ const Terrain = (() => {
         const elevM = elevationAt(ptLat, ptLon);
         const upM   = elevM - altM;
 
-        const pt = projectENU(north, east, upM, yawR, pitchR, rollR);
+        const pt = projectENU(north, east, upM, yawR, pitchR, -rollR);
         row.push(pt ? {
           sx:       cx + (pt.rgt / pt.fwd) * focal,
           sy:       tapeMidY - (pt.up / pt.fwd) * focal,
