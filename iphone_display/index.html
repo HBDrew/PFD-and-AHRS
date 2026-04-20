@@ -398,17 +398,11 @@ function _onOrient(e) {
     yaw = Math.atan2(-RA[0][1], RA[1][1]);
   }
 
-  // Extract in table-top coordinates, then transform for flight position:
-  // flight_roll = table_top_yaw, flight_pitch = table_top_pitch, flight_yaw = table_top_roll
-  const rollDeg = roll * (180 / Math.PI);
-  const pitchDeg = pitch * (180 / Math.PI);
-  const yawDeg = (typeof e.webkitCompassHeading === 'number')
+  PS.roll  = -roll  * (180 / Math.PI) - PS.roll0;
+  PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
+  PS.yaw = (typeof e.webkitCompassHeading === 'number')
     ? e.webkitCompassHeading
     : (e.alpha || 0);
-
-  PS.roll  = yawDeg - PS.roll0;
-  PS.pitch = pitchDeg - PS.pitch0;
-  PS.yaw = rollDeg;
 }
 
 function _onGeolocation(pos) {
