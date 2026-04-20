@@ -347,8 +347,6 @@ function _sensorFlash(msg, ms) {
 }
 
 // iPhone panel-mounted: screen faces pilot, back faces nose, flat on panel.
-// Quaternion-based extraction avoids gimbal lock by working with small relative
-// rotations from an initial reference orientation.
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
@@ -357,18 +355,13 @@ function _onOrient(e) {
   const alpha = (e.alpha || 0) * DEG_TO_RAD;
   const beta  = (e.beta  || 0) * DEG_TO_RAD;
   const gamma = (e.gamma || 0) * DEG_TO_RAD;
-  // Store raw sensor values for zeroPhoneAttitude to use
-  PS.lastAlpha = e.alpha || 0;
-  PS.lastBeta = e.beta || 0;
-  PS.lastGamma = e.gamma || 0;
 
   // Display raw sensor values on screen
   if (sensorRawEl) {
     sensorRawEl.textContent = `α=${(e.alpha||0).toFixed(1)}° β=${(e.beta||0).toFixed(1)}° γ=${(e.gamma||0).toFixed(1)}°`;
   }
 
-  // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
-  // Build rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
+  // Device orientation rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
   const ca = Math.cos(alpha), sa = Math.sin(alpha);
   const cb = Math.cos(beta),  sb = Math.sin(beta);
   const cg = Math.cos(gamma), sg = Math.sin(gamma);
@@ -379,14 +372,14 @@ function _onOrient(e) {
     [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: table-top
+  // Mount transform: phone mounted horizontally (table-top position)
   const M = [
     [0,  1,  0],
     [-1, 0,  0],
     [0,  0,  1]
   ];
 
-  // R_aircraft = M * R_device
+  // R_aircraft = M * R
   const RA = [];
   for (let i = 0; i < 3; i++) {
     RA[i] = [];
@@ -395,13 +388,13 @@ function _onOrient(e) {
     }
   }
 
-  // Extract ZYX Euler angles directly from matrix
+  // Extract ZYX Euler angles
   const sinPitch = -RA[2][0];
   const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
   const cosPitch = Math.cos(pitch);
 
   let roll, yaw;
-  if (Math.abs(cosPitch) > 1e-6) {
+  if (Math.abs(cosPitch) > 1e-4) {
     roll = Math.atan2(RA[2][1], RA[2][2]);
     yaw = Math.atan2(RA[1][0], RA[0][0]);
   } else {
@@ -409,9 +402,11 @@ function _onOrient(e) {
     yaw = Math.atan2(-RA[0][1], RA[1][1]);
   }
 
-  PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
+  PS.roll  = -roll  * (180 / Math.PI) - PS.roll0;
   PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
-  PS.yaw   = e.alpha || 0;
+  PS.yaw = (typeof e.webkitCompassHeading === 'number')
+    ? e.webkitCompassHeading
+    : (e.alpha || 0);
 }
 
 function _onGeolocation(pos) {
