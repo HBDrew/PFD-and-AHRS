@@ -345,68 +345,26 @@ function _sensorFlash(msg, ms) {
 }
 
 // iPhone panel-mounted: screen faces pilot, back faces nose, flat on panel.
-// Uses proper rotation matrix approach: build the rotation from alpha/beta/gamma
-// (device orientation in device body frame), apply the mount transform to convert
-// to aircraft frame, then extract roll/pitch/yaw. This correctly handles the
-// specific physical mounting regardless of screen orientation.
+// Device +Y axis points towards nose, +X axis points left, +Z axis points up.
+// Direct mapping avoids gimbal lock issues near level flight.
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
 
-  const DEG_TO_RAD = Math.PI / 180;
-  const alpha = (e.alpha || 0) * DEG_TO_RAD;
-  const beta  = (e.beta  || 0) * DEG_TO_RAD;
-  const gamma = (e.gamma || 0) * DEG_TO_RAD;
+  const beta  = e.beta  || 0;  // rotation around device X (pitch-like)
+  const gamma = e.gamma || 0;  // rotation around device Y (roll-like)
 
-  // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
-  // Build rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
-  const ca = Math.cos(alpha), sa = Math.sin(alpha);
-  const cb = Math.cos(beta),  sb = Math.sin(beta);
-  const cg = Math.cos(gamma), sg = Math.sin(gamma);
+  // For panel-mounted config: device Y→nose, device X→left, device Z→up
+  // Aircraft roll (about nose-tail) comes from device Z rotation
+  // Aircraft pitch (about wing) comes from device X rotation
+  // This mapping avoids gimbal lock by using the axes directly
+  PS.roll  = -gamma - PS.roll0;
+  PS.pitch = -beta  - PS.pitch0;
 
-  const R = [
-    [ca*cg - sa*sb*sg,  -ca*sg - sa*sb*cg,  -sa*cb],
-    [sa*cg + ca*sb*sg,  -sa*sg + ca*sb*cg,   ca*cb],
-    [cb*sg,              cb*cg,               sb]
-  ];
-
-  // Mount transform: phone mounted with back towards nose, screen facing pilot.
-  // Converts from phone body frame to aircraft frame.
-  const M = [
-    [0,  1,  0],
-    [-1, 0,  0],
-    [0,  0,  1]
-  ];
-
-  // R_aircraft = M * R_device
-  const RA = [];
-  for (let i = 0; i < 3; i++) {
-    RA[i] = [];
-    for (let j = 0; j < 3; j++) {
-      RA[i][j] = M[i][0]*R[0][j] + M[i][1]*R[1][j] + M[i][2]*R[2][j];
-    }
-  }
-
-  // Extract Euler angles (ZYX order): roll, pitch, yaw from R_aircraft.
-  // pitch = -asin(RA[2][0]), roll = atan2(RA[1][0], RA[0][0]), yaw = atan2(RA[2][1], RA[2][2])
-  const sinPitch = -RA[2][0];
-  const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
-  const cosPitch = Math.cos(pitch);
-  let roll, yaw;
-
-  if (Math.abs(cosPitch) > 1e-6) {
-    roll = Math.atan2(RA[1][0], RA[0][0]);
-    yaw = Math.atan2(RA[2][1], RA[2][2]);
-  } else {
-    roll = Math.atan2(-RA[0][1], RA[1][1]);
-    yaw = 0;
-  }
-
-  PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
-  PS.pitch = pitch * (180 / Math.PI) - PS.pitch0;
   // iOS exposes webkitCompassHeading — true-north compass heading in the
   // world frame, independent of how the device is held. Prefer it when
-  // available; otherwise fall back to computed yaw.
+  // available; otherwise fall back to raw alpha (only meaningful when the
+  // device is flat and supports 'deviceorientationabsolute').
   PS.yaw = (typeof e.webkitCompassHeading === 'number')
     ? e.webkitCompassHeading
     : (e.alpha || 0);
