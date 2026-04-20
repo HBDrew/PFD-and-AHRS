@@ -440,11 +440,11 @@ function _onOrient(e) {
   const rot45 = Math.sqrt(0.5);  // sin(45°) = cos(45°) = sqrt(0.5)
   const qRotX = 0, qRotY = -rot45, qRotZ = 0, qRotW = rot45;
 
-  // Multiply: q_rotated = q_rel * q_rot
-  const qRotX_result = qRelW*qRotX + qRelX*qRotW + qRelY*qRotZ - qRelZ*qRotY;
-  const qRotY_result = qRelW*qRotY - qRelX*qRotZ + qRelY*qRotW + qRelZ*qRotX;
-  const qRotZ_result = qRelW*qRotZ + qRelX*qRotY - qRelY*qRotX + qRelZ*qRotW;
-  const qRotW_result = qRelW*qRotW - qRelX*qRotX - qRelY*qRotY - qRelZ*qRotZ;
+  // Multiply: q_rotated = q_rot * q_rel (apply frame rotation first)
+  const qRotX_result = qRotW*qRelX + qRotX*qRelW + qRotY*qRelZ - qRotZ*qRelY;
+  const qRotY_result = qRotW*qRelY - qRotX*qRelZ + qRotY*qRelW + qRotZ*qRelX;
+  const qRotZ_result = qRotW*qRelZ + qRotX*qRelY - qRotY*qRelX + qRotZ*qRelW;
+  const qRotW_result = qRotW*qRelW - qRotX*qRelX - qRotY*qRelY - qRotZ*qRelZ;
 
   // Extract Euler angles from frame-rotated quaternion (now safe from gimbal lock)
   const sinPitch = 2 * (qRotW_result*qRotY_result - qRotZ_result*qRotX_result);
