@@ -48,15 +48,20 @@
   #trn-progress-txt  { color:rgba(180,210,255,.85); font-size:11px; margin-top:4px; }
 
   /* ── Status badges ── */
-  #link-status, #baro-status, #terrain-status, #sensor-status {
+  #link-status, #baro-status, #data-status, #terrain-status, #sensor-status {
     position:absolute; top:6px; font:bold 11px/1 monospace;
     padding:3px 7px; border-radius:3px;
     pointer-events:none; z-index:10; letter-spacing:.04em;
   }
   #link-status    { right:8px; }
   #baro-status    { right:70px; cursor:pointer; pointer-events:auto; background:rgba(0,55,115,.80); color:#cef; }
-  #terrain-status { right:150px; cursor:pointer; pointer-events:auto; }
+  #data-status    { right:120px; cursor:pointer; pointer-events:auto; }
+  #terrain-status { right:190px; cursor:pointer; pointer-events:auto; }
   #sensor-status  { right:230px; cursor:pointer; pointer-events:auto; }
+
+  .data-ahrs  { background:rgba(0,120,180,.80); color:#fff; }
+  .data-phone { background:rgba(0,150,120,.85); color:#fff; }
+  .data-none  { background:rgba(60,60,80,.80); color:#aac; }
 
   .link-ok     { background:rgba(0,170,0,.75);    color:#fff; }
   .link-warn   { background:rgba(210,130,0,.75);  color:#fff; }
@@ -174,10 +179,10 @@
   <button id="setup-close" onclick="closeSetupMenu()">✕ CLOSE</button>
 </div>
 
-<div id="baro-status"    title="Tap to set QNH / calibrate barometer">QNH ···</div>
+<div id="baro-status"   title="Tap to set QNH / calibrate barometer">QNH ···</div>
+<div id="data-status"   title="Data source">DATA</div>
 <div id="terrain-status" class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
-<div id="sensor-status"  class="sensor-off" title="Use phone IMU + GPS as AHRS fallback">PHONE</div>
-<div id="link-status"    class="link-dead">NO LINK</div>
+<div id="link-status"   class="link-dead">NO LINK</div>
 
 <div id="terrain-panel">
   <p>Download terrain tiles once over WiFi — used offline in flight.<br>
@@ -365,6 +370,21 @@ function updateLinkStatus() {
   else if (age < 3000) { linkEl.textContent='LINK OK';    linkEl.className='link-ok';   }
   else if (age < 8000) { linkEl.textContent='LINK WARN';  linkEl.className='link-warn'; }
   else                 { linkEl.textContent='NO LINK';    linkEl.className='link-dead'; }
+}
+
+function updateDataStatus() {
+  const dataEl = document.getElementById('data-status');
+  const ahrsConnected = D.ahrs_ok && (performance.now() - lastMsgMs) < 5000;
+  if (ahrsConnected) {
+    dataEl.textContent = 'AHRS';
+    dataEl.className = 'data-ahrs';
+  } else if (PS.enabled) {
+    dataEl.textContent = PS.absolute ? 'PHONE' : 'PHONE*';
+    dataEl.className = 'data-phone';
+  } else {
+    dataEl.textContent = 'DATA';
+    dataEl.className = 'data-none';
+  }
 }
 
 // ── iPhone internal-sensor fallback ────────────────────────────────────────
@@ -673,6 +693,8 @@ function onTerrainStatus(status, count) {
                    ready:'trn-ready', partial:'trn-partial', error:'link-dead' };
   trnEl.textContent = labels[status] || status.toUpperCase();
   trnEl.className   = cls[status]    || 'trn-idle';
+  // Hide terrain badge when tiles are loaded
+  trnEl.style.display = (status === 'ready' || status === 'partial') ? 'none' : 'block';
 }
 
 function setProgress(pct, txt) {
@@ -1659,6 +1681,7 @@ function render(ts) {
   lastTs=ts;
 
   updateLinkStatus();
+  updateDataStatus();
   if (ts - lastBaroRefresh > 1000) {
     updateBaroUI();
     if (trimPanel.style.display === 'block') updateTrimUI();
