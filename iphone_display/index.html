@@ -389,7 +389,7 @@ function _onOrient(e) {
   const cosPitch = Math.cos(pitch);
 
   let roll, yaw;
-  if (Math.abs(cosPitch) > 1e-4) {
+  if (Math.abs(cosPitch) > 0.2) {
     roll = Math.atan2(RA[2][1], RA[2][2]);
     yaw = Math.atan2(RA[1][0], RA[0][0]);
   } else {
