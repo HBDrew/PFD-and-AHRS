@@ -19,7 +19,7 @@
  */
 'use strict';
 
-const CACHE_VERSION = 'pfd-v112';
+const CACHE_VERSION = 'pfd-v113';
 const CACHE_STATIC  = `${CACHE_VERSION}-static`;
 const CACHE_TILES   = `${CACHE_VERSION}-tiles`;
 const MAX_TILES     = 200;
