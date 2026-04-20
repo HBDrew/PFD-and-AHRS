@@ -125,6 +125,7 @@
 <div id="trim-status"    title="Tap to adjust AHRS trim">TRIM</div>
 <div id="terrain-status" class="trn-loading" title="Tap to open terrain menu">TERRAIN…</div>
 <div id="sensor-status"  class="sensor-off" title="Use phone IMU + GPS as AHRS fallback">PHONE</div>
+<div id="sensor-raw"     style="position:absolute; top:24px; right:310px; font:11px monospace; color:#0f0; pointer-events:none;">α=0° β=0° γ=0°</div>
 <div id="link-status"    class="link-dead">NO LINK</div>
 
 <div id="terrain-panel">
@@ -287,6 +288,7 @@ const PS = {
   roll0: 0, pitch0: 0,
 };
 const sensorEl = document.getElementById('sensor-status');
+const sensorRawEl = document.getElementById('sensor-raw');
 
 async function togglePhoneSensors() {
   if (PS.enabled) {
@@ -360,10 +362,9 @@ function _onOrient(e) {
   PS.lastBeta = e.beta || 0;
   PS.lastGamma = e.gamma || 0;
 
-  // Log raw sensor values to help diagnose orientation issue
-  if (!PS.sensorLogCount) PS.sensorLogCount = 0;
-  if (PS.sensorLogCount++ % 20 === 0) {
-    sensorEl.title = `α=${(e.alpha||0).toFixed(0)}° β=${(e.beta||0).toFixed(0)}° γ=${(e.gamma||0).toFixed(0)}°`;
+  // Display raw sensor values on screen
+  if (sensorRawEl) {
+    sensorRawEl.textContent = `α=${(e.alpha||0).toFixed(1)}° β=${(e.beta||0).toFixed(1)}° γ=${(e.gamma||0).toFixed(1)}°`;
   }
 
   // Device orientation: alpha=Z rotation, beta=X rotation, gamma=Y rotation
