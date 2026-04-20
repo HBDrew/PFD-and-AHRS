@@ -353,13 +353,18 @@ function _onOrient(e) {
 
   const DEG_TO_RAD = Math.PI / 180;
   const alpha = (e.alpha || 0) * DEG_TO_RAD;
-  const beta  = (e.beta  || 0) * DEG_TO_RAD;
-  const gamma = (e.gamma || 0) * DEG_TO_RAD;
+  let beta  = (e.beta  || 0) * DEG_TO_RAD;
+  let gamma = (e.gamma || 0) * DEG_TO_RAD;
 
   // Display raw sensor values on screen
   if (sensorRawEl) {
     sensorRawEl.textContent = `α=${(e.alpha||0).toFixed(1)}° β=${(e.beta||0).toFixed(1)}° γ=${(e.gamma||0).toFixed(1)}°`;
   }
+
+  // On this device, gamma is pitch (not beta), so swap them for standard interpretation
+  const temp = beta;
+  beta = gamma;
+  gamma = temp;
 
   // Device orientation rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
   const ca = Math.cos(alpha), sa = Math.sin(alpha);
