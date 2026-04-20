@@ -353,60 +353,36 @@ function _onOrient(e) {
 
   const DEG_TO_RAD = Math.PI / 180;
   const alpha = (e.alpha || 0) * DEG_TO_RAD;
-  const beta  = (e.beta  || 0) * DEG_TO_RAD;
-  const gamma = (e.gamma || 0) * DEG_TO_RAD;
-  // Store raw sensor values for zeroPhoneAttitude to use
-  PS.lastAlpha = e.alpha || 0;
-  PS.lastBeta = e.beta || 0;
-  PS.lastGamma = e.gamma || 0;
+  let beta  = (e.beta  || 0) * DEG_TO_RAD;
+  let gamma = (e.gamma || 0) * DEG_TO_RAD;
 
   // Display raw sensor values on screen
   if (sensorRawEl) {
     sensorRawEl.textContent = `α=${(e.alpha||0).toFixed(1)}° β=${(e.beta||0).toFixed(1)}° γ=${(e.gamma||0).toFixed(1)}°`;
   }
 
-  // Detect mount orientation on first read: table-top or flight
-  if (!PS.mountOrientation) {
-    const beta = e.beta || 0;
-    // If beta near ±90°, phone is vertical (flight); if near 0°, phone is level (table-top)
-    PS.mountOrientation = Math.abs(beta) > 45 ? 'flight' : 'tabletop';
-  }
+  // On this device, gamma is pitch (not beta), so swap them for standard interpretation
+  const temp = beta;
+  beta = gamma;
+  gamma = temp;
 
-  // Log raw sensor values to help diagnose orientation issue
-  if (!PS.sensorLogCount) PS.sensorLogCount = 0;
-  if (PS.sensorLogCount++ % 20 === 0) {
-    sensorEl.title = `${PS.mountOrientation} α=${(e.alpha||0).toFixed(0)}° β=${(e.beta||0).toFixed(0)}° γ=${(e.gamma||0).toFixed(0)}°`;
-  }
-
-  // Device orientation: alpha=Z rotation, but on this device gamma=pitch(X) and beta=roll(Y)
-  // Build rotation matrix: Rz(alpha) * Rx(gamma) * Ry(beta) [swapped from standard spec]
+  // Device orientation rotation matrix: Rz(alpha) * Rx(beta) * Ry(gamma)
   const ca = Math.cos(alpha), sa = Math.sin(alpha);
-  const cb = Math.cos(beta),  sb = Math.sin(beta);   // Now beta is Y (roll)
-  const cg = Math.cos(gamma), sg = Math.sin(gamma);  // Now gamma is X (pitch)
+  const cb = Math.cos(beta),  sb = Math.sin(beta);
+  const cg = Math.cos(gamma), sg = Math.sin(gamma);
 
   const R = [
-    [ca*cb - sa*sg*sb,  -ca*sb - sa*sg*cb,  -sa*cg],
-    [sa*cb + ca*sg*sb,  -sa*sb + ca*sg*cb,   ca*cg],
-    [cg*sb,              cg*cb,               sg]
+    [ca*cg - sa*sb*sg,  -ca*sg - sa*sb*cg,  -sa*cb],
+    [sa*cg + ca*sb*sg,  -sa*sg + ca*sb*cg,   ca*cb],
+    [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: use appropriate matrix based on detected orientation
-  let M;
-  if (PS.mountOrientation === 'flight') {
-    // Phone mounted vertically: back towards nose, screen facing pilot, top pointing up
-    M = [
-      [0, 0, 1],
-      [1, 0, 0],
-      [0, 1, 0]
-    ];
-  } else {
-    // Phone mounted horizontally (table-top): back towards nose, screen facing up
-    M = [
-      [0,  1,  0],
-      [-1, 0,  0],
-      [0,  0,  1]
-    ];
-  }
+  // Mount transform: phone mounted horizontally (table-top position)
+  const M = [
+    [0,  1,  0],
+    [-1, 0,  0],
+    [0,  0,  1]
+  ];
 
   // R_aircraft = M * R_device
   const RA = [];
