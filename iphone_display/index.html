@@ -345,9 +345,8 @@ function _sensorFlash(msg, ms) {
 }
 
 // iPhone panel-mounted: screen faces pilot, back faces nose, flat on panel.
-// This requires a proper rotation matrix approach: build the rotation from
-// alpha/beta/gamma (device orientation), apply the mount transform, extract
-// aircraft roll/pitch/yaw.  Yaw comes from compass heading only (webkitCompassHeading).
+// Quaternion-based extraction avoids gimbal lock by working with small relative
+// rotations from an initial reference orientation.
 function _onOrient(e) {
   if (e.alpha == null) return;
   PS.lastOrient = performance.now();
@@ -370,7 +369,6 @@ function _onOrient(e) {
   ];
 
   // Mount transform: phone mounted with back towards nose, screen facing pilot.
-  // Converts from phone body frame to aircraft frame.
   const M = [
     [0,  1,  0],
     [-1, 0,  0],
@@ -386,19 +384,64 @@ function _onOrient(e) {
     }
   }
 
-  // Extract Euler angles (ZYX order): roll, pitch, yaw from R_aircraft.
-  // pitch = -asin(RA[2][0]), roll = atan2(RA[1][0], RA[0][0]), yaw = atan2(RA[2][1], RA[2][2])
-  const sinPitch = -RA[2][0];
+  // Convert rotation matrix to quaternion (Shepperd's method for numerical stability)
+  const trace = RA[0][0] + RA[1][1] + RA[2][2];
+  let qx, qy, qz, qw;
+
+  if (trace > 0) {
+    const s = 0.5 / Math.sqrt(trace + 1);
+    qw = 0.25 / s;
+    qx = (RA[2][1] - RA[1][2]) * s;
+    qy = (RA[0][2] - RA[2][0]) * s;
+    qz = (RA[1][0] - RA[0][1]) * s;
+  } else if (RA[0][0] > RA[1][1] && RA[0][0] > RA[2][2]) {
+    const s = 2 * Math.sqrt(1 + RA[0][0] - RA[1][1] - RA[2][2]);
+    qw = (RA[2][1] - RA[1][2]) / s;
+    qx = 0.25 * s;
+    qy = (RA[0][1] + RA[1][0]) / s;
+    qz = (RA[0][2] + RA[2][0]) / s;
+  } else if (RA[1][1] > RA[2][2]) {
+    const s = 2 * Math.sqrt(1 + RA[1][1] - RA[0][0] - RA[2][2]);
+    qw = (RA[0][2] - RA[2][0]) / s;
+    qx = (RA[0][1] + RA[1][0]) / s;
+    qy = 0.25 * s;
+    qz = (RA[1][2] + RA[2][1]) / s;
+  } else {
+    const s = 2 * Math.sqrt(1 + RA[2][2] - RA[0][0] - RA[1][1]);
+    qw = (RA[1][0] - RA[0][1]) / s;
+    qx = (RA[0][2] + RA[2][0]) / s;
+    qy = (RA[1][2] + RA[2][1]) / s;
+    qz = 0.25 * s;
+  }
+
+  // Store reference quaternion on first sensor read (captures initial orientation)
+  if (!PS.refQuaternion) {
+    PS.refQuaternion = [qx, qy, qz, qw];
+  }
+
+  // Compute relative quaternion: q_rel = q_ref_inv * q_current
+  // Inverse of unit quaternion is its conjugate
+  const [qRefX, qRefY, qRefZ, qRefW] = PS.refQuaternion;
+  const qRefInvX = -qRefX, qRefInvY = -qRefY, qRefInvZ = -qRefZ, qRefInvW = qRefW;
+
+  // Quaternion multiplication: qRefInv * q
+  const qRelX = qRefInvW*qx + qRefInvX*qw + qRefInvY*qz - qRefInvZ*qy;
+  const qRelY = qRefInvW*qy - qRefInvX*qz + qRefInvY*qw + qRefInvZ*qx;
+  const qRelZ = qRefInvW*qz + qRefInvX*qy - qRefInvY*qx + qRefInvZ*qw;
+  const qRelW = qRefInvW*qw - qRefInvX*qx - qRefInvY*qy - qRefInvZ*qz;
+
+  // Extract Euler angles from relative quaternion (small rotations near identity, no gimbal lock)
+  const sinPitch = 2 * (qRelW*qRelY - qRelZ*qRelX);
   const pitch = Math.asin(Math.max(-1, Math.min(1, sinPitch)));
   const cosPitch = Math.cos(pitch);
-  let roll, yaw;
 
+  let roll, yaw;
   if (Math.abs(cosPitch) > 1e-6) {
-    roll = Math.atan2(RA[1][0], RA[0][0]);
-    yaw = Math.atan2(RA[2][1], RA[2][2]);
+    roll = Math.atan2(2*(qRelW*qRelX + qRelY*qRelZ), 1 - 2*(qRelX*qRelX + qRelY*qRelY));
+    yaw = Math.atan2(2*(qRelW*qRelZ + qRelX*qRelY), 1 - 2*(qRelY*qRelY + qRelZ*qRelZ));
   } else {
-    roll = Math.atan2(-RA[0][1], RA[1][1]);
-    yaw = 0;
+    roll = 0;
+    yaw = Math.atan2(2*(qRelX*qRelY - qRelZ*qRelW), qRelX*qRelX - qRelY*qRelY - qRelZ*qRelZ + qRelW*qRelW);
   }
 
   PS.roll  = roll  * (180 / Math.PI) - PS.roll0;
