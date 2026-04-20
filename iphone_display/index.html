@@ -367,11 +367,12 @@ function _onOrient(e) {
     [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: phone mounted horizontally (table-top position).
+  // Mount transform: flight position (phone vertical on panel, 90° pitched from table-top).
+  // Extraction happens in flight coordinates, avoiding gimbal lock at normal flight attitudes.
   const M = [
-    [0,  1,  0],
+    [0,  0, -1],
     [-1, 0,  0],
-    [0,  0,  1]
+    [0,  1,  0]
   ];
 
   // R_aircraft = M * R
@@ -389,7 +390,7 @@ function _onOrient(e) {
   const cosPitch = Math.cos(pitch);
 
   let roll, yaw;
-  if (Math.abs(cosPitch) > 0.5) {
+  if (Math.abs(cosPitch) > 1e-4) {
     roll = Math.atan2(RA[2][1], RA[2][2]);
     yaw = Math.atan2(RA[1][0], RA[0][0]);
   } else {
@@ -397,9 +398,9 @@ function _onOrient(e) {
     yaw = Math.atan2(-RA[0][1], RA[1][1]);
   }
 
-  // Shift pitch by -90° to avoid gimbal lock in flight position
+  // Extract directly in flight coordinates (no transformation needed)
   const rollDeg = -roll * (180 / Math.PI);
-  const pitchDeg = pitch * (180 / Math.PI) - 90;
+  const pitchDeg = pitch * (180 / Math.PI);
   const yawDeg = (typeof e.webkitCompassHeading === 'number')
     ? e.webkitCompassHeading
     : (e.alpha || 0);
