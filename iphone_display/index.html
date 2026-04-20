@@ -367,12 +367,11 @@ function _onOrient(e) {
     [cb*sg,              cb*cg,               sb]
   ];
 
-  // Mount transform: vertical panel mount, landscape, back→nose, screen→pilot
-  // Device +X (left) → Aircraft -Y, Device +Y (down) → Aircraft -Z, Device +Z (out) → Aircraft +X
+  // Mount transform: phone mounted horizontally (table), back towards nose
   const M = [
-    [0,  0,  1],
+    [0,  1,  0],
     [-1, 0,  0],
-    [0, -1,  0]
+    [0,  0,  1]
   ];
 
   // R_aircraft = M * R
