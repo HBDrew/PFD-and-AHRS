@@ -461,12 +461,12 @@ function _onOrient(e) {
   const gaz =   rx;     // gravity component pointing down through aircraft floor
 
   const pitch = -Math.asin(Math.max(-1, Math.min(1, gax))) * 180 / Math.PI;
-  const roll  =  Math.atan2(gay, gaz) * 180 / Math.PI;
+  const roll  = (PS.beta || 0);  // use beta directly to avoid alpha coupling
 
   PS.roll  = roll  - PS.roll0;
   PS.pitch = pitch - PS.pitch0;
-  // webkitCompassHeading is true-north in the world frame regardless of how
-  // the phone is held — prefer it; fall back to raw alpha only when unavailable.
+  // webkitCompassHeading is true-north in the world frame (independent of device orientation)
+  // For yaw, use compass when available; alpha fallback is purely for heading, no coupling
   PS.yaw = (typeof e.webkitCompassHeading === 'number')
     ? e.webkitCompassHeading
     : (e.alpha || 0);
