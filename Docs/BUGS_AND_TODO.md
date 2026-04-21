@@ -131,6 +131,9 @@ Work items:
   - Speed tape: move marks to left edge (outside), make bolder/wider
   - Altitude tape: move marks to right edge (outside), make bolder/wider
   - Extend tape height up toward notch area (use L.safeT for upper bound)
+  - **Extend terrain warning (TAWS color bands) to full screen edges** — horizon
+    extends beyond current tape bounds; as tapes move in, terrain area expands.
+    TAWS colours should fill entire visible AI area, not just tape region.
   - May need to adjust L.spdX, L.altX, L.spdW, L.altW, L.tapeTopY calcs
   - Adjust tape drawing positions and widths accordingly
   - Test on notched phones (iPhone 12+) and notch-free (SE)
