@@ -1787,12 +1787,12 @@ function drawHeadingTape() {
     const deg=((Math.round(hdg)+i+3600)%360);
     const offset=i-(hdg-Math.round(hdg)), x=cx+offset*pxPerDeg;
     if (x<0||x>W) continue;
-    if (deg%5===0) {
-      const th=deg%10===0?hdgH*.35:hdgH*.18;
-      ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=deg%10===0?1.5:1;
+    if (deg%10===0) {
+      const th=deg%20===0?hdgH*.35:hdgH*.18;
+      ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=deg%20===0?1.5:1;
       ctx.beginPath(); ctx.moveTo(x,hdgY); ctx.lineTo(x,hdgY+th); ctx.stroke();
     }
-    if (deg%10===0) {
+    if (deg%20===0) {
       const label=CARDS[deg]||deg.toString().padStart(3,'0');
       ctx.fillStyle=CARDS[deg]?'#ffd700':'rgba(255,255,255,.9)';
       ctx.textAlign='center'; ctx.fillText(label,x,hdgY+hdgH-3);
