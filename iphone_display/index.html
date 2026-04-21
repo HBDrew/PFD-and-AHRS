@@ -1252,8 +1252,11 @@ function _handleSpdTap(x, y) {
       // Calculate bug position using same formula as drawSpeedTape
       const spdRange = speedUnit === 'mph' ? 140 : 120;
       const pxPerSpd = L.tapeH / spdRange;
-      const bugY = L.tapeMidY - (toDisplaySpd(B.spd_bug) - toDisplaySpd(D.speed)) * pxPerSpd;
-      if (Math.abs(y - bugY) < 20) {  // 20px tolerance
+      const spd = toDisplaySpd(D.speed);
+      const bugY = L.tapeMidY - (toDisplaySpd(B.spd_bug) - spd) * pxPerSpd;
+      // Clamp to visible tape area (like in rendering)
+      const clampedBugY = Math.max(L.tapeTopY, Math.min(L.tapeTopY + L.tapeH, bugY));
+      if (Math.abs(y - clampedBugY) < 25) {  // 25px tolerance
         openBugPanel('spd_bug');
         return;
       }
@@ -1268,7 +1271,9 @@ function _handleSpdTap(x, y) {
       // Calculate bug position using same formula as drawAltTape
       const pxPerFt = L.tapeH / 600;
       const bugY = L.tapeMidY - (B.alt_bug - D.alt) * pxPerFt;
-      if (Math.abs(y - bugY) < 20) {  // 20px tolerance
+      // Clamp to visible tape area (like in rendering)
+      const clampedBugY = Math.max(L.tapeTopY, Math.min(L.tapeTopY + L.tapeH, bugY));
+      if (Math.abs(y - clampedBugY) < 25) {  // 25px tolerance
         openBugPanel('alt_bug');
         return;
       }
@@ -1278,10 +1283,12 @@ function _handleSpdTap(x, y) {
   // Check for heading bug tap (bottom area)
   if (y >= L.hdgY && y <= L.hdgY + L.hdgH) {
     if (B.hdg_bug != null) {
-      const hdgW = L.altX - (L.spdX + L.spdW);
+      const pxPerDeg = W / 60;
       const off = ((B.hdg_bug - D.yaw + 540) % 360) - 180;
-      const bugX = L.cx + (off / 180) * hdgW / 2;
-      if (Math.abs(x - bugX) < 20) {  // 20px tolerance
+      const bugX = L.cx + off * pxPerDeg;
+      // Clamp to inside of tap buttons (like in pi4)
+      const clampedBugX = Math.max(L.spdX + L.spdW + 20, Math.min(L.altX - 20, bugX));
+      if (Math.abs(x - clampedBugX) < 25) {  // 25px tolerance
         openBugPanel('hdg_bug');
         return;
       }
@@ -1774,11 +1781,12 @@ function drawHeadingTape() {
 
   // Heading readout box with pointer below (matches pi4 style)
   const hdgStr = Math.round(D.yaw).toString().padStart(3,'0') + '°';
-  const font17 = `bold ${Math.max(13,H*.030)}px monospace`;
+  const fontSize = Math.max(13,H*.030);
+  const font17 = `bold ${fontSize}px monospace`;
   ctx.font = font17;
   const textW = ctx.measureText(hdgStr).width;
   const bw = Math.max(66, textW + 28);
-  const bh = Math.max(28, parseInt(font17) + 8);
+  const bh = Math.max(28, fontSize + 8);
   const bx = cx - bw/2;
   const by = hdgY - bh - 2;
 
@@ -1791,12 +1799,12 @@ function drawHeadingTape() {
   ctx.fillStyle = hdgCol; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(hdgStr, cx, by + bh/2);
 
-  // Subscript M/G label (below the degree symbol)
+  // Subscript M/G label (below the degree symbol, right of the ° glyph)
   const srcFont = `${Math.max(8,H*.016)}px monospace`;
   ctx.font = srcFont;
   ctx.fillStyle = hdgCol;
-  ctx.textAlign='center'; ctx.textBaseline='top';
-  ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh - 12);
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.fillText(srcLabel, cx + textW/2 + 1, by + bh - 11);
 
   // Pointer triangle below the box
   ctx.fillStyle = hdgCol;
