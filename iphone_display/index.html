@@ -50,13 +50,13 @@
   /* ── Status badges ── */
   #link-status, #baro-status, #terrain-status, #sensor-status {
     position:absolute; top:6px; font:bold 11px/1 monospace;
-    padding:3px 7px; border-radius:3px;
+    padding:6px 10px; border-radius:4px; min-height:28px; display:flex; align-items:center;
     pointer-events:none; z-index:10; letter-spacing:.04em;
   }
   #link-status    { right:8px; }
   #baro-status    { right:90px; cursor:pointer; pointer-events:auto; background:rgba(0,55,115,.80); color:#cef; }
   #terrain-status { right:150px; cursor:pointer; pointer-events:auto; }
-  #sensor-status  { right:230px; cursor:pointer; pointer-events:auto; }
+  #sensor-status  { right:230px; cursor:pointer; pointer-events:auto; min-width:50px; text-align:center; }
 
   .link-ok     { background:rgba(0,170,0,.75);    color:#fff; }
   .link-warn   { background:rgba(210,130,0,.75);  color:#fff; }
@@ -628,27 +628,44 @@ sensorEl.addEventListener('click', togglePhoneSensors);
 // ── Two-finger hold to open setup ──────────────────────────────────────────
 let touchStartTime = 0;
 let touchCount = 0;
+let setupHoldTimer = null;
 const SETUP_HOLD_TIME = 800;  // ms
 
 document.addEventListener('touchstart', (e) => {
   if (e.touches.length === 2) {
     touchStartTime = performance.now();
     touchCount = 2;
+    // Clear any existing timer
+    if (setupHoldTimer) clearTimeout(setupHoldTimer);
+    // Set timer to open setup menu immediately when hold time is reached
+    setupHoldTimer = setTimeout(() => {
+      if (touchCount === 2) {
+        openSetupMenu();
+        setupHoldTimer = null;
+      }
+    }, SETUP_HOLD_TIME);
   } else {
     touchCount = 0;
+    if (setupHoldTimer) clearTimeout(setupHoldTimer);
   }
 });
 
 document.addEventListener('touchmove', (e) => {
-  if (e.touches.length !== 2) touchCount = 0;
+  if (e.touches.length !== 2) {
+    touchCount = 0;
+    if (setupHoldTimer) {
+      clearTimeout(setupHoldTimer);
+      setupHoldTimer = null;
+    }
+  }
 });
 
 document.addEventListener('touchend', (e) => {
-  if (touchCount === 2 && performance.now() - touchStartTime >= SETUP_HOLD_TIME) {
-    openSetupMenu();
-    e.preventDefault();
-  }
   touchCount = 0;
+  if (setupHoldTimer) {
+    clearTimeout(setupHoldTimer);
+    setupHoldTimer = null;
+  }
 });
 
 function openSetupMenu() {
