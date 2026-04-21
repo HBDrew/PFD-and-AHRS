@@ -1767,14 +1767,40 @@ function drawHeadingTape() {
       ctx.textAlign='center'; ctx.fillText(label,x,hdgY+hdgH-3);
     }
   }
-  const bw=58,bh=22;
-  roundRect(cx-bw/2,hdgY-bh-2,bw,bh,3);
-  ctx.fillStyle='rgba(0,0,0,.88)'; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.2; ctx.stroke();
-  ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(13,H*.030)}px monospace`;
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(Math.round(D.yaw).toString().padStart(3,'0'),cx,hdgY-bh/2-2);
-  ctx.fillStyle='#ffd700';
-  ctx.beginPath(); ctx.moveTo(cx,hdgY-1); ctx.lineTo(cx-7,hdgY-9); ctx.lineTo(cx+7,hdgY-9);
+  // Determine heading source: GPS track (magenta) or magnetic (white)
+  const isGpsHeading = PS.enabled && !D.ahrs_ok;  // fallback to GPS track when AHRS unavailable
+  const hdgCol = isGpsHeading ? BUG_MAGENTA : '#fff';
+  const srcLabel = isGpsHeading ? 'G' : 'M';
+
+  // Heading readout box with pointer below (matches pi4 style)
+  const hdgStr = Math.round(D.yaw).toString().padStart(3,'0') + '°';
+  const font17 = `bold ${Math.max(13,H*.030)}px monospace`;
+  ctx.font = font17;
+  const textW = ctx.measureText(hdgStr).width;
+  const bw = Math.max(66, textW + 28);
+  const bh = Math.max(28, parseInt(font17) + 8);
+  const bx = cx - bw/2;
+  const by = hdgY - bh - 2;
+
+  // Chamfered box (simplified: just rounded rectangle with pointer)
+  roundRect(bx, by, bw, bh, 3);
+  ctx.fillStyle='rgba(0,0,0,.88)'; ctx.fill();
+  ctx.strokeStyle = hdgCol; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // Main heading text
+  ctx.fillStyle = hdgCol; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(hdgStr, cx, by + bh/2);
+
+  // Subscript M/G label (below the degree symbol)
+  const srcFont = `${Math.max(8,H*.016)}px monospace`;
+  ctx.font = srcFont;
+  ctx.fillStyle = hdgCol;
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh - 12);
+
+  // Pointer triangle below the box
+  ctx.fillStyle = hdgCol;
+  ctx.beginPath(); ctx.moveTo(cx, hdgY-1); ctx.lineTo(cx-7, hdgY-9); ctx.lineTo(cx+7, hdgY-9);
   ctx.closePath(); ctx.fill(); ctx.textBaseline='alphabetic';
 
   // Heading bug chevron — see preview.html drawHeadingTape() for shape.
