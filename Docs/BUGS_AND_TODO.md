@@ -120,6 +120,21 @@ Notes:
   - May need better spacing in the box for larger/smaller phone screens
   - Test on iPhone 12 (notch), iPhone SE (small), iPhone 15 Pro Max (large)
 
+### #11  iPhone tape repositioning — speed/altitude marks + safe-area constraint
+Status: **OPEN**
+Target: `iphone_display/index.html` speed/altitude tape positioning and tick marks.
+Context: Match Pi4 display where speed/altitude tapes extend further out
+with tick marks on outside edges (bolder, larger). However, iPhone notch/safe
+area constraint: moving tapes too far out would place the notch directly in
+the middle of one of the tapes, blocking the readout. Need to balance layout
+against `safe-area-inset-*` values.
+Work items:
+  - Speed tape: move marks to left edge (outside), make bolder
+  - Altitude tape: move marks to right edge (outside), make bolder
+  - Consider narrower tape widths or reflow to fit within safe areas
+  - May need to adjust L.spdX, L.altX, L.spdW, L.altW layout calculations
+  - Test on notched phones (iPhone 12+) and notch-free (SE)
+
 ---
 
 ## Completed
