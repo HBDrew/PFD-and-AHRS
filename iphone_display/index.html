@@ -1269,10 +1269,37 @@ function _handleSpdTap(x, y) {
   const now = performance.now();
   if (now - _lastTapMs < _TAP_DEBOUNCE) return;
 
-  // Check for speed bug tap (within tape area)
+  // Check for speed digital readout tap (center area of speed tape)
+  // Tapping the readout numbers opens the editor
+  const spdCenterX = L.spdX + L.spdW / 2;
+  if (x >= L.spdX && x <= L.spdX + L.spdW
+      && y >= L.tapeMidY - 30 && y <= L.tapeMidY + 30) {
+    _lastTapMs = now;
+    openBugPanel('spd_bug');
+    return;
+  }
+
+  // Check for altitude digital readout tap (center area of altitude tape)
+  const altCenterX = L.altX + L.altW / 2;
+  if (x >= L.altX && x <= L.altX + L.altW
+      && y >= L.tapeMidY - 30 && y <= L.tapeMidY + 30) {
+    _lastTapMs = now;
+    openBugPanel('alt_bug');
+    return;
+  }
+
+  // Check for heading digital readout tap (the box above heading tape)
+  if (y >= L.hdgY - 44 && y <= L.hdgY - 2) {
+    if (x > L.cx - 50 && x < L.cx + 50) {
+      _lastTapMs = now;
+      openBugPanel('hdg_bug');
+      return;
+    }
+  }
+
+  // Fallback: tap on bug chevron if it exists
   if (x >= L.spdX && x <= L.spdX + L.spdW + 14
       && y >= L.tapeTopY && y <= L.tapeBotY) {
-    // If bug exists and tap is near it, open editor
     if (B.spd_bug != null) {
       const spdRange = speedUnit === 'mph' ? 140 : 120;
       const pxPerSpd = L.tapeH / spdRange;
@@ -1284,57 +1311,11 @@ function _handleSpdTap(x, y) {
         openBugPanel('spd_bug');
         return;
       }
-    } else {
-      // No bug yet - open editor on any tape tap (except far right for unit toggle)
-      if (x < L.spdX + L.spdW - 10) {
-        _lastTapMs = now;
-        openBugPanel('spd_bug');
-        return;
-      }
     }
-    _lastTapMs = now;
-    toggleSpeedUnit();
-  }
-
-  // Check for altitude bug tap
-  if (x >= L.altX && x <= L.altX + L.altW + 14
-      && y >= L.tapeTopY && y <= L.tapeBotY) {
-    if (B.alt_bug != null) {
-      const pxPerFt = L.tapeH / 600;
-      const bugY = L.tapeMidY - (B.alt_bug - D.alt) * pxPerFt;
-      const clampedBugY = Math.max(L.tapeTopY, Math.min(L.tapeTopY + L.tapeH, bugY));
-      if (Math.abs(y - clampedBugY) < 30) {
-        _lastTapMs = now;
-        openBugPanel('alt_bug');
-        return;
-      }
-    } else {
-      // No bug yet - open editor on any tape tap
+    // Tap on right edge of speed tape = unit toggle
+    if (x > L.spdX + L.spdW - 15) {
       _lastTapMs = now;
-      openBugPanel('alt_bug');
-      return;
-    }
-  }
-
-  // Check for heading bug tap (bottom area)
-  if (y >= L.hdgY && y <= L.hdgY + L.hdgH) {
-    if (B.hdg_bug != null) {
-      const pxPerDeg = W / 60;
-      const off = ((B.hdg_bug - D.yaw + 540) % 360) - 180;
-      const bugX = L.cx + off * pxPerDeg;
-      const clampedBugX = Math.max(L.spdX + L.spdW + 20, Math.min(L.altX - 20, bugX));
-      if (Math.abs(x - clampedBugX) < 30) {
-        _lastTapMs = now;
-        openBugPanel('hdg_bug');
-        return;
-      }
-    } else {
-      // No bug yet - open editor on any heading tape tap (except far edges)
-      if (x > L.spdX + L.spdW + 20 && x < L.altX - 20) {
-        _lastTapMs = now;
-        openBugPanel('hdg_bug');
-        return;
-      }
+      toggleSpeedUnit();
     }
   }
 }
