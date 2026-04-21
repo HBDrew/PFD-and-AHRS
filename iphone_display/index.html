@@ -1839,19 +1839,17 @@ function drawHeadingTape() {
   ctx.textAlign='left'; ctx.textBaseline='top';
   ctx.fillText(srcLabel, cx + textW/2 + 2, by + bh - 10);
 
-  // Heading bug chevron — see preview.html drawHeadingTape() for shape.
+  // Heading bug chevron — parks at edge when off-screen (like speed/alt bugs)
   if (B.hdg_bug != null) {
     const off = ((B.hdg_bug - hdg + 540) % 360) - 180;
     let hbx = cx + off * pxPerDeg;
     hbx = Math.max(L.spdX+L.spdW+20, Math.min(L.altX-20, hbx));
-    if (Math.abs(off) <= 30) {
-      ctx.fillStyle = BUG_CYAN;
-      ctx.beginPath();
-      ctx.moveTo(hbx-17, hdgY+14); ctx.lineTo(hbx-17, hdgY);
-      ctx.lineTo(hbx-5,  hdgY);    ctx.lineTo(hbx,    hdgY+7);
-      ctx.lineTo(hbx+5,  hdgY);    ctx.lineTo(hbx+17, hdgY);
-      ctx.lineTo(hbx+17, hdgY+14); ctx.closePath(); ctx.fill();
-    }
+    ctx.fillStyle = BUG_CYAN;
+    ctx.beginPath();
+    ctx.moveTo(hbx-17, hdgY+14); ctx.lineTo(hbx-17, hdgY);
+    ctx.lineTo(hbx-5,  hdgY);    ctx.lineTo(hbx,    hdgY+7);
+    ctx.lineTo(hbx+5,  hdgY);    ctx.lineTo(hbx+17, hdgY);
+    ctx.lineTo(hbx+17, hdgY+14); ctx.closePath(); ctx.fill();
   }
 }
 
