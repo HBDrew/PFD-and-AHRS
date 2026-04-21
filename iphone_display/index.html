@@ -1787,9 +1787,9 @@ function drawHeadingTape() {
     const deg=((Math.round(hdg)+i+3600)%360);
     const offset=i-(hdg-Math.round(hdg)), x=cx+offset*pxPerDeg;
     if (x<0||x>W) continue;
-    if (deg%10===0) {
-      const th=deg%20===0?hdgH*.35:hdgH*.18;
-      ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=deg%20===0?1.5:1;
+    if (deg%20===0) {
+      const th=hdgH*.35;
+      ctx.strokeStyle='rgba(255,255,255,.7)'; ctx.lineWidth=1.5;
       ctx.beginPath(); ctx.moveTo(x,hdgY); ctx.lineTo(x,hdgY+th); ctx.stroke();
     }
     if (deg%20===0) {
