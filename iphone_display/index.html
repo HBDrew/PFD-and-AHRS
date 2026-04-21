@@ -1244,23 +1244,38 @@ resize();
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 200));
 
+// Debounce touch taps to prevent multiple rapid fires
+let _lastTapMs = 0;
+const _TAP_DEBOUNCE = 300;  // ms
+
 function _handleSpdTap(x, y) {
-  // Check for speed bug tap (within tape area and close to a bug chevron)
+  const now = performance.now();
+  if (now - _lastTapMs < _TAP_DEBOUNCE) return;
+
+  // Check for speed bug tap (within tape area)
   if (x >= L.spdX && x <= L.spdX + L.spdW + 14
       && y >= L.tapeTopY && y <= L.tapeBotY) {
+    // If bug exists and tap is near it, open editor
     if (B.spd_bug != null) {
-      // Calculate bug position using same formula as drawSpeedTape
       const spdRange = speedUnit === 'mph' ? 140 : 120;
       const pxPerSpd = L.tapeH / spdRange;
       const spd = toDisplaySpd(D.speed);
       const bugY = L.tapeMidY - (toDisplaySpd(B.spd_bug) - spd) * pxPerSpd;
-      // Clamp to visible tape area (like in rendering)
       const clampedBugY = Math.max(L.tapeTopY, Math.min(L.tapeTopY + L.tapeH, bugY));
-      if (Math.abs(y - clampedBugY) < 25) {  // 25px tolerance
+      if (Math.abs(y - clampedBugY) < 30) {
+        _lastTapMs = now;
+        openBugPanel('spd_bug');
+        return;
+      }
+    } else {
+      // No bug yet - open editor on any tape tap (except far right for unit toggle)
+      if (x < L.spdX + L.spdW - 10) {
+        _lastTapMs = now;
         openBugPanel('spd_bug');
         return;
       }
     }
+    _lastTapMs = now;
     toggleSpeedUnit();
   }
 
@@ -1268,15 +1283,19 @@ function _handleSpdTap(x, y) {
   if (x >= L.altX && x <= L.altX + L.altW + 14
       && y >= L.tapeTopY && y <= L.tapeBotY) {
     if (B.alt_bug != null) {
-      // Calculate bug position using same formula as drawAltTape
       const pxPerFt = L.tapeH / 600;
       const bugY = L.tapeMidY - (B.alt_bug - D.alt) * pxPerFt;
-      // Clamp to visible tape area (like in rendering)
       const clampedBugY = Math.max(L.tapeTopY, Math.min(L.tapeTopY + L.tapeH, bugY));
-      if (Math.abs(y - clampedBugY) < 25) {  // 25px tolerance
+      if (Math.abs(y - clampedBugY) < 30) {
+        _lastTapMs = now;
         openBugPanel('alt_bug');
         return;
       }
+    } else {
+      // No bug yet - open editor on any tape tap
+      _lastTapMs = now;
+      openBugPanel('alt_bug');
+      return;
     }
   }
 
@@ -1286,9 +1305,16 @@ function _handleSpdTap(x, y) {
       const pxPerDeg = W / 60;
       const off = ((B.hdg_bug - D.yaw + 540) % 360) - 180;
       const bugX = L.cx + off * pxPerDeg;
-      // Clamp to inside of tap buttons (like in pi4)
       const clampedBugX = Math.max(L.spdX + L.spdW + 20, Math.min(L.altX - 20, bugX));
-      if (Math.abs(x - clampedBugX) < 25) {  // 25px tolerance
+      if (Math.abs(x - clampedBugX) < 30) {
+        _lastTapMs = now;
+        openBugPanel('hdg_bug');
+        return;
+      }
+    } else {
+      // No bug yet - open editor on any heading tape tap (except far edges)
+      if (x > L.spdX + L.spdW + 20 && x < L.altX - 20) {
+        _lastTapMs = now;
         openBugPanel('hdg_bug');
         return;
       }
@@ -1786,14 +1812,23 @@ function drawHeadingTape() {
   ctx.font = font17;
   const textW = ctx.measureText(hdgStr).width;
   const bw = Math.max(66, textW + 28);
-  const bh = Math.max(28, fontSize + 8);
+  const bh = Math.max(28, fontSize + 10);
   const bx = cx - bw/2;
   const by = hdgY - bh - 2;
 
-  // Chamfered box (simplified: just rounded rectangle with pointer)
-  roundRect(bx, by, bw, bh, 3);
-  ctx.fillStyle='rgba(0,0,0,.88)'; ctx.fill();
-  ctx.strokeStyle = hdgCol; ctx.lineWidth = 1.5; ctx.stroke();
+  // Chamfered box (simplified: rounded rectangle with trapezoid pointer)
+  roundRect(bx, by, bw, bh, 4);
+  ctx.fillStyle='rgba(0,0,0,.90)'; ctx.fill();
+  ctx.strokeStyle = hdgCol; ctx.lineWidth = 2; ctx.stroke();
+
+  // Pointer triangle below the box (connects to tape)
+  ctx.fillStyle = hdgCol;
+  ctx.beginPath();
+  ctx.moveTo(cx - 8, by + bh);
+  ctx.lineTo(cx + 8, by + bh);
+  ctx.lineTo(cx, hdgY - 2);
+  ctx.closePath();
+  ctx.fill();
 
   // Main heading text
   ctx.fillStyle = hdgCol; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -1804,12 +1839,7 @@ function drawHeadingTape() {
   ctx.font = srcFont;
   ctx.fillStyle = hdgCol;
   ctx.textAlign='left'; ctx.textBaseline='top';
-  ctx.fillText(srcLabel, cx + textW/2 + 1, by + bh - 11);
-
-  // Pointer triangle below the box
-  ctx.fillStyle = hdgCol;
-  ctx.beginPath(); ctx.moveTo(cx, hdgY-1); ctx.lineTo(cx-7, hdgY-9); ctx.lineTo(cx+7, hdgY-9);
-  ctx.closePath(); ctx.fill(); ctx.textBaseline='alphabetic';
+  ctx.fillText(srcLabel, cx + textW/2 + 2, by + bh - 10);
 
   // Heading bug chevron — see preview.html drawHeadingTape() for shape.
   if (B.hdg_bug != null) {
