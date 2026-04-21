@@ -163,6 +163,38 @@
     border-radius:8px; color:#fff; font:bold 14px monospace;
     cursor:pointer; text-align:center;
   }
+
+  /* ── Bug editing panel ── */
+  #bug-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.92);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
+  }
+  #bug-panel p { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+  .bug-input-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .bug-label { color:rgba(180,210,255,.85); font:bold 14px monospace; min-width:60px; }
+  #bug-input {
+    flex:1; background:#0a1a30; color:#fff; border:1px solid #3a6aaf;
+    border-radius:4px; padding:8px 10px; font:16px monospace;
+    -webkit-appearance:none; appearance:none; text-align:center;
+  }
+  .bug-numpad {
+    display:grid; grid-template-columns:repeat(3,1fr); gap:4px; margin-bottom:8px;
+  }
+  .bug-numpad-btn {
+    background:#1a4a80; color:#fff; border:1px solid #4a8adf;
+    border-radius:4px; padding:12px; font:bold 16px monospace;
+    cursor:pointer; text-align:center; min-height:44px;
+    display:flex; align-items:center; justify-content:center;
+    -webkit-user-select:none; user-select:none; touch-action:manipulation;
+  }
+  .bug-numpad-btn:active { background:#2a6ab0; }
+  .bug-numpad-btn.delete { background:#8a2020; border-color:#d44444; grid-column:2; }
+  .bug-numpad-btn.delete:active { background:#a83030; }
+  .bug-numpad-btn.enter { background:#1a8a40; border-color:#44d474; grid-column:1/4; }
+  .bug-numpad-btn.enter:active { background:#2aa850; }
 </style>
 </head>
 <body>
@@ -306,6 +338,31 @@
   </div>
   <div class="trn-btns" style="margin-top:8px">
     <button class="trn-btn" onclick="closeSensorReadoutPanel()">✕ Close</button>
+  </div>
+</div>
+
+<div id="bug-panel">
+  <p id="bug-panel-title">Edit Speed Bug</p>
+  <div class="bug-input-row">
+    <span class="bug-label" id="bug-panel-label">SPD</span>
+    <input type="number" id="bug-input" placeholder="---" min="0" max="9999">
+  </div>
+  <div class="bug-numpad">
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('1')">1</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('2')">2</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('3')">3</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('4')">4</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('5')">5</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('6')">6</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('7')">7</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('8')">8</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('9')">9</button>
+    <button class="bug-numpad-btn" onclick="bugNumpadKey('0')">0</button>
+    <button class="bug-numpad-btn delete" onclick="bugNumpadDelete()">⌫</button>
+    <button class="bug-numpad-btn enter" onclick="bugNumpadEnter()">✓ SET</button>
+  </div>
+  <div class="trn-btns">
+    <button class="trn-btn" onclick="closeBugPanel()">✕ Close</button>
   </div>
 </div>
 
@@ -805,6 +862,71 @@ function resetAllTrims() {
   updateTrimUI();
 }
 
+// ── Bug panel ─────────────────────────────────────────────────────────────
+const bugPanel = document.getElementById('bug-panel');
+const bugInput = document.getElementById('bug-input');
+let bugEditTarget = null;  // 'spd_bug', 'alt_bug', or 'hdg_bug'
+
+function openBugPanel(target) {
+  bugEditTarget = target;
+  const titles = { spd_bug: 'Edit Speed Bug', alt_bug: 'Edit Altitude Bug', hdg_bug: 'Edit Heading Bug' };
+  const labels = { spd_bug: 'SPD', alt_bug: 'ALT', hdg_bug: 'HDG' };
+  const suffixes = { spd_bug: ' kt', alt_bug: ' ft', hdg_bug: '°' };
+
+  document.getElementById('bug-panel-title').textContent = titles[target];
+  document.getElementById('bug-panel-label').textContent = labels[target];
+  const currentVal = B[target];
+  bugInput.value = currentVal != null ? Math.round(currentVal) : '';
+  bugInput.placeholder = currentVal != null ? Math.round(currentVal).toString() : '---';
+  bugPanel.style.display = 'block';
+  bugInput.focus();
+}
+
+function closeBugPanel() {
+  bugPanel.style.display = 'none';
+  bugEditTarget = null;
+  bugInput.value = '';
+}
+
+function bugNumpadKey(digit) {
+  const maxChars = bugEditTarget === 'spd_bug' ? 3 : bugEditTarget === 'alt_bug' ? 5 : 3;
+  if (bugInput.value.length < maxChars) {
+    bugInput.value += digit;
+  }
+}
+
+function bugNumpadDelete() {
+  bugInput.value = bugInput.value.slice(0, -1);
+}
+
+function bugNumpadEnter() {
+  const val = bugInput.value.trim();
+  if (val === '') {
+    closeBugPanel();
+    return;
+  }
+
+  const numVal = parseFloat(val);
+  if (isNaN(numVal)) {
+    closeBugPanel();
+    return;
+  }
+
+  // Validate ranges and save
+  let finalVal = numVal;
+  if (bugEditTarget === 'spd_bug') {
+    finalVal = Math.max(0, Math.min(9999, numVal));
+  } else if (bugEditTarget === 'alt_bug') {
+    finalVal = Math.max(-1500, Math.min(60000, numVal));
+  } else if (bugEditTarget === 'hdg_bug') {
+    finalVal = ((numVal % 360) + 360) % 360;
+  }
+
+  B[bugEditTarget] = finalVal;
+  localStorage.setItem('bugs', JSON.stringify(B));
+  closeBugPanel();
+}
+
 // ── Unit preferences (persist across sessions) ─────────────────────────────
 const HPA_TO_INHG = 0.02953;
 const INHG_TO_HPA = 33.8639;
@@ -1122,11 +1244,48 @@ resize();
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 200));
 
-// Tap the speed tape (anywhere along its width) to toggle kt / mph
 function _handleSpdTap(x, y) {
+  // Check for speed bug tap (within tape area and close to a bug chevron)
   if (x >= L.spdX && x <= L.spdX + L.spdW + 14
       && y >= L.tapeTopY && y <= L.tapeBotY) {
+    if (B.spd_bug != null) {
+      // Calculate bug position using same formula as drawSpeedTape
+      const spdRange = speedUnit === 'mph' ? 140 : 120;
+      const pxPerSpd = L.tapeH / spdRange;
+      const bugY = L.tapeMidY - (toDisplaySpd(B.spd_bug) - toDisplaySpd(D.speed)) * pxPerSpd;
+      if (Math.abs(y - bugY) < 20) {  // 20px tolerance
+        openBugPanel('spd_bug');
+        return;
+      }
+    }
     toggleSpeedUnit();
+  }
+
+  // Check for altitude bug tap
+  if (x >= L.altX && x <= L.altX + L.altW + 14
+      && y >= L.tapeTopY && y <= L.tapeBotY) {
+    if (B.alt_bug != null) {
+      // Calculate bug position using same formula as drawAltTape
+      const pxPerFt = L.tapeH / 600;
+      const bugY = L.tapeMidY - (B.alt_bug - D.alt) * pxPerFt;
+      if (Math.abs(y - bugY) < 20) {  // 20px tolerance
+        openBugPanel('alt_bug');
+        return;
+      }
+    }
+  }
+
+  // Check for heading bug tap (bottom area)
+  if (y >= L.hdgY && y <= L.hdgY + L.hdgH) {
+    if (B.hdg_bug != null) {
+      const hdgW = L.altX - (L.spdX + L.spdW);
+      const off = ((B.hdg_bug - D.yaw + 540) % 360) - 180;
+      const bugX = L.cx + (off / 180) * hdgW / 2;
+      if (Math.abs(x - bugX) < 20) {  // 20px tolerance
+        openBugPanel('hdg_bug');
+        return;
+      }
+    }
   }
 }
 canvas.addEventListener('click',    e => {
