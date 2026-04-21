@@ -124,15 +124,15 @@ Notes:
 Status: **OPEN**
 Target: `iphone_display/index.html` speed/altitude tape positioning and tick marks.
 Context: Match Pi4 display where speed/altitude tapes extend further out
-with tick marks on outside edges (bolder, larger). However, iPhone notch/safe
-area constraint: moving tapes too far out would place the notch directly in
-the middle of one of the tapes, blocking the readout. Need to balance layout
-against `safe-area-inset-*` values.
+with tick marks on outside edges (bolder, larger). Solution: move tapes UP
+to the notch area (within safe-area-inset-top) but not beyond, avoiding
+notch blocking. Tapes can extend more while still respecting safe areas.
 Work items:
-  - Speed tape: move marks to left edge (outside), make bolder
-  - Altitude tape: move marks to right edge (outside), make bolder
-  - Consider narrower tape widths or reflow to fit within safe areas
-  - May need to adjust L.spdX, L.altX, L.spdW, L.altW layout calculations
+  - Speed tape: move marks to left edge (outside), make bolder/wider
+  - Altitude tape: move marks to right edge (outside), make bolder/wider
+  - Extend tape height up toward notch area (use L.safeT for upper bound)
+  - May need to adjust L.spdX, L.altX, L.spdW, L.altW, L.tapeTopY calcs
+  - Adjust tape drawing positions and widths accordingly
   - Test on notched phones (iPhone 12+) and notch-free (SE)
 
 ---
