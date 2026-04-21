@@ -108,6 +108,18 @@ Context: when `AP_SSID = "AHRS-Link-DEBUG"` or similar diagnostic
 values, the AP doesn't come up. Works with default SSID. Possible
 channel/password-length edge case.
 
+### #10  iPhone heading readout box — refinement
+Status: **OPEN**
+Target: `iphone_display/index.html` heading readout styling.
+Context: Heading box currently uses simple rounded rectangle. Should
+match Pi4 style more closely: chamfered box with proper pointer
+triangle, better visual hierarchy, possibly better subscript positioning.
+Notes:
+  - Pi4 uses `_chamfer()` for rounded corners with point angles
+  - Consider icon/label styling to make M/G indicator more prominent
+  - May need better spacing in the box for larger/smaller phone screens
+  - Test on iPhone 12 (notch), iPhone SE (small), iPhone 15 Pro Max (large)
+
 ---
 
 ## Completed
