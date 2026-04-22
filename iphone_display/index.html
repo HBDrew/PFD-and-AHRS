@@ -1890,9 +1890,11 @@ function drawHeadingTape() {
   const hdgCol = isGpsHeading ? BUG_MAGENTA : '#fff';
   const srcLabel = isGpsHeading ? 'G' : 'M';
 
-  // Heading readout box — chamfered polygon with integrated pointer (pi4 style)
+  // Heading readout box — chamfered polygon with integrated pointer (pi4 style).
+  // Font sized to match the Veeder-Root drum font so the three readouts read
+  // as a visual set across the bottom of the display.
   const hdgStr = Math.round(D.yaw).toString().padStart(3,'0') + '°';
-  const fontSize = Math.max(13, H*.030);
+  const fontSize = Math.max(18, H*.050);
   ctx.font = `bold ${fontSize}px monospace`;
   const textW = ctx.measureText(hdgStr).width;
   const bw = Math.max(66, textW + 28);
