@@ -153,29 +153,25 @@ Work items:
   - Surface status on the `/status` JSON so the Connectivity panel
     on both display platforms can show "MAG CAL: OK / STALE / NONE".
 
-### #13  iPhone TAWS full-AI colour bands
-Status: **OPEN**
-Target: `iphone_display/index.html` — extend the TAWS concept beyond
-the centre-top banner.
-Context: pi4 and iPhone currently show a centred "TERRAIN CAUTION" /
-"PULL UP TERRAIN" banner and nothing else. When #11 finished, the
-tapes moved in slightly and the AI area is now wider — we have room
-to additionally tint the whole ground half of the AI amber (caution)
-or red (warning) for peripheral-vision alerting. Tint should apply to
-the full visible ground area, not just inside the old tape bounds.
-Work items:
-  - Add an amber overlay (`rgba(160,110,0,0.25)`?) across the ground
-    polygon in `drawAI()` when `TAWS.level === 1`.
-  - Red overlay (flashing with the banner) for `TAWS.level === 2`.
-  - Respect roll — the overlay needs to rotate with the horizon so it
-    still reads as "ground is dangerously close", not a screen-wide
-    flash.
-  - Consider whether pi4 should get the same treatment (probably
-    yes, to keep the two displays visually aligned).
-
 ---
 
 ## Completed
+
+### TERRAIN-FULLWIDTH  iPhone terrain mesh clipped to tape gap — **FIXED**
+Target: `iphone_display/terrain.js` `render()`.
+Root cause: `ctx.rect(clipX, tapeTopY, clipW, tapeH)` where `clipX =
+spdX + spdW` and `clipW = altX - clipX` restricted the TAWS-coloured
+terrain mesh (red = at/above aircraft, amber = within 500 ft) to
+the AI gap between the tapes. The coloured horizon band stopped at
+each tape's inner edge, so a pilot scanning the horizon saw the
+alert only in a narrow central strip.
+Fix: clip to `(0, tapeTopY, canvas.width, tapeH)` instead. The tapes
+are rendered after terrain and use `rgba(0,8,25,0.80)` backgrounds,
+so they tint the band instead of hiding it — the alert colour
+now reads edge-to-edge along the horizon while the tape readouts
+remain legible.
+Closes the "extend TAWS colours to full AI area" sub-task that was
+originally part of #11.
 
 ### #11  iPhone tape repositioning — outside-edge marks + safe-area — **FIXED**
 Target: `iphone_display/index.html` — `computeLayout`, `drawSpdTape`,

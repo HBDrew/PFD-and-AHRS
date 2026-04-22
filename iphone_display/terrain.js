@@ -307,8 +307,11 @@ const Terrain = (() => {
     const DISTANCES  = [0.5, 1, 2, 4, 8, 15, 25, 40, 60];   // nautical miles
 
     ctx.save();
+    // Clip to the full screen width so the TAWS-coloured horizon band
+    // reads edge-to-edge. Tapes are semi-transparent (alpha ~0.8) and
+    // are drawn after terrain, so they tint the band without hiding it.
     ctx.beginPath();
-    ctx.rect(clipX, tapeTopY, clipW, tapeH);
+    ctx.rect(0, tapeTopY, ctx.canvas.width, tapeH);
     ctx.clip();
 
     // Build projected grid [distIdx][brgIdx]
