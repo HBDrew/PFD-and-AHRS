@@ -300,11 +300,16 @@ const Terrain = (() => {
     const rollR  =  D.roll  * DEG;
     const altM   =  D.alt   * 0.3048;   // feet → metres
 
-    // Sampling grid: 21 bearings (±40°) × 9 distance rings
-    const BRG_COUNT  = 21;
-    const DIST_COUNT = 9;
-    const BRG_HALF   = 42;   // degrees either side
-    const DISTANCES  = [0.5, 1, 2, 4, 8, 15, 25, 40, 60];   // nautical miles
+    // Sampling grid: bearings scale with canvas width so the terrain mesh
+    // reaches the screen edges regardless of aspect ratio. focal is sized
+    // for the AI gap (~70° FOV across the inside width), so the outside
+    // edges sit further out in bearing space — sample accordingly.
+    const DISTANCES = [0.5, 1, 2, 4, 8, 15, 25, 40, 60];   // nautical miles
+    const DIST_COUNT = DISTANCES.length;
+    const halfW   = ctx.canvas.width / 2;
+    const edgeAng = Math.atan(halfW / focal) * 180 / Math.PI;
+    const BRG_HALF  = Math.min(75, Math.ceil(edgeAng) + 5);
+    const BRG_COUNT = Math.max(21, Math.round(BRG_HALF / 2) * 2 + 1);
 
     ctx.save();
     // Clip to the full screen width so the TAWS-coloured horizon band

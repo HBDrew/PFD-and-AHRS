@@ -54,7 +54,7 @@
     pointer-events:none; z-index:10; letter-spacing:.04em;
   }
   #link-status    { right:8px; }
-  #baro-status    { right:90px; cursor:pointer; pointer-events:auto; background:rgba(0,55,115,.80); color:#cef; }
+  #baro-status    { display:none; }   /* rendered on canvas — see drawBaroButton */
   #terrain-status { right:150px; cursor:pointer; pointer-events:auto; }
   #sensor-status  { right:230px; cursor:pointer; pointer-events:auto; min-width:50px; text-align:center; }
 
@@ -1342,6 +1342,16 @@ function _handleSpdTap(x, y) {
     }
   }
 
+  // Check for baro button tap (bottom of speed tape column, overlays
+  // the heading strip). Delegates to the (hidden) HTML #baro-status
+  // click handler so panel open/close logic stays in one place.
+  if (x >= L.spdX && x <= L.spdX + L.spdW
+      && y >= L.hdgY && y <= L.hdgY + L.hdgH) {
+    _lastTapMs = now;
+    baroEl.click();
+    return;
+  }
+
   // Fallback: tap on bug chevron if it exists
   if (x >= L.spdX && x <= L.spdX + L.spdW + 14
       && y >= L.tapeTopY && y <= L.tapeBotY) {
@@ -1920,9 +1930,32 @@ function drawHeadingTape() {
   ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh/2 + fontSize*0.35);
 }
 
+// ── Baro button (pi4-style tap button at bottom of speed tape column) ─────
+function drawBaroButton() {
+  const { spdX, spdW, hdgY, hdgH } = L;
+  const baroOk = D.baro_ok !== false;
+  const usingGps = !baroOk || D.baro_src === 'gps';
+  const fill   = usingGps ? 'rgba(120,0,120,.85)' : 'rgba(0,55,115,.85)';
+  const stroke = usingGps ? '#d8d' : '#6cf';
+  roundRect(spdX, hdgY, spdW, hdgH, 4);
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke();
+  // Text mirrors the (now hidden) HTML #baro-status badge so updateBaroUI
+  // remains the single source of truth for formatting.
+  const label = baroEl.textContent || 'QNH ···';
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${Math.max(11, Math.min(hdgH * 0.45, spdW * 0.22))}px monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, spdX + spdW/2, hdgY + hdgH/2);
+  ctx.textBaseline = 'alphabetic';
+}
+
 // ── GPS status ─────────────────────────────────────────────────────────────
 function drawGPSStatus() {
-  const x=L.safeL+10, y=L.safeT+8;
+  // Positioned just right of the airspeed tape's inside edge so it stays
+  // in the AI area and away from the iOS notch/status-bar region.
+  const x = L.spdX + L.spdW + 6;
+  const y = L.tapeTopY + 4;
   const label=D.fix===0?'NO FIX':D.fix===1?'GPS':'DGPS';
   const col  =D.fix===0?'#f44':D.fix===1?'#fa0':'#0d0';
   ctx.fillStyle=col; ctx.font=`bold ${Math.max(10,H*.022)}px monospace`;
@@ -1979,7 +2012,8 @@ function render(ts) {
   // 1. Sky/ground background (full canvas, rotated with roll)
   drawAI();
 
-  // 2. Terrain mesh — drawn on top of sky/ground, clipped to AI area between tapes
+  // 2. Terrain mesh — drawn on top of sky/ground, clipped to full screen
+  // width so TAWS-coloured horizon band reads edge-to-edge
   Terrain.render(ctx, D, L);
 
   // 3. Fixed instrument overlays (always on top of terrain)
@@ -1990,6 +2024,7 @@ function render(ts) {
   drawAltTape();
   drawHeadingTape();
   drawGPSStatus();
+  drawBaroButton();
   drawTerrainAlert();
 
   // ── Failure overlays ──────────────────────────────────────────────────────
