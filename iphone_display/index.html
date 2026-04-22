@@ -1252,14 +1252,57 @@ function computeLayout() {
   L.focal = clipW > 0 ? (clipW / 2) / Math.tan(35 * Math.PI / 180) : 300;
 }
 
+// Display is locked to landscape. When the viewport reports portrait (which
+// happens when a steep bank angle tricks iOS's auto-rotate into flipping the
+// page), we keep the canvas rendering at landscape resolution and CSS-rotate
+// it 90° CW to undo the flip. Touch coordinates are remapped through the
+// inverse transform in _eventToCanvas below.
+let _portraitRotated = false;
+
 function resize() {
-  W = canvas.width  = window.innerWidth;
-  H = canvas.height = window.innerHeight;
+  const iw = window.innerWidth;
+  const ih = window.innerHeight;
+  _portraitRotated = ih > iw;
+
+  if (_portraitRotated) {
+    W = canvas.width  = ih;   // landscape width
+    H = canvas.height = iw;   // landscape height
+    canvas.style.width  = ih + 'px';
+    canvas.style.height = iw + 'px';
+    canvas.style.transformOrigin = 'top left';
+    canvas.style.transform = `translate(${iw}px, 0) rotate(90deg)`;
+  } else {
+    W = canvas.width  = iw;
+    H = canvas.height = ih;
+    canvas.style.width  = iw + 'px';
+    canvas.style.height = ih + 'px';
+    canvas.style.transform = '';
+  }
   computeLayout();
 }
 resize();
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+
+// Best-effort: some browsers / PWA environments accept an explicit lock.
+// iOS Safari/PWAs typically reject this, so we rely on the CSS rotation
+// above for the actual visual lock — this is belt-and-braces.
+try {
+  if (screen.orientation && screen.orientation.lock) {
+    screen.orientation.lock('landscape').catch(() => {});
+  }
+} catch (_) { /* ignore */ }
+
+function _eventToCanvas(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  const vx = clientX - r.left, vy = clientY - r.top;
+  if (_portraitRotated) {
+    // Inverse of: translate(iw,0) rotate(90deg).
+    // Canvas (x, y) appears at viewport (H - y, x), so:
+    return { x: vy, y: H - vx };
+  }
+  return { x: vx, y: vy };
+}
 
 // Debounce touch taps to prevent multiple rapid fires
 let _lastTapMs = 0;
@@ -1320,12 +1363,13 @@ function _handleSpdTap(x, y) {
   }
 }
 canvas.addEventListener('click',    e => {
-  const r=canvas.getBoundingClientRect();
-  _handleSpdTap(e.clientX-r.left, e.clientY-r.top);
+  const p = _eventToCanvas(e.clientX, e.clientY);
+  _handleSpdTap(p.x, p.y);
 });
 canvas.addEventListener('touchend', e => {
-  const r=canvas.getBoundingClientRect(), t=e.changedTouches[0];
-  _handleSpdTap(t.clientX-r.left, t.clientY-r.top);
+  const t = e.changedTouches[0];
+  const p = _eventToCanvas(t.clientX, t.clientY);
+  _handleSpdTap(p.x, p.y);
   // Don't preventDefault here — let other touch events (terrain panel) still work
 }, {passive:true});
 

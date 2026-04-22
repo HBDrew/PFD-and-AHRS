@@ -108,6 +108,51 @@ Context: when `AP_SSID = "AHRS-Link-DEBUG"` or similar diagnostic
 values, the AP doesn't come up. Works with default SSID. Possible
 channel/password-length edge case.
 
+### #12  iPhone compass calibration — cardinal-point or GPS-track
+Status: **OPEN**
+Target: `iphone_display/index.html` sensor pipeline (`_onOrientation`,
+`PS` state), and possibly a new calibration panel in the setup menu.
+Context: iPhone's `webkitCompassHeading` is most accurate in portrait
+and drifts in landscape — especially landscape-right (charging port on
+right), which is the preferred mount orientation. Need a user-driven
+calibration to compute a per-orientation offset that's stored locally
+and added to the raw heading before display.
+Modes:
+  1. **Cardinal walk-through**: pilot taps a "CAL COMPASS" button in
+     setup, then points the aircraft at known N / E / S / W headings
+     and confirms each. Average the four offsets (handles device tilt
+     bias). Store to `localStorage`.
+  2. **GPS-track auto-cal**: when GPS groundspeed > 15 kt for ≥10 s
+     and AHRS compass is live, compute `offset = gps_track - compass`
+     (unwrapped, averaged over the sample window). Roll into the
+     stored offset with a low-pass filter so wind/crab angle doesn't
+     bias it too hard; require straight-and-level (|roll| < 5°) to
+     include a sample.
+Apply the stored offset in `_onOrientation` before writing `PS.yaw`.
+Show a "CAL" indicator on the heading box when an offset is active.
+Needs paired firmware work (see AHRS-MAGCAL below).
+
+### AHRS-MAGCAL  WT901 magnetometer calibration procedure
+Status: **OPEN**
+Target: `firmware/wt901.py`, `firmware/main.py`, `firmware/web_server.py`.
+Context: The WT901 has factory mag calibration but drifts with nearby
+ferrous metal (panel, wiring, headset). For the AHRS to supply a
+trustworthy yaw that the iPhone/Pi4 displays can trust, we need a
+user-runnable calibration routine. Also needed so the iPhone #12
+cardinal calibration has something authoritative to match against.
+Work items:
+  - Add a `/magcal/start` / `/magcal/sample?hdg=XXX` / `/magcal/finish`
+    HTTP endpoint set (or serial command equivalent) on the Pico W so
+    a display can drive the procedure without a special tool.
+  - At each of N/E/S/W, read mag X/Y for ~2 s and average; solve for
+    hard-iron offset (center of the ellipse) and soft-iron scale
+    (ellipse-to-circle transform). See any WT901 hard/soft-iron cal
+    reference for the math (2D form is sufficient — we only use yaw).
+  - Persist the resulting 2x2 matrix + offset to flash. Apply in
+    `wt901.py` before computing yaw.
+  - Surface status on the `/status` JSON so the Connectivity panel
+    on both display platforms can show "MAG CAL: OK / STALE / NONE".
+
 ### #11  iPhone tape repositioning — speed/altitude marks + safe-area constraint
 Status: **OPEN**
 Target: `iphone_display/index.html` speed/altitude tape positioning and tick marks.
@@ -129,6 +174,26 @@ Work items:
 ---
 
 ## Completed
+
+### IPHONE-ORIENT-LOCK  iPhone display must never rotate — **FIXED**
+Target: `iphone_display/index.html` resize path and touch handlers.
+Root cause: in steep bank, the accelerometer's gravity vector fools
+iOS's auto-rotate into flipping the PWA to portrait mid-flight — the
+PFD content then draws into a tall narrow box, with the heading tape
+and tapes rotated 90°. The manifest's `"orientation": "landscape"`
+hint alone isn't enough under these conditions, and
+`screen.orientation.lock()` is not reliably supported on iOS Safari
+or iOS PWAs.
+Fix: render the canvas at landscape resolution regardless of the
+viewport — when `window.innerHeight > window.innerWidth` we still set
+`canvas.width = innerHeight`, `canvas.height = innerWidth`, then apply
+CSS `translate(innerWidth, 0) rotate(90deg)` to the canvas element so
+it visually covers the portrait viewport while the content reads as
+landscape. Touch coordinates are remapped through the inverse
+transform in a new `_eventToCanvas()` helper used by both the click
+and touchend listeners (`vy → canvas.x`, `H - vx → canvas.y`).
+`screen.orientation.lock('landscape')` is still attempted as a
+best-effort belt-and-braces call.
 
 ### #10  iPhone heading readout box — refinement — **FIXED**
 Target: `iphone_display/index.html` `drawHeadingTape`.
