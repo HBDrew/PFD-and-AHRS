@@ -1798,6 +1798,20 @@ function drawHeadingTape() {
       ctx.textAlign='center'; ctx.fillText(label,x,hdgY+hdgH-3);
     }
   }
+  // Heading bug chevron — drawn BEFORE the readout box so the box/pointer
+  // covers the bug when it sits near the current heading (matches spd/alt).
+  if (B.hdg_bug != null) {
+    const off = ((B.hdg_bug - hdg + 540) % 360) - 180;
+    let hbx = cx + off * pxPerDeg;
+    hbx = Math.max(L.spdX+L.spdW+20, Math.min(L.altX-20, hbx));
+    ctx.fillStyle = BUG_CYAN;
+    ctx.beginPath();
+    ctx.moveTo(hbx-17, hdgY+14); ctx.lineTo(hbx-17, hdgY);
+    ctx.lineTo(hbx-5,  hdgY);    ctx.lineTo(hbx,    hdgY+7);
+    ctx.lineTo(hbx+5,  hdgY);    ctx.lineTo(hbx+17, hdgY);
+    ctx.lineTo(hbx+17, hdgY+14); ctx.closePath(); ctx.fill();
+  }
+
   // Determine heading source: GPS track (magenta) or magnetic (white)
   const isGpsHeading = PS.enabled && !D.ahrs_ok;  // fallback to GPS track when AHRS unavailable
   const hdgCol = isGpsHeading ? BUG_MAGENTA : '#fff';
@@ -1845,19 +1859,6 @@ function drawHeadingTape() {
   ctx.fillStyle = hdgCol;
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh/2 + fontSize*0.35);
-
-  // Heading bug chevron — parks at edge when off-screen (like speed/alt bugs)
-  if (B.hdg_bug != null) {
-    const off = ((B.hdg_bug - hdg + 540) % 360) - 180;
-    let hbx = cx + off * pxPerDeg;
-    hbx = Math.max(L.spdX+L.spdW+20, Math.min(L.altX-20, hbx));
-    ctx.fillStyle = BUG_CYAN;
-    ctx.beginPath();
-    ctx.moveTo(hbx-17, hdgY+14); ctx.lineTo(hbx-17, hdgY);
-    ctx.lineTo(hbx-5,  hdgY);    ctx.lineTo(hbx,    hdgY+7);
-    ctx.lineTo(hbx+5,  hdgY);    ctx.lineTo(hbx+17, hdgY);
-    ctx.lineTo(hbx+17, hdgY+14); ctx.closePath(); ctx.fill();
-  }
 }
 
 // ── GPS status ─────────────────────────────────────────────────────────────
