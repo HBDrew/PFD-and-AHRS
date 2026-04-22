@@ -155,6 +155,49 @@ Work items:
 
 ---
 
+### #14  iPhone baro button shouldn't exist when in GPS-ALT
+Status: **OPEN**
+Target: `iphone_display/index.html` `drawBaroButton`, `_handleSpdTap`.
+Context: When the baro sensor is unavailable (`baro_ok === false`)
+or the firmware is reporting GPS-derived altitude (`baro_src ===
+"gps"`), the displayed altitude has no QNH input — adjusting QNH does
+nothing useful. Today the baro button still draws (magenta) showing
+"GPS ALT" and is tappable; it should be omitted entirely so the pilot
+isn't invited to tweak a setting that has no effect.
+Work items:
+  - Skip the rounded-rect draw and tap registration when
+    `!D.baro_ok || D.baro_src === "gps"`. Either return early from
+    `drawBaroButton` and the tap branch in `_handleSpdTap`, or gate
+    on a single `_baroAdjustable()` helper.
+  - Decide what (if anything) fills the bottom of the alt-tape
+    column when the button is hidden — probably nothing (let the
+    heading tape show through), matching pi4 behaviour.
+
+### #15  iPhone V-speeds editor UI
+Status: **OPEN**
+Target: `iphone_display/index.html` setup menu — new "V-SPEEDS" panel.
+Context: V-speeds (Vs0, Vs1, Va, Vfe, Vno, Vne, Vy, Vx) drive the
+speed-tape colour bands and the V-speed labels. Defaults match
+Cessna 172S POH and the only way to change them today is to hand-edit
+`localStorage['vspeeds']` from the browser console — the comment in
+`index.html:956` explicitly notes "Edits to these will eventually
+come from a flight-profile UI". Pi4 already has a Flight Profile
+screen; iPhone doesn't.
+Work items:
+  - Add a "V-SPEEDS" button to the setup menu (alongside TERRAIN /
+    BAROMETER / TRIM / SENSORS).
+  - Panel with eight numpad-driven entries (Vs0, Vs1, Va, Vfe, Vno,
+    Vne, Vy, Vx); reuse the existing bug-edit numpad style.
+  - Save to `localStorage['vspeeds']` in the same JSON shape the
+    init reader already understands.
+  - Validate ordering on commit (Vs0 < Vs1 < Vfe ≤ Vno < Vne, etc.)
+    and surface an inline error rather than silently storing bad
+    values.
+  - Match pi4's "V-SPEEDS (knots)" header so the unit convention is
+    explicit even when the speed tape is showing mph.
+
+---
+
 ## Completed
 
 ### TERRAIN-FULLWIDTH  iPhone terrain mesh clipped to tape gap — **FIXED**
