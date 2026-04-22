@@ -888,12 +888,14 @@ function openBugPanel(target) {
   bugEditTarget = target;
   const titles = { spd_bug: 'Edit Speed Bug', alt_bug: 'Edit Altitude Bug', hdg_bug: 'Edit Heading Bug' };
   const labels = { spd_bug: 'SPD', alt_bug: 'ALT', hdg_bug: 'HDG' };
-  const suffixes = { spd_bug: ' kt', alt_bug: ' ft', hdg_bug: '°' };
 
   document.getElementById('bug-panel-title').textContent = titles[target];
   document.getElementById('bug-panel-label').textContent = labels[target];
   const currentVal = B[target];
-  bugInput.value = currentVal != null ? Math.round(currentVal) : '';
+  // Input starts empty so the first digit replaces the old value without
+  // needing a backspace. The current bug stays visible as the placeholder,
+  // and bugNumpadEnter on an empty buffer just closes without changing B.
+  bugInput.value = '';
   bugInput.placeholder = currentVal != null ? Math.round(currentVal).toString() : '---';
   bugPanel.style.display = 'block';
   bugInput.focus();
@@ -934,7 +936,8 @@ function bugNumpadEnter() {
   if (bugEditTarget === 'spd_bug') {
     finalVal = Math.max(0, Math.min(9999, numVal));
   } else if (bugEditTarget === 'alt_bug') {
-    finalVal = Math.max(-1500, Math.min(60000, numVal));
+    // Altitude bug snaps to 100 ft increments.
+    finalVal = Math.max(-1500, Math.min(60000, Math.round(numVal / 100) * 100));
   } else if (bugEditTarget === 'hdg_bug') {
     finalVal = ((numVal % 360) + 360) % 360;
   }
@@ -1342,10 +1345,10 @@ function _handleSpdTap(x, y) {
     }
   }
 
-  // Check for baro button tap (bottom of speed tape column, overlays
+  // Check for baro button tap (bottom of altitude tape column, overlays
   // the heading strip). Delegates to the (hidden) HTML #baro-status
   // click handler so panel open/close logic stays in one place.
-  if (x >= L.spdX && x <= L.spdX + L.spdW
+  if (x >= L.altX && x <= L.altX + L.altW
       && y >= L.hdgY && y <= L.hdgY + L.hdgH) {
     _lastTapMs = now;
     baroEl.click();
@@ -1609,7 +1612,7 @@ function drawSpeedTape() {
   // Visible tape range matches pi4 (PX_PER_KT = TAPE_H / 120).
   const spdRange = speedUnit === 'mph' ? 140 : 120;
   const pxPerSpd = tapeH / spdRange;
-  const fs=Math.max(10,H*.021);
+  const fs=Math.max(20,H*.042);
 
   ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(spdX,tapeTopY,spdW,tapeH);
   ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
@@ -1672,7 +1675,7 @@ function drawSpeedTape() {
     if (v<0) continue;
     const y=tapeMidY-(v-spd)*pxPerSpd;
     if (Math.abs(y-tapeMidY) < spdReadoutHalf) continue;
-    if (y < tapeTopY+14 || y > tapeTopY+tapeH-6) continue;
+    if (y < tapeTopY+fs+8 || y > tapeTopY+tapeH-fs/2-6) continue;
     const major = v % 20 === 0;
     const tl = major ? 14 : 7;
     ctx.strokeStyle='rgba(230,230,230,.95)';
@@ -1741,7 +1744,7 @@ function drawSpeedTape() {
 function drawAltTape() {
   const { altX, altW, tapeTopY, tapeH, tapeMidY } = L;
   const pxPerFt=tapeH/600, alt=D.alt;
-  const fs=Math.max(10,H*.021);
+  const fs=Math.max(20,H*.042);
 
   ctx.fillStyle='rgba(0,8,25,.80)'; ctx.fillRect(altX,tapeTopY,altW,tapeH);
   ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1;
@@ -1752,22 +1755,21 @@ function drawAltTape() {
   ctx.save();
   ctx.beginPath(); ctx.rect(altX,tapeTopY,altW,tapeH); ctx.clip();
   // Ticks on outside (right) edge pointing inward — matches pi4.
-  // Start on a multiple of 100 so ft%200 and ft%500 resolve correctly.
-  const baseAlt = Math.round(alt / 100) * 100;
+  // Major + label at every 100 ft, minor at every 50 ft.
+  const baseAlt = Math.round(alt / 50) * 50;
   const altReadoutHalf = Math.max(21, H*0.067) + 4;
-  for (let ft=baseAlt-300; ft<=baseAlt+300; ft+=100) {
+  for (let ft=baseAlt-300; ft<=baseAlt+300; ft+=50) {
     const y=tapeMidY-(ft-alt)*pxPerFt;
     if (Math.abs(y-tapeMidY) < altReadoutHalf) continue;
-    if (y < tapeTopY+14 || y > tapeTopY+tapeH-6) continue;
-    const isMaj=ft%500===0, tlen=isMaj?14:7;
+    if (y < tapeTopY+fs+8 || y > tapeTopY+tapeH-fs/2-6) continue;
+    const isMaj = ft%100===0, tlen = isMaj ? 14 : 7;
     ctx.strokeStyle = isMaj ? 'rgba(230,230,230,.95)' : 'rgba(230,230,230,.60)';
     ctx.lineWidth   = isMaj ? 2 : 1;
     ctx.beginPath();
     ctx.moveTo(altX+altW, y); ctx.lineTo(altX+altW-tlen, y); ctx.stroke();
-    // Label every 200ft mark; major (500ft) marks get a brighter label
-    if (ft%200===0) {
-      ctx.fillStyle = isMaj ? 'rgba(230,230,230,.95)' : 'rgba(230,230,230,.85)';
-      ctx.font=`bold ${isMaj?fs+1:fs}px monospace`;
+    if (isMaj) {
+      ctx.fillStyle = 'rgba(230,230,230,.95)';
+      ctx.font=`bold ${fs}px monospace`;
       ctx.textAlign='right'; ctx.textBaseline='middle';
       ctx.fillText(ft.toString(), altX+altW-tlen-3, y);
     }
@@ -1930,23 +1932,23 @@ function drawHeadingTape() {
   ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh/2 + fontSize*0.35);
 }
 
-// ── Baro button (pi4-style tap button at bottom of speed tape column) ─────
+// ── Baro button (pi4-style tap button at bottom of altitude tape column) ──
 function drawBaroButton() {
-  const { spdX, spdW, hdgY, hdgH } = L;
+  const { altX, altW, hdgY, hdgH } = L;
   const baroOk = D.baro_ok !== false;
   const usingGps = !baroOk || D.baro_src === 'gps';
   const fill   = usingGps ? 'rgba(120,0,120,.85)' : 'rgba(0,55,115,.85)';
   const stroke = usingGps ? '#d8d' : '#6cf';
-  roundRect(spdX, hdgY, spdW, hdgH, 4);
+  roundRect(altX, hdgY, altW, hdgH, 4);
   ctx.fillStyle = fill; ctx.fill();
   ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke();
   // Text mirrors the (now hidden) HTML #baro-status badge so updateBaroUI
   // remains the single source of truth for formatting.
   const label = baroEl.textContent || 'QNH ···';
   ctx.fillStyle = '#fff';
-  ctx.font = `bold ${Math.max(11, Math.min(hdgH * 0.45, spdW * 0.22))}px monospace`;
+  ctx.font = `bold ${Math.max(11, Math.min(hdgH * 0.45, altW * 0.22))}px monospace`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(label, spdX + spdW/2, hdgY + hdgH/2);
+  ctx.fillText(label, altX + altW/2, hdgY + hdgH/2);
   ctx.textBaseline = 'alphabetic';
 }
 
