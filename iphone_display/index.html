@@ -1853,7 +1853,7 @@ function drawHeadingTape() {
   ctx.fillStyle='rgba(0,8,22,.82)'; ctx.fillRect(0,hdgY,W,hdgH);
   ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(0,hdgY); ctx.lineTo(W,hdgY); ctx.stroke();
-  ctx.font=`${Math.max(20,H*.044)}px monospace`; ctx.textBaseline='bottom';
+  ctx.font=`bold ${Math.max(20,H*.044)}px monospace`; ctx.textBaseline='bottom';
   for (let i=-45; i<=45; i++) {
     const deg=((Math.round(hdg)+i+3600)%360);
     const offset=i-(hdg-Math.round(hdg)), x=cx+offset*pxPerDeg;
