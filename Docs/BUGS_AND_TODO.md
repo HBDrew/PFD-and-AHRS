@@ -205,10 +205,13 @@ Work items:
     vertical pole with the ICAO identifier next to it. No
     paved/unpaved/heliport symbol distinction — just the post
     and the label, same shape for every airport.
-  - **S/M/L filter**: same defaults as pi4 (`show_public`, S/M/L
-    by longest runway) so distant fields don't clutter — but the
-    rendered marker stays the simple post regardless of size.
-    Persist to localStorage.
+  - **Type + size filter**: carry over pi4's four type toggles
+    (`show_public`, `show_heli`, `show_seaplane`, `show_other` —
+    public covers S/M/L by longest runway). Pi4-only `show_runways`
+    and `show_centerlines` are skipped since iPhone only renders
+    the signpost. The marker stays the simple post regardless of
+    type/size; the filter just controls which airports appear.
+    Persist all toggles to localStorage.
   - **Download/manage screen**: new "AIRPORTS" entry in the setup
     menu mirroring TERRAIN. Two buttons (Global / Regional),
     progress bar, count display, last-updated timestamp, clear
