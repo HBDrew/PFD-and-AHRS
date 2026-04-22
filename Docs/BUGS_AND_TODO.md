@@ -173,6 +173,55 @@ Work items:
     column when the button is hidden — probably nothing (let the
     heading tape show through), matching pi4 behaviour.
 
+### #17  iPhone airport overlay — symbols + labels + download screen
+Status: **OPEN**
+Target: `iphone_display/` — new `airports.js` module, additions to
+`index.html` for the AI overlay, and a new download/manage panel
+plumbed into the setup menu next to TERRAIN.
+Context: Pi4 has full airport support — `airports.py` parses the
+OurAirports CSV into a numpy cache, `draw_airport_symbols()`
+renders them as projected symbols on the AI with S/M/L filter,
+`draw_airport_data()` is the dedicated data screen with download
+controls, and the status badges include NO APT / EXP APT. iPhone
+has none of this. The data set is ~3 MB (from `fetch_airports.sh`,
+~80K airports worldwide), so it ships from the same upstream
+(`davidmegginson/ourairports-data`) that pi4 already uses.
+Work items:
+  - **Data**: convert the airports + runways CSVs into a compact
+    browser-loadable form (JSON shards by lat/lon tile, or a single
+    binary blob with a header index — match what terrain.js does
+    so the cache + service-worker story is consistent).
+  - **airports.js module**: Terrain-style API:
+    `Airports.init()`, `Airports.downloadGlobal(progressCb)`,
+    `Airports.downloadRegion(lat, lon, radiusNm, progressCb)`,
+    `Airports.nearby(lat, lon, radiusNm)`, `Airports.tileCount`,
+    `Airports.status`. Use IndexedDB (or the same Cache API
+    terrain.js uses) so it survives offline.
+  - **Marker on AI**: `Airports.render(ctx, D, L)` called after
+    `Terrain.render` and before the tape overlays — projects each
+    nearby airport via the same focal/yaw/pitch/roll math the
+    terrain mesh uses (factor that out into a shared helper if
+    it isn't already). Render as a simple "signpost": small
+    vertical pole with the ICAO identifier next to it. No
+    paved/unpaved/heliport symbol distinction — just the post
+    and the label, same shape for every airport.
+  - **S/M/L filter**: same defaults as pi4 (`show_public`, S/M/L
+    by longest runway) so distant fields don't clutter — but the
+    rendered marker stays the simple post regardless of size.
+    Persist to localStorage.
+  - **Download/manage screen**: new "AIRPORTS" entry in the setup
+    menu mirroring TERRAIN. Two buttons (Global / Regional),
+    progress bar, count display, last-updated timestamp, clear
+    cache button. Reuse the existing terrain panel CSS so it
+    looks like a sibling, not a one-off.
+  - **Status indicators**: NO APT / EXP APT badges in the same
+    row as the GPS / link badges, mirroring pi4's `_AMBER`
+    convention so the displays stay visually aligned.
+  - Decide whether airport data should auto-download on first
+    install (PWA add-to-home-screen), or be opt-in like terrain.
+    Probably opt-in for the global set, auto for the
+    home-airport-region.
+
 ### #16  iPhone heading tape — show 25% more degrees at once
 Status: **OPEN**
 Target: `iphone_display/index.html` `drawHeadingTape`.
