@@ -1803,41 +1803,48 @@ function drawHeadingTape() {
   const hdgCol = isGpsHeading ? BUG_MAGENTA : '#fff';
   const srcLabel = isGpsHeading ? 'G' : 'M';
 
-  // Heading readout box with pointer below (matches pi4 style)
+  // Heading readout box — chamfered polygon with integrated pointer (pi4 style)
   const hdgStr = Math.round(D.yaw).toString().padStart(3,'0') + '°';
-  const fontSize = Math.max(13,H*.030);
-  const font17 = `bold ${fontSize}px monospace`;
-  ctx.font = font17;
+  const fontSize = Math.max(13, H*.030);
+  ctx.font = `bold ${fontSize}px monospace`;
   const textW = ctx.measureText(hdgStr).width;
   const bw = Math.max(66, textW + 28);
   const bh = Math.max(28, fontSize + 10);
   const bx = cx - bw/2;
   const by = hdgY - bh - 2;
+  const td = 14;        // triangle pointer depth
+  const th = bw / 3;    // triangle base width
+  const tx = cx - th/2;
+  const r  = 4;         // corner radius
 
-  // Chamfered box (simplified: rounded rectangle with trapezoid pointer)
-  roundRect(bx, by, bw, bh, 4);
-  ctx.fillStyle='rgba(0,0,0,.90)'; ctx.fill();
+  // Single path: rounded rect with integrated triangle pointer going into tape
+  ctx.beginPath();
+  ctx.moveTo(bx + r, by);
+  ctx.lineTo(bx + bw - r, by);
+  ctx.arcTo(bx + bw, by, bx + bw, by + r, r);
+  ctx.lineTo(bx + bw, by + bh - r);
+  ctx.arcTo(bx + bw, by + bh, bx + bw - r, by + bh, r);
+  ctx.lineTo(tx + th, by + bh);
+  ctx.lineTo(cx,       by + bh + td);
+  ctx.lineTo(tx,       by + bh);
+  ctx.lineTo(bx + r,   by + bh);
+  ctx.arcTo(bx, by + bh, bx, by + bh - r, r);
+  ctx.lineTo(bx, by + r);
+  ctx.arcTo(bx, by, bx + r, by, r);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(0,0,0,.90)'; ctx.fill();
   ctx.strokeStyle = hdgCol; ctx.lineWidth = 2; ctx.stroke();
 
-  // Pointer triangle below the box (connects to tape)
-  ctx.fillStyle = hdgCol;
-  ctx.beginPath();
-  ctx.moveTo(cx - 8, by + bh);
-  ctx.lineTo(cx + 8, by + bh);
-  ctx.lineTo(cx, hdgY - 2);
-  ctx.closePath();
-  ctx.fill();
-
-  // Main heading text
+  // Main heading text — centred in rectangle portion of the box
   ctx.fillStyle = hdgCol; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(hdgStr, cx, by + bh/2);
 
-  // Subscript M/G label (below the degree symbol, right of the ° glyph)
-  const srcFont = `${Math.max(8,H*.016)}px monospace`;
-  ctx.font = srcFont;
+  // M/G subscript — outboard of the ° glyph, baseline-aligned with main text
+  const srcFontSize = Math.max(9, H*.018);
+  ctx.font = `bold ${srcFontSize}px monospace`;
   ctx.fillStyle = hdgCol;
-  ctx.textAlign='left'; ctx.textBaseline='top';
-  ctx.fillText(srcLabel, cx + textW/2 + 2, by + bh - 10);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh/2 + fontSize*0.35);
 
   // Heading bug chevron — parks at edge when off-screen (like speed/alt bugs)
   if (B.hdg_bug != null) {

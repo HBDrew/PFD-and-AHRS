@@ -108,18 +108,6 @@ Context: when `AP_SSID = "AHRS-Link-DEBUG"` or similar diagnostic
 values, the AP doesn't come up. Works with default SSID. Possible
 channel/password-length edge case.
 
-### #10  iPhone heading readout box — refinement
-Status: **OPEN**
-Target: `iphone_display/index.html` heading readout styling.
-Context: Heading box currently uses simple rounded rectangle. Should
-match Pi4 style more closely: chamfered box with proper pointer
-triangle, better visual hierarchy, possibly better subscript positioning.
-Notes:
-  - Pi4 uses `_chamfer()` for rounded corners with point angles
-  - Consider icon/label styling to make M/G indicator more prominent
-  - May need better spacing in the box for larger/smaller phone screens
-  - Test on iPhone 12 (notch), iPhone SE (small), iPhone 15 Pro Max (large)
-
 ### #11  iPhone tape repositioning — speed/altitude marks + safe-area constraint
 Status: **OPEN**
 Target: `iphone_display/index.html` speed/altitude tape positioning and tick marks.
@@ -141,6 +129,19 @@ Work items:
 ---
 
 ## Completed
+
+### #10  iPhone heading readout box — refinement — **FIXED**
+Target: `iphone_display/index.html` `drawHeadingTape`.
+Previous implementation was a simple rounded rectangle with a
+separately-drawn filled triangle below it. Replaced with a single
+chamfered polygon whose outline traces the rectangle AND the triangle
+pointer — matching the Pi4 `_chamfer()` path in `draw_heading_tape()`
+(white/magenta stroke on black fill, pointer integrated into box
+outline rather than a separate solid triangle). Triangle depth 14 px,
+base width `bw/3`, corner radius 4 px. M/G subscript moved to
+baseline-aligned position outboard of the ° glyph (previously was
+top-aligned near the bottom of the box) and bumped to bold for
+better legibility on high-DPI phone screens.
 
 ### UNIT-BUG  Bug values entered in display units not converted — **FIXED**
 Numpad ENTER for `spd_bug` and `alt_bug` stored the user's raw
