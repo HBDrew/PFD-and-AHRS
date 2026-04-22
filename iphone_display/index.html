@@ -1853,7 +1853,7 @@ function drawHeadingTape() {
   ctx.fillStyle='rgba(0,8,22,.82)'; ctx.fillRect(0,hdgY,W,hdgH);
   ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(0,hdgY); ctx.lineTo(W,hdgY); ctx.stroke();
-  ctx.font=`${Math.max(10,H*.022)}px monospace`; ctx.textBaseline='bottom';
+  ctx.font=`${Math.max(20,H*.044)}px monospace`; ctx.textBaseline='bottom';
   for (let i=-45; i<=45; i++) {
     const deg=((Math.round(hdg)+i+3600)%360);
     const offset=i-(hdg-Math.round(hdg)), x=cx+offset*pxPerDeg;
@@ -1864,7 +1864,9 @@ function drawHeadingTape() {
       ctx.beginPath(); ctx.moveTo(x,hdgY); ctx.lineTo(x,hdgY+th); ctx.stroke();
     }
     if (deg%10===0) {
-      const label=CARDS[deg]||deg.toString().padStart(3,'0');
+      // Drop the trailing zero on numeric labels: 50°→"5", 350°→"35".
+      // Cardinal points (N/E/S/W) stay as letters.
+      const label = CARDS[deg] || (deg / 10).toString();
       ctx.fillStyle=CARDS[deg]?'#ffd700':'rgba(255,255,255,.9)';
       ctx.textAlign='center'; ctx.fillText(label,x,hdgY+hdgH-3);
     }
