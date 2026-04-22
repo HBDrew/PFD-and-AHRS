@@ -1232,7 +1232,9 @@ function computeLayout() {
 
   L.hdgH     = Math.max(38, H * 0.10);
   L.hdgY     = H - L.hdgH - L.safeB;
-  L.tapeTopY = L.safeT + 26;
+  // Tape extends up to the safe-area inset (status bar / notch edge),
+  // giving more visible range without overlapping protected UI.
+  L.tapeTopY = L.safeT;
   L.tapeBotY = L.hdgY;
   L.tapeH    = L.tapeBotY - L.tapeTopY;
   L.tapeMidY = (L.tapeTopY + L.tapeBotY) / 2;
@@ -1651,17 +1653,26 @@ function drawSpeedTape() {
 
   ctx.save();
   ctx.beginPath(); ctx.rect(spdX,tapeTopY,spdW,tapeH); ctx.clip();
-  // Ticks and labels every 20 units — no minor ticks
-  const spdBase = Math.round(spd / 20) * 20;
-  for (let v=spdBase-120; v<=spdBase+120; v+=20) {
+  // Ticks on outside (left) edge pointing inward — matches pi4.
+  // 10 kt minor, 20 kt major with labels. Skip near center (readout box)
+  // and near top/bottom (to avoid colliding with the GS KT label row).
+  const spdBase = Math.round(spd / 10) * 10;
+  const spdReadoutHalf = Math.max(18, H*0.057) + 4;
+  for (let v=spdBase-120; v<=spdBase+120; v+=10) {
     if (v<0) continue;
     const y=tapeMidY-(v-spd)*pxPerSpd;
-    if (Math.abs(y-tapeMidY)<Math.max(18,H*0.057)+4) continue;
-    ctx.strokeStyle='rgba(255,255,255,.80)'; ctx.lineWidth=1.5;
-    ctx.beginPath(); ctx.moveTo(spdX+spdW,y); ctx.lineTo(spdX+spdW-14,y); ctx.stroke();
-    ctx.fillStyle='rgba(255,255,255,.90)'; ctx.font=`${fs}px monospace`;
-    ctx.textAlign='right'; ctx.textBaseline='middle';
-    ctx.fillText(v.toString(),spdX+spdW-17,y);
+    if (Math.abs(y-tapeMidY) < spdReadoutHalf) continue;
+    if (y < tapeTopY+14 || y > tapeTopY+tapeH-6) continue;
+    const major = v % 20 === 0;
+    const tl = major ? 14 : 7;
+    ctx.strokeStyle='rgba(230,230,230,.95)';
+    ctx.lineWidth = major ? 2 : 1;
+    ctx.beginPath(); ctx.moveTo(spdX,y); ctx.lineTo(spdX+tl,y); ctx.stroke();
+    if (major) {
+      ctx.fillStyle='rgba(230,230,230,.95)'; ctx.font=`bold ${fs}px monospace`;
+      ctx.textAlign='left'; ctx.textBaseline='middle';
+      ctx.fillText(v.toString(),spdX+tl+3,y);
+    }
   }
   ctx.restore();
 
@@ -1730,21 +1741,25 @@ function drawAltTape() {
 
   ctx.save();
   ctx.beginPath(); ctx.rect(altX,tapeTopY,altW,tapeH); ctx.clip();
+  // Ticks on outside (right) edge pointing inward — matches pi4.
   // Start on a multiple of 100 so ft%200 and ft%500 resolve correctly.
   const baseAlt = Math.round(alt / 100) * 100;
+  const altReadoutHalf = Math.max(21, H*0.067) + 4;
   for (let ft=baseAlt-300; ft<=baseAlt+300; ft+=100) {
     const y=tapeMidY-(ft-alt)*pxPerFt;
-    if (Math.abs(y-tapeMidY)<Math.max(21,H*0.067)+4) continue;
-    const isMaj=ft%500===0, tlen=isMaj?16:8;
-    ctx.strokeStyle=isMaj?'rgba(255,255,255,.85)':'rgba(255,255,255,.45)';
-    ctx.lineWidth=isMaj?1.8:1;
-    ctx.beginPath(); ctx.moveTo(altX,y); ctx.lineTo(altX+tlen,y); ctx.stroke();
+    if (Math.abs(y-tapeMidY) < altReadoutHalf) continue;
+    if (y < tapeTopY+14 || y > tapeTopY+tapeH-6) continue;
+    const isMaj=ft%500===0, tlen=isMaj?14:7;
+    ctx.strokeStyle = isMaj ? 'rgba(230,230,230,.95)' : 'rgba(230,230,230,.60)';
+    ctx.lineWidth   = isMaj ? 2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(altX+altW, y); ctx.lineTo(altX+altW-tlen, y); ctx.stroke();
     // Label every 200ft mark; major (500ft) marks get a brighter label
     if (ft%200===0) {
-      ctx.fillStyle=isMaj?'rgba(255,255,255,.95)':'rgba(255,255,255,.80)';
-      ctx.font=`${isMaj?fs+1:fs}px monospace`;
-      ctx.textAlign='left'; ctx.textBaseline='middle';
-      ctx.fillText(ft.toString(),altX+tlen+3,y);
+      ctx.fillStyle = isMaj ? 'rgba(230,230,230,.95)' : 'rgba(230,230,230,.85)';
+      ctx.font=`bold ${isMaj?fs+1:fs}px monospace`;
+      ctx.textAlign='right'; ctx.textBaseline='middle';
+      ctx.fillText(ft.toString(), altX+altW-tlen-3, y);
     }
   }
   ctx.restore();

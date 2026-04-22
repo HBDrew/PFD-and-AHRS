@@ -153,27 +153,52 @@ Work items:
   - Surface status on the `/status` JSON so the Connectivity panel
     on both display platforms can show "MAG CAL: OK / STALE / NONE".
 
-### #11  iPhone tape repositioning — speed/altitude marks + safe-area constraint
+### #13  iPhone TAWS full-AI colour bands
 Status: **OPEN**
-Target: `iphone_display/index.html` speed/altitude tape positioning and tick marks.
-Context: Match Pi4 display where speed/altitude tapes extend further out
-with tick marks on outside edges (bolder, larger). Solution: move tapes UP
-to the notch area (within safe-area-inset-top) but not beyond, avoiding
-notch blocking. Tapes can extend more while still respecting safe areas.
+Target: `iphone_display/index.html` — extend the TAWS concept beyond
+the centre-top banner.
+Context: pi4 and iPhone currently show a centred "TERRAIN CAUTION" /
+"PULL UP TERRAIN" banner and nothing else. When #11 finished, the
+tapes moved in slightly and the AI area is now wider — we have room
+to additionally tint the whole ground half of the AI amber (caution)
+or red (warning) for peripheral-vision alerting. Tint should apply to
+the full visible ground area, not just inside the old tape bounds.
 Work items:
-  - Speed tape: move marks to left edge (outside), make bolder/wider
-  - Altitude tape: move marks to right edge (outside), make bolder/wider
-  - Extend tape height up toward notch area (use L.safeT for upper bound)
-  - **Extend terrain warning (TAWS color bands) to full screen edges** — horizon
-    extends beyond current tape bounds; as tapes move in, terrain area expands.
-    TAWS colours should fill entire visible AI area, not just tape region.
-  - May need to adjust L.spdX, L.altX, L.spdW, L.altW, L.tapeTopY calcs
-  - Adjust tape drawing positions and widths accordingly
-  - Test on notched phones (iPhone 12+) and notch-free (SE)
+  - Add an amber overlay (`rgba(160,110,0,0.25)`?) across the ground
+    polygon in `drawAI()` when `TAWS.level === 1`.
+  - Red overlay (flashing with the banner) for `TAWS.level === 2`.
+  - Respect roll — the overlay needs to rotate with the horizon so it
+    still reads as "ground is dangerously close", not a screen-wide
+    flash.
+  - Consider whether pi4 should get the same treatment (probably
+    yes, to keep the two displays visually aligned).
 
 ---
 
 ## Completed
+
+### #11  iPhone tape repositioning — outside-edge marks + safe-area — **FIXED**
+Target: `iphone_display/index.html` — `computeLayout`, `drawSpdTape`,
+`drawAltTape`.
+Fix summary:
+  - `L.tapeTopY` reduced from `safeT + 26` → `safeT` so the tapes now
+    extend up to the notch / status-bar edge (dark tape background
+    still sits behind the "GS KT" / "ALT FT" header label inside
+    the tape area, so nothing protrudes into the notch).
+  - Speed tape ticks moved to the LEFT (outside) edge: major 14 px /
+    2 px stroke at every 20 kt, minor 7 px / 1 px at every 10 kt
+    (minor ticks are new — pi4 parity). Labels now left-aligned
+    immediately to the right of the tick, bold.
+  - Altitude tape ticks moved to the RIGHT (outside) edge with the
+    same major/minor treatment. Labels right-aligned immediately to
+    the left of the tick, bold.
+  - Added top/bottom exclusion (12 px) so ticks never collide with
+    the header label row. Centre-exclusion zone retained so the
+    Veeder-Root readout still hides the current-value tick.
+  - TAWS full-AI colour bands deferred to a new issue (#13) — the
+    existing TAWS code only draws a centre banner, so there's no
+    "tape-scoped" version to extend; implementing it is net-new
+    work rather than a #11 cleanup.
 
 ### IPHONE-ORIENT-LOCK  iPhone display must never rotate — **FIXED**
 Target: `iphone_display/index.html` resize path and touch handlers.
