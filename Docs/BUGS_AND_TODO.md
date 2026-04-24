@@ -244,26 +244,24 @@ Fix:
   - Setup menu gains a 🧭 HEADING entry opening a panel with three
     mutually exclusive buttons: MAG, TRK, AUTO. Choice persists in
     `localStorage['hdg_mode']` (default AUTO).
-  - New `_activeHdg()` returns `{ value, label, color, warn, useTrack }`
+  - New `_activeHdg()` returns `{ value, label, color, useTrack }`
     — the single source of truth for what to display and how to
     colour it. MAG always uses `D.yaw` (AHRS or phone compass), TRK
     uses `D.track` when GPS speed > 3 kt, AUTO prefers MAG when
     `D.ahrs_ok` else TRK when groundspeed is live. Unavailable
-    preferred sources fall back with an amber `MAG?` / `TRK?` /
-    `---` warning label.
+    preferred sources fall back with an amber `M?` / `G?` / `?`
+    warning subscript.
   - `drawHeadingTape` now reads `hdg = src.value`, so the tape, the
     bug chevron offset, and the readout digits all agree with the
-    pill label — no more silent mismatch between what's displayed
-    and what the subscript claimed.
-  - Tiny `M`/`G` subscript replaced with a full coloured pill above
-    the readout box: white on MAG, magenta on TRK, amber on warning.
-    Pill font `max(12, H*0.026)` bold, black text on the pill fill
-    for high contrast.
-  - Transition enunciation: whenever `_activeHdg().label` changes
-    (whether from a manual mode change, AHRS dropping out, or GPS
-    track coming live), the box grows a thick pulsing outer ring in
-    the new source colour for 1.5 s and the pill flashes on/off.
-    Impossible to miss on a glance.
+    subscript — no more silent mismatch between what's displayed
+    and what the label claimed.
+  - Enunciation via colour only (pilot preferred the quieter
+    treatment): the heading readout box border and the `M`/`G`
+    subscript take the source colour (white = MAG, magenta = TRK,
+    amber = warning). The heading bug chevron stays cyan on MAG
+    (pi4 convention for pilot-selected targets) and flips to the
+    source colour on TRK / warning so a handover is visible
+    without a pill, flash, or pulse.
 
 ### #19  iPhone VSI broken on GPS + VS bar too small — **FIXED**
 Target: `iphone_display/index.html` — `PS` state, `_onGeolocation`,

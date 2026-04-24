@@ -2028,37 +2028,33 @@ const HDG_SRC_MAGENTA = BUG_MAGENTA;
 const HDG_SRC_AMBER   = '#ffb000';
 const HDG_TRK_MIN_KT  = 3;  // below this, GPS track is unreliable
 
-let _lastHdgLabel = null;
-let _hdgFlashUntil = 0;
-const HDG_FLASH_MS = 1500;
-
 function _activeHdg() {
   const trackOk = D.gps_ok && D.speed > HDG_TRK_MIN_KT;
   // MAG = any compass-based yaw (AHRS or phone compass). ahrs_ok is
-  // asserted by both paths so the label is "MAG" in either case.
+  // asserted by both paths so the subscript reads 'M' in either case.
   const magOk = D.ahrs_ok;
 
-  let useTrack, label, color, warn = false;
+  let useTrack, label, color;
   if (HDG_MODE === 'MAG') {
     useTrack = false;
-    if (!magOk) { label = 'MAG?'; color = HDG_SRC_AMBER; warn = true; }
-    else        { label = 'MAG';  color = HDG_SRC_WHITE; }
+    if (!magOk) { label = 'M?'; color = HDG_SRC_AMBER; }
+    else        { label = 'M';  color = HDG_SRC_WHITE; }
   } else if (HDG_MODE === 'TRK') {
     useTrack = trackOk;
-    if (!trackOk) { label = 'TRK?'; color = HDG_SRC_AMBER; warn = true; }
-    else          { label = 'TRK';  color = HDG_SRC_MAGENTA; }
+    if (!trackOk) { label = 'G?'; color = HDG_SRC_AMBER; }
+    else          { label = 'G';  color = HDG_SRC_MAGENTA; }
   } else {  // AUTO
     if (magOk) {
-      useTrack = false; label = 'MAG'; color = HDG_SRC_WHITE;
+      useTrack = false; label = 'M'; color = HDG_SRC_WHITE;
     } else if (trackOk) {
-      useTrack = true;  label = 'TRK'; color = HDG_SRC_MAGENTA;
+      useTrack = true;  label = 'G'; color = HDG_SRC_MAGENTA;
     } else {
-      useTrack = false; label = '---'; color = HDG_SRC_AMBER; warn = true;
+      useTrack = false; label = '?'; color = HDG_SRC_AMBER;
     }
   }
   return {
     value: useTrack ? D.track : D.yaw,
-    label, color, warn, useTrack,
+    label, color, useTrack,
   };
 }
 function drawHeadingTape() {
@@ -2075,10 +2071,6 @@ function drawHeadingTape() {
   // wind correction angle — hiding that in the tape scroll would be
   // just as confusing as the old silent-switch behaviour).
   const src = _activeHdg();
-  if (_lastHdgLabel !== null && src.label !== _lastHdgLabel) {
-    _hdgFlashUntil = performance.now() + HDG_FLASH_MS;
-  }
-  _lastHdgLabel = src.label;
 
   const pxPerDeg=W/HDG_SPAN_DEG, hdg=src.value;
   ctx.fillStyle='rgba(0,8,22,.82)'; ctx.fillRect(0,hdgY,W,hdgH);
@@ -2102,23 +2094,27 @@ function drawHeadingTape() {
       ctx.textAlign='center'; ctx.fillText(label,x,hdgY+hdgH-3);
     }
   }
+  // Heading-source colour. Box border takes this directly. The bug
+  // chevron stays cyan on the default MAG source (matches pi4/pi_zero
+  // convention that pilot-selected targets are cyan), and switches to
+  // the source colour on TRK / warning so a silent swap is visible.
+  const hdgCol = src.color;
+  const srcLabel = src.label;
+  const bugCol = src.label === 'M' ? BUG_CYAN : hdgCol;
+
   // Heading bug chevron — drawn BEFORE the readout box so the box/pointer
   // covers the bug when it sits near the current heading (matches spd/alt).
   if (B.hdg_bug != null) {
     const off = ((B.hdg_bug - hdg + 540) % 360) - 180;
     let hbx = cx + off * pxPerDeg;
     hbx = Math.max(L.spdX+L.spdW+20, Math.min(L.altX-20, hbx));
-    ctx.fillStyle = BUG_CYAN;
+    ctx.fillStyle = bugCol;
     ctx.beginPath();
     ctx.moveTo(hbx-17, hdgY+14); ctx.lineTo(hbx-17, hdgY);
     ctx.lineTo(hbx-5,  hdgY);    ctx.lineTo(hbx,    hdgY+7);
     ctx.lineTo(hbx+5,  hdgY);    ctx.lineTo(hbx+17, hdgY);
     ctx.lineTo(hbx+17, hdgY+14); ctx.closePath(); ctx.fill();
   }
-
-  // Heading-source colour driven by the resolver above.
-  const hdgCol = src.color;
-  const srcLabel = src.label;
 
   // Heading readout box — chamfered polygon with integrated pointer (pi4 style).
   // Font sized to match the Veeder-Root drum font so the three readouts read
@@ -2152,47 +2148,20 @@ function drawHeadingTape() {
   ctx.arcTo(bx, by, bx + r, by, r);
   ctx.closePath();
   ctx.fillStyle = 'rgba(0,0,0,.90)'; ctx.fill();
-  // Transition flash — thick outer glow for ~1.5 s when the active
-  // source changes. Guarantees the pilot can't miss a handover.
-  const now = performance.now();
-  if (now < _hdgFlashUntil) {
-    const t = 1 - (_hdgFlashUntil - now) / HDG_FLASH_MS;  // 0 → 1
-    ctx.save();
-    ctx.strokeStyle = hdgCol;
-    ctx.lineWidth = 5 + 3 * Math.sin(Math.min(1, t) * Math.PI);
-    ctx.globalAlpha = 0.85 - t * 0.5;
-    ctx.stroke();
-    ctx.restore();
-  }
-  ctx.strokeStyle = hdgCol; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.strokeStyle = hdgCol; ctx.lineWidth = 2; ctx.stroke();
 
   // Main heading text — centred in rectangle portion of the box.
   ctx.fillStyle = hdgCol; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(hdgStr, cx, by + bh/2);
 
-  // MAG / TRK source tag — full-size coloured pill above the box so
-  // the active source is visible at a glance and a handover is
-  // impossible to miss. During a flash the pill also pulses.
-  const tagFs = Math.max(12, H*0.026);
-  ctx.font = `bold ${tagFs}px monospace`;
-  const tagW = ctx.measureText(srcLabel).width + 12;
-  const tagH = tagFs + 6;
-  const tagX = cx - tagW/2;
-  const tagY = by - tagH - 2;
-  roundRect(tagX, tagY, tagW, tagH, 3);
+  // M/G subscript — outboard of the ° glyph, baseline-aligned with main
+  // text. Amber with a trailing '?' when the pilot-preferred source is
+  // unavailable so the loss is visible without being loud.
+  const srcFontSize = Math.max(9, H*.018);
+  ctx.font = `bold ${srcFontSize}px monospace`;
   ctx.fillStyle = hdgCol;
-  if (now < _hdgFlashUntil) {
-    const t = 1 - (_hdgFlashUntil - now) / HDG_FLASH_MS;
-    ctx.save();
-    ctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * Math.PI * 4);
-    ctx.fill();
-    ctx.restore();
-  } else {
-    ctx.fill();
-  }
-  ctx.fillStyle = '#000'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(srcLabel, cx, tagY + tagH/2);
-  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh/2 + fontSize*0.35);
 }
 
 // ── Baro button (pi4-style tap button at bottom of altitude tape column) ──
