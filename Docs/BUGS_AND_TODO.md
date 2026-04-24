@@ -155,24 +155,6 @@ Work items:
 
 ---
 
-### #14  iPhone baro button shouldn't exist when in GPS-ALT
-Status: **OPEN**
-Target: `iphone_display/index.html` `drawBaroButton`, `_handleSpdTap`.
-Context: When the baro sensor is unavailable (`baro_ok === false`)
-or the firmware is reporting GPS-derived altitude (`baro_src ===
-"gps"`), the displayed altitude has no QNH input — adjusting QNH does
-nothing useful. Today the baro button still draws (magenta) showing
-"GPS ALT" and is tappable; it should be omitted entirely so the pilot
-isn't invited to tweak a setting that has no effect.
-Work items:
-  - Skip the rounded-rect draw and tap registration when
-    `!D.baro_ok || D.baro_src === "gps"`. Either return early from
-    `drawBaroButton` and the tap branch in `_handleSpdTap`, or gate
-    on a single `_baroAdjustable()` helper.
-  - Decide what (if anything) fills the bottom of the alt-tape
-    column when the button is hidden — probably nothing (let the
-    heading tape show through), matching pi4 behaviour.
-
 ### #17  iPhone airport overlay — symbols + labels + download screen
 Status: **OPEN**
 Target: `iphone_display/` — new `airports.js` module, additions to
@@ -356,6 +338,16 @@ Work items:
 ---
 
 ## Completed
+
+### #14  iPhone baro button shouldn't exist when in GPS-ALT — **FIXED**
+Target: `iphone_display/index.html` `drawBaroButton`, `_handleSpdTap`.
+Fix: added `_baroAdjustable()` helper returning `D.baro_ok !== false &&
+D.baro_src !== 'gps'`. Both the rounded-rect draw and the tap branch
+early-return when it's false, so the button disappears and the area
+doesn't register taps in GPS-ALT mode — matches pi4 behaviour. The
+column sits empty (heading tape shows through), which is the intended
+visual. Also simplified `drawBaroButton` — the old magenta-when-GPS
+branch is dead code now that the button never draws in that state.
 
 ### TERRAIN-FULLWIDTH  iPhone terrain mesh clipped to tape gap — **FIXED**
 Target: `iphone_display/terrain.js` `render()`.

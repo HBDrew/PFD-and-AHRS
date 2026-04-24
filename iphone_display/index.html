@@ -1347,8 +1347,10 @@ function _handleSpdTap(x, y) {
 
   // Check for baro button tap (bottom of altitude tape column, overlays
   // the heading strip). Delegates to the (hidden) HTML #baro-status
-  // click handler so panel open/close logic stays in one place.
-  if (x >= L.altX && x <= L.altX + L.altW
+  // click handler so panel open/close logic stays in one place. Tap is
+  // only active when QNH actually affects displayed altitude.
+  if (_baroAdjustable()
+      && x >= L.altX && x <= L.altX + L.altW
       && y >= L.hdgY && y <= L.hdgY + L.hdgH) {
     _lastTapMs = now;
     baroEl.click();
@@ -1937,17 +1939,19 @@ function drawHeadingTape() {
 }
 
 // ── Baro button (pi4-style tap button at bottom of altitude tape column) ──
+function _baroAdjustable() {
+  // QNH has no effect when the baro sensor is absent or the firmware is
+  // synthesising altitude from GPS. Gate both the button draw and the tap
+  // handler on this so the pilot can't tweak a setting that does nothing.
+  return D.baro_ok !== false && D.baro_src !== 'gps';
+}
+
 function drawBaroButton() {
+  if (!_baroAdjustable()) return;
   const { altX, altW, hdgY, hdgH } = L;
-  const baroOk = D.baro_ok !== false;
-  const usingGps = !baroOk || D.baro_src === 'gps';
-  const fill   = usingGps ? 'rgba(120,0,120,.85)' : 'rgba(0,55,115,.85)';
-  const stroke = usingGps ? '#d8d' : '#6cf';
   roundRect(altX, hdgY, altW, hdgH, 4);
-  ctx.fillStyle = fill; ctx.fill();
-  ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke();
-  // Text mirrors the (now hidden) HTML #baro-status badge so updateBaroUI
-  // remains the single source of truth for formatting.
+  ctx.fillStyle = 'rgba(0,55,115,.85)'; ctx.fill();
+  ctx.strokeStyle = '#6cf'; ctx.lineWidth = 1.5; ctx.stroke();
   const label = baroEl.textContent || 'QNH ···';
   ctx.fillStyle = '#fff';
   ctx.font = `bold ${Math.max(11, Math.min(hdgH * 0.45, altW * 0.22))}px monospace`;
