@@ -468,6 +468,10 @@ const PS = {
   alpha: 0, beta: 0, gamma: 0,
   compassHeading: null,
   screenAngle: 0,
+  // Rolling window of {t, alt} samples used to derive VSI from GPS
+  // altitude when no baro/AHRS vertical-rate source is available.
+  altHist: [],
+  vspeed: 0,
 };
 const sensorEl = document.getElementById('sensor-status');
 
@@ -580,6 +584,29 @@ function _onOrient(e) {
     : (e.alpha || 0);
 }
 
+// Rolling-window slope estimate over the last ~PS_VS_WINDOW_MS of
+// altitude samples, returned in ft/min. Need >=2 s of span before we
+// trust the slope enough to report non-zero, otherwise a single noisy
+// GPS alt jump produces absurd fpm readings.
+const PS_VS_WINDOW_MS = 5000;
+const PS_VS_MIN_SPAN_MS = 2000;
+function _psComputeVspeed() {
+  const h = PS.altHist;
+  if (h.length < 2) return 0;
+  const tLast = h[h.length - 1].t;
+  // Drop samples older than the window.
+  while (h.length > 1 && tLast - h[0].t > PS_VS_WINDOW_MS) h.shift();
+  const span = tLast - h[0].t;
+  if (span < PS_VS_MIN_SPAN_MS) return 0;
+  // Simple least-squares slope on (t_ms, alt_ft).
+  let sx = 0, sy = 0, sxx = 0, sxy = 0, n = h.length;
+  for (const p of h) { sx += p.t; sy += p.alt; sxx += p.t * p.t; sxy += p.t * p.alt; }
+  const denom = n * sxx - sx * sx;
+  if (denom === 0) return 0;
+  const slope_ft_per_ms = (n * sxy - sx * sy) / denom;
+  return slope_ft_per_ms * 60000;  // ft/min
+}
+
 function _onGeolocation(pos) {
   PS.lastGps = performance.now();
   PS.lat   = pos.coords.latitude;
@@ -588,6 +615,13 @@ function _onGeolocation(pos) {
   PS.speed = pos.coords.speed    != null ? pos.coords.speed * 1.94384    : 0;
   PS.track = pos.coords.heading  != null ? pos.coords.heading            : 0;
   PS.fix   = 3; PS.sats = 9;  // navigator API doesn't expose sat count
+  // Feed the GPS-VSI rolling window. Only push when GPS actually supplied
+  // an altitude (pos.coords.altitude === null means 2-D fix).
+  if (pos.coords.altitude != null) {
+    PS.altHist.push({ t: PS.lastGps, alt: PS.alt });
+    if (PS.altHist.length > 64) PS.altHist.shift();
+    PS.vspeed = _psComputeVspeed();
+  }
 }
 
 // Poll-style integration: when the SSE link has been dead for >5 s and the
@@ -619,6 +653,9 @@ function applyPhoneSensors() {
     TARGET.speed = PS.speed; TARGET.track = PS.track;
     TARGET.fix = PS.fix; TARGET.sats = PS.sats;
     TARGET.gps_ok = true;
+    // No firmware VSI when on phone sensors — derive it from the
+    // geolocation altitude stream (see _psComputeVspeed).
+    TARGET.vspeed = PS.vspeed;
   }
   TARGET.baro_ok = false;  // no phone baro API on iOS
 }
@@ -1774,6 +1811,47 @@ function drawAltTape() {
   ctx.fillStyle='rgba(160,210,255,.85)'; ctx.font=`${Math.max(9,H*.018)}px monospace`;
   ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('ALT FT',altX+altW/2,tapeTopY+4);
 
+  // VS bar strip on the inside (left) edge of the alt tape — matches
+  // pi4 but shifted inboard so the outside-edge ticks/labels still read
+  // cleanly. 200 ft of tape ≡ 2000 fpm so the bar grows visually at
+  // the same rate as altitude will change in one minute.
+  const vsBarW  = Math.max(5, Math.round(altW * 0.09));
+  const vsBarX  = altX;
+  const vsPxPer = (200 * pxPerFt) / 2000;
+  const vsCapPx = 200 * pxPerFt;  // ≡ 2000 fpm
+  ctx.save();
+  ctx.beginPath(); ctx.rect(altX, tapeTopY, altW, tapeH); ctx.clip();
+  // Faint bar gutter so the scale is visible even at level flight.
+  ctx.fillStyle = 'rgba(80,80,110,.35)';
+  ctx.fillRect(vsBarX, tapeTopY, vsBarW, tapeH);
+  // ±500 / ±1000 / ±1500 / ±2000 fpm tick marks.
+  ctx.strokeStyle = 'rgba(255,255,255,.55)';
+  ctx.lineWidth = 1;
+  for (const fpm of [500, 1000, 1500, 2000]) {
+    const dy = fpm * vsPxPer;
+    const tl = fpm % 1000 === 0 ? vsBarW : vsBarW * 0.55;
+    ctx.beginPath(); ctx.moveTo(vsBarX + vsBarW - tl, tapeMidY - dy);
+    ctx.lineTo(vsBarX + vsBarW,                       tapeMidY - dy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(vsBarX + vsBarW - tl, tapeMidY + dy);
+    ctx.lineTo(vsBarX + vsBarW,                       tapeMidY + dy); ctx.stroke();
+  }
+  // Filled needle — magenta bar growing from the midpoint.
+  const vsAbs = Math.abs(D.vspeed);
+  if (vsAbs > 30) {
+    const vsPx = Math.min(vsCapPx, vsAbs * vsPxPer);
+    ctx.fillStyle = BUG_MAGENTA;
+    if (D.vspeed > 0) {
+      ctx.fillRect(vsBarX, tapeMidY - vsPx, vsBarW, vsPx);
+    } else {
+      ctx.fillRect(vsBarX, tapeMidY,        vsBarW, vsPx);
+    }
+  }
+  // Zero-line reference.
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(vsBarX, tapeMidY);
+  ctx.lineTo(vsBarX + vsBarW, tapeMidY); ctx.stroke();
+  ctx.restore();
+
   ctx.save();
   ctx.beginPath(); ctx.rect(altX,tapeTopY,altW,tapeH); ctx.clip();
   // Ticks on outside (right) edge pointing inward — matches pi4.
@@ -1847,14 +1925,21 @@ function drawAltTape() {
                 {showAdjacent: true, adjSlotH: Math.round(altDrumFs * 1.20)});
   _drumShade(R - aDrmL + 1, midA - aHalfOut + 1, aDrmW - 2, aHalfOut * 2 - 2);
 
-  const vsiY=midA+aHalfOut+5, arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
-  const vcol=D.vspeed>100?'#0f0':D.vspeed<-100?'#f80':'#aaa';
-  ctx.fillStyle=vcol; ctx.font=`${Math.max(10,H*.022)}px monospace`;
+  // VSI numeric readout — enlarged and magenta when non-trivial so it
+  // reads as a set with the VS bar. Format ±X,XXX fpm rounded to 10 fpm.
+  const vsiY=midA+aHalfOut+5;
+  const arrow=D.vspeed>30?'▲':D.vspeed<-30?'▼':'—';
+  const vsRounded = Math.abs(Math.round(D.vspeed/10)*10);
+  const vsText = vsAbs > 30
+    ? `${arrow}${vsRounded.toLocaleString()}`
+    : '—';
+  const vcol = vsAbs > 30 ? BUG_MAGENTA : 'rgba(200,200,200,.9)';
+  ctx.fillStyle=vcol; ctx.font=`bold ${Math.max(15, H*0.033)}px monospace`;
   ctx.textAlign='center'; ctx.textBaseline='top';
-  ctx.fillText(`${arrow}${Math.abs(Math.round(D.vspeed/10)*10)}`,altX+altW/2,vsiY);
-  const fpmLblY=vsiY+Math.max(13,H*.026);
-  ctx.fillStyle='rgba(140,175,210,.7)'; ctx.font=`${Math.max(8,H*.016)}px monospace`;
-  ctx.fillText('fpm',altX+altW/2,fpmLblY);
+  ctx.fillText(vsText, altX+altW/2, vsiY);
+  const fpmLblY=vsiY+Math.max(17,H*.035);
+  ctx.fillStyle='rgba(160,190,220,.75)'; ctx.font=`${Math.max(10,H*.020)}px monospace`;
+  ctx.fillText('fpm', altX+altW/2, fpmLblY);
   // QNH and altitude source
   const qnhY=fpmLblY+Math.max(11,H*.019)+2;
   const isBaro=D.baro_src==='bme280';

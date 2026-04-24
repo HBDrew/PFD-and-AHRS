@@ -208,32 +208,6 @@ Work items:
     home-airport-region.
 
 
-### #19  iPhone VSI broken on GPS + VS bar too small
-Status: **OPEN**
-Target: `iphone_display/index.html` — `applyPhoneSensors`, VSI draw
-code inside `drawAltTape`, and `computeLayout`.
-Context: `TARGET.vspeed` is only written by the SSE stream. When the
-display is running on phone sensors (`applyPhoneSensors`), we copy
-`PS.speed`, `PS.track`, `PS.alt` but never derive a vertical rate, so
-the VSI readout sits at 0 fpm. The readout itself is also a tiny
-`▲120 FPM` glyph wedged under the alt tape — pi4 has a proper
-vertical VS bar (needle + ±2000 fpm scale) running alongside the
-altitude tape. With tape space to spare on iPhone we can add the
-same bar.
-Work items:
-  - Derive GPS vspeed: track a short rolling window of (t, PS.alt)
-    samples (e.g. last 5 s), compute slope in ft/min, low-pass, and
-    write to `TARGET.vspeed` when phone sensors are active and SSE
-    is silent. Discard samples when `PS.lastGps` is stale.
-  - Add a VS bar column to the right of the altitude tape (pi4
-    style): vertical scale with ±2000 fpm range, major ticks at
-    500 fpm, small chevron/arrow needle driven by `D.vspeed`.
-    Label stays numeric next to the needle for precise readout.
-  - Adjust `computeLayout` to carve the bar's column off the right
-    margin; keep the alt tape itself unchanged in width.
-  - Keep the existing tiny ▲/▼ readout or subsume it into the new
-    bar — probably just the needle + a numeric callout is enough.
-
 ### #20  iPhone HDG vs TRK — enunciated, with user preference
 Status: **OPEN**
 Target: `iphone_display/index.html` `drawHeadingTape` (source-label
@@ -295,6 +269,27 @@ Work items:
 ---
 
 ## Completed
+
+### #19  iPhone VSI broken on GPS + VS bar too small — **FIXED**
+Target: `iphone_display/index.html` — `PS` state, `_onGeolocation`,
+`applyPhoneSensors`, and `drawAltTape`.
+Fix:
+  - GPS-derived vspeed: new `PS.altHist` rolling window keyed by
+    `_onGeolocation` (pushes `{t, alt}` when the fix includes a
+    3-D altitude). `_psComputeVspeed()` runs a least-squares slope
+    over the last 5 s (requires ≥ 2 s span to report non-zero).
+    `applyPhoneSensors` writes `PS.vspeed` → `TARGET.vspeed` when
+    SSE is silent, so the VSI now moves when the pilot is only on
+    phone sensors.
+  - Pi4-style VS bar on the inside (left) edge of the alt tape:
+    magenta needle growing from the midpoint against a ±2000 fpm
+    scale (200 ft of tape ≡ 2000 fpm, matching pi4). Tick marks at
+    ±500 / ±1000 / ±1500 / ±2000 fpm, faint gutter so the scale is
+    visible at level flight, white zero-line reference.
+  - Numeric VSI readout enlarged (`max(15, H*0.033)` bold, was
+    `max(10, H*0.022)`), magenta when |vspeed| > 30 fpm so the
+    readout and bar read as a set. Thousands-separated
+    (`±1,250 fpm`) to stay compact at 4-digit rates.
 
 ### #18  iPhone tapes/drums too jumpy — per-field smoothing — **FIXED**
 Target: `iphone_display/index.html` `smooth()` and render loop.
