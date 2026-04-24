@@ -207,24 +207,6 @@ Work items:
     Probably opt-in for the global set, auto for the
     home-airport-region.
 
-### #16  iPhone heading tape — show 25% more degrees at once
-Status: **OPEN**
-Target: `iphone_display/index.html` `drawHeadingTape`.
-Context: The heading tape currently spans 90° across the canvas
-(`pxPerDeg = W/90`), so the pilot only sees ±45° around the current
-heading. Want roughly 25% more degrees visible at a glance — shrink
-the per-degree pixel width so a wider span fits, e.g.
-`pxPerDeg = W/112.5` (≈ ±56°), or whatever ratio reads cleanly with
-the current bold-double-size labels and 5°/10° tick cadence.
-Work items:
-  - Drop `pxPerDeg` from `W/90` to ~`W/112` (verify the tick + label
-    spacing still has breathing room at the new density).
-  - Widen the loop bound from `[-45..45]` to match the new span so
-    ticks/labels actually populate the wider visible range.
-  - Confirm the heading bug chevron clamp at the tape edges still
-    leaves room for the speed/alt tapes and doesn't crowd the
-    readout box.
-  - Verify on both notched and non-notched phones in landscape.
 
 ### #18  iPhone tapes/drums too jumpy — per-field smoothing
 Status: **OPEN**
@@ -338,6 +320,14 @@ Work items:
 ---
 
 ## Completed
+
+### #16  iPhone heading tape — show 25 % more degrees at once — **FIXED**
+Target: `iphone_display/index.html` `drawHeadingTape`.
+Fix: span widened from 90° to 112° via a new `HDG_SPAN_DEG` constant,
+so the pilot now sees ±56° instead of ±45°. `pxPerDeg = W/HDG_SPAN_DEG`
+and the tick loop bound derives from `HDG_HALF = ceil(HDG_SPAN_DEG/2)`.
+Existing bug-chevron clamp (`spdX+spdW+20 … altX-20`) still holds and
+the 10° label cadence reads cleanly with the bold double-size labels.
 
 ### #14  iPhone baro button shouldn't exist when in GPS-ALT — **FIXED**
 Target: `iphone_display/index.html` `drawBaroButton`, `_handleSpdTap`.

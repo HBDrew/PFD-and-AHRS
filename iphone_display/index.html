@@ -1851,12 +1851,18 @@ function drawAltTape() {
 const CARDS={0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
 function drawHeadingTape() {
   const { hdgY, hdgH, cx } = L;
-  const pxPerDeg=W/90, hdg=D.yaw;
+  // Wider span than pi4 so the pilot can preview more turn in a glance.
+  // Span of 112° ≈ ±56° on either side of current heading — ~25 % more
+  // degrees than the old ±45° tape while keeping 10° label cadence
+  // legible at the bold-double-size label font.
+  const HDG_SPAN_DEG = 112;
+  const HDG_HALF = Math.ceil(HDG_SPAN_DEG / 2);
+  const pxPerDeg=W/HDG_SPAN_DEG, hdg=D.yaw;
   ctx.fillStyle='rgba(0,8,22,.82)'; ctx.fillRect(0,hdgY,W,hdgH);
   ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(0,hdgY); ctx.lineTo(W,hdgY); ctx.stroke();
   ctx.font=`bold ${Math.max(20,H*.044)}px monospace`; ctx.textBaseline='bottom';
-  for (let i=-45; i<=45; i++) {
+  for (let i=-HDG_HALF; i<=HDG_HALF; i++) {
     const deg=((Math.round(hdg)+i+3600)%360);
     const offset=i-(hdg-Math.round(hdg)), x=cx+offset*pxPerDeg;
     if (x<0||x>W) continue;
