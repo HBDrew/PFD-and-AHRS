@@ -244,6 +244,92 @@ Work items:
     readout box.
   - Verify on both notched and non-notched phones in landscape.
 
+### #18  iPhone tapes/drums too jumpy — per-field smoothing
+Status: **OPEN**
+Target: `iphone_display/index.html` `smooth()` and the `D`/`TARGET` state.
+Context: `smooth()` lerps every field with the same `alpha =
+min(1, dt/60)`, so at ~60 fps alpha ≈ 0.28. That's snappy enough for
+pitch/roll but doesn't filter noise on slow-moving readouts — the
+Veeder-Root speed/alt drums and the tapes jitter visibly on both
+AHRS (SSE at ~20 Hz, already firmware-smoothed) and phone-sensor
+sources (noisier). Phone sensors make it worse but AHRS is also
+affected. The lerp formula is `1 - exp(-dt/tau)` in disguise, so a
+per-field `tau` (ms) gives predictable settling regardless of frame
+rate.
+Work items:
+  - Replace the single-alpha `smooth()` with per-field time constants
+    stored in a `SMOOTH_TAU` block. Suggested starting values (ms):
+    `roll 150, pitch 150, yaw 250, speed 600, alt 700, vspeed 1200,
+    track 400, ay 200`. Compute each field's alpha as
+    `1 - exp(-dt_ms / tau)`.
+  - Leave booleans (`ahrs_ok`, `gps_ok`, `baro_ok`, `fix`, `sats`)
+    and lat/lon/baro_hpa on the direct copy (no smoothing).
+  - Verify pitch/roll still track fast enough for real AHRS motion —
+    if 150 ms feels laggy, drop to 100 ms. The only fields where we
+    really want long tau are the tape/drum readouts.
+  - Confirm on both live-AHRS and phone-sensor modes.
+
+### #19  iPhone VSI broken on GPS + VS bar too small
+Status: **OPEN**
+Target: `iphone_display/index.html` — `applyPhoneSensors`, VSI draw
+code inside `drawAltTape`, and `computeLayout`.
+Context: `TARGET.vspeed` is only written by the SSE stream. When the
+display is running on phone sensors (`applyPhoneSensors`), we copy
+`PS.speed`, `PS.track`, `PS.alt` but never derive a vertical rate, so
+the VSI readout sits at 0 fpm. The readout itself is also a tiny
+`▲120 FPM` glyph wedged under the alt tape — pi4 has a proper
+vertical VS bar (needle + ±2000 fpm scale) running alongside the
+altitude tape. With tape space to spare on iPhone we can add the
+same bar.
+Work items:
+  - Derive GPS vspeed: track a short rolling window of (t, PS.alt)
+    samples (e.g. last 5 s), compute slope in ft/min, low-pass, and
+    write to `TARGET.vspeed` when phone sensors are active and SSE
+    is silent. Discard samples when `PS.lastGps` is stale.
+  - Add a VS bar column to the right of the altitude tape (pi4
+    style): vertical scale with ±2000 fpm range, major ticks at
+    500 fpm, small chevron/arrow needle driven by `D.vspeed`.
+    Label stays numeric next to the needle for precise readout.
+  - Adjust `computeLayout` to carve the bar's column off the right
+    margin; keep the alt tape itself unchanged in width.
+  - Keep the existing tiny ▲/▼ readout or subsume it into the new
+    bar — probably just the needle + a numeric callout is enough.
+
+### #20  iPhone HDG vs TRK — enunciated, with user preference
+Status: **OPEN**
+Target: `iphone_display/index.html` `drawHeadingTape` (source-label
+logic), setup menu (new HEADING panel), and persistence via
+`localStorage`.
+Context: The heading tape silently switches to GPS track when
+`!D.ahrs_ok`. In practice the transition is invisible to the pilot
+— the current "G/M" subscript on the box is tiny and the magenta
+box border can be mistaken for a minor styling change. Pilot
+flew with bad compass, then groundspeed came up and the heading
+corrected itself with no visible cue. Pi4 handles this with a
+clear MAG/TRK label; we should match and do even better.
+Work items:
+  - New setup-menu entry "HEADING" with three options: **MAG**
+    (always use AHRS compass), **TRK** (always use GPS track),
+    **AUTO** (today's behaviour: AHRS if `ahrs_ok`, else track).
+    Persist to `localStorage['hdg_mode']` (default AUTO).
+  - Draw the active source with no ambiguity: replace the tiny
+    "G"/"M" subscript with a full-width **"MAG"** or **"TRK"**
+    label placed inside the heading readout box (or directly
+    above it). Colour the entire heading box border magenta when
+    on TRK, white when on MAG — today both are rendered too
+    similarly.
+  - Enunciate transitions: flash the heading box border (thicker
+    stroke or bright overlay) for ~1.5 s when the active source
+    changes. Works for both auto transitions and manual mode
+    changes.
+  - When mode is TRK but no GPS track is available (no fix or
+    `PS.speed < 3 kt`), show the MAG value with an amber "TRK?"
+    warning so the pilot knows the preferred source is unavailable.
+  - Apply `D.track` to the tape/bug when active source is TRK;
+    otherwise continue using `D.yaw`.
+
+---
+
 ### #15  iPhone V-speeds editor UI
 Status: **OPEN**
 Target: `iphone_display/index.html` setup menu — new "V-SPEEDS" panel.
