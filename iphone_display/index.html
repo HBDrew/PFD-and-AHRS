@@ -116,6 +116,25 @@
   .trim-lbl      { color:rgba(180,210,255,.85); font:bold 12px monospace; min-width:48px; }
   .trim-val      { color:#fff; font:bold 14px monospace; min-width:52px; text-align:right; }
 
+  /* ── Heading-mode panel ── */
+  #hdg-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.92);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
+  }
+  #hdg-panel p    { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+  .hdg-mode-row   { display:flex; gap:8px; margin-bottom:8px; }
+  .hdg-mode-btn   {
+    flex:1; background:#0a1a30; color:#fff; border:1px solid #3a6aaf;
+    border-radius:4px; padding:10px 6px; font:bold 13px monospace;
+    cursor:pointer; text-align:center;
+  }
+  .hdg-mode-btn.active { background:#1a5090; border-color:#6cf; color:#dff; }
+  .hdg-mode-btn:active { background:#2a6ab0; }
+  .hdg-hint       { color:rgba(180,200,230,.65); font-size:11px; line-height:1.4; }
+
   /* ── Sensor readout badge ── */
   #sensor-readout-status {
     position:absolute; top:6px; right:358px;
@@ -205,6 +224,7 @@
   <button class="setup-btn" onclick="openTerrainMenu()">⬇ TERRAIN</button>
   <button class="setup-btn" onclick="openBaroMenu()">📊 BAROMETER</button>
   <button class="setup-btn" onclick="openTrimMenu()">✈ TRIM</button>
+  <button class="setup-btn" onclick="openHdgMenu()">🧭 HEADING</button>
   <button class="setup-btn" onclick="openSensorMenu()">📡 SENSORS</button>
   <button id="setup-close" onclick="closeSetupMenu()">✕ CLOSE</button>
 </div>
@@ -289,6 +309,23 @@
     </button>
     <button class="trn-btn" onclick="resetAllTrims()">&#8635; Reset All</button>
     <button class="trn-btn" onclick="closeTrimPanel()">&#x2715; Close</button>
+  </div>
+</div>
+
+<div id="hdg-panel">
+  <p>Heading source</p>
+  <div class="hdg-mode-row">
+    <button class="hdg-mode-btn" id="hdg-mode-mag"  onclick="setHdgMode('MAG')">MAG</button>
+    <button class="hdg-mode-btn" id="hdg-mode-trk"  onclick="setHdgMode('TRK')">TRK</button>
+    <button class="hdg-mode-btn" id="hdg-mode-auto" onclick="setHdgMode('AUTO')">AUTO</button>
+  </div>
+  <p class="hdg-hint">
+    <strong>MAG</strong> — magnetic heading (AHRS or phone compass).<br>
+    <strong>TRK</strong> — GPS ground track (true-north, wind-corrected). Needs &gt;3 kt.<br>
+    <strong>AUTO</strong> — MAG when available, falls back to TRK.
+  </p>
+  <div class="trn-btns">
+    <button class="trn-btn" onclick="closeHdgPanel()">✕ Close</button>
   </div>
 </div>
 
@@ -735,6 +772,33 @@ function openSensorMenu() {
   closeSetupMenu();
   sensorReadoutPanel.style.display = 'block';
   updateSensorReadoutUI();
+}
+
+// Heading-source preference: 'MAG' (compass only), 'TRK' (GPS track
+// only), 'AUTO' (MAG when ahrs_ok else TRK). Persisted so a pilot
+// who wants deterministic behaviour doesn't re-set it every flight.
+let HDG_MODE = (localStorage.getItem('hdg_mode') || 'AUTO').toUpperCase();
+if (!['MAG', 'TRK', 'AUTO'].includes(HDG_MODE)) HDG_MODE = 'AUTO';
+
+function openHdgMenu() {
+  closeSetupMenu();
+  document.getElementById('hdg-panel').style.display = 'block';
+  _updateHdgModeUI();
+}
+function closeHdgPanel() {
+  document.getElementById('hdg-panel').style.display = 'none';
+}
+function setHdgMode(m) {
+  if (!['MAG', 'TRK', 'AUTO'].includes(m)) return;
+  HDG_MODE = m;
+  localStorage.setItem('hdg_mode', m);
+  _updateHdgModeUI();
+}
+function _updateHdgModeUI() {
+  for (const m of ['MAG', 'TRK', 'AUTO']) {
+    const btn = document.getElementById('hdg-mode-' + m.toLowerCase());
+    if (btn) btn.classList.toggle('active', HDG_MODE === m);
+  }
 }
 
 // "Zero Phone" — capture the current raw device-orientation readings as
@@ -1954,6 +2018,49 @@ function drawAltTape() {
 
 // ── Heading tape ───────────────────────────────────────────────────────────
 const CARDS={0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
+
+// Active heading-source resolver. Returns the value to display on the
+// tape + box and a label/colour describing the source. Warnings come
+// through when the pilot's preferred source is unavailable so they
+// can see *why* the display is behaving the way it is.
+const HDG_SRC_WHITE   = '#fff';
+const HDG_SRC_MAGENTA = BUG_MAGENTA;
+const HDG_SRC_AMBER   = '#ffb000';
+const HDG_TRK_MIN_KT  = 3;  // below this, GPS track is unreliable
+
+let _lastHdgLabel = null;
+let _hdgFlashUntil = 0;
+const HDG_FLASH_MS = 1500;
+
+function _activeHdg() {
+  const trackOk = D.gps_ok && D.speed > HDG_TRK_MIN_KT;
+  // MAG = any compass-based yaw (AHRS or phone compass). ahrs_ok is
+  // asserted by both paths so the label is "MAG" in either case.
+  const magOk = D.ahrs_ok;
+
+  let useTrack, label, color, warn = false;
+  if (HDG_MODE === 'MAG') {
+    useTrack = false;
+    if (!magOk) { label = 'MAG?'; color = HDG_SRC_AMBER; warn = true; }
+    else        { label = 'MAG';  color = HDG_SRC_WHITE; }
+  } else if (HDG_MODE === 'TRK') {
+    useTrack = trackOk;
+    if (!trackOk) { label = 'TRK?'; color = HDG_SRC_AMBER; warn = true; }
+    else          { label = 'TRK';  color = HDG_SRC_MAGENTA; }
+  } else {  // AUTO
+    if (magOk) {
+      useTrack = false; label = 'MAG'; color = HDG_SRC_WHITE;
+    } else if (trackOk) {
+      useTrack = true;  label = 'TRK'; color = HDG_SRC_MAGENTA;
+    } else {
+      useTrack = false; label = '---'; color = HDG_SRC_AMBER; warn = true;
+    }
+  }
+  return {
+    value: useTrack ? D.track : D.yaw,
+    label, color, warn, useTrack,
+  };
+}
 function drawHeadingTape() {
   const { hdgY, hdgH, cx } = L;
   // Wider span than pi4 so the pilot can preview more turn in a glance.
@@ -1962,7 +2069,18 @@ function drawHeadingTape() {
   // legible at the bold-double-size label font.
   const HDG_SPAN_DEG = 112;
   const HDG_HALF = Math.ceil(HDG_SPAN_DEG / 2);
-  const pxPerDeg=W/HDG_SPAN_DEG, hdg=D.yaw;
+
+  // Resolve active source first so the tape itself scrolls based on
+  // the heading we're actually showing (MAG vs TRK can differ by the
+  // wind correction angle — hiding that in the tape scroll would be
+  // just as confusing as the old silent-switch behaviour).
+  const src = _activeHdg();
+  if (_lastHdgLabel !== null && src.label !== _lastHdgLabel) {
+    _hdgFlashUntil = performance.now() + HDG_FLASH_MS;
+  }
+  _lastHdgLabel = src.label;
+
+  const pxPerDeg=W/HDG_SPAN_DEG, hdg=src.value;
   ctx.fillStyle='rgba(0,8,22,.82)'; ctx.fillRect(0,hdgY,W,hdgH);
   ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(0,hdgY); ctx.lineTo(W,hdgY); ctx.stroke();
@@ -1998,15 +2116,14 @@ function drawHeadingTape() {
     ctx.lineTo(hbx+17, hdgY+14); ctx.closePath(); ctx.fill();
   }
 
-  // Determine heading source: GPS track (magenta) or magnetic (white)
-  const isGpsHeading = PS.enabled && !D.ahrs_ok;  // fallback to GPS track when AHRS unavailable
-  const hdgCol = isGpsHeading ? BUG_MAGENTA : '#fff';
-  const srcLabel = isGpsHeading ? 'G' : 'M';
+  // Heading-source colour driven by the resolver above.
+  const hdgCol = src.color;
+  const srcLabel = src.label;
 
   // Heading readout box — chamfered polygon with integrated pointer (pi4 style).
   // Font sized to match the Veeder-Root drum font so the three readouts read
   // as a visual set across the bottom of the display.
-  const hdgStr = Math.round(D.yaw).toString().padStart(3,'0') + '°';
+  const hdgStr = Math.round(hdg).toString().padStart(3,'0') + '°';
   const fontSize = Math.max(18, H*.050);
   ctx.font = `bold ${fontSize}px monospace`;
   const textW = ctx.measureText(hdgStr).width;
@@ -2035,18 +2152,47 @@ function drawHeadingTape() {
   ctx.arcTo(bx, by, bx + r, by, r);
   ctx.closePath();
   ctx.fillStyle = 'rgba(0,0,0,.90)'; ctx.fill();
-  ctx.strokeStyle = hdgCol; ctx.lineWidth = 2; ctx.stroke();
+  // Transition flash — thick outer glow for ~1.5 s when the active
+  // source changes. Guarantees the pilot can't miss a handover.
+  const now = performance.now();
+  if (now < _hdgFlashUntil) {
+    const t = 1 - (_hdgFlashUntil - now) / HDG_FLASH_MS;  // 0 → 1
+    ctx.save();
+    ctx.strokeStyle = hdgCol;
+    ctx.lineWidth = 5 + 3 * Math.sin(Math.min(1, t) * Math.PI);
+    ctx.globalAlpha = 0.85 - t * 0.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.strokeStyle = hdgCol; ctx.lineWidth = 2.5; ctx.stroke();
 
-  // Main heading text — centred in rectangle portion of the box
+  // Main heading text — centred in rectangle portion of the box.
   ctx.fillStyle = hdgCol; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(hdgStr, cx, by + bh/2);
 
-  // M/G subscript — outboard of the ° glyph, baseline-aligned with main text
-  const srcFontSize = Math.max(9, H*.018);
-  ctx.font = `bold ${srcFontSize}px monospace`;
+  // MAG / TRK source tag — full-size coloured pill above the box so
+  // the active source is visible at a glance and a handover is
+  // impossible to miss. During a flash the pill also pulses.
+  const tagFs = Math.max(12, H*0.026);
+  ctx.font = `bold ${tagFs}px monospace`;
+  const tagW = ctx.measureText(srcLabel).width + 12;
+  const tagH = tagFs + 6;
+  const tagX = cx - tagW/2;
+  const tagY = by - tagH - 2;
+  roundRect(tagX, tagY, tagW, tagH, 3);
   ctx.fillStyle = hdgCol;
-  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh/2 + fontSize*0.35);
+  if (now < _hdgFlashUntil) {
+    const t = 1 - (_hdgFlashUntil - now) / HDG_FLASH_MS;
+    ctx.save();
+    ctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * Math.PI * 4);
+    ctx.fill();
+    ctx.restore();
+  } else {
+    ctx.fill();
+  }
+  ctx.fillStyle = '#000'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(srcLabel, cx, tagY + tagH/2);
+  ctx.textBaseline = 'alphabetic';
 }
 
 // ── Baro button (pi4-style tap button at bottom of altitude tape column) ──

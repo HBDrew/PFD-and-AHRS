@@ -208,39 +208,6 @@ Work items:
     home-airport-region.
 
 
-### #20  iPhone HDG vs TRK — enunciated, with user preference
-Status: **OPEN**
-Target: `iphone_display/index.html` `drawHeadingTape` (source-label
-logic), setup menu (new HEADING panel), and persistence via
-`localStorage`.
-Context: The heading tape silently switches to GPS track when
-`!D.ahrs_ok`. In practice the transition is invisible to the pilot
-— the current "G/M" subscript on the box is tiny and the magenta
-box border can be mistaken for a minor styling change. Pilot
-flew with bad compass, then groundspeed came up and the heading
-corrected itself with no visible cue. Pi4 handles this with a
-clear MAG/TRK label; we should match and do even better.
-Work items:
-  - New setup-menu entry "HEADING" with three options: **MAG**
-    (always use AHRS compass), **TRK** (always use GPS track),
-    **AUTO** (today's behaviour: AHRS if `ahrs_ok`, else track).
-    Persist to `localStorage['hdg_mode']` (default AUTO).
-  - Draw the active source with no ambiguity: replace the tiny
-    "G"/"M" subscript with a full-width **"MAG"** or **"TRK"**
-    label placed inside the heading readout box (or directly
-    above it). Colour the entire heading box border magenta when
-    on TRK, white when on MAG — today both are rendered too
-    similarly.
-  - Enunciate transitions: flash the heading box border (thicker
-    stroke or bright overlay) for ~1.5 s when the active source
-    changes. Works for both auto transitions and manual mode
-    changes.
-  - When mode is TRK but no GPS track is available (no fix or
-    `PS.speed < 3 kt`), show the MAG value with an amber "TRK?"
-    warning so the pilot knows the preferred source is unavailable.
-  - Apply `D.track` to the tape/bug when active source is TRK;
-    otherwise continue using `D.yaw`.
-
 ---
 
 ### #15  iPhone V-speeds editor UI
@@ -269,6 +236,34 @@ Work items:
 ---
 
 ## Completed
+
+### #20  iPhone HDG vs TRK — enunciated, with user preference — **FIXED**
+Target: `iphone_display/index.html` — new `HEADING` setup panel,
+`_activeHdg()` resolver, and `drawHeadingTape` rewiring.
+Fix:
+  - Setup menu gains a 🧭 HEADING entry opening a panel with three
+    mutually exclusive buttons: MAG, TRK, AUTO. Choice persists in
+    `localStorage['hdg_mode']` (default AUTO).
+  - New `_activeHdg()` returns `{ value, label, color, warn, useTrack }`
+    — the single source of truth for what to display and how to
+    colour it. MAG always uses `D.yaw` (AHRS or phone compass), TRK
+    uses `D.track` when GPS speed > 3 kt, AUTO prefers MAG when
+    `D.ahrs_ok` else TRK when groundspeed is live. Unavailable
+    preferred sources fall back with an amber `MAG?` / `TRK?` /
+    `---` warning label.
+  - `drawHeadingTape` now reads `hdg = src.value`, so the tape, the
+    bug chevron offset, and the readout digits all agree with the
+    pill label — no more silent mismatch between what's displayed
+    and what the subscript claimed.
+  - Tiny `M`/`G` subscript replaced with a full coloured pill above
+    the readout box: white on MAG, magenta on TRK, amber on warning.
+    Pill font `max(12, H*0.026)` bold, black text on the pill fill
+    for high contrast.
+  - Transition enunciation: whenever `_activeHdg().label` changes
+    (whether from a manual mode change, AHRS dropping out, or GPS
+    track coming live), the box grows a thick pulsing outer ring in
+    the new source colour for 1.5 s and the pill flashes on/off.
+    Impossible to miss on a glance.
 
 ### #19  iPhone VSI broken on GPS + VS bar too small — **FIXED**
 Target: `iphone_display/index.html` — `PS` state, `_onGeolocation`,
