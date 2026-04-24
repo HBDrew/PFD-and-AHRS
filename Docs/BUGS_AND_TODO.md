@@ -208,31 +208,6 @@ Work items:
     home-airport-region.
 
 
-### #18  iPhone tapes/drums too jumpy — per-field smoothing
-Status: **OPEN**
-Target: `iphone_display/index.html` `smooth()` and the `D`/`TARGET` state.
-Context: `smooth()` lerps every field with the same `alpha =
-min(1, dt/60)`, so at ~60 fps alpha ≈ 0.28. That's snappy enough for
-pitch/roll but doesn't filter noise on slow-moving readouts — the
-Veeder-Root speed/alt drums and the tapes jitter visibly on both
-AHRS (SSE at ~20 Hz, already firmware-smoothed) and phone-sensor
-sources (noisier). Phone sensors make it worse but AHRS is also
-affected. The lerp formula is `1 - exp(-dt/tau)` in disguise, so a
-per-field `tau` (ms) gives predictable settling regardless of frame
-rate.
-Work items:
-  - Replace the single-alpha `smooth()` with per-field time constants
-    stored in a `SMOOTH_TAU` block. Suggested starting values (ms):
-    `roll 150, pitch 150, yaw 250, speed 600, alt 700, vspeed 1200,
-    track 400, ay 200`. Compute each field's alpha as
-    `1 - exp(-dt_ms / tau)`.
-  - Leave booleans (`ahrs_ok`, `gps_ok`, `baro_ok`, `fix`, `sats`)
-    and lat/lon/baro_hpa on the direct copy (no smoothing).
-  - Verify pitch/roll still track fast enough for real AHRS motion —
-    if 150 ms feels laggy, drop to 100 ms. The only fields where we
-    really want long tau are the tape/drum readouts.
-  - Confirm on both live-AHRS and phone-sensor modes.
-
 ### #19  iPhone VSI broken on GPS + VS bar too small
 Status: **OPEN**
 Target: `iphone_display/index.html` — `applyPhoneSensors`, VSI draw
@@ -320,6 +295,18 @@ Work items:
 ---
 
 ## Completed
+
+### #18  iPhone tapes/drums too jumpy — per-field smoothing — **FIXED**
+Target: `iphone_display/index.html` `smooth()` and render loop.
+Fix: replaced the single-alpha lerp (`alpha = min(1, dt/60)`) with a
+per-field `SMOOTH_TAU` table and `alpha = 1 - exp(-dt_ms/tau)`. Short
+tau on attitude (roll/pitch 150 ms, yaw 250 ms) so motion still
+tracks, long tau on the tape/drum readouts (speed 600 ms, alt 700
+ms, vspeed 1200 ms, track 400 ms) to kill SSE noise and phone-sensor
+jitter. Render loop now passes `dt_ms` directly (capped at 250 ms so
+a long background pause doesn't force a huge single-frame jump).
+Applies to both live-AHRS and phone-sensor sources since both feed
+through `TARGET → smooth()`.
 
 ### #16  iPhone heading tape — show 25 % more degrees at once — **FIXED**
 Target: `iphone_display/index.html` `drawHeadingTape`.

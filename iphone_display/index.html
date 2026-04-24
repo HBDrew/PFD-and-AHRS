@@ -1394,15 +1394,35 @@ canvas.addEventListener('touchend', e => {
 const DEG = Math.PI / 180;
 function lerp(a,b,t)      { return a+(b-a)*t; }
 function lerpAngle(a,b,t) { let d=((b-a+540)%360)-180; return (a+d*t+360)%360; }
-function smooth(alpha) {
-  D.roll   = lerp(D.roll,  TARGET.roll,  alpha);
-  D.pitch  = lerp(D.pitch, TARGET.pitch, alpha);
-  D.yaw    = lerpAngle(D.yaw, TARGET.yaw, alpha);
-  D.alt    = lerp(D.alt,   TARGET.alt,   alpha);
-  D.speed  = lerp(D.speed, TARGET.speed, alpha);
-  D.vspeed = lerp(D.vspeed,TARGET.vspeed,alpha);
-  D.track  = lerpAngle(D.track, TARGET.track, alpha);
-  D.ay     = lerp(D.ay,    TARGET.ay,    alpha);
+
+// Per-field exponential smoothing time constants (ms). Short tau on
+// attitude so real motion tracks without visible lag; long tau on the
+// tape/drum readouts so SSE noise (at ~20 Hz) and phone-sensor jitter
+// don't show up as fluttering digits. alpha per frame is computed as
+// 1 - exp(-dt_ms / tau), which makes settling time predictable
+// regardless of frame rate.
+const SMOOTH_TAU = {
+  roll:   150,
+  pitch:  150,
+  yaw:    250,
+  speed:  600,
+  alt:    700,
+  vspeed: 1200,
+  track:  400,
+  ay:     200,
+};
+function _alpha(dtMs, tauMs) {
+  return 1 - Math.exp(-Math.max(0, dtMs) / tauMs);
+}
+function smooth(dtMs) {
+  D.roll   = lerp(D.roll,  TARGET.roll,  _alpha(dtMs, SMOOTH_TAU.roll));
+  D.pitch  = lerp(D.pitch, TARGET.pitch, _alpha(dtMs, SMOOTH_TAU.pitch));
+  D.yaw    = lerpAngle(D.yaw,   TARGET.yaw,   _alpha(dtMs, SMOOTH_TAU.yaw));
+  D.alt    = lerp(D.alt,   TARGET.alt,   _alpha(dtMs, SMOOTH_TAU.alt));
+  D.speed  = lerp(D.speed, TARGET.speed, _alpha(dtMs, SMOOTH_TAU.speed));
+  D.vspeed = lerp(D.vspeed,TARGET.vspeed,_alpha(dtMs, SMOOTH_TAU.vspeed));
+  D.track  = lerpAngle(D.track, TARGET.track, _alpha(dtMs, SMOOTH_TAU.track));
+  D.ay     = lerp(D.ay,    TARGET.ay,    _alpha(dtMs, SMOOTH_TAU.ay));
   D.fix=TARGET.fix; D.sats=TARGET.sats;
   D.lat=TARGET.lat; D.lon=TARGET.lon;
   D.gps_alt=TARGET.gps_alt;
@@ -2011,7 +2031,9 @@ function render(ts) {
   // TARGET (and then D via smooth()).  When the SSE link is alive this is
   // a near-no-op.
   applyPhoneSensors();
-  smooth(Math.min(1,(ts-lastTs)/60));
+  // Cap dt so a long tab-backgrounded pause doesn't force a huge
+  // single-frame jump through the smoother.
+  smooth(Math.min(250, ts - lastTs));
   lastTs=ts;
 
   updateLinkStatus();
