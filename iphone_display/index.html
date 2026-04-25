@@ -135,6 +135,16 @@
   .hdg-mode-btn:active { background:#2a6ab0; }
   .hdg-hint       { color:rgba(180,200,230,.65); font-size:11px; line-height:1.4; }
 
+  /* ── Compass calibration panel ── */
+  #compass-cal-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.92);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
+  }
+  #compass-cal-panel p { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+
   /* ── Sensor readout badge ── */
   #sensor-readout-status {
     position:absolute; top:6px; right:358px;
@@ -322,10 +332,38 @@
   <p class="hdg-hint">
     <strong>MAG</strong> — magnetic heading (AHRS or phone compass).<br>
     <strong>TRK</strong> — GPS ground track (true-north, wind-corrected). Needs &gt;3 kt.<br>
-    <strong>AUTO</strong> — MAG when available, falls back to TRK.
+    <strong>AUTO</strong> — TRK when GPS is moving, falls back to MAG.<br>
+    A diamond on the tape marks the other source when both are live
+    (cyan = magnetic, magenta = track).
   </p>
   <div class="trn-btns">
+    <button class="trn-btn" onclick="openCompassCalPanel()">🧲 CAL COMPASS</button>
     <button class="trn-btn" onclick="closeHdgPanel()">✕ Close</button>
+  </div>
+</div>
+
+<div id="compass-cal-panel">
+  <p>Compass calibration  <small id="compass-cal-status" style="color:rgba(180,200,255,.6); margin-left:6px"></small></p>
+  <p class="hdg-hint" id="compass-cal-instr">
+    Point the aircraft <strong>NORTH</strong> (000°), hold steady, then tap CAPTURE.
+  </p>
+  <div class="trim-row">
+    <span class="trim-lbl">RAW</span>
+    <span class="trim-val" id="compass-cal-raw">—</span>
+    <span class="trim-lbl" style="margin-left:14px">CAL</span>
+    <span class="trim-val" id="compass-cal-applied">—</span>
+  </div>
+  <div class="trim-row">
+    <span class="trim-lbl">OFFSET</span>
+    <span class="trim-val" id="compass-cal-offset">0.0°</span>
+    <span class="trim-lbl" style="margin-left:14px">STEP</span>
+    <span class="trim-val" id="compass-cal-step">1 / 4</span>
+  </div>
+  <div class="trn-btns">
+    <button class="trn-btn" id="compass-cal-capture-btn" onclick="compassCalCapture()">⊕ CAPTURE N</button>
+    <button class="trn-btn" onclick="compassCalRestart()">↺ Restart</button>
+    <button class="trn-btn" onclick="compassCalReset()">✕ Clear cal</button>
+    <button class="trn-btn" onclick="closeCompassCalPanel()">⤺ Close</button>
   </div>
 </div>
 
@@ -512,6 +550,15 @@ const PS = {
 };
 const sensorEl = document.getElementById('sensor-status');
 
+// Compass calibration — single global offset added to webkitCompassHeading
+// before it becomes PS.yaw.  Built up via the cardinal walk-through in
+// the HEADING setup panel.  Persisted across reloads.
+const COMPASS_CAL = { offset: 0 };
+try {
+  const v = parseFloat(localStorage.getItem('compass_cal_offset'));
+  if (Number.isFinite(v)) COMPASS_CAL.offset = ((v % 360) + 360) % 360;
+} catch (e) {}
+
 async function togglePhoneSensors() {
   if (PS.enabled) {
     _disablePhoneSensors();
@@ -615,10 +662,14 @@ function _onOrient(e) {
   PS.roll  = roll  - PS.roll0;
   PS.pitch = pitch - PS.pitch0;
   // webkitCompassHeading is true-north in the world frame (independent of device orientation)
-  // For yaw, use compass when available; alpha fallback is purely for heading, no coupling
-  PS.yaw = (typeof e.webkitCompassHeading === 'number')
-    ? e.webkitCompassHeading
-    : (e.alpha || 0);
+  // For yaw, use compass when available; alpha fallback is purely for heading, no coupling.
+  // Add the user-driven calibration offset so a known mag bias (panel iron,
+  // landscape-right vs portrait drift) is corrected before any consumer.
+  if (typeof e.webkitCompassHeading === 'number') {
+    PS.yaw = ((e.webkitCompassHeading + COMPASS_CAL.offset) % 360 + 360) % 360;
+  } else {
+    PS.yaw = (e.alpha || 0);
+  }
 }
 
 // Rolling-window slope estimate over the last ~PS_VS_WINDOW_MS of
@@ -801,6 +852,122 @@ function _updateHdgModeUI() {
   }
 }
 
+// ── Compass calibration (cardinal walk-through) ────────────────────────────
+// Pilot points the aircraft at N / E / S / W in turn and taps CAPTURE.
+// We record (expected, raw) per cardinal, compute the circular mean of
+// the deltas, and persist that as a single additive offset.  The offset
+// is applied in _onOrient before PS.yaw is published so every downstream
+// consumer (display tape, GPS-track diamond compare, sensor readout) uses
+// the corrected value.  Raw compassHeading is preserved on PS for the
+// next calibration run and for the SENSORS readout.
+const COMPASS_CAL_CARDS = [
+  { name: 'NORTH', expected:   0 },
+  { name: 'EAST',  expected:  90 },
+  { name: 'SOUTH', expected: 180 },
+  { name: 'WEST',  expected: 270 },
+];
+const COMPASS_CAL_RUN = { step: 0, samples: [] };
+
+function openCompassCalPanel() {
+  closeHdgPanel();
+  COMPASS_CAL_RUN.step = 0;
+  COMPASS_CAL_RUN.samples = [];
+  _setCompassCalStatus(PS.enabled
+    ? '' : 'PHONE sensors are off — enable them first.');
+  document.getElementById('compass-cal-panel').style.display = 'block';
+  _compassCalUpdateUI();
+}
+function closeCompassCalPanel() {
+  document.getElementById('compass-cal-panel').style.display = 'none';
+}
+
+function compassCalRestart() {
+  COMPASS_CAL_RUN.step = 0;
+  COMPASS_CAL_RUN.samples = [];
+  _setCompassCalStatus('Restarted.');
+  _compassCalUpdateUI();
+}
+
+function compassCalReset() {
+  COMPASS_CAL.offset = 0;
+  try { localStorage.removeItem('compass_cal_offset'); } catch (e) {}
+  COMPASS_CAL_RUN.step = 0;
+  COMPASS_CAL_RUN.samples = [];
+  _setCompassCalStatus('Calibration cleared.');
+  _compassCalUpdateUI();
+}
+
+function compassCalCapture() {
+  if (!PS.enabled || PS.compassHeading == null) {
+    _setCompassCalStatus('No compass data — enable PHONE sensors.');
+    return;
+  }
+  const card = COMPASS_CAL_CARDS[COMPASS_CAL_RUN.step];
+  COMPASS_CAL_RUN.samples.push({ expected: card.expected, raw: PS.compassHeading });
+  COMPASS_CAL_RUN.step += 1;
+
+  if (COMPASS_CAL_RUN.step >= COMPASS_CAL_CARDS.length) {
+    // Circular mean of (expected - raw) over the four cardinals.
+    let sx = 0, sy = 0;
+    for (const s of COMPASS_CAL_RUN.samples) {
+      const d = ((s.expected - s.raw + 540) % 360) - 180;
+      const r = d * Math.PI / 180;
+      sx += Math.cos(r); sy += Math.sin(r);
+    }
+    const mean = Math.atan2(sy, sx) * 180 / Math.PI;
+    COMPASS_CAL.offset = ((mean % 360) + 360) % 360;
+    try { localStorage.setItem('compass_cal_offset', String(COMPASS_CAL.offset)); }
+    catch (e) {}
+    _setCompassCalStatus('Done — offset ' + _signedDeg(mean) + '.');
+    COMPASS_CAL_RUN.step = 0;
+    COMPASS_CAL_RUN.samples = [];
+  } else {
+    _setCompassCalStatus('Captured ' + card.name + '.');
+  }
+  _compassCalUpdateUI();
+}
+
+function _signedDeg(d) {
+  // Render an offset in [-180, 180] for the status line — easier to read
+  // than the wrapped 0..360 form when the offset is a small negative.
+  const w = ((d + 540) % 360) - 180;
+  return (w >= 0 ? '+' : '') + w.toFixed(1) + '°';
+}
+
+function _setCompassCalStatus(s) {
+  const el = document.getElementById('compass-cal-status');
+  if (el) el.textContent = s;
+}
+
+function _compassCalUpdateUI() {
+  const card = COMPASS_CAL_CARDS[COMPASS_CAL_RUN.step] || COMPASS_CAL_CARDS[0];
+  const instr = document.getElementById('compass-cal-instr');
+  if (instr) {
+    instr.innerHTML = 'Step ' + (COMPASS_CAL_RUN.step + 1) + ' of '
+      + COMPASS_CAL_CARDS.length + ' — point aircraft <strong>'
+      + card.name + '</strong> ('
+      + String(card.expected).padStart(3, '0') + '°), then tap CAPTURE.';
+  }
+  const btn = document.getElementById('compass-cal-capture-btn');
+  if (btn) btn.textContent = '⊕ CAPTURE ' + card.name.charAt(0);
+  const raw = document.getElementById('compass-cal-raw');
+  if (raw) raw.textContent = (PS.enabled && PS.compassHeading != null)
+    ? PS.compassHeading.toFixed(1) + '°' : '—';
+  const applied = document.getElementById('compass-cal-applied');
+  if (applied) {
+    if (PS.enabled && PS.compassHeading != null) {
+      const calVal = ((PS.compassHeading + COMPASS_CAL.offset) % 360 + 360) % 360;
+      applied.textContent = calVal.toFixed(1) + '°';
+    } else {
+      applied.textContent = '—';
+    }
+  }
+  const off = document.getElementById('compass-cal-offset');
+  if (off) off.textContent = _signedDeg(COMPASS_CAL.offset);
+  const step = document.getElementById('compass-cal-step');
+  if (step) step.textContent = (COMPASS_CAL_RUN.step + 1) + ' / ' + COMPASS_CAL_CARDS.length;
+}
+
 // "Zero Phone" — capture the current raw device-orientation readings as
 // the mounted-level reference.  Subsequent roll/pitch outputs are
 // computed relative to this, so a phone cradled at any angle can still
@@ -936,7 +1103,10 @@ function updateSensorReadoutUI() {
     document.getElementById('sensor-beta').textContent = PS.beta.toFixed(2) + '°';
     document.getElementById('sensor-gamma').textContent = PS.gamma.toFixed(2) + '°';
     document.getElementById('sensor-compass').textContent = PS.compassHeading != null
-      ? PS.compassHeading.toFixed(1) + '°' : '(not available)';
+      ? (PS.compassHeading.toFixed(1) + '°'
+         + (Math.abs(((COMPASS_CAL.offset + 540) % 360) - 180) > 0.5
+            ? ' (cal ' + _signedDeg(COMPASS_CAL.offset) + ')' : ''))
+      : '(not available)';
     document.getElementById('sensor-roll').textContent = PS.roll.toFixed(2) + '°';
     document.getElementById('sensor-pitch').textContent = PS.pitch.toFixed(2) + '°';
     document.getElementById('sensor-yaw').textContent = PS.yaw.toFixed(1) + '°';
@@ -2043,18 +2213,31 @@ function _activeHdg() {
     useTrack = trackOk;
     if (!trackOk) { label = 'G?'; color = HDG_SRC_AMBER; }
     else          { label = 'G';  color = HDG_SRC_MAGENTA; }
-  } else {  // AUTO
-    if (magOk) {
-      useTrack = false; label = 'M'; color = HDG_SRC_WHITE;
-    } else if (trackOk) {
+  } else {  // AUTO — TRK preferred (true-north, no mag drift), MAG fallback.
+    if (trackOk) {
       useTrack = true;  label = 'G'; color = HDG_SRC_MAGENTA;
+    } else if (magOk) {
+      useTrack = false; label = 'M'; color = HDG_SRC_WHITE;
     } else {
       useTrack = false; label = '?'; color = HDG_SRC_AMBER;
     }
   }
+
+  // Cross-source diamond: when the *other* source is also available,
+  // mark its value on the tape so the pilot can see the discrepancy
+  // (wind correction angle, mag variation, compass drift) without
+  // having to flip modes. Diamond colour follows the source convention:
+  // cyan = magnetic, magenta = GPS track.
+  let cross = null;
+  if (useTrack && magOk) {
+    cross = { value: D.yaw,   color: BUG_CYAN    };
+  } else if (!useTrack && trackOk && (HDG_MODE === 'MAG' || magOk)) {
+    cross = { value: D.track, color: BUG_MAGENTA };
+  }
+
   return {
     value: useTrack ? D.track : D.yaw,
-    label, color, useTrack,
+    label, color, useTrack, cross,
   };
 }
 function drawHeadingTape() {
@@ -2101,6 +2284,30 @@ function drawHeadingTape() {
   const hdgCol = src.color;
   const srcLabel = src.label;
   const bugCol = src.label === 'M' ? BUG_CYAN : hdgCol;
+
+  // Cross-source diamond — sits on the tape at the *other* source's value
+  // so the pilot can see compass-vs-track divergence (wind correction
+  // angle, mag variation, calibration drift) without flipping modes.
+  // Cyan = magnetic, magenta = GPS track.
+  if (src.cross) {
+    const off = ((src.cross.value - hdg + 540) % 360) - 180;
+    if (Math.abs(off) <= HDG_HALF) {
+      const dx = cx + off * pxPerDeg;
+      const dy = hdgY + hdgH * 0.50;
+      const dr = Math.max(7, hdgH * 0.22);
+      ctx.fillStyle = src.cross.color;
+      ctx.strokeStyle = 'rgba(0,0,0,.85)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(dx,      dy - dr);
+      ctx.lineTo(dx + dr, dy);
+      ctx.lineTo(dx,      dy + dr);
+      ctx.lineTo(dx - dr, dy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
 
   // Heading bug chevron — drawn BEFORE the readout box so the box/pointer
   // covers the bug when it sits near the current heading (matches spd/alt).
@@ -2162,6 +2369,17 @@ function drawHeadingTape() {
   ctx.fillStyle = hdgCol;
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   ctx.fillText(srcLabel, cx + textW/2 + 3, by + bh/2 + fontSize*0.35);
+
+  // CAL indicator — displayed when a compass calibration offset is active
+  // and the displayed heading is mag-derived (otherwise the offset doesn't
+  // touch the value).  Mirrors the source label on the inboard left side
+  // of the box, in cyan so it doesn't compete with the source colour.
+  const calActive = !src.useTrack && Math.abs(((COMPASS_CAL.offset + 540) % 360) - 180) > 0.5;
+  if (calActive) {
+    ctx.fillStyle = BUG_CYAN;
+    ctx.textAlign = 'right';
+    ctx.fillText('CAL', cx - textW/2 - 3, by + bh/2 + fontSize*0.35);
+  }
 }
 
 // ── Baro button (pi4-style tap button at bottom of altitude tape column) ──
@@ -2244,6 +2462,11 @@ function render(ts) {
     if (sensorReadoutPanel.style.display === 'block') updateSensorReadoutUI();
     lastBaroRefresh=ts;
   }
+  // Compass-cal panel: refresh every frame while open so the live RAW /
+  // CAL readouts track the compass at sensor rate (1 s is too slow for a
+  // pilot trying to hold a cardinal heading while tapping CAPTURE).
+  const calPanel = document.getElementById('compass-cal-panel');
+  if (calPanel && calPanel.style.display === 'block') _compassCalUpdateUI();
   updateTerrainAlert();
   ctx.clearRect(0,0,W,H);
 

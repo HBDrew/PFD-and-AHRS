@@ -108,29 +108,22 @@ Context: when `AP_SSID = "AHRS-Link-DEBUG"` or similar diagnostic
 values, the AP doesn't come up. Works with default SSID. Possible
 channel/password-length edge case.
 
-### #12  iPhone compass calibration — cardinal-point or GPS-track
-Status: **OPEN**
-Target: `iphone_display/index.html` sensor pipeline (`_onOrientation`,
-`PS` state), and possibly a new calibration panel in the setup menu.
-Context: iPhone's `webkitCompassHeading` is most accurate in portrait
-and drifts in landscape — especially landscape-right (charging port on
-right), which is the preferred mount orientation. Need a user-driven
-calibration to compute a per-orientation offset that's stored locally
-and added to the raw heading before display.
-Modes:
-  1. **Cardinal walk-through**: pilot taps a "CAL COMPASS" button in
-     setup, then points the aircraft at known N / E / S / W headings
-     and confirms each. Average the four offsets (handles device tilt
-     bias). Store to `localStorage`.
-  2. **GPS-track auto-cal**: when GPS groundspeed > 15 kt for ≥10 s
-     and AHRS compass is live, compute `offset = gps_track - compass`
-     (unwrapped, averaged over the sample window). Roll into the
-     stored offset with a low-pass filter so wind/crab angle doesn't
-     bias it too hard; require straight-and-level (|roll| < 5°) to
-     include a sample.
-Apply the stored offset in `_onOrientation` before writing `PS.yaw`.
-Show a "CAL" indicator on the heading box when an offset is active.
-Needs paired firmware work (see AHRS-MAGCAL below).
+### #12b  iPhone compass GPS-track auto-cal
+Status: **OPEN** (cardinal walk-through landed — see Completed §#12a)
+Target: `iphone_display/index.html` `_onOrient`, `applyPhoneSensors`,
+`COMPASS_CAL`.
+Context: with the cardinal walk-through in place, a second auto-cal
+mode would let a pilot keep the offset accurate without taxiing four
+cardinals. When GPS groundspeed > 15 kt for ≥10 s and the compass is
+live, compute `offset = gps_track − compass` (unwrapped, averaged over
+the sample window). Roll into `COMPASS_CAL.offset` with a low-pass
+filter so wind/crab doesn't bias it; require straight-and-level
+(|roll| < 5°) to include a sample. Surface a "CAL: AUTO" badge so the
+pilot can see when it's actively learning vs. holding the previous
+offset.
+Pairs with firmware item AHRS-MAGCAL below — when the firmware-side
+mag cal also lands, the iPhone compass and the AHRS compass will both
+converge on the GPS track and stay aligned.
 
 ### AHRS-MAGCAL  WT901 magnetometer calibration procedure
 Status: **OPEN**
@@ -236,6 +229,50 @@ Work items:
 ---
 
 ## Completed
+
+### #12a  iPhone compass calibration — cardinal walk-through — **FIXED**
+Target: `iphone_display/index.html` — new `#compass-cal-panel`,
+`COMPASS_CAL` global, additions to `_onOrient`.
+Fix:
+  - HEADING setup panel gains a 🧲 CAL COMPASS button that opens a
+    new full-width calibration panel.
+  - Pilot points the aircraft at NORTH (000°), taps CAPTURE, repeats
+    for EAST / SOUTH / WEST. Live RAW vs CAL readouts update at
+    sensor rate while the panel is open. Restart and Clear-cal
+    buttons reset the run / wipe the stored offset.
+  - On the fourth capture we compute the circular mean of the four
+    `(expected − raw)` deltas (sin/cos sums + atan2 — handles wrap)
+    and persist it to `localStorage['compass_cal_offset']`.
+  - Offset is applied in `_onOrient` immediately after reading
+    `webkitCompassHeading`, so every consumer (display tape, GPS-vs-
+    compass cross-source diamond, sensor readout) sees the corrected
+    value. Raw `PS.compassHeading` is preserved for future
+    calibration runs and for the SENSORS readout.
+  - `drawHeadingTape` renders a small CAL subscript on the inboard
+    side of the heading readout box whenever an offset is active and
+    the displayed source is mag-derived. The SENSORS panel's compass
+    row also gains a `(cal +N.N°)` annotation so the pilot can see
+    what's been applied at a glance.
+GPS-track auto-cal half-mode is tracked separately as #12b.
+
+### #20a  iPhone heading AUTO mode flipped to TRK-first — **FIXED**
+Target: `iphone_display/index.html` `_activeHdg()`, hdg-panel hint
+copy. AUTO previously preferred MAG (compass) and fell back to TRK
+(GPS track). Pilot feedback: GPS track is the more trustworthy of
+the two on a moving aircraft (true-north, no mag drift, no panel-
+iron bias), so AUTO now picks TRK whenever GPS speed > 3 kt and
+falls back to MAG only when GPS isn't moving. Hint text updated.
+
+### CROSS-SOURCE-DIAMOND  iPhone heading tape — show the *other* source — **FIXED**
+Target: `iphone_display/index.html` `_activeHdg()` + `drawHeadingTape`.
+When both compass and GPS track are live, the tape now draws a
+filled diamond at the *other* source's value so the pilot can see
+divergence (wind correction angle, magnetic variation, compass
+drift) without having to flip modes. Diamond colour follows the
+source convention: cyan = magnetic, magenta = GPS track. So in MAG
+mode (white tape) you see a magenta diamond at the GPS track; in
+TRK or AUTO modes (magenta tape) you see a cyan diamond at the
+magnetic heading.
 
 ### #20  iPhone HDG vs TRK — enunciated, with user preference — **FIXED**
 Target: `iphone_display/index.html` — new `HEADING` setup panel,
