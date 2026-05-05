@@ -10,6 +10,41 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### WAVESHARE-35-DPI  Pi 4 Waveshare 3.5" DPI panel won't initialise
+Status: **OPEN — low priority, blocked on time, ROADOM 7" HDMI works fine**
+Target: `/boot/firmware/config.txt`, possibly `pi4/config.py` profile
+overlay name, possibly Waveshare's `LCD-show` package.
+Context: tried switching from the ROADOM 7" HDMI to the Waveshare 3.5"
+DPI hat. Set `DISPLAY_PROFILE = "waveshare_35"` and uncommented the
+DPI lines in `config.txt`:
+  ```
+  dtoverlay=waveshare-35dpi-3b-4b
+  framebuffer_width=640
+  framebuffer_height=480
+  ```
+Pi boots and SSH works, but the Waveshare panel stays dark. Diagnosis:
+the overlay file `waveshare-35dpi-3b-4b.dtbo` is **not present** in
+`/boot/firmware/overlays/` on Pi OS Bookworm (kernel 6.12). Only the
+DSI-Waveshare and CAN-hat overlays ship now — the older panel-specific
+DPI overlays were deprecated. The dtoverlay line is silently ignored;
+`/sys/class/drm/` shows only HDMI connectors, never a DPI one.
+Two paths forward when picking this up:
+  - **A1**: Install Waveshare's `LCD-show` package
+    (`git clone https://github.com/waveshare/LCD-show && sudo
+    ./LCD35-show`) — ships the missing overlay. Old script, edits
+    `config.txt` itself and reboots; back up `config.txt` first.
+  - **A2**: Use the modern `vc4-kms-dpi-generic` overlay with explicit
+    panel timings looked up from the Waveshare datasheet. Cleaner,
+    keeps the install self-managed.
+Confirmed today that path **B** (override `DISPLAY_W`/`DISPLAY_H`
+to 640×480 in `config_local.py` while keeping HDMI on the ROADOM)
+would let us validate the small-screen *layout* without bringing
+up the Waveshare panel — useful as a pre-step for any future
+sessions that want to verify PFD rendering at 640×480 before doing
+the hardware swap.
+Recovery applied today: reverted `config.txt` to HDMI-only, restored
+ROADOM 7" as the active display.
+
 ### SVT-FPS-TURNS  Fragment-shader cost spikes during steep banked turns
 Status: **OPEN — low priority**
 Target: `pi4/svt_renderer_gl.py` `FRAGMENT_SHADER`.
