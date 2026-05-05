@@ -650,7 +650,7 @@ class _SharedState:
         the mesh centre is applied at render time via the camera eye.
         """
         # World-aligned sampling: both the mesh centre AND the per-vertex
-        # sample positions are snapped to multiples of SAMPLE_STEP_M from
+        # sample positions are snapped to multiples of sample_step_m from
         # a fixed world origin. Result: every sample is at the same world
         # location regardless of which mesh it's part of, so a recentre
         # only changes WHICH samples are visible — the geometry of any
@@ -669,15 +669,21 @@ class _SharedState:
         # compatible vertex count at the configured radius.
         sample_step_m = (2.0 * radius_m) / (MESH_GRID_N - 1)
 
-        # Snap mesh centre to a multiple of sample_step_m from world origin
-        # (lat/lon = 0). cos_lat is taken at the aircraft's lat so the
-        # east-axis snap stays metric-consistent.
-        cos_lat = max(1e-6, math.cos(math.radians(lat)))
+        # Snap mesh_lat to a fixed lat grid (lat snap doesn't depend on
+        # longitude geometry, so it's always stable).
         m_per_deg_lat = 60.0 * NM_TO_M
-        m_per_deg_lon = 60.0 * NM_TO_M * cos_lat
         snap_dlat = sample_step_m / m_per_deg_lat
-        snap_dlon = sample_step_m / m_per_deg_lon
         mesh_lat = round(lat / snap_dlat) * snap_dlat
+
+        # Compute snap_dlon from the SNAPPED lat, not the aircraft lat.
+        # Using aircraft lat causes cos_lat to drift every frame on N/S
+        # motion, which makes snap_dlon drift, which causes mesh_lon to
+        # re-round, which triggers a rebuild every few frames (massive
+        # FPS hit + visible morph). Snapped lat is stable within a lat
+        # cell, so snap_dlon is bit-for-bit stable.
+        cos_snap = max(1e-6, math.cos(math.radians(mesh_lat)))
+        m_per_deg_lon = 60.0 * NM_TO_M * cos_snap
+        snap_dlon = sample_step_m / m_per_deg_lon
         mesh_lon = round(lon / snap_dlon) * snap_dlon
 
         key = (round(mesh_lat, 6), round(mesh_lon, 6))
