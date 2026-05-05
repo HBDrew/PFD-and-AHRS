@@ -113,6 +113,11 @@ def setup_gl_display(width: int, height: int, fullscreen: bool = True):
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 0)
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, 4)  # ES
     pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
+    # 24-bit depth needed for terrain mesh — without this SDL may pick a
+    # 16-bit (or no) depth buffer, causing visible depth fighting that
+    # makes the terrain appear to "morph" as the camera moves.
+    pygame.display.gl_set_attribute(pygame.GL_DEPTH_SIZE, 24)
+    pygame.display.gl_set_attribute(pygame.GL_STENCIL_SIZE, 0)
 
     screen = pygame.display.set_mode((width, height), flags)
 

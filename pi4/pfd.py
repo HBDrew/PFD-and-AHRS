@@ -77,6 +77,10 @@ except Exception:
 _shared_gl_ctx = None
 _shared_gl_compositor = None
 
+# Temporary FPS readout for shared-GL hardware bring-up (#1). Updated by
+# main() each frame, drawn by render() just outside the airspeed bug box.
+_fps_readout = 0.0
+
 import obstacles as obs_mod
 import airports as apt_mod
 import runways as rwy_mod
@@ -887,6 +891,15 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     surf.set_clip(old_clip)
 
 
+# gfxdraw.filled_polygon doesn't write per-pixel alpha on SRCALPHA surfaces,
+# so fills come out invisible on the shared-GL composite surface (only
+# aapolygon outlines survive). pygame.draw.polygon writes alpha=255
+# correctly. Signature is (surf, points, color) to match the gfxdraw call
+# sites verbatim.
+def _filled_polygon(surf, points, color):
+    pygame.draw.polygon(surf, color, points)
+
+
 # ── Roll arc ──────────────────────────────────────────────────────────────────
 def _doghouse_pts(cx, cy, ang_rad, r, size=11, inward=True):
     """
@@ -946,7 +959,7 @@ def draw_roll_arc(surf, roll):
         arc_inner.append((int(cx + ROLL_R * cos_a),
                           int(cy + ROLL_R * sin_a)))
     arc_band = arc_outer + list(reversed(arc_inner))
-    pygame.gfxdraw.filled_polygon(surf, arc_band, WHITE)
+    _filled_polygon(surf, arc_band, WHITE)
     pygame.gfxdraw.aapolygon(surf, arc_band, WHITE)
 
     # ── Tick marks — rotate with sky, solid white, 2px width ─────────────────
@@ -975,13 +988,13 @@ def draw_roll_arc(surf, roll):
     # as the arc's 0° tick).
     upper_ang = (-90 - roll) * DEG
     tri0 = _doghouse_pts(cx, cy, upper_ang, ROLL_R + 2, size=10, inward=True)
-    pygame.gfxdraw.filled_polygon(surf, tri0, WHITE)
+    _filled_polygon(surf, tri0, WHITE)
     pygame.gfxdraw.aapolygon(surf, tri0, WHITE)
 
     # Fixed lower doghouse — INSIDE arc, tip at arc-8, fixed at 12 o'clock
     roll_ang = -math.pi / 2
     rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 8, size=10, inward=False)
-    pygame.gfxdraw.filled_polygon(surf, rp_pts, WHITE)
+    _filled_polygon(surf, rp_pts, WHITE)
     pygame.gfxdraw.aapolygon(surf, rp_pts, WHITE)
 
 
@@ -1000,13 +1013,13 @@ def draw_aircraft_symbol(surf):
     lo = [(CX, CY), (CX - 93, CY + 44), (CX - 75, CY + 44)]   # L outer (lighter)
     ri = [(CX, CY), (CX + 57, CY + 44), (CX + 75, CY + 44)]   # R inner (darker)
     ro = [(CX, CY), (CX + 75, CY + 44), (CX + 93, CY + 44)]   # R outer (lighter)
-    pygame.gfxdraw.filled_polygon(surf, li, AMBER_DARK)
+    _filled_polygon(surf, li, AMBER_DARK)
     pygame.gfxdraw.aapolygon(surf, li, AMBER_DARK)
-    pygame.gfxdraw.filled_polygon(surf, lo, AMBER)
+    _filled_polygon(surf, lo, AMBER)
     pygame.gfxdraw.aapolygon(surf, lo, AMBER)
-    pygame.gfxdraw.filled_polygon(surf, ri, AMBER_DARK)
+    _filled_polygon(surf, ri, AMBER_DARK)
     pygame.gfxdraw.aapolygon(surf, ri, AMBER_DARK)
-    pygame.gfxdraw.filled_polygon(surf, ro, AMBER)
+    _filled_polygon(surf, ro, AMBER)
     pygame.gfxdraw.aapolygon(surf, ro, AMBER)
 
     # Engine nacelles — fills
@@ -1014,13 +1027,13 @@ def draw_aircraft_symbol(surf):
     ll = [(CX - 93, CY), (CX - 138, CY),    (CX - 138, CY + 6), (CX - 99, CY + 6)]
     ru = [(CX + 93, CY), (CX + 99, CY - 6), (CX + 138, CY - 6), (CX + 138, CY)]
     rl = [(CX + 93, CY), (CX + 138, CY),    (CX + 138, CY + 6), (CX + 99, CY + 6)]
-    pygame.gfxdraw.filled_polygon(surf, lu, AMBER)
+    _filled_polygon(surf, lu, AMBER)
     pygame.gfxdraw.aapolygon(surf, lu, AMBER)
-    pygame.gfxdraw.filled_polygon(surf, ll, AMBER_DARK)
+    _filled_polygon(surf, ll, AMBER_DARK)
     pygame.gfxdraw.aapolygon(surf, ll, AMBER_DARK)
-    pygame.gfxdraw.filled_polygon(surf, ru, AMBER)
+    _filled_polygon(surf, ru, AMBER)
     pygame.gfxdraw.aapolygon(surf, ru, AMBER)
-    pygame.gfxdraw.filled_polygon(surf, rl, AMBER_DARK)
+    _filled_polygon(surf, rl, AMBER_DARK)
     pygame.gfxdraw.aapolygon(surf, rl, AMBER_DARK)
 
     # Outer perimeter outlines — no line across the inner colour-split edge
@@ -1139,7 +1152,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                       (_sp + _box_r, TAPE_MID + _half_out),
                       (_sp + _inn_r, TAPE_MID + _half_out), (_sp + _inn_r, TAPE_MID + _half_in),
                       (_sp + _ptr_r, TAPE_MID + _half_in)], {2, 3, 4, 5, 6, 7}, r=3)
-    pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
+    _filled_polygon(surf, pts_s, (0, 10, 30))
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
     _rolling_drum(surf, _sp + _ptr_r + 1, TAPE_MID - _half_in + 1, _inn_w - 2, _half_in * 2 - 2, speed, 2, spd_col, 24,
                   power_offset=1, suppress_leading=True)
@@ -1244,7 +1257,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                       (R - _box_w,     TAPE_MID + _half_in),
                       (R - _drm_l,     TAPE_MID + _half_in), (R - _drm_l, TAPE_MID + _half_out),
                       (R - _ptr_w,     TAPE_MID + _half_out), (R - _ptr_w, TAPE_MID + _half_in)], {2, 3, 4, 5, 6, 7, 8, 9}, r=3)
-    pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
+    _filled_polygon(surf, pts_a, (0, 10, 30))
 
     # VSI readout — extends left beyond the tape if the text needs room
     _ny   = TAPE_MID + _half_in
@@ -1338,7 +1351,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                (hbx - 5,  HDG_Y), (hbx, HDG_Y + 7), (hbx + 5, HDG_Y),
                (hbx + 17, HDG_Y), (hbx + 17, HDG_Y + 14)]
         hdg_bug_col = MAGENTA if hdg_src == "gps" else CYAN
-        pygame.gfxdraw.filled_polygon(surf, bug, hdg_bug_col)
+        _filled_polygon(surf, bug, hdg_bug_col)
         pygame.gfxdraw.aapolygon(surf, bug, hdg_bug_col)
 
     # GPS track pointer (magenta, when GPS OK and heading source is MAG)
@@ -1371,7 +1384,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                       (CX,      by2 + bh + td),
                       (tx,      by2 + bh),
                       (bx,      by2 + bh)], {0, 1, 2, 6}, r=3)
-    pygame.gfxdraw.filled_polygon(surf, pts_h, (0, 0, 0))
+    _filled_polygon(surf, pts_h, (0, 0, 0))
     pygame.draw.polygon(surf, hdg_col, pts_h, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
     # Three-digit readout — centred in the box
@@ -4582,7 +4595,7 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
             if _in_ai(*p1) or _in_ai(*p2) or _in_ai(*p3) or _in_ai(*p4):
                 old_clip = surf.get_clip()
                 surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
-                pygame.gfxdraw.filled_polygon(surf, [p1, p2, p3, p4], ASPHALT)
+                _filled_polygon(surf, [p1, p2, p3, p4], ASPHALT)
                 pygame.gfxdraw.aapolygon(surf, [p1, p2, p3, p4], STRIPE)
                 # Centreline stripe: from LE midpoint to HE midpoint
                 mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
@@ -4899,6 +4912,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         _text(surf, "DEMO", 14, (255, 60, 60), cx=CX, cy=CY - 20)
     elif _sim_state is not None:
         _text(surf, "SIM", 14, (255, 100, 60), cx=CX, cy=CY - 20)
+
+    # Temporary FPS readout for #1 hardware bring-up — top-left, just
+    # outside the airspeed bug box. Remove once shared-GL is signed off.
+    _text(surf, f"{_fps_readout:.0f} fps", 11, (255, 255, 0),
+          x=SPD_W + 4, y=2)
 
     # ── Overlay modes: veil + UI drawn on top of live PFD ────────────────────
     if mode == "sim_controls":
@@ -5529,6 +5547,9 @@ def main():
         _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
 
+        global _fps_readout
+        _fps_readout = clock.get_fps()
+
         # Print frame timing every 60 frames so we can diagnose bottlenecks
         if not hasattr(main, '_frame_n'):
             main._frame_n = 0
@@ -5536,8 +5557,7 @@ def main():
         if main._frame_n % 60 == 0:
             render_ms = (_t1 - _t0) * 1000
             flip_ms   = (_t2 - _t1) * 1000
-            fps       = clock.get_fps()
-            print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  flip={flip_ms:.1f}ms")
+            print(f"[PFD] fps={_fps_readout:.1f}  render={render_ms:.1f}ms  flip={flip_ms:.1f}ms")
 
     if _sse_client:
         _sse_client.stop()

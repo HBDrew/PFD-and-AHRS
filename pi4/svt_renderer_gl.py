@@ -757,7 +757,9 @@ def render_svt_into_current_fb(
     mvp = proj @ view
 
     ctx.enable(moderngl.DEPTH_TEST)
-    ctx.clear(0.04, 0.16, 0.31, 1.0)
+    # Explicit depth clear — without it, per-frame depth state from the 2D
+    # composite pass would persist and cause terrain depth fighting.
+    ctx.clear(0.04, 0.16, 0.31, 1.0, depth=1.0)
 
     horizon_y = _horizon_y_ndc(pitch_deg, v_fov_deg)
     st.sky_prog['u_horizon_y'].value = horizon_y
