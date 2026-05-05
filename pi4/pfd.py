@@ -943,13 +943,13 @@ def draw_roll_arc(surf, roll):
     cx, cy = CX, ROLL_CY
 
     # ── Arc: 120° span centred at 12 o'clock, rotated by roll ────────────────
-    # Solid filled polygon band between inner and outer radius for a bold,
-    # truly solid arc.  Outer edge traced forward, inner edge traced backward
-    # to form a closed polygon that pygame fills completely.
+    # Drawn as a single thick polyline along the centreline radius (not a
+    # band polygon): a band gets a weird double-AA halo when run through
+    # _filled_polygon (aalines traces both inner and outer edges), whereas
+    # a thick line is one clean stroke.
     _ARC_STEPS = 80
     _ARC_THICK = 4  # pixels of arc band thickness
-    arc_outer = []
-    arc_inner = []
+    arc_pts = []
     for i in range(_ARC_STEPS + 1):
         # Sky-pointer design: arc rotates WITH the sky/horizon so the fixed
         # aircraft reference at the top of the screen reads the current bank.
@@ -957,13 +957,9 @@ def draw_roll_arc(surf, roll):
         # visually, which means pygame angles DECREASE (hence -roll).
         ang = (-90 - roll - 60 + i * 120.0 / _ARC_STEPS) * DEG
         cos_a, sin_a = math.cos(ang), math.sin(ang)
-        arc_outer.append((int(cx + (ROLL_R + _ARC_THICK) * cos_a),
-                          int(cy + (ROLL_R + _ARC_THICK) * sin_a)))
-        arc_inner.append((int(cx + ROLL_R * cos_a),
-                          int(cy + ROLL_R * sin_a)))
-    arc_band = arc_outer + list(reversed(arc_inner))
-    _filled_polygon(surf, arc_band, WHITE)
-    pygame.gfxdraw.aapolygon(surf, arc_band, WHITE)
+        arc_pts.append((int(cx + ROLL_R * cos_a),
+                        int(cy + ROLL_R * sin_a)))
+    pygame.draw.lines(surf, WHITE, False, arc_pts, _ARC_THICK)
 
     # ── Tick marks — rotate with sky, solid white, 2px width ─────────────────
     for deg2, length in [(10, 9), (20, 9), (30, 13),

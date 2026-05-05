@@ -641,9 +641,9 @@ class _SharedState:
         don't visibly jump every time we recenter. Aircraft offset from
         the mesh centre is applied at render time via the camera eye.
         """
-        # 0.005° ≈ 550 m at mid-latitudes — mesh rebuilds every ~550 m
-        # of motion instead of every ~110 m.
-        SNAP_DEG = 0.005
+        # 0.01° ≈ 1.1 km at mid-latitudes — mesh rebuilds every ~14-22 s
+        # at typical GA cruise speed (was every ~7-11 s at 0.005°).
+        SNAP_DEG = 0.01
         mesh_lat = round(lat / SNAP_DEG) * SNAP_DEG
         mesh_lon = round(lon / SNAP_DEG) * SNAP_DEG
 
