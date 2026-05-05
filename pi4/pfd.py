@@ -4474,8 +4474,10 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
 _RUNWAY_MAX_RANGE_NM       = 8.0    # only draw runways within this range
 _CENTERLINE_RANGE_NM       = 15.0   # draw extended centerlines within this range
-_CENTERLINE_EXTEND_NM      = 10.0   # centerline extends this far from threshold
+_CENTERLINE_EXTEND_NM      = 5.0    # centerline extends this far from threshold
 _CENTERLINE_DASH_NM        = 0.5    # dash length (nm)
+_CENTERLINE_GLIDE_DEG      = 3.0    # rise centerline at standard glideslope
+_AIRPORT_BOX_MIN_PX        = 70     # min on-screen size of airport environment box
 
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
@@ -4539,6 +4541,7 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     ASPHALT = (60, 60, 65)
     STRIPE  = (230, 230, 235)
     CLINE   = (220, 230, 240)
+    BOX_COL = (255, 255, 255)
 
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
@@ -4596,6 +4599,24 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                 mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
                 if mid_le is not None and mid_he is not None:
                     pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
+
+                # Airport environment box: inflate the projected runway
+                # polygon uniformly about its centroid to a minimum on-screen
+                # radius so the airport stays visible once the runway shrinks
+                # to a handful of pixels.  Scaling preserves runway
+                # orientation (it rolls/rotates with the AI).
+                pts = [p1, p2, p3, p4]
+                bcx = sum(p[0] for p in pts) / 4.0
+                bcy = sum(p[1] for p in pts) / 4.0
+                max_r = max(math.hypot(p[0] - bcx, p[1] - bcy) for p in pts)
+                min_r = _AIRPORT_BOX_MIN_PX / 2.0
+                if max_r < min_r and max_r > 0.5:
+                    s = min_r / max_r
+                    box_pts = [(int(bcx + (p[0] - bcx) * s),
+                                int(bcy + (p[1] - bcy) * s)) for p in pts]
+                else:
+                    box_pts = pts
+                pygame.draw.lines(surf, BOX_COL, True, box_pts, 2)
                 surf.set_clip(old_clip)
 
         # ── Extended centerlines from each threshold ──────────────────────
@@ -4614,7 +4635,8 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
                               cx, cy, px_per_deg, col,
                               nm_per_deg_lat, nm_per_deg_lon):
     """Dashed line extending OUTWARD from each threshold along the reciprocal
-    of the runway axis, out to _CENTERLINE_EXTEND_NM."""
+    of the runway axis, rising at the standard glideslope so the dashes
+    represent the visual approach path rather than ground projection."""
     ax, ay_r, aw, ah = ai_rect
 
     # Axis unit vector from LE → HE in degrees
@@ -4632,14 +4654,15 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
     gap_nm  = _CENTERLINE_DASH_NM * 0.6
     n_steps = int(_CENTERLINE_EXTEND_NM / (dash_nm + gap_nm))
 
+    # Vertical rise per nm along the approach path (ft).
+    rise_ft_per_nm = math.tan(math.radians(_CENTERLINE_GLIDE_DEG)) * 6076.0
+
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
 
     # Angular cutoff: skip segments whose endpoint is more than 60° off the
     # nose — past that the flat-earth bearing math wraps and dashes behind
-    # the aircraft would streak horizontally across the AI.  60° is well
-    # beyond the ~40° half-FOV implied by px_per_deg so on-screen dashes
-    # are never clipped.
+    # the aircraft would streak horizontally across the AI.
     _FOV = 60.0
 
     # For each threshold, extend OUTWARD (opposite of the axis toward the
@@ -4655,19 +4678,21 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
             s_lon = thresh_lon + sign * u_dlon * start
             e_lat = thresh_lat + sign * u_dlat * end
             e_lon = thresh_lon + sign * u_dlon * end
+            s_elev = thresh_elev + start * rise_ft_per_nm
+            e_elev = thresh_elev + end   * rise_ft_per_nm
             ps = _project_latlon(s_lat, s_lon, lat, lon, alt_ft,
-                                 thresh_elev, hdg_deg, pitch_deg, roll_deg,
+                                 s_elev, hdg_deg, pitch_deg, roll_deg,
                                  cx, cy, px_per_deg, max_fov_deg=_FOV,
-                                 ground_only=True)
+                                 ground_only=False)
             if ps is None:
                 continue
             pe = _project_latlon(e_lat, e_lon, lat, lon, alt_ft,
-                                 thresh_elev, hdg_deg, pitch_deg, roll_deg,
+                                 e_elev, hdg_deg, pitch_deg, roll_deg,
                                  cx, cy, px_per_deg, max_fov_deg=_FOV,
-                                 ground_only=True)
+                                 ground_only=False)
             if pe is None:
                 continue
-            pygame.draw.aaline(surf, col, ps, pe)
+            pygame.draw.line(surf, col, ps, pe, 2)
 
     surf.set_clip(old_clip)
 
