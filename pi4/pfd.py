@@ -989,13 +989,11 @@ def draw_roll_arc(surf, roll):
     upper_ang = (-90 - roll) * DEG
     tri0 = _doghouse_pts(cx, cy, upper_ang, ROLL_R + 2, size=10, inward=True)
     _filled_polygon(surf, tri0, WHITE, aa=False)
-    pygame.gfxdraw.aapolygon(surf, tri0, WHITE)
 
     # Fixed lower doghouse — INSIDE arc, tip at arc-8, fixed at 12 o'clock
     roll_ang = -math.pi / 2
     rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 8, size=10, inward=False)
     _filled_polygon(surf, rp_pts, WHITE, aa=False)
-    pygame.gfxdraw.aapolygon(surf, rp_pts, WHITE)
 
 
 # ── Aircraft symbol ───────────────────────────────────────────────────────────

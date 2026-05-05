@@ -649,21 +649,12 @@ class _SharedState:
         don't visibly jump every time we recenter. Aircraft offset from
         the mesh centre is applied at render time via the camera eye.
         """
-        # 0.005° ≈ 550 m at mid-latitudes. Geometric jump at recentre is
-        # unavoidable but small at this step. Colour and grid jumps are
-        # eliminated separately via u_alt_m / u_world_offset shader
-        # uniforms, so a smaller step (more frequent, smaller jumps) is
-        # preferable to a larger one. Alt no longer in the cache key —
-        # vertices store absolute elev_m, so altitude changes don't
-        # require a mesh rebuild.
-        SNAP_DEG = 0.005
-        mesh_lat = round(lat / SNAP_DEG) * SNAP_DEG
-        mesh_lon = round(lon / SNAP_DEG) * SNAP_DEG
-
-        key = (round(mesh_lat, 4), round(mesh_lon, 4))
-        if key == self.mesh_key and self.terrain_vao is not None:
-            return
-
+        # World-aligned sampling: both the mesh centre AND the per-vertex
+        # sample positions are snapped to multiples of SAMPLE_STEP_M from
+        # a fixed world origin. Result: every sample is at the same world
+        # location regardless of which mesh it's part of, so a recentre
+        # only changes WHICH samples are visible — the geometry of any
+        # given mountain is identical before and after.
         if MESH_SIZE_MODE == "altitude":
             r_nm = max(MESH_RADIUS_MIN_NM,
                        min(MESH_RADIUS_MAX_NM,
@@ -672,11 +663,34 @@ class _SharedState:
             r_nm = MESH_RADIUS_NM
         radius_m = r_nm * NM_TO_M
         self.mesh_radius_m = radius_m
-        n = MESH_GRID_N
         alt_m = alt_ft * FT_TO_M
 
-        grid_1d = np.linspace(-radius_m, radius_m, n, dtype=np.float32)
+        # Sample step in metres, derived from MESH_GRID_N for backward-
+        # compatible vertex count at the configured radius.
+        sample_step_m = (2.0 * radius_m) / (MESH_GRID_N - 1)
+
+        # Snap mesh centre to a multiple of sample_step_m from world origin
+        # (lat/lon = 0). cos_lat is taken at the aircraft's lat so the
+        # east-axis snap stays metric-consistent.
+        cos_lat = max(1e-6, math.cos(math.radians(lat)))
+        m_per_deg_lat = 60.0 * NM_TO_M
+        m_per_deg_lon = 60.0 * NM_TO_M * cos_lat
+        snap_dlat = sample_step_m / m_per_deg_lat
+        snap_dlon = sample_step_m / m_per_deg_lon
+        mesh_lat = round(lat / snap_dlat) * snap_dlat
+        mesh_lon = round(lon / snap_dlon) * snap_dlon
+
+        key = (round(mesh_lat, 6), round(mesh_lon, 6))
+        if key == self.mesh_key and self.terrain_vao is not None:
+            return
+
+        # Sample grid: integer multiples of sample_step_m from mesh centre.
+        # Same world points always sampled the same way.
+        n_half = int(round(radius_m / sample_step_m))
+        grid_1d = (np.arange(-n_half, n_half + 1, dtype=np.float32)
+                   * sample_step_m)
         east, north = np.meshgrid(grid_1d, grid_1d)
+        n = grid_1d.size
 
         cos_lat = max(1e-6, math.cos(math.radians(mesh_lat)))
         dlat = north / NM_TO_M / 60.0
