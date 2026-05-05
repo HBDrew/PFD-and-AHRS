@@ -37,7 +37,7 @@ GPS_BAUD    = 9600  # NEO-6M factory default
 # ── WiFi Access Point ────────────────────────────────────────────────────────
 # Phone connects to this network – no internet required
 AP_SSID     = "AHRS-PFD"
-AP_PASSWORD = "ahrs1234"   # min 8 chars for WPA2; set "" for open AP
+AP_PASSWORD = ""           # empty = open AP (no password); WPA2 if non-empty
 
 # ── Web server ────────────────────────────────────────────────────────────────
 HTTP_PORT = 80   # Navigate to http://192.168.4.1 on the phone
