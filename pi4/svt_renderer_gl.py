@@ -96,7 +96,6 @@ precision highp float;
 
 in vec3 in_pos;          // (East, North, Up_absolute) in metres. Origin at
                          // mesh centre; Z is absolute elevation above sea level.
-in float in_clearance;   // unused — legacy attribute kept for VAO compat.
 
 uniform mat4 u_mvp;
 uniform float u_alt_m;        // aircraft altitude (m, absolute) per-frame, so
@@ -274,7 +273,6 @@ _sky_prog     = None     # shader program for sky
 _sky_vao      = None     # fullscreen quad VAO
 _terrain_vao  = None     # terrain mesh VAO
 _terrain_vbo_pos = None  # terrain vertex positions VBO
-_terrain_vbo_clr = None  # terrain vertex clearances VBO
 _terrain_ibo     = None  # terrain triangle indices IBO
 
 _fbo_size   = (0, 0)     # current FBO (w, h)
@@ -348,7 +346,7 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
     Returns (positions [N×3 float32 metres], clearances [N float32 metres]).
     Aircraft is at origin (0,0,0); +X=East, +Y=North, +Z=Up; alt is mesh-relative.
     """
-    global _mesh_key, _mesh_radius_m, _terrain_vao, _terrain_vbo_pos, _terrain_vbo_clr, _terrain_ibo
+    global _mesh_key, _mesh_radius_m, _terrain_vao, _terrain_vbo_pos, _terrain_ibo
 
     # Cache key: quantize lat/lon/alt so we don't rebuild every frame
     # 0.005° ≈ 0.3 nm at mid-latitudes; 200 ft alt steps
@@ -409,7 +407,6 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
     # Z = absolute elevation (matches shader expectation). Aircraft alt
     # applied per-frame via u_alt_m uniform.
     positions = np.stack([east, north, elev_m], axis=-1).astype(np.float32)
-    clearances = (alt_m - elev_m).astype(np.float32)
 
     # Build triangle indices (two triangles per quad)
     # Vertex (i, j) → flat index i*n + j
@@ -426,16 +423,13 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
     if _terrain_vbo_pos is not None:
         _terrain_vao.release()
         _terrain_vbo_pos.release()
-        _terrain_vbo_clr.release()
         _terrain_ibo.release()
 
     _terrain_vbo_pos = _ctx.buffer(positions.tobytes())
-    _terrain_vbo_clr = _ctx.buffer(clearances.tobytes())
     _terrain_ibo     = _ctx.buffer(indices.tobytes())
     _terrain_vao = _ctx.vertex_array(
         _terrain_prog,
-        [(_terrain_vbo_pos, '3f', 'in_pos'),
-         (_terrain_vbo_clr, '1f', 'in_clearance')],
+        [(_terrain_vbo_pos, '3f', 'in_pos')],
         index_buffer=_terrain_ibo,
     )
 
@@ -621,7 +615,7 @@ _shared_state = {}
 
 class _SharedState:
     __slots__ = ("ctx", "terrain_prog", "sky_prog", "sky_vao",
-                 "terrain_vao", "terrain_vbo_pos", "terrain_vbo_clr",
+                 "terrain_vao", "terrain_vbo_pos",
                  "terrain_ibo", "mesh_key", "mesh_radius_m",
                  "mesh_center_lat", "mesh_center_lon")
 
@@ -640,7 +634,6 @@ class _SharedState:
                                         [(sky_vbo, '2f', 'in_pos')])
         self.terrain_vao = None
         self.terrain_vbo_pos = None
-        self.terrain_vbo_clr = None
         self.terrain_ibo = None
         self.mesh_key = None
         self.mesh_radius_m = MESH_RADIUS_NM * NM_TO_M
@@ -719,7 +712,6 @@ class _SharedState:
         # vertex shader (u_alt_m uniform) so colour updates smoothly with
         # altitude instead of jumping at mesh-rebuild boundaries.
         positions = np.stack([east, north, elev_m], axis=-1).astype(np.float32)
-        clearances = np.zeros_like(elev_m, dtype=np.float32)  # legacy buffer; unused
 
         i, j = np.meshgrid(np.arange(n - 1), np.arange(n - 1), indexing='ij')
         v0 = (i     * n + j    ).astype(np.uint32)
@@ -733,16 +725,13 @@ class _SharedState:
         if self.terrain_vbo_pos is not None:
             self.terrain_vao.release()
             self.terrain_vbo_pos.release()
-            self.terrain_vbo_clr.release()
             self.terrain_ibo.release()
 
         self.terrain_vbo_pos = self.ctx.buffer(positions.tobytes())
-        self.terrain_vbo_clr = self.ctx.buffer(clearances.tobytes())
         self.terrain_ibo     = self.ctx.buffer(indices.tobytes())
         self.terrain_vao = self.ctx.vertex_array(
             self.terrain_prog,
-            [(self.terrain_vbo_pos, '3f', 'in_pos'),
-             (self.terrain_vbo_clr, '1f', 'in_clearance')],
+            [(self.terrain_vbo_pos, '3f', 'in_pos')],
             index_buffer=self.terrain_ibo,
         )
 
