@@ -894,13 +894,14 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
 # gfxdraw.filled_polygon and gfxdraw.aapolygon both fail to write
 # per-pixel alpha on SRCALPHA surfaces — fills/outlines come out invisible
 # on the shared-GL composite surface. pygame.draw.polygon writes the fill
-# at alpha=255 and pygame.draw.aalines writes alpha-blended AA edges
-# correctly, so call sites that previously paired filled_polygon with a
-# separate aapolygon get both via this single helper. Signature matches
-# the original gfxdraw.filled_polygon call sites verbatim.
-def _filled_polygon(surf, points, color):
+# at alpha=255 correctly. aa=True adds a pygame.draw.aalines pass for
+# anti-aliased edges; on small markers (doghouses, etc.) that AA pass
+# bleeds outward as a visible halo, so callers that prefer hard edges
+# pass aa=False.
+def _filled_polygon(surf, points, color, aa=True):
     pygame.draw.polygon(surf, color, points)
-    pygame.draw.aalines(surf, color, True, points)
+    if aa:
+        pygame.draw.aalines(surf, color, True, points)
 
 
 # ── Roll arc ──────────────────────────────────────────────────────────────────
@@ -987,13 +988,13 @@ def draw_roll_arc(surf, roll):
     # as the arc's 0° tick).
     upper_ang = (-90 - roll) * DEG
     tri0 = _doghouse_pts(cx, cy, upper_ang, ROLL_R + 2, size=10, inward=True)
-    _filled_polygon(surf, tri0, WHITE)
+    _filled_polygon(surf, tri0, WHITE, aa=False)
     pygame.gfxdraw.aapolygon(surf, tri0, WHITE)
 
     # Fixed lower doghouse — INSIDE arc, tip at arc-8, fixed at 12 o'clock
     roll_ang = -math.pi / 2
     rp_pts = _doghouse_pts(cx, cy, roll_ang, ROLL_R - 8, size=10, inward=False)
-    _filled_polygon(surf, rp_pts, WHITE)
+    _filled_polygon(surf, rp_pts, WHITE, aa=False)
     pygame.gfxdraw.aapolygon(surf, rp_pts, WHITE)
 
 

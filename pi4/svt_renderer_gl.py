@@ -94,19 +94,27 @@ VERTEX_SHADER = """
 #version 300 es
 precision highp float;
 
-in vec3 in_pos;          // world position (East, North, Up) in metres, relative to aircraft
-in float in_clearance;   // aircraft_alt_m - terrain_alt_m at this vertex (metres)
+in vec3 in_pos;          // (East, North, Up_absolute) in metres. Origin at
+                         // mesh centre; Z is absolute elevation above sea level.
+in float in_clearance;   // unused — legacy attribute kept for VAO compat.
 
 uniform mat4 u_mvp;
+uniform float u_alt_m;        // aircraft altitude (m, absolute) per-frame, so
+                              // colour updates smoothly with altitude instead of
+                              // in 200 ft mesh-rebuild steps.
+uniform vec2 u_world_offset;  // mesh centre's world east/north (m), modulo the
+                              // grid period — added to vertex pos so the grid
+                              // stays anchored to absolute world coords when the
+                              // mesh recentres.
 
-out float v_clearance_ft;   // pass clearance in FEET to fragment
-out vec3 v_world_pos;       // world position for grid overlay
-out float v_dist_m;         // horizontal distance from aircraft (for fade)
+out float v_clearance_ft;
+out vec3 v_world_pos;
+out float v_dist_m;
 
 void main() {
     gl_Position = u_mvp * vec4(in_pos, 1.0);
-    v_clearance_ft = in_clearance * 3.28084;  // m → ft
-    v_world_pos = in_pos;
+    v_clearance_ft = (u_alt_m - in_pos.z) * 3.28084;
+    v_world_pos = vec3(in_pos.xy + u_world_offset, in_pos.z);
     v_dist_m = length(in_pos.xy);
 }
 """
@@ -398,7 +406,9 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
     elev_m = elev_ft * FT_TO_M
 
     # Build vertex array: position (east, north, up) and clearance (metres)
-    positions = np.stack([east, north, elev_m - alt_m], axis=-1).astype(np.float32)
+    # Z = absolute elevation (matches shader expectation). Aircraft alt
+    # applied per-frame via u_alt_m uniform.
+    positions = np.stack([east, north, elev_m], axis=-1).astype(np.float32)
     clearances = (alt_m - elev_m).astype(np.float32)
 
     # Build triangle indices (two triangles per quad)
@@ -526,9 +536,10 @@ def render_svt_gl(
 
     _build_mesh(srtm_dir, lat, lon, alt_ft)
 
-    # Camera
+    # Camera — vertices store absolute elevation, so eye Z = aircraft alt.
+    alt_m = alt_ft * FT_TO_M
     fwd, up = _attitude_basis(pitch_deg, roll_deg, hdg_deg)
-    eye = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    eye = np.array([0.0, 0.0, alt_m], dtype=np.float32)
     target = eye + fwd
     view = _look_at(eye, target, up)
     proj = _perspective(v_fov_deg, ai_w / ai_h, NEAR_PLANE_M, FAR_PLANE_M)
@@ -551,6 +562,10 @@ def render_svt_gl(
     # Terrain
     if _terrain_vao is not None:
         _terrain_prog['u_mvp'].write(mvp.T.tobytes())   # column-major for GL
+        _terrain_prog['u_alt_m'].value            = alt_m
+        # Legacy path doesn't snap mesh to a world grid, so the grid-stable
+        # offset is simply zero — the mesh moves with the aircraft.
+        _terrain_prog['u_world_offset'].value     = (0.0, 0.0)
         _terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
         _terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
         _terrain_prog['u_grid_max_dist_m'].value  = _mesh_radius_m
@@ -641,14 +656,18 @@ class _SharedState:
         don't visibly jump every time we recenter. Aircraft offset from
         the mesh centre is applied at render time via the camera eye.
         """
-        # 0.01° ≈ 1.1 km at mid-latitudes — mesh rebuilds every ~14-22 s
-        # at typical GA cruise speed (was every ~7-11 s at 0.005°).
-        SNAP_DEG = 0.01
+        # 0.005° ≈ 550 m at mid-latitudes. Geometric jump at recentre is
+        # unavoidable but small at this step. Colour and grid jumps are
+        # eliminated separately via u_alt_m / u_world_offset shader
+        # uniforms, so a smaller step (more frequent, smaller jumps) is
+        # preferable to a larger one. Alt no longer in the cache key —
+        # vertices store absolute elev_m, so altitude changes don't
+        # require a mesh rebuild.
+        SNAP_DEG = 0.005
         mesh_lat = round(lat / SNAP_DEG) * SNAP_DEG
         mesh_lon = round(lon / SNAP_DEG) * SNAP_DEG
 
-        key = (round(mesh_lat, 4), round(mesh_lon, 4),
-               round(alt_ft / 200) * 200)
+        key = (round(mesh_lat, 4), round(mesh_lon, 4))
         if key == self.mesh_key and self.terrain_vao is not None:
             return
 
@@ -696,8 +715,11 @@ class _SharedState:
 
         elev_m = elev_ft * FT_TO_M
 
-        positions = np.stack([east, north, elev_m - alt_m], axis=-1).astype(np.float32)
-        clearances = (alt_m - elev_m).astype(np.float32)
+        # Z = absolute elevation. Aircraft alt is applied per-frame in the
+        # vertex shader (u_alt_m uniform) so colour updates smoothly with
+        # altitude instead of jumping at mesh-rebuild boundaries.
+        positions = np.stack([east, north, elev_m], axis=-1).astype(np.float32)
+        clearances = np.zeros_like(elev_m, dtype=np.float32)  # legacy buffer; unused
 
         i, j = np.meshgrid(np.arange(n - 1), np.arange(n - 1), indexing='ij')
         v0 = (i     * n + j    ).astype(np.uint32)
@@ -767,14 +789,17 @@ def render_svt_into_current_fb(
 
     st.build_mesh(srtm_dir, lat, lon, alt_ft)
 
-    # Aircraft offset from mesh centre, in metres (mesh is built on a
-    # quantized world grid; aircraft slides through it smoothly).
+    # Aircraft offset from mesh centre, in metres. Mesh sits on a quantized
+    # world grid; aircraft slides through it smoothly.
     cos_mlat = max(1e-6, math.cos(math.radians(st.mesh_center_lat)))
     cam_north = (lat - st.mesh_center_lat) * 60.0 * NM_TO_M
     cam_east  = (lon - st.mesh_center_lon) * 60.0 * NM_TO_M * cos_mlat
+    alt_m = alt_ft * FT_TO_M
 
+    # Vertices store absolute elevation, so eye Z must be aircraft alt
+    # (not 0). Camera-to-vertex relative geometry is unchanged.
     fwd, up = _attitude_basis(pitch_deg, roll_deg, hdg_deg)
-    eye = np.array([cam_east, cam_north, 0.0], dtype=np.float32)
+    eye = np.array([cam_east, cam_north, alt_m], dtype=np.float32)
     target = eye + fwd
     view = _look_at(eye, target, up)
     proj = _perspective(v_fov_deg, ai_w / ai_h, NEAR_PLANE_M, FAR_PLANE_M)
@@ -795,6 +820,16 @@ def render_svt_into_current_fb(
 
     if st.terrain_vao is not None:
         st.terrain_prog['u_mvp'].write(mvp.T.tobytes())
+        st.terrain_prog['u_alt_m'].value            = alt_m
+        # World offset modulo grid period — keeps the value small (precision)
+        # and the grid pattern stable across mesh recentres.
+        grid_period_m = GRID_SPACING_NM * NM_TO_M * GRID_MAJOR_EVERY
+        mesh_world_e = st.mesh_center_lon * 60.0 * NM_TO_M * cos_mlat
+        mesh_world_n = st.mesh_center_lat * 60.0 * NM_TO_M
+        st.terrain_prog['u_world_offset'].value = (
+            mesh_world_e % grid_period_m,
+            mesh_world_n % grid_period_m,
+        )
         st.terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
         st.terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
         st.terrain_prog['u_grid_max_dist_m'].value  = st.mesh_radius_m
