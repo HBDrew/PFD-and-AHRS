@@ -77,10 +77,6 @@ except Exception:
 _shared_gl_ctx = None
 _shared_gl_compositor = None
 
-# Temporary FPS readout for shared-GL hardware bring-up (#1). Updated by
-# main() each frame, drawn by render() just outside the airspeed bug box.
-_fps_readout = 0.0
-
 import obstacles as obs_mod
 import airports as apt_mod
 import runways as rwy_mod
@@ -4911,11 +4907,6 @@ def render(surf, demo_mode, connected, data_stale=False):
     elif _sim_state is not None:
         _text(surf, "SIM", 14, (255, 100, 60), cx=CX, cy=CY - 20)
 
-    # Temporary FPS readout for #1 hardware bring-up — top-left, just
-    # outside the airspeed bug box. Remove once shared-GL is signed off.
-    _text(surf, f"{_fps_readout:.0f} fps", 11, (255, 255, 0),
-          x=SPD_W + 4, y=2)
-
     # ── Overlay modes: veil + UI drawn on top of live PFD ────────────────────
     if mode == "sim_controls":
         draw_sim_controls(surf)
@@ -5545,9 +5536,6 @@ def main():
         _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
 
-        global _fps_readout
-        _fps_readout = clock.get_fps()
-
         # Print frame timing every 60 frames so we can diagnose bottlenecks
         if not hasattr(main, '_frame_n'):
             main._frame_n = 0
@@ -5555,7 +5543,8 @@ def main():
         if main._frame_n % 60 == 0:
             render_ms = (_t1 - _t0) * 1000
             flip_ms   = (_t2 - _t1) * 1000
-            print(f"[PFD] fps={_fps_readout:.1f}  render={render_ms:.1f}ms  flip={flip_ms:.1f}ms")
+            fps       = clock.get_fps()
+            print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  flip={flip_ms:.1f}ms")
 
     if _sse_client:
         _sse_client.stop()

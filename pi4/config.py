@@ -119,10 +119,10 @@ SRTM_DIR      = os.path.join(_HERE, "data", "srtm")
 #                    terrain renders directly into the default framebuffer
 #                    and is composited under a 2D overlay surface uploaded
 #                    as a GL texture.  Avoids the standalone-EGL/KMS conflict.
-#                    Opt-in; bring-up on Pi 4 pending hardware validation.
+#                    Validated on Pi 4 + ROADOM display — current default.
 # "pygame"        — legacy 2D scanline renderer (fallback for testing/debug).
 # Auto-falls back to "pygame" at runtime if the chosen GL path fails.
-SVT_RENDERER = "opengl"
+SVT_RENDERER = "opengl_shared"
 
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
 OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")

@@ -10,84 +10,27 @@ notes with enough context to pick it up cold.
 
 ## Open
 
-### #1  GL SVT — pygame.OPENGL shared-context composite (approach A)
-Status: **IN PROGRESS — pfd.py wiring landed, hardware bring-up next**
-Target: `pi4/svt_composite_gl.py` (new), `pi4/test_svt_composite.py` (new),
-`pi4/svt_renderer_gl.py`, `pi4/pfd.py`, `pi4/config.py`.
-
-Background: standalone EGL context creation breaks KMS/DRM on this Pi 4
-(kernel 6.12 + mesa 25.0 V3D). Disabled in `cad8e40`. Chosen approach
-is "A" (simpler) rather than "B" (full GL-native rewrite):
-  - pygame owns the display via `pygame.OPENGL | pygame.DOUBLEBUF`
-  - moderngl attaches via `create_context()` (NOT standalone — that's
-    what broke before)
-  - Terrain rendered by GL into the default framebuffer
-  - 2D PFD elements drawn by the existing pygame code onto an
-    offscreen SRCALPHA surface with the AI region left transparent
-  - The 2D surface is uploaded as a GL texture each frame and
-    composited as a fullscreen quad with alpha blending
-
-Done so far:
-  - `pi4/svt_composite_gl.py`: setup_gl_display(), Compositor class
-    (upload_and_draw, release). Fullscreen-quad shader in GLES 3.0.
-  - `pi4/test_svt_composite.py`: standalone smoke test. Animates a
-    solid-colour clear (stand-in for terrain) and composites a fake
-    PFD 2D layer on top. Runs 5 s then exits. Use `--windowed` for
-    desktop dev.
-  - `pi4/config.py`: `SVT_RENDERER = "opengl_shared"` option documented;
-    default still `"opengl"`.
-  - `pi4/svt_renderer_gl.py`: `render_svt_into_current_fb(ctx, ...)`
-    entrypoint added. Reuses the existing shader/math but keeps its own
-    per-ctx state (`_SharedState` cached by id(ctx)), no FBO allocation,
-    no glReadPixels. Existing standalone `render_svt_gl()` unchanged.
-  - `pi4/pfd.py`:
-      - Imports `setup_gl_display`/`Compositor` and
-        `render_svt_into_current_fb`. Module-level `_shared_gl_ctx` /
-        `_shared_gl_compositor` are populated by main() when setup
-        succeeds and consulted by render()/_flip() to take the GL path.
-      - `main()` display init: when `SVT_RENDERER == "opengl_shared"`
-        (and not in screenshot mode) calls `setup_gl_display()`,
-        creates a `Compositor`, and allocates an SRCALPHA offscreen
-        `surf`. Any exception falls back to the existing pygame path.
-      - `_flip()`: in shared-GL mode uploads `surf` as a texture and
-        composites it on top of the already-rendered terrain, then
-        `pygame.display.flip()`. Rotated + SCALED paths unchanged.
-      - `render()`: pre-clears the SRCALPHA surf to transparent each
-        frame; clears GL default FB to black before any draws (so
-        setup screens don't see stale terrain); in PFD mode, renders
-        sky+terrain via `render_svt_into_current_fb` into the AI
-        viewport (pygame rows 0..HDG_Y → GL rows HDG_H..DISPLAY_H),
-        then resets viewport to full screen; skips the pygame
-        `draw_ai_background`/`draw_simple_ai_background` call in
-        shared-GL mode. Zero-pitch-line gate now also fires in
-        shared-GL mode.
-
-Remaining hardware-required steps:
-  1. Run `python3 pi4/test_svt_composite.py --windowed` on the Pi 4.
-     Verify: window opens, no blank screen, shader compiles, fake PFD
-     layer composites cleanly with animated background, ~60 FPS, clean
-     exit. Log `GL_RENDERER` / `GL_VERSION` from stdout.
-  2. Set `SVT_RENDERER = "opengl_shared"` in `pi4/config.py` (or via
-     `config_local.py`) and run `pfd.py`. Validate on hardware:
-       - Terrain visible with tapes/drums/text overlaid
-       - Horizon stays aligned with pitch ladder at all pitches
-       - Roll rotation matches terrain rotation (symbols track)
-       - No KMS/DRM conflict, no blank screen
-       - FPS ≥ ~30 on Pi 4 ROADOM display
-       - Setup screens fully opaque (no terrain bleeding through)
-
-Notes / open questions for hardware bring-up:
-  - SDL GL attributes in `setup_gl_display` request GLES 3.0 profile
-    (PROFILE_MASK=4). Confirm V3D accepts this; if not, may need
-    `pygame.GL_CONTEXT_PROFILE_COMPATIBILITY` or no profile hint.
-  - `pygame.SCALED` is incompatible with `pygame.OPENGL`. For
-    non-native logical resolutions we'd need a GL scaling pass
-    (easy — just adjust the fullscreen-quad UVs).
-  - `DISPLAY_ROTATE != 0` path needs GL rotation; TBD for Pi 4 ROADOM
-    which is native-oriented.
-  - Texture upload via `pygame.image.tostring` + `tex.write` is
-    correct but copies through Python — can swap to `buffer_protocol`
-    or PBO later if frame rate is a problem. Unlikely on 1024×600.
+### SVT-FPS-TURNS  Fragment-shader cost spikes during steep banked turns
+Status: **OPEN — low priority**
+Target: `pi4/svt_renderer_gl.py` `FRAGMENT_SHADER`.
+Context: with the shared-GL renderer landed (#1 closed), normal
+flight holds 30 FPS but FPS dips to 15-20 during steep banked turns.
+Root cause is fragment-shader cost — at high bank, the visible terrain
+extends to lower pitch angles and far horizons, so more fragments are
+shaded per frame. The fragment shader does per-pixel: clearance-colour
+palette lookup (5 branches), `dFdx`/`dFdy`-based normal computation,
+Lambertian lighting, two `grid_line` evaluations (each with `fract` +
+`fwidth` + `smoothstep`), and distance-fade `smoothstep`. Likely cheap
+wins:
+  - Replace the if-chain in `clearance_color()` with a stepped LUT
+    or `mix()` ramp.
+  - Drop the per-fragment normal recomputation in favour of a coarser
+    flat-shaded ambient term (or compute it less often).
+  - Early-out grid evaluation when `fade < 0.01` is already in place;
+    consider also skipping the major-line pass when only minor would
+    contribute.
+  - Reduce `MESH_GRID_N` from 300 → 200 — fewer triangles, cheaper
+    rasterisation, almost-invisible quality loss at typical FOV.
 
 ### #7  Demo smoothness — sinusoidal interpolation
 Status: **OPEN**
@@ -229,6 +172,54 @@ Work items:
 ---
 
 ## Completed
+
+### #1  GL SVT — pygame.OPENGL shared-context composite — **FIXED**
+Target: `pi4/svt_composite_gl.py` (new), `pi4/test_svt_composite.py` (new),
+`pi4/svt_renderer_gl.py`, `pi4/pfd.py`, `pi4/config.py`.
+
+Fix: full hardware bring-up of the shared-GL composite renderer on
+Pi 4 + ROADOM display, plus a long sequence of correctness fixes
+that surfaced once it ran live. End state: 30 FPS sustained terrain
++ overlays, rock-stable across mesh recentres, default renderer flipped
+to `"opengl_shared"`. Commit chain on `claude/test-svs-display-OLAg2`:
+
+  - `c16a793` — initial bring-up: SDL `GL_DEPTH_SIZE=24`, explicit
+    depth-clear, `pygame.draw.polygon` SRCALPHA fill, on-screen FPS
+    readout for hardware validation.
+  - `8bb15ae` — world-grid mesh snap + camera-offset eye, thicker
+    roll arc (`_ARC_THICK` 2→4), AA outlines for filled polygons,
+    pitch-ladder lines doubled (major 2→4 px, minor aaline→2 px).
+  - `137b298` — roll arc redrawn as `pygame.draw.lines` (was a
+    band polygon producing a double-AA halo).
+  - `b919733` — vertex Z = absolute elevation; `u_alt_m` per-frame
+    uniform → smooth colour transitions across altitude. `u_world_offset`
+    uniform → grid pattern stable across recentres.
+  - `13f6e73` — drop unused `in_clearance` attribute (was crashing
+    the VAO build after the shader refactor).
+  - `b063eb9` — world-aligned sample grid (sample positions snap
+    to multiples of `sample_step_m` from world origin). Doghouse
+    `gfxdraw.aapolygon` halo removed.
+  - `7952a62` — `snap_dlon` derived from snapped `mesh_lat` (was
+    drifting per-frame off aircraft `cos(lat)`, causing rebuild
+    every few frames; FPS hit + visible morph).
+  - `92db1df` — angular sample grid + equator-equivalent grid
+    pattern. Same world point always sampled at the same lat/lon;
+    `v_world_pos.x = in_pos.x / cos(mesh_lat) + (mesh_lon * NM*60) mod GP`
+    in the vertex shader → grid pattern in world coords, invariant
+    across mesh recentres in any direction. Foreground rock-solid;
+    grid stays locked to terrain features.
+  - This commit — temporary FPS readout removed; default
+    `SVT_RENDERER` flipped to `"opengl_shared"`.
+
+Trade-off worth documenting: grid is now in fixed angular spacing
+(lat/lon graticule) rather than fixed metric. At lat 33° each minor
+cell is ~773 m east × 926 m north — slightly elongated, like a real
+chart graticule. Acceptable for the world-anchoring it buys; if a
+square-cell metric grid is needed later, introduce a fixed reference
+latitude.
+
+Residual: FPS dips to 15-20 during steep banked turns. Tracked
+separately as SVT-FPS-TURNS (low priority).
 
 ### #12a  iPhone compass calibration — cardinal walk-through — **FIXED**
 Target: `iphone_display/index.html` — new `#compass-cal-panel`,
