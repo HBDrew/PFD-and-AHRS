@@ -607,7 +607,8 @@ _shared_state = {}
 class _SharedState:
     __slots__ = ("ctx", "terrain_prog", "sky_prog", "sky_vao",
                  "terrain_vao", "terrain_vbo_pos", "terrain_vbo_clr",
-                 "terrain_ibo", "mesh_key", "mesh_radius_m")
+                 "terrain_ibo", "mesh_key", "mesh_radius_m",
+                 "mesh_center_lat", "mesh_center_lon")
 
     def __init__(self, ctx):
         self.ctx = ctx
@@ -628,11 +629,26 @@ class _SharedState:
         self.terrain_ibo = None
         self.mesh_key = None
         self.mesh_radius_m = MESH_RADIUS_NM * NM_TO_M
+        self.mesh_center_lat = 0.0
+        self.mesh_center_lon = 0.0
 
     def build_mesh(self, srtm_dir, lat, lon, alt_ft):
         """Same mesh-building logic as the module-level _build_mesh, but
-        operating on this instance's ctx/buffers instead of module globals."""
-        key = (round(lat, 3), round(lon, 3), round(alt_ft / 200) * 200)
+        operating on this instance's ctx/buffers instead of module globals.
+
+        Mesh is centered on a quantized world-grid point (not the moving
+        aircraft) so terrain features stay in stable world positions and
+        don't visibly jump every time we recenter. Aircraft offset from
+        the mesh centre is applied at render time via the camera eye.
+        """
+        # 0.005° ≈ 550 m at mid-latitudes — mesh rebuilds every ~550 m
+        # of motion instead of every ~110 m.
+        SNAP_DEG = 0.005
+        mesh_lat = round(lat / SNAP_DEG) * SNAP_DEG
+        mesh_lon = round(lon / SNAP_DEG) * SNAP_DEG
+
+        key = (round(mesh_lat, 4), round(mesh_lon, 4),
+               round(alt_ft / 200) * 200)
         if key == self.mesh_key and self.terrain_vao is not None:
             return
 
@@ -650,11 +666,11 @@ class _SharedState:
         grid_1d = np.linspace(-radius_m, radius_m, n, dtype=np.float32)
         east, north = np.meshgrid(grid_1d, grid_1d)
 
-        cos_lat = max(1e-6, math.cos(math.radians(lat)))
+        cos_lat = max(1e-6, math.cos(math.radians(mesh_lat)))
         dlat = north / NM_TO_M / 60.0
         dlon = east  / NM_TO_M / 60.0 / cos_lat
-        sample_lat = lat + dlat
-        sample_lon = lon + dlon
+        sample_lat = mesh_lat + dlat
+        sample_lon = mesh_lon + dlon
 
         elev_ft = np.zeros((n, n), dtype=np.float32)
         lat_int_arr = np.floor(sample_lat).astype(np.int32)
@@ -709,6 +725,8 @@ class _SharedState:
         )
 
         self.mesh_key = key
+        self.mesh_center_lat = mesh_lat
+        self.mesh_center_lon = mesh_lon
 
 
 def render_svt_into_current_fb(
@@ -749,8 +767,14 @@ def render_svt_into_current_fb(
 
     st.build_mesh(srtm_dir, lat, lon, alt_ft)
 
+    # Aircraft offset from mesh centre, in metres (mesh is built on a
+    # quantized world grid; aircraft slides through it smoothly).
+    cos_mlat = max(1e-6, math.cos(math.radians(st.mesh_center_lat)))
+    cam_north = (lat - st.mesh_center_lat) * 60.0 * NM_TO_M
+    cam_east  = (lon - st.mesh_center_lon) * 60.0 * NM_TO_M * cos_mlat
+
     fwd, up = _attitude_basis(pitch_deg, roll_deg, hdg_deg)
-    eye = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    eye = np.array([cam_east, cam_north, 0.0], dtype=np.float32)
     target = eye + fwd
     view = _look_at(eye, target, up)
     proj = _perspective(v_fov_deg, ai_w / ai_h, NEAR_PLANE_M, FAR_PLANE_M)

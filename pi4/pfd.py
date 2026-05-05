@@ -860,7 +860,7 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
             # Horizon line
             p1 = _rv(-half, rel_y)
             p2 = _rv( half, rel_y)
-            pygame.draw.line(surf, (255, 255, 255, 200), p1, p2, 2)
+            pygame.draw.line(surf, (255, 255, 255, 200), p1, p2, 4)
             continue
 
         col = (255, 255, 255, 220)
@@ -868,9 +868,9 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
         p2  = _rv( half, rel_y)
 
         if major:
-            pygame.draw.line(surf, col, p1, p2, 2)
+            pygame.draw.line(surf, col, p1, p2, 4)
         else:
-            pygame.draw.aaline(surf, col, p1, p2)
+            pygame.draw.line(surf, col, p1, p2, 2)
 
         # Tick marks: 8 px inward (toward horizon = toward centre of AI)
         tick = 8 if deg > 0 else -8
@@ -891,13 +891,16 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     surf.set_clip(old_clip)
 
 
-# gfxdraw.filled_polygon doesn't write per-pixel alpha on SRCALPHA surfaces,
-# so fills come out invisible on the shared-GL composite surface (only
-# aapolygon outlines survive). pygame.draw.polygon writes alpha=255
-# correctly. Signature is (surf, points, color) to match the gfxdraw call
-# sites verbatim.
+# gfxdraw.filled_polygon and gfxdraw.aapolygon both fail to write
+# per-pixel alpha on SRCALPHA surfaces — fills/outlines come out invisible
+# on the shared-GL composite surface. pygame.draw.polygon writes the fill
+# at alpha=255 and pygame.draw.aalines writes alpha-blended AA edges
+# correctly, so call sites that previously paired filled_polygon with a
+# separate aapolygon get both via this single helper. Signature matches
+# the original gfxdraw.filled_polygon call sites verbatim.
 def _filled_polygon(surf, points, color):
     pygame.draw.polygon(surf, color, points)
+    pygame.draw.aalines(surf, color, True, points)
 
 
 # ── Roll arc ──────────────────────────────────────────────────────────────────
@@ -944,7 +947,7 @@ def draw_roll_arc(surf, roll):
     # truly solid arc.  Outer edge traced forward, inner edge traced backward
     # to form a closed polygon that pygame fills completely.
     _ARC_STEPS = 80
-    _ARC_THICK = 2  # pixels of arc band thickness
+    _ARC_THICK = 4  # pixels of arc band thickness
     arc_outer = []
     arc_inner = []
     for i in range(_ARC_STEPS + 1):
