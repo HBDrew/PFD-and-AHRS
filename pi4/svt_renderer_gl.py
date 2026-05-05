@@ -95,16 +95,20 @@ VERTEX_SHADER = """
 precision highp float;
 
 in vec3 in_pos;          // (East, North, Up_absolute) in metres. Origin at
-                         // mesh centre; Z is absolute elevation above sea level.
+                         // mesh centre. East metric scales with cos(mesh_lat)
+                         // (mesh covers a fixed *angular* span); Z is absolute
+                         // elevation above sea level.
 
 uniform mat4 u_mvp;
 uniform float u_alt_m;        // aircraft altitude (m, absolute) per-frame, so
-                              // colour updates smoothly with altitude instead of
-                              // in 200 ft mesh-rebuild steps.
-uniform vec2 u_world_offset;  // mesh centre's world east/north (m), modulo the
-                              // grid period — added to vertex pos so the grid
-                              // stays anchored to absolute world coords when the
-                              // mesh recentres.
+                              // colour updates smoothly with altitude.
+uniform float u_cos_mesh_lat; // cos(mesh_lat). Used to convert in_pos.x from
+                              // mesh-local metric east back to equator-
+                              // equivalent metric (lon * NM*60) so the grid
+                              // pattern is in absolute world coords and stays
+                              // anchored across mesh recentres at any latitude.
+uniform vec2 u_world_offset;  // mesh centre's (lon*NM*60, lat*NM*60) modulo
+                              // the grid period — equator-equivalent metric.
 
 out float v_clearance_ft;
 out vec3 v_world_pos;
@@ -113,7 +117,10 @@ out float v_dist_m;
 void main() {
     gl_Position = u_mvp * vec4(in_pos, 1.0);
     v_clearance_ft = (u_alt_m - in_pos.z) * 3.28084;
-    v_world_pos = vec3(in_pos.xy + u_world_offset, in_pos.z);
+    // Equator-equivalent metric — invariant per world point regardless of
+    // which mesh (which mesh_lat) we're in. North is already metric.
+    float vx_eq = in_pos.x / u_cos_mesh_lat;
+    v_world_pos = vec3(vec2(vx_eq, in_pos.y) + u_world_offset, in_pos.z);
     v_dist_m = length(in_pos.xy);
 }
 """
@@ -557,8 +564,9 @@ def render_svt_gl(
     if _terrain_vao is not None:
         _terrain_prog['u_mvp'].write(mvp.T.tobytes())   # column-major for GL
         _terrain_prog['u_alt_m'].value            = alt_m
-        # Legacy path doesn't snap mesh to a world grid, so the grid-stable
-        # offset is simply zero — the mesh moves with the aircraft.
+        # Legacy path: aircraft sits at mesh origin; cos at aircraft lat.
+        _terrain_prog['u_cos_mesh_lat'].value     = max(
+            1e-6, math.cos(math.radians(lat)))
         _terrain_prog['u_world_offset'].value     = (0.0, 0.0)
         _terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
         _terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
@@ -669,47 +677,46 @@ class _SharedState:
         # compatible vertex count at the configured radius.
         sample_step_m = (2.0 * radius_m) / (MESH_GRID_N - 1)
 
-        # Snap mesh_lat to a fixed lat grid (lat snap doesn't depend on
-        # longitude geometry, so it's always stable).
+        # Snap mesh_lat to a fixed lat grid (lat snap is metric — no cos
+        # dependency).
         m_per_deg_lat = 60.0 * NM_TO_M
         snap_dlat = sample_step_m / m_per_deg_lat
         mesh_lat = round(lat / snap_dlat) * snap_dlat
 
-        # Compute snap_dlon from the SNAPPED lat, not the aircraft lat.
-        # Using aircraft lat causes cos_lat to drift every frame on N/S
-        # motion, which makes snap_dlon drift, which causes mesh_lon to
-        # re-round, which triggers a rebuild every few frames (massive
-        # FPS hit + visible morph). Snapped lat is stable within a lat
-        # cell, so snap_dlon is bit-for-bit stable.
-        cos_snap = max(1e-6, math.cos(math.radians(mesh_lat)))
-        m_per_deg_lon = 60.0 * NM_TO_M * cos_snap
-        snap_dlon = sample_step_m / m_per_deg_lon
+        # Snap mesh_lon to a *cos-independent* grid: equator-equivalent
+        # angular step, same as snap_dlat. If we instead derived snap_dlon
+        # from cos(mesh_lat), every lat-cell crossing would shift the lon
+        # snap lattice by tens of metres (cos changes ~2e-5 per snap step;
+        # multiplied by the integer cell count from the prime meridian,
+        # that's ~28 m of mesh_lon resnap per N/S recentre — visible as a
+        # foreground morph because the same vertex index samples a slightly
+        # different world point each rebuild).
+        snap_dlon = snap_dlat
         mesh_lon = round(lon / snap_dlon) * snap_dlon
+
+        # cos at the snapped lat is used for mesh-local metric projection
+        # (vertex east position) and for SRTM lookup conversion. It still
+        # changes per lat cell, but only affects vertex *positions* by a
+        # tiny amount (~i * step * Δcos ≈ 1 m at the mesh edge, ~0 m at
+        # the centre) — far smaller than the 28 m grid-snap shift it
+        # replaces, and the foreground (i near 0) is rock-stable.
+        cos_snap = max(1e-6, math.cos(math.radians(mesh_lat)))
 
         key = (round(mesh_lat, 6), round(mesh_lon, 6))
         if key == self.mesh_key and self.terrain_vao is not None:
             return
 
-        # Debug: print recentre details so we can verify sample alignment.
-        # Remove once the morph issue is resolved.
-        prev = self.mesh_key
-        if prev is not None:
-            d_lat_deg = mesh_lat - prev[0]
-            d_lon_deg = mesh_lon - prev[1]
-            d_north_m = d_lat_deg * 60.0 * NM_TO_M
-            d_east_m  = d_lon_deg * 60.0 * NM_TO_M * cos_snap
-            print(f"[SVT] recentre: dlat={d_lat_deg:+.6f}° "
-                  f"dlon={d_lon_deg:+.6f}° "
-                  f"d_north={d_north_m:+.2f}m d_east={d_east_m:+.2f}m "
-                  f"step={sample_step_m:.2f}m")
-
-        # Sample grid: integer multiples of sample_step_m from mesh centre.
-        # Same world points always sampled the same way.
+        # Sample grid: integer multiples of snap_dlat from mesh centre, in
+        # both axes. North step is metric; east step is metric * cos(mesh_lat)
+        # so that the angular spacing in longitude is snap_dlat at any
+        # latitude. Result: every (lat, lon) sample point lies on a fixed
+        # global angular grid — same world point always sampled the same way.
         n_half = int(round(radius_m / sample_step_m))
-        grid_1d = (np.arange(-n_half, n_half + 1, dtype=np.float32)
-                   * sample_step_m)
-        east, north = np.meshgrid(grid_1d, grid_1d)
-        n = grid_1d.size
+        i_array = np.arange(-n_half, n_half + 1, dtype=np.float32)
+        north_1d = i_array * sample_step_m
+        east_1d  = i_array * sample_step_m * cos_snap
+        east, north = np.meshgrid(east_1d, north_1d)
+        n = i_array.size
 
         cos_lat = max(1e-6, math.cos(math.radians(mesh_lat)))
         dlat = north / NM_TO_M / 60.0
@@ -843,14 +850,17 @@ def render_svt_into_current_fb(
     if st.terrain_vao is not None:
         st.terrain_prog['u_mvp'].write(mvp.T.tobytes())
         st.terrain_prog['u_alt_m'].value            = alt_m
-        # World offset modulo grid period — keeps the value small (precision)
-        # and the grid pattern stable across mesh recentres.
+        st.terrain_prog['u_cos_mesh_lat'].value     = cos_mlat
+        # World offset is in equator-equivalent metric (lon*NM*60, lat*NM*60),
+        # NO cos factor — same projection used for the per-fragment
+        # v_world_pos in the shader, so the same world point always lands
+        # at the same v_world_pos value regardless of mesh_lat.
         grid_period_m = GRID_SPACING_NM * NM_TO_M * GRID_MAJOR_EVERY
-        mesh_world_e = st.mesh_center_lon * 60.0 * NM_TO_M * cos_mlat
-        mesh_world_n = st.mesh_center_lat * 60.0 * NM_TO_M
+        mesh_world_e_eq = st.mesh_center_lon * 60.0 * NM_TO_M
+        mesh_world_n    = st.mesh_center_lat * 60.0 * NM_TO_M
         st.terrain_prog['u_world_offset'].value = (
-            mesh_world_e % grid_period_m,
-            mesh_world_n % grid_period_m,
+            mesh_world_e_eq % grid_period_m,
+            mesh_world_n    % grid_period_m,
         )
         st.terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
         st.terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
