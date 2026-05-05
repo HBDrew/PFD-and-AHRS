@@ -690,6 +690,19 @@ class _SharedState:
         if key == self.mesh_key and self.terrain_vao is not None:
             return
 
+        # Debug: print recentre details so we can verify sample alignment.
+        # Remove once the morph issue is resolved.
+        prev = self.mesh_key
+        if prev is not None:
+            d_lat_deg = mesh_lat - prev[0]
+            d_lon_deg = mesh_lon - prev[1]
+            d_north_m = d_lat_deg * 60.0 * NM_TO_M
+            d_east_m  = d_lon_deg * 60.0 * NM_TO_M * cos_snap
+            print(f"[SVT] recentre: dlat={d_lat_deg:+.6f}° "
+                  f"dlon={d_lon_deg:+.6f}° "
+                  f"d_north={d_north_m:+.2f}m d_east={d_east_m:+.2f}m "
+                  f"step={sample_step_m:.2f}m")
+
         # Sample grid: integer multiples of sample_step_m from mesh centre.
         # Same world points always sampled the same way.
         n_half = int(round(radius_m / sample_step_m))
