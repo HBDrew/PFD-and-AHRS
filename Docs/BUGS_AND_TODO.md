@@ -10,6 +10,49 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### IPHONE-PICO-HOSTING  iPhone display HTML too large for Pico W to serve
+Status: **OPEN — blocks iPhone display use over the Pico's WiFi AP**
+Target: `firmware/web_server.py` `_load_index` / `_handle_root`,
+`iphone_display/index.html`, possibly the hosting strategy.
+Context: today flipped the Pico's AP to open and tried to load
+`http://192.168.4.1` from the iPhone. Page loaded only a stale
+40 KB version of `iphone_display/index.html` that had been flashed
+months ago. Tried to flash the current 106 KB version
+(`mpremote cp iphone_display/index.html :index.html`) and now the
+page won't load at all. Almost certainly Pico W out-of-memory:
+`_load_index()` does `with open('index.html', 'r') as f: return f.read()`
+— reads the entire HTML into RAM, then writes it to the socket.
+Pico W has ~160 KB free MicroPython heap after firmware load; a
+106 KB string + the encode buffer + JSON state + pending SSE writes
+overflows.
+Also no automated way to keep the Pico's `iphone_display/*` files
+in sync with the repo — every change in `iphone_display/` requires
+a manual `mpremote cp` per file. Drift is silent and we hit it.
+Three viable fixes:
+  - **A. Stream the file** — change `_handle_root` to open the file
+    and `await writer.write(chunk)` in chunks (e.g. 4 KB at a time)
+    so it never holds the full HTML in RAM. Smallest change. Works
+    with the current bundle as-is.
+  - **B. Slim build** — produce a minified iphone_display bundle
+    aimed at the Pico (drop service worker, inline only the critical
+    paths, defer non-essential JS). Buys headroom for future growth
+    but adds a build step.
+  - **C. Host on the Pi 4 instead** — the Pi 4 has plenty of RAM
+    and is already running an HTTP server for other purposes.
+    Pico stays as the AHRS data source (continues to broadcast
+    `$AHRS,{json}` over USB to Pi 4); Pi 4 serves the iPhone HTML
+    and re-emits `/events` SSE from its own SSE proxy. Most
+    flexible long-term but requires plumbing on the Pi 4 side.
+Plus auxiliary task — **add `tools/flash_pico.sh`** that bundles
+the firmware + `iphone_display/` flash in one command (kill pfd.py,
+copy all files, reset, restart pfd.py). Stops the silent-drift
+problem we just hit.
+Recovery to current state: nothing user-facing on the Pi 4 PFD is
+affected (it gets AHRS over USB and renders locally). Only the
+iPhone display via WiFi is broken. Roll back to a smaller
+`index.html` on the Pico if needed in the meantime, or skip the
+iPhone display until one of A/B/C lands.
+
 ### WAVESHARE-35-DPI  Pi 4 Waveshare 3.5" DPI panel won't initialise
 Status: **OPEN — low priority, blocked on time, ROADOM 7" HDMI works fine**
 Target: `/boot/firmware/config.txt`, possibly `pi4/config.py` profile
