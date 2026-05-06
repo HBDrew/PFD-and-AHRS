@@ -5394,7 +5394,6 @@ _CENTERLINE_RANGE_NM       = 15.0   # draw extended centerlines within this rang
 _CENTERLINE_EXTEND_NM      = 5.0    # centerline extends this far from threshold
 _CENTERLINE_DASH_NM        = 0.5    # dash length (nm)
 _CENTERLINE_GLIDE_DEG      = 3.0    # rise centerline at standard glideslope
-_AIRPORT_BOX_PX            = 30     # on-screen edge length of airport environment box
 
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
@@ -5569,25 +5568,34 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                         _text(surf, he_id, sz, NUM_COL, bold=True,
                               cx=he_lbl[0], cy=he_lbl[1])
 
-                # Airport environment box: fixed-size square (no scaling
-                # with range or runway projection) centred on the runway
-                # midpoint.  Drawn from the projected runway midpoint so
-                # roll/pitch/heading already place it correctly relative
-                # to the AI; only its on-screen size is fixed.  Result:
-                # the box stays the same size frame-to-frame as you fly
-                # towards the airport and never extends above the horizon
-                # any further than the midpoint itself does.
-                if mid_le is not None and mid_he is not None:
-                    box_cx = (mid_le[0] + mid_he[0]) * 0.5
-                    box_cy = (mid_le[1] + mid_he[1]) * 0.5
-                    half = _AIRPORT_BOX_PX * 0.5
-                    if (ax - half <= box_cx <= ax + aw + half and
-                            ay_r - half <= box_cy <= ay_r + ah + half):
-                        x0 = int(box_cx - half); x1 = int(box_cx + half)
-                        y0 = int(box_cy - half); y1 = int(box_cy + half)
+                # Airport environment box: a runway-axis-aligned rectangle
+                # 2.5× the runway's width with a small extension past each
+                # threshold so it reads as a frame around the runway, not a
+                # screen-aligned shape that scales weirdly with attitude.
+                # Computed in lat/lon (same as the runway polygon) so the
+                # box rotates with the runway naturally as you change
+                # heading on the approach.
+                BOX_W_SCALE   = 2.5
+                BOX_LEN_PAD   = 0.10   # 10 % past each threshold
+                # Unit vectors along the axis (in lat/lon degrees per nm)
+                axis_lat_unit = ax_lat / axis_len_nm
+                axis_lon_unit = ax_lon / axis_len_nm
+                pad_nm = axis_len_nm * BOX_LEN_PAD
+                ext_lat = axis_lat_unit * pad_nm
+                ext_lon = axis_lon_unit * pad_nm
+                pl = perp_lat * BOX_W_SCALE
+                po = perp_lon * BOX_W_SCALE
+                b1 = _proj(r.le_lat - ext_lat + pl, r.le_lon - ext_lon + po, r.le_elev_ft)
+                b2 = _proj(r.he_lat + ext_lat + pl, r.he_lon + ext_lon + po, r.he_elev_ft)
+                b3 = _proj(r.he_lat + ext_lat - pl, r.he_lon + ext_lon - po, r.he_elev_ft)
+                b4 = _proj(r.le_lat - ext_lat - pl, r.le_lon - ext_lon - po, r.le_elev_ft)
+                if not any(b is None for b in (b1, b2, b3, b4)):
+                    bxs = [b1[0], b2[0], b3[0], b4[0]]
+                    bys = [b1[1], b2[1], b3[1], b4[1]]
+                    if (max(bxs) >= ax and min(bxs) <= ax + aw and
+                            max(bys) >= ay_r and min(bys) <= ay_r + ah):
                         pygame.draw.lines(surf, BOX_COL, True,
-                                          [(x0, y0), (x1, y0),
-                                           (x1, y1), (x0, y1)], 2)
+                                          [b1, b2, b3, b4], 2)
                 surf.set_clip(old_clip)
 
         # ── Extended centerlines from each threshold ──────────────────────
