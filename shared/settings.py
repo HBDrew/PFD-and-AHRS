@@ -35,6 +35,7 @@ _PERSIST_SUBTREES = [
     "ss",    # Sensor settings: trims, mounting, heading/airspeed source
     "cs",    # Connectivity: AHRS URL, WiFi SSID  (not password — see below)
     "ad",    # Airport data: filter toggles (show_public, show_heli, etc.)
+    "nav",   # Direct-to navigation: active waypoint ident, lat/lon, activation
 ]
 
 # Top-level scalar keys that persist as-is

@@ -209,6 +209,14 @@ disp["sim"] = {                     # flight simulator state
     "baro_fail":  False,
     "ahrs_fail":  False,
 }
+disp["nav"] = {                     # rudimentary direct-to-airport navigation
+    "ident":   "",      # ICAO/local ID of active waypoint, "" = none
+    "lat":     0.0,
+    "lon":     0.0,
+    "elev_ft": 0.0,
+    "act_lat": 0.0,     # aircraft lat at activation (CDI course reference)
+    "act_lon": 0.0,
+}
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 
@@ -2262,6 +2270,15 @@ def handle_event(event, demo_mode):
                 key = action.split(":", 1)[1]
                 disp["ad"][key] = not disp["ad"].get(key, False)
                 _settings.mark_dirty()
+            elif action == "nav_direct":
+                disp["kbd_target"] = "nav_ident"
+                disp["kbd_prev"]   = "airport_data"
+                disp["kbd_buf"]    = disp.get("nav", {}).get("ident", "")
+                disp["mode"]       = "keyboard"
+            elif action == "nav_nearest":
+                _nav_set_nearest()
+            elif action == "nav_clear":
+                _nav_clear()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -2317,7 +2334,17 @@ def handle_event(event, demo_mode):
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'ok':             # DONE
                     buf = disp["kbd_buf"].strip()
-                    if buf:
+                    if target == "nav_ident":
+                        # Look up the entered ident in the airport DB and
+                        # activate it as the direct-to waypoint.  Empty buf
+                        # cancels.  Unknown ident is a no-op (UI stays open
+                        # would be ideal, but matching the rest of the
+                        # keyboard flow we just close it).
+                        if buf:
+                            _nav_set_by_ident(buf.upper())
+                        else:
+                            _nav_clear()
+                    elif buf:
                         if disp["kbd_prev"] == "connectivity_setup":
                             disp["cs"][target] = buf
                             # Changing AHRS URL live-restarts the SSE stream
@@ -3990,6 +4017,21 @@ def draw_airport_data(surf, ad):
     _seg_btn(surf, bx + big_w + 10,   row2_y, big_w, filt_h,
              "EXT CENTERLINES", ad.get("show_centerlines", False), r=6)
 
+    # Row 3: direct-to navigation controls (3 tiles).  "DIRECT TO" opens the
+    # QWERTY keyboard for ident entry; "NEAREST" picks the closest public
+    # airport using current GPS pos; "CLEAR" cancels the active waypoint.
+    nv = disp.get("nav", {})
+    nav_ident = nv.get("ident", "")
+    row3_y = row2_y + filt_h + 10
+    nav_w = (bw - 20) // 3
+    nav_lbl = f"DIRECT  →  {nav_ident}" if nav_ident else "DIRECT  →"
+    _seg_btn(surf, bx,                       row3_y, nav_w, filt_h,
+             nav_lbl,   bool(nav_ident), r=6)
+    _seg_btn(surf, bx + nav_w + 10,          row3_y, nav_w, filt_h,
+             "NEAREST", False,            r=6)
+    _seg_btn(surf, bx + 2 * (nav_w + 10),    row3_y, nav_w, filt_h,
+             "CLEAR",   False,            r=6)
+
 
 def airport_data_hit(x, y, ad):
     """Return action string or None."""
@@ -4021,6 +4063,16 @@ def airport_data_hit(x, y, ad):
             return "toggle:show_runways"
         if bx + big_w + 10 <= x <= bx + big_w + 10 + big_w:
             return "toggle:show_centerlines"
+    # Row 3: direct-to navigation (3 tiles)
+    row3_y = row2_y + filt_h + 10
+    nav_w = (bw - 20) // 3
+    if row3_y <= y <= row3_y + filt_h:
+        if bx <= x <= bx + nav_w:
+            return "nav_direct"
+        if bx + nav_w + 10 <= x <= bx + 2 * nav_w + 10:
+            return "nav_nearest"
+        if bx + 2 * (nav_w + 10) <= x <= bx + 2 * (nav_w + 10) + nav_w:
+            return "nav_clear"
     if ad.get("downloading"):
         if (bx+bw-80 <= x <= bx+bw and prog_y+6 <= y <= prog_y+38):
             return "cancel"
@@ -4470,6 +4522,210 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
                   cx=sx, cy=sign_y + sign_h // 2)
 
 
+# ── Direct-to navigation ─────────────────────────────────────────────────────
+# Rudimentary GPS nav: a single active waypoint (an airport in our DB).  The
+# magenta course trace runs along the ground from the aircraft to the
+# waypoint; the CDI shows perpendicular cross-track from the great-circle
+# course originating at the activation point.
+
+_CDI_FULL_SCALE_NM = 1.0    # ±1 nm full-scale deflection (en-route default)
+
+
+def _nav_geo_dist_brg(la1, lo1, la2, lo2):
+    """Flat-earth distance (nm) and true bearing (deg) from 1 to 2."""
+    nm_per_deg_lat = 60.0
+    nm_per_deg_lon = 60.0 * math.cos(math.radians(la1))
+    dN = (la2 - la1) * nm_per_deg_lat
+    dE = (lo2 - lo1) * nm_per_deg_lon
+    dist = math.hypot(dN, dE)
+    brg = math.degrees(math.atan2(dE, dN)) % 360.0
+    return dist, brg
+
+
+def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
+    """Signed cross-track distance (nm) from the great-circle course
+    (act → wpt) to the current position.  Positive = right of course."""
+    nm_per_deg_lat = 60.0
+    nm_per_deg_lon = 60.0 * math.cos(math.radians(act_lat))
+    # Course unit vector in (N, E)
+    cN = (wpt_lat - act_lat) * nm_per_deg_lat
+    cE = (wpt_lon - act_lon) * nm_per_deg_lon
+    cmag = math.hypot(cN, cE)
+    if cmag < 1e-6:
+        return 0.0
+    cN /= cmag; cE /= cmag
+    # Aircraft offset from activation point
+    dN = (cur_lat - act_lat) * nm_per_deg_lat
+    dE = (cur_lon - act_lon) * nm_per_deg_lon
+    # Right-of-course = component along the +90° rotation of the course
+    return dE * cN - dN * cE
+
+
+def _nav_set_by_ident(ident: str) -> bool:
+    """Activate direct-to to the airport with this ident.  Returns True on hit."""
+    if _airports is None or not ident:
+        return False
+    lat = disp.get("lat", 0.0)
+    lon = disp.get("lon", 0.0)
+    candidates = []
+    if hasattr(_airports, "dtype"):
+        mask = _airports["ident"] == ident
+        for row in _airports[mask]:
+            candidates.append((str(row["ident"]), float(row["lat"]),
+                               float(row["lon"]), float(row["elev_ft"])))
+    else:
+        for rec in _airports:
+            if rec[0] == ident:
+                candidates.append((rec[0], float(rec[2]), float(rec[3]),
+                                   float(rec[4])))
+    if not candidates:
+        return False
+    ai, alat, alon, aelev = candidates[0]
+    disp["nav"]["ident"]   = ai
+    disp["nav"]["lat"]     = alat
+    disp["nav"]["lon"]     = alon
+    disp["nav"]["elev_ft"] = aelev
+    disp["nav"]["act_lat"] = lat
+    disp["nav"]["act_lon"] = lon
+    _settings.mark_dirty()
+    return True
+
+
+def _nav_set_nearest() -> bool:
+    """Activate direct-to to the nearest public airport (S/M/L) within 100 nm."""
+    if _airports is None:
+        return False
+    lat = disp.get("lat", 0.0)
+    lon = disp.get("lon", 0.0)
+    nearby = apt_mod.query_nearby(_airports, lat, lon, radius_nm=100.0)
+    for apt in nearby:
+        if apt.atype in ("S", "M", "L"):
+            disp["nav"]["ident"]   = apt.ident
+            disp["nav"]["lat"]     = float(apt.lat)
+            disp["nav"]["lon"]     = float(apt.lon)
+            disp["nav"]["elev_ft"] = float(apt.elev_ft)
+            disp["nav"]["act_lat"] = lat
+            disp["nav"]["act_lon"] = lon
+            _settings.mark_dirty()
+            return True
+    return False
+
+
+def _nav_clear() -> None:
+    disp["nav"]["ident"]   = ""
+    disp["nav"]["lat"]     = 0.0
+    disp["nav"]["lon"]     = 0.0
+    disp["nav"]["elev_ft"] = 0.0
+    disp["nav"]["act_lat"] = 0.0
+    disp["nav"]["act_lon"] = 0.0
+    _settings.mark_dirty()
+
+
+def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
+                         hdg_deg, pitch_deg, roll_deg):
+    """Solid magenta course trace from the aircraft to the active waypoint,
+    drawn ground-anchored at the waypoint's airport elevation."""
+    nv = disp.get("nav", {})
+    if not nv.get("ident"):
+        return
+    wpt_lat  = float(nv["lat"])
+    wpt_lon  = float(nv["lon"])
+    wpt_elev = float(nv.get("elev_ft", 0.0))
+
+    dist_nm, _ = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
+    if dist_nm < 0.05:
+        return
+
+    ax, ay_r, aw, ah = ai_rect
+    cx_ai = ax + aw // 2
+    cy_ai = ay_r + ah // 2
+    px_per_deg = ah / 48.0
+
+    # Step 0.5 nm or finer; cap step count so very-distant waypoints don't
+    # explode work per frame.
+    n_steps = max(8, int(dist_nm / 0.5))
+    n_steps = min(n_steps, 400)
+
+    dlat = wpt_lat - lat
+    dlon = wpt_lon - lon
+
+    old_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
+
+    prev_pt = None
+    for i in range(1, n_steps + 1):
+        t = i / n_steps
+        s_lat = lat + dlat * t
+        s_lon = lon + dlon * t
+        pt = _project_latlon(s_lat, s_lon, lat, lon, alt_ft, wpt_elev,
+                             hdg_deg, pitch_deg, roll_deg, cx_ai, cy_ai,
+                             px_per_deg, max_fov_deg=80, ground_only=True)
+        if pt is None:
+            prev_pt = None
+            continue
+        if prev_pt is not None:
+            pygame.draw.line(surf, MAGENTA, prev_pt, pt, 3)
+        prev_pt = pt
+
+    surf.set_clip(old_clip)
+
+
+def draw_cdi(surf):
+    """Course Deviation Indicator strip above the heading readout box.
+    Shows desired track, distance/ETE, and a ±1 nm cross-track diamond."""
+    nv = disp.get("nav", {})
+    ident = nv.get("ident", "")
+    if not ident:
+        return
+
+    lat = disp.get("lat", 0.0)
+    lon = disp.get("lon", 0.0)
+    wpt_lat = float(nv["lat"])
+    wpt_lon = float(nv["lon"])
+    act_lat = float(nv.get("act_lat", lat))
+    act_lon = float(nv.get("act_lon", lon))
+
+    dist_nm, dtk = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
+    xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+
+    # Bar geometry: sit just above the heading readout box.  Box height is
+    # max(28, font_h+8); place the bar with a small margin above.
+    bar_w = max(140, int(DISPLAY_W * 0.20))
+    bar_h = 6
+    bar_y = HDG_Y - 50            # leaves room for the readout box (28-32 px)
+    bar_x = CX - bar_w // 2
+
+    # Translucent backplate so the bar reads against terrain
+    plate = pygame.Surface((bar_w + 24, 24), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 180))
+    surf.blit(plate, (bar_x - 12, bar_y - 9))
+
+    # Bar + tick marks (centre + ±0.5 + ±1.0 dots)
+    pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
+                     border_radius=2)
+    for frac in (-1.0, -0.5, 0.0, 0.5, 1.0):
+        tx = bar_x + int((frac + 1.0) * 0.5 * bar_w)
+        if frac == 0.0:
+            pygame.draw.line(surf, WHITE,
+                             (tx, bar_y - 4), (tx, bar_y + bar_h + 4), 2)
+        else:
+            pygame.draw.circle(surf, (180, 200, 220),
+                               (tx, bar_y + bar_h // 2), 2)
+
+    # CDI diamond — represents the COURSE position relative to the aircraft.
+    # Right-of-course (positive xtk) → diamond moves LEFT (course is to your left).
+    xtk_clamped = max(-1.0, min(1.0, xtk / _CDI_FULL_SCALE_NM))
+    dx_diamond = -int(xtk_clamped * (bar_w / 2))
+    dcx = CX + dx_diamond
+    dcy = bar_y + bar_h // 2
+    dpts = [(dcx, dcy - 9), (dcx + 8, dcy), (dcx, dcy + 9), (dcx - 8, dcy)]
+    _filled_polygon(surf, dpts, MAGENTA)
+
+    # Readout: ident · DTK · DIST — centred above the bar
+    readout = f"{ident}  {int(round(dtk)) % 360:03d}°  {dist_nm:.1f}NM"
+    _text(surf, readout, 11, MAGENTA, bold=True, cx=CX, cy=bar_y - 14)
+
+
 # ── Runway polygons + extended centerlines ───────────────────────────────────
 
 _RUNWAY_MAX_RANGE_NM       = 8.0    # only draw runways within this range
@@ -4526,6 +4782,11 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     show_cline = ad.get("show_centerlines", True)
     if not (show_rwy or show_cline):
         return
+
+    # When a direct-to waypoint is active, restrict extended centerlines to
+    # the selected airport — keeps the approach picture uncluttered when
+    # several airports are within the centerline range.
+    sel_ident = (disp.get("nav") or {}).get("ident", "")
 
     nearby = rwy_mod.query_nearby(_runways, lat, lon,
                                   radius_nm=max(_RUNWAY_MAX_RANGE_NM,
@@ -4621,8 +4882,11 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
 
         # ── Extended centerlines from each threshold ──────────────────────
         # Only show centerlines if within a somewhat larger range — they're
-        # a navigation aid for approach planning.
-        if show_cline and d_nm <= _CENTERLINE_RANGE_NM:
+        # a navigation aid for approach planning.  When a direct-to waypoint
+        # is active, render only the selected airport's centerlines.
+        cline_for_this = (show_cline and d_nm <= _CENTERLINE_RANGE_NM and
+                          (not sel_ident or str(r.airport) == sel_ident))
+        if cline_for_this:
             _draw_extended_centerline(
                 surf, ai_rect, r, lat, lon, alt_ft,
                 hdg_deg, pitch_deg, roll_deg, cx, cy, px_per_deg,
@@ -4871,6 +5135,9 @@ def render(surf, demo_mode, connected, data_stale=False):
             draw_airport_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
         if _obstacles is not None:
             draw_obstacle_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+        # Direct-to course trace — drawn on the rotated overlay so it banks
+        # with the AI together with the other ground-anchored symbols.
+        draw_direct_to_trace(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
         if abs(roll) > 0.5:
             rotated = pygame.transform.rotate(_overlay, roll)
             rx, ry = rotated.get_size()
@@ -4902,6 +5169,11 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 5. Heading tape
     draw_heading_tape(surf, hdg, hdg_bug, track, gps_ok, hdg_src=hdg_src)
+
+    # 5b. CDI — direct-to course deviation indicator above the heading box.
+    # No-op when no waypoint is active.
+    if gps_ok:
+        draw_cdi(surf)
 
     # 6. Roll arc
     draw_roll_arc(surf, roll)
