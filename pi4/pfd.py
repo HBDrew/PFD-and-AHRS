@@ -4528,8 +4528,8 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 # waypoint; the CDI shows perpendicular cross-track from the great-circle
 # course originating at the activation point.
 
-_CDI_FULL_SCALE_NM = 1.0    # ±1 nm full-scale deflection (en-route default)
-_EARTH_R_NM        = 3440.065  # Earth mean radius (km/1.852)
+_CDI_FULL_SCALE_DEG = 10.0  # ±10° relative bearing = full-scale deflection
+_EARTH_R_NM         = 3440.065  # Earth mean radius (km/1.852)
 
 
 def _nav_geo_dist_brg(la1, lo1, la2, lo2):
@@ -4691,9 +4691,15 @@ def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
     surf.set_clip(old_clip)
 
 
-def draw_cdi(surf):
-    """Course Deviation Indicator strip above the heading readout box.
-    Shows desired track, distance/ETE, and a ±1 nm cross-track diamond."""
+def draw_cdi(surf, hdg):
+    """Bearing pointer strip above the heading readout box.
+
+    Diamond deflects in the direction the active waypoint bears relative
+    to the displayed heading — fly toward the diamond and the airport
+    centres up.  Full-scale at ±_CDI_FULL_SCALE_DEG.  This is a bearing
+    pointer rather than a classic course-deviation CDI: simpler, matches
+    the pilot's mental model for direct-to-airport ("the needle points
+    at the airport"), and does not depend on an activation point."""
     nv = disp.get("nav", {})
     ident = nv.get("ident", "")
     if not ident:
@@ -4703,11 +4709,9 @@ def draw_cdi(surf):
     lon = disp.get("lon", 0.0)
     wpt_lat = float(nv["lat"])
     wpt_lon = float(nv["lon"])
-    act_lat = float(nv.get("act_lat", lat))
-    act_lon = float(nv.get("act_lon", lon))
 
-    dist_nm, dtk = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
-    xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+    dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
+    rel_brg = (brg - hdg + 540.0) % 360.0 - 180.0   # signed, -180..+180
 
     # Bar geometry: sit just above the heading readout box.  Box height is
     # max(28, font_h+8); place the bar with a small margin above.
@@ -4721,7 +4725,7 @@ def draw_cdi(surf):
     plate.fill((0, 8, 22, 180))
     surf.blit(plate, (bar_x - 12, bar_y - 9))
 
-    # Bar + tick marks (centre + ±0.5 + ±1.0 dots)
+    # Bar + tick marks (centre + ±50% + full-scale dots)
     pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
                      border_radius=2)
     for frac in (-1.0, -0.5, 0.0, 0.5, 1.0):
@@ -4733,17 +4737,19 @@ def draw_cdi(surf):
             pygame.draw.circle(surf, (180, 200, 220),
                                (tx, bar_y + bar_h // 2), 2)
 
-    # CDI diamond — represents the COURSE position relative to the aircraft.
-    # Right-of-course (positive xtk) → diamond moves LEFT (course is to your left).
-    xtk_clamped = max(-1.0, min(1.0, xtk / _CDI_FULL_SCALE_NM))
-    dx_diamond = -int(xtk_clamped * (bar_w / 2))
+    # Diamond — deflects in the direction of the bearing-to-waypoint
+    # relative to nose.  Airport 5° right of nose → diamond 50% right at
+    # ±10° full-scale.  Pilot flies toward the diamond to centre it.
+    rel_clamped = max(-_CDI_FULL_SCALE_DEG,
+                      min(_CDI_FULL_SCALE_DEG, rel_brg))
+    dx_diamond = int(rel_clamped / _CDI_FULL_SCALE_DEG * (bar_w / 2))
     dcx = CX + dx_diamond
     dcy = bar_y + bar_h // 2
     dpts = [(dcx, dcy - 9), (dcx + 8, dcy), (dcx, dcy + 9), (dcx - 8, dcy)]
     _filled_polygon(surf, dpts, MAGENTA)
 
-    # Readout: ident · DTK · DIST — centred above the bar
-    readout = f"{ident}  {int(round(dtk)) % 360:03d}°  {dist_nm:.1f}NM"
+    # Readout: ident · BRG · DIST — centred above the bar
+    readout = f"{ident}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
     _text(surf, readout, 11, MAGENTA, bold=True, cx=CX, cy=bar_y - 14)
 
 
@@ -5194,7 +5200,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 5b. CDI — direct-to course deviation indicator above the heading box.
     # No-op when no waypoint is active.
     if gps_ok:
-        draw_cdi(surf)
+        draw_cdi(surf, hdg)
 
     # 6. Roll arc
     draw_roll_arc(surf, roll)
