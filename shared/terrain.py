@@ -37,16 +37,17 @@ VOID_ELEV     = -32768      # SRTM void marker
 
 # ── Terrain colour palette (elevation-relative to aircraft) ───────────────────
 # colours keyed by (clearance_ft): clearance = aircraft_alt - terrain_elev
-# Negative = terrain ABOVE aircraft.  Bands shifted +100 ft vs the textbook
-# "red when terrain reaches altitude": red at clearance < 100 ft gives the
-# pilot a 100 ft buffer warning before actual contact.
+# Negative = terrain ABOVE aircraft.  Bands shifted +200 ft vs the textbook
+# "red when terrain reaches altitude": red at clearance < 200 ft gives the
+# pilot a 200 ft buffer warning before actual contact, in sync with
+# TERRAIN_WARNING_FT (200) and TERRAIN_CAUTION_FT (700) in config_base.py.
 PALETTE_RELATIVE = [
     (-9999,  (220,  30,  30)),   # terrain above aircraft  → red
-    (  100,  (220,  80,   0)),   # 100–200 ft clearance     → deep orange
-    (  200,  (200, 130,   0)),   # 200–600 ft               → amber
-    (  600,  (140, 100,  40)),   # 600–1100 ft              → brown
-    ( 1100,  (100,  75,  35)),   # 1100–2100 ft             → dark brown
-    ( 2100,  ( 70,  55,  28)),   # 2100+ ft below           → very dark
+    (  200,  (220,  80,   0)),   # 200–300 ft clearance     → deep orange
+    (  300,  (200, 130,   0)),   # 300–700 ft               → amber
+    (  700,  (140, 100,  40)),   # 700–1200 ft              → brown
+    ( 1200,  (100,  75,  35)),   # 1200–2200 ft             → dark brown
+    ( 2200,  ( 70,  55,  28)),   # 2200+ ft below           → very dark
 ]
 
 # Absolute elevation palette (used when no aircraft alt available / demo)

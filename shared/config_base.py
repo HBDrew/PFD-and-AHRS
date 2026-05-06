@@ -27,8 +27,11 @@ VX   =  62   # Best angle of climb
 BARO_DEFAULT_HPA = 1013.25
 
 # ── Terrain / SVT thresholds ──────────────────────────────────────────────────
-TERRAIN_CAUTION_FT = 500    # terrain within 500 ft → yellow
-TERRAIN_WARNING_FT = 100    # terrain within 100 ft → red
+# Aligned with PALETTE_RELATIVE in shared/terrain.py — caution kicks in at the
+# amber band, warning at the red band, so the central alert banner colour
+# tracks the SVT terrain colour the pilot is already looking at.
+TERRAIN_CAUTION_FT = 700    # terrain within 700 ft → amber alert (yellow band)
+TERRAIN_WARNING_FT = 200    # terrain within 200 ft → red alert (red band)
 
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
 OBSTACLE_RADIUS_NM  = 10.0    # AI symbol render radius
