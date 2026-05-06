@@ -4937,6 +4937,28 @@ def _draw_veil(surf):
 _OBS_RADIUS_NM  = OBSTACLE_RADIUS_NM
 _OBS_BELOW_FT   = OBSTACLE_BELOW_FT
 _OBS_CAUTION_FT = OBSTACLE_CAUTION_FT
+
+# Cache rendered obstacle labels keyed on (text, colour) — pygame.font
+# rendering is ~1 ms each call, and a busy metro view can show 50+ towers
+# whose MSL labels repeat (round-100 buckets).  Cleared on font/style
+# change, capped to keep memory bounded.
+_obs_label_cache = {}
+_OBS_LABEL_CACHE_MAX = 256
+
+
+def _obs_label_blit(surf, text, color, cx, cy):
+    """Blit a small obstacle MSL label, reusing cached pygame surfaces
+    so the heavy text rendering only happens once per (text, color)."""
+    key = (text, color)
+    img = _obs_label_cache.get(key)
+    if img is None:
+        font = _get_font(8, False)
+        img = font.render(text, True, color)
+        if len(_obs_label_cache) >= _OBS_LABEL_CACHE_MAX:
+            _obs_label_cache.clear()
+        _obs_label_cache[key] = img
+    rect = img.get_rect(center=(cx, cy))
+    surf.blit(img, rect)
 _OBS_WARNING_FT = OBSTACLE_WARNING_FT
 
 def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
@@ -5035,9 +5057,14 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
             pygame.draw.line(surf, star_col, (sx - r, sy - r), (sx + r, sy + r), 1)
             pygame.draw.line(surf, star_col, (sx - r, sy + r), (sx + r, sy - r), 1)
 
-        if ob_agl[i] >= 500 or dist_nm[i] < 3.0:
+        # Selective labelling — pygame text render is ~1 ms each, so we
+        # only label the towers that the pilot most needs to read.  Tall
+        # towers (≥ 1000 ft AGL) anywhere in range, plus everything within
+        # 1 nm.  Cached at module scope so repeated MSL values (1000,
+        # 1500…) only render once per colour.
+        if ob_agl[i] >= 1000 or dist_nm[i] < 1.0:
             lbl = f"{int(ob_msl[i]//100)*100}"
-            _text(surf, lbl, 8, col, cx=sx, cy=sy - 14)
+            _obs_label_blit(surf, lbl, col, sx, sy - 14)
 
 
 def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
