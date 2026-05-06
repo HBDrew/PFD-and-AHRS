@@ -649,7 +649,8 @@ class _SharedState:
                  "terrain_vao", "terrain_vbo_pos",
                  "terrain_ibo", "mesh_key", "mesh_radius_m",
                  "mesh_center_lat", "mesh_center_lon",
-                 "line_prog", "line_vbo", "line_vao", "line_capacity")
+                 "line_prog", "line_vbo", "line_vao", "line_capacity",
+                 "_last_line_width")
 
     def __init__(self, ctx):
         self.ctx = ctx
@@ -678,6 +679,7 @@ class _SharedState:
         self.line_vao = ctx.vertex_array(
             self.line_prog, [(self.line_vbo, '3f', 'in_pos')])
         self.line_capacity = 4096
+        self._last_line_width = None
 
     def render_polyline_latlonelev(self, mvp, vertices_latlonelev,
                                     rgba=(0.86, 0.0, 0.86, 1.0),
@@ -712,10 +714,14 @@ class _SharedState:
         self.line_prog['u_color'].value = rgba
         # Width support is driver-dependent; many GLES drivers cap at 1 px.
         # Set anyway so V3D and llvmpipe can honour wider lines when they do.
-        try:
-            self.ctx.line_width = float(line_width)
-        except Exception:
-            pass
+        # Cached: line_width can be a sync-causing GL state change on some
+        # drivers — only push it to the GPU when the value actually changes.
+        if self._last_line_width != line_width:
+            try:
+                self.ctx.line_width = float(line_width)
+            except Exception:
+                pass
+            self._last_line_width = line_width
         self.line_vao.render(mode=moderngl.LINE_STRIP, vertices=len(world))
 
     def build_mesh(self, srtm_dir, lat, lon, alt_ft):

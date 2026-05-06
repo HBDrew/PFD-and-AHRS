@@ -4665,18 +4665,36 @@ def _nav_clear() -> None:
     _settings.mark_dirty()
 
 
-_DIRECT_TO_DRAPE_OFFSET_FT = 50.0   # ft above terrain — keeps the line clear
-                                    # of mesh interpolation/z-fighting that
-                                    # buries it inside ridges at lower offsets
+_DIRECT_TO_DRAPE_OFFSET_FT = 200.0  # ft above terrain.  Has to clear the
+                                    # GPU mesh's bilinear interpolation
+                                    # between its ~250 m grid samples — at
+                                    # narrow ridges that interpolated
+                                    # surface can sit hundreds of feet
+                                    # above the DEM cell our line samples.
+
+# Cached trace vertex array.  Key = (act_lat, act_lon, wpt_lat, wpt_lon);
+# rebuilt only when the active direct-to changes.  Without this, the per-
+# frame DEM sampling costs ~5 µs per step × hundreds of steps and visibly
+# drops the GL frame rate.
+_direct_to_trace_cache_key = None
+_direct_to_trace_cache_arr = None
 
 
 def build_direct_to_trace_vertices():
     """Sample the active direct-to course at 0.5 nm steps and return an
     (N, 3) ndarray of (lat, lon, elev_ft) world points draped over the
     SRTM terrain.  Returns None when no waypoint is active or when the
-    course is degenerate."""
+    course is degenerate.
+
+    Result is cached on (act, waypoint); the course is fixed for the
+    duration of a direct-to so we only pay the DEM sampling cost once
+    per activation, not once per frame."""
+    global _direct_to_trace_cache_key, _direct_to_trace_cache_arr
+
     nv = disp.get("nav", {})
     if not nv.get("ident"):
+        _direct_to_trace_cache_key = None
+        _direct_to_trace_cache_arr = None
         return None
     wpt_lat  = float(nv["lat"])
     wpt_lon  = float(nv["lon"])
@@ -4686,8 +4704,14 @@ def build_direct_to_trace_vertices():
     if act_lat == 0.0 and act_lon == 0.0:
         return None
 
+    key = (act_lat, act_lon, wpt_lat, wpt_lon)
+    if key == _direct_to_trace_cache_key and _direct_to_trace_cache_arr is not None:
+        return _direct_to_trace_cache_arr
+
     course_nm, _ = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
     if course_nm < 0.05:
+        _direct_to_trace_cache_key = None
+        _direct_to_trace_cache_arr = None
         return None
 
     n_steps = max(8, int(course_nm / 0.5))
@@ -4706,9 +4730,13 @@ def build_direct_to_trace_vertices():
         pts.append((s_lat, s_lon, terrain_elev + _DIRECT_TO_DRAPE_OFFSET_FT))
     try:
         import numpy as _np
-        return _np.array(pts, dtype=_np.float32)
+        arr = _np.array(pts, dtype=_np.float32)
     except ImportError:
-        return pts
+        arr = pts
+
+    _direct_to_trace_cache_key = key
+    _direct_to_trace_cache_arr = arr
+    return arr
 
 
 def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
