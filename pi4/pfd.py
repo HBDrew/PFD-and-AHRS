@@ -5857,10 +5857,14 @@ def render(surf, demo_mode, connected, data_stale=False):
     # ground in degenerate sensor states or sim error).  20 ft above the
     # terrain immediately under the aircraft keeps the eye-point above the
     # mesh even on rolling ground.
-    _ground_elev_ft = get_elevation_ft(SRTM_DIR, lat, lon)
+    _ground_elev_ft = get_elevation_ft(SRTM_DIR, lat, lon) if gps_ok else 0.0
     alt_render = max(alt, _ground_elev_ft + 20.0)
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
-    if _shared_gl_ctx is not None:
+    # Without a GPS fix we don't know where the aircraft is, so any SVT
+    # rendering would be lying about the world.  Fall back to plain
+    # blue-over-brown so attitude (pitch/roll from AHRS) is still
+    # readable but the synthetic terrain is suppressed.
+    if _shared_gl_ctx is not None and gps_ok:
         # Render terrain into the AI region of the default framebuffer.
         # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
         # GL rows HDG_H..DISPLAY_H.
@@ -5884,7 +5888,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             airports_arr=_airports,
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
-    elif _has_terrain:
+    elif _has_terrain and gps_ok:
         draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt_render, lat, lon)
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
