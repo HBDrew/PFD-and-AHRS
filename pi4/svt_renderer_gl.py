@@ -116,10 +116,14 @@ uniform float u_cos_mesh_lat; // cos(mesh_lat). Used to convert in_pos.x from
                               // anchored across mesh recentres at any latitude.
 uniform vec2 u_world_offset;  // mesh centre's (lon*NM*60, lat*NM*60) modulo
                               // the grid period — equator-equivalent metric.
+uniform vec2 u_aircraft_xy;   // aircraft (east, north) in this mesh's frame
+                              // — used by the outer mesh to discard fragments
+                              // inside the inner mesh's coverage square.
 
 out float v_clearance_ft;
 out vec3 v_world_pos;
 out float v_dist_m;
+out vec2 v_offset_from_aircraft;
 
 void main() {
     gl_Position = u_mvp * vec4(in_pos, 1.0);
@@ -129,6 +133,7 @@ void main() {
     float vx_eq = in_pos.x / u_cos_mesh_lat;
     v_world_pos = vec3(vec2(vx_eq, in_pos.y) + u_world_offset, in_pos.z);
     v_dist_m = length(in_pos.xy);
+    v_offset_from_aircraft = in_pos.xy - u_aircraft_xy;
 }
 """
 
@@ -139,11 +144,17 @@ precision highp float;
 in float v_clearance_ft;
 in vec3 v_world_pos;
 in float v_dist_m;
+in vec2 v_offset_from_aircraft;
 out vec4 frag_color;
 
 uniform float u_grid_spacing_m;     // metres per grid square (e.g. 1852 = 1 nm)
 uniform float u_grid_major_every;   // major line every N squares (e.g. 5)
 uniform float u_grid_max_dist_m;    // grid fades to invisible at this distance
+uniform float u_discard_inside_m;   // outer mesh: drop fragments inside the
+                                    // inner mesh's square coverage zone so
+                                    // it doesn't clobber inner-mesh detail
+                                    // and grid lines via depth-test ties.
+                                    // 0.0 = no discard (inner mesh).
 uniform vec3  u_sun_dir;            // unit vector pointing TOWARD the sun
 uniform float u_sun_intensity;      // 0.0 = no lighting, 1.0 = full
 uniform float u_ambient;            // 0.0 = pitch black shadows, 1.0 = no shadow
@@ -180,6 +191,14 @@ float grid_line(vec2 pos, float spacing, float line_width_px) {
 }
 
 void main() {
+    // Outer mesh: kill fragments inside the inner mesh's square so the
+    // inner tier owns the foreground exclusively (no z-tie clobbering).
+    if (u_discard_inside_m > 0.0
+        && abs(v_offset_from_aircraft.x) < u_discard_inside_m
+        && abs(v_offset_from_aircraft.y) < u_discard_inside_m) {
+        discard;
+    }
+
     vec3 base = clearance_color(v_clearance_ft);
 
     // ── Sun-angle lighting ───────────────────────────────────────────────
@@ -962,8 +981,13 @@ def render_svt_into_current_fb(
     grid_period_m = GRID_SPACING_NM * NM_TO_M * GRID_MAJOR_EVERY
 
     def _render_tier(vao, mesh_lat, mesh_lon, mesh_radius_m,
-                     grid_spacing_m, grid_max_dist_m):
-        """Render one mesh tier with the right per-tier uniforms."""
+                     grid_spacing_m, grid_max_dist_m, discard_inside_m=0.0):
+        """Render one mesh tier with the right per-tier uniforms.
+
+        discard_inside_m > 0 makes the fragment shader drop pixels inside
+        a square of that half-extent around the aircraft.  Used for the
+        outer mesh to keep it from clobbering the inner mesh's foreground.
+        """
         cos_mlat = max(1e-6, math.cos(math.radians(mesh_lat)))
         cam_north = (lat - mesh_lat) * 60.0 * NM_TO_M
         cam_east  = (lon - mesh_lon) * 60.0 * NM_TO_M * cos_mlat
@@ -975,6 +999,7 @@ def render_svt_into_current_fb(
         st.terrain_prog['u_mvp'].write(local_mvp.T.tobytes())
         st.terrain_prog['u_alt_m'].value        = alt_m
         st.terrain_prog['u_cos_mesh_lat'].value = cos_mlat
+        st.terrain_prog['u_aircraft_xy'].value  = (cam_east, cam_north)
         mesh_world_e_eq = mesh_lon * 60.0 * NM_TO_M
         mesh_world_n    = mesh_lat * 60.0 * NM_TO_M
         st.terrain_prog['u_world_offset'].value = (
@@ -984,6 +1009,7 @@ def render_svt_into_current_fb(
         st.terrain_prog['u_grid_spacing_m'].value   = grid_spacing_m
         st.terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
         st.terrain_prog['u_grid_max_dist_m'].value  = grid_max_dist_m
+        st.terrain_prog['u_discard_inside_m'].value = float(discard_inside_m)
         st.terrain_prog['u_sun_dir'].value       = sun_dir
         st.terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
         st.terrain_prog['u_ambient'].value       = SUN_AMBIENT
@@ -993,12 +1019,18 @@ def render_svt_into_current_fb(
     # Outer mesh first — distant ridges paint silhouettes behind the inner
     # mesh's foreground detail.  Grid lines disabled (u_grid_spacing_m = 0)
     # because they'd look weird drawn over coarse 4–5 km triangles.
+    # discard_inside_m clamps slightly larger than the inner mesh's straight-
+    # edge radius so the inner tier owns the foreground (with its grid lines)
+    # without depth-tie clobbering from the coarse outer triangulation.  The
+    # 5 % margin covers the inner mesh's snap-grid offset relative to the
+    # aircraft (up to one inner sample step).
     if st.outer_vao is not None:
         _render_tier(st.outer_vao,
                      st.outer_mesh_center_lat, st.outer_mesh_center_lon,
                      st.outer_mesh_radius_m,
                      grid_spacing_m=0.0,
-                     grid_max_dist_m=st.outer_mesh_radius_m)
+                     grid_max_dist_m=st.outer_mesh_radius_m,
+                     discard_inside_m=st.mesh_radius_m * 1.05)
 
     # Inner mesh — overdraws the outer in the 0–20 nm zone.  Cyan
     # distance-grid lines are enabled here.
