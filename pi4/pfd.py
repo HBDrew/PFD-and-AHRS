@@ -1792,13 +1792,13 @@ class SimFlyState:
             state["speed"] = max(0.0, spd + d_spd)
 
             # ── Position ───────────────────────────────────────────────────────
-            # Constant simulated wind from 270° (west) at 15 kt — yields a
-            # ~5–10° crab angle at typical training-aircraft speeds, so the
-            # cross-source pointer on the heading tape has something to show
-            # (track ≠ heading) and the magenta direct-to course shifts off
-            # the nose visibly when flying east/west legs.
+            # Constant simulated wind from 270° (west) at 7 kt — yields a
+            # ~3–5° crab angle at typical training-aircraft speeds.  Just
+            # enough that the cross-source pointer on the heading tape
+            # has something to show (track ≠ heading) without the magenta
+            # direct-to course visibly leaning off the nose.
             SIM_WIND_FROM_DEG = 270.0
-            SIM_WIND_KT       = 15.0
+            SIM_WIND_KT       = 7.0
             wind_rad = math.radians(SIM_WIND_FROM_DEG + 180.0)  # blowing TO
             wind_n_kt = SIM_WIND_KT * math.cos(wind_rad)
             wind_e_kt = SIM_WIND_KT * math.sin(wind_rad)
@@ -1996,6 +1996,16 @@ def sim_setup_hit(x, y):
             return "cancel"
 
     return None
+
+
+# ── Sim watermark / quick-exit button ────────────────────────────────────────
+# Sized to read clearly from a normal cockpit viewing distance so pilots
+# notice it's tappable.  Tap → opens the SIM CONTROLS overlay (which has
+# the EXIT SIM action).
+_SIM_BTN_W = 88
+_SIM_BTN_H = 32
+_SIM_BTN_X = CX - _SIM_BTN_W // 2
+_SIM_BTN_Y = CY - 36 - _SIM_BTN_H
 
 
 # ── Sim controls overlay ─────────────────────────────────────────────────────
@@ -2502,9 +2512,10 @@ def handle_event(event, demo_mode):
             return True
 
         # ── PFD taps ──────────────────────────────────────────────────────
-        # Tap on SIM watermark → open sim controls overlay
+        # Tap on SIM button → open sim controls overlay (which has EXIT SIM)
         if _sim_state is not None and mode == "pfd":
-            if CX - 30 <= x <= CX + 30 and CY - 30 <= y <= CY - 10:
+            if (_SIM_BTN_X <= x <= _SIM_BTN_X + _SIM_BTN_W and
+                    _SIM_BTN_Y <= y <= _SIM_BTN_Y + _SIM_BTN_H):
                 disp["mode"] = "sim_controls"
                 return True
 
@@ -5412,11 +5423,15 @@ def render(surf, demo_mode, connected, data_stale=False):
     draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
                      use_track=use_track, baro_ok=baro_ok)
 
-    # 12. Demo / SIM watermark
+    # 12. Demo / SIM watermark.  When the simulator is running, the
+    # watermark doubles as a clearly-tappable button — pilots otherwise
+    # don't realise the small "SIM" text is interactive and end up
+    # killing the whole PFD process to leave the simulator.
     if demo_mode:
         _text(surf, "DEMO", 14, (255, 60, 60), cx=CX, cy=CY - 20)
     elif _sim_state is not None:
-        _text(surf, "SIM", 14, (255, 100, 60), cx=CX, cy=CY - 20)
+        _action_btn(surf, _SIM_BTN_X, _SIM_BTN_Y, _SIM_BTN_W, _SIM_BTN_H,
+                    "SIM  ✕", style="danger", r=6)
 
     # ── Overlay modes: veil + UI drawn on top of live PFD ────────────────────
     if mode == "sim_controls":
