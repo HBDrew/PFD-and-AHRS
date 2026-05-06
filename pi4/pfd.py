@@ -3800,67 +3800,182 @@ def _wd_ensure_shapefiles(wd):
 
 
 def _wd_load_shapes(name, wd):
-    """Return cached list of (bbox, rings) tuples for shapefile `name`.
-    rings is a list of [(lon, lat), …] — one per polygon part.  bbox is
-    (lon_min, lat_min, lon_max, lat_max) for fast tile-vs-shape rejection.
+    """Return cached parsed shapefile for `name`.  Cached as a dict with
+    flat numpy arrays (much smaller + faster than nested Python lists),
+    persisted to disk as .npz so subsequent runs skip the slow shapefile
+    parse entirely:
+
+        {'points':       (N, 2) float32,    flat list of all (lon, lat)
+         'ring_starts':  (M+1,) int32,       indices into points[] per ring
+         'ring_bboxes':  (M, 4) float32}     (lon_min, lat_min, lon_max, lat_max)
+
+    Pure numpy means the worker thread never has to touch pygame/SDL
+    (which has global locks that can deadlock the render thread when a
+    huge polygon is being filled in C).
     """
+    import numpy as _np
     if name in _wd_shapes_cache:
         return _wd_shapes_cache[name]
+
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, name + ".npz")
+
+    # Fast path: previously-parsed cache on disk.
+    if os.path.exists(npz_path):
+        wd["dl_status"] = f"Loading cached {name}…"
+        try:
+            with _np.load(npz_path, allow_pickle=False) as z:
+                cache = {
+                    "points":      z["points"],
+                    "ring_starts": z["ring_starts"],
+                    "ring_bboxes": z["ring_bboxes"],
+                }
+            _wd_shapes_cache[name] = cache
+            return cache
+        except Exception:
+            pass   # fall through to re-parse
+
+    # Slow path: parse the .shp.  Big shapefiles (ocean has 600 K points)
+    # can take 30 s the first time; cache to .npz makes the second run
+    # instant.
     import shapefile as _shapefile   # pyshp
-    path = os.path.join(_wd_shapes_dir(), name + ".shp")
-    wd["dl_status"] = f"Parsing {name}.shp…"
-    polys = []
-    with _shapefile.Reader(path) as sf:
+    shp_path = os.path.join(sdir, name + ".shp")
+    wd["dl_status"] = f"Parsing {name}.shp (one-time, ~30 s)…"
+
+    all_pts = []
+    ring_starts = [0]
+    ring_bboxes = []
+    cum = 0
+    with _shapefile.Reader(shp_path) as sf:
         for shp in sf.iterShapes():
-            bbox = tuple(shp.bbox)   # (lon_min, lat_min, lon_max, lat_max)
             parts = list(shp.parts) + [len(shp.points)]
-            rings = []
             for i in range(len(parts) - 1):
-                rings.append(shp.points[parts[i]:parts[i + 1]])
-            polys.append((bbox, rings))
-    _wd_shapes_cache[name] = polys
-    return polys
+                ring = shp.points[parts[i]:parts[i + 1]]
+                if len(ring) < 3:
+                    continue
+                arr = _np.asarray(ring, dtype=_np.float32)
+                all_pts.append(arr)
+                cum += len(arr)
+                ring_starts.append(cum)
+                ring_bboxes.append((arr[:, 0].min(), arr[:, 1].min(),
+                                    arr[:, 0].max(), arr[:, 1].max()))
+
+    if not all_pts:
+        cache = {
+            "points":      _np.zeros((0, 2), dtype=_np.float32),
+            "ring_starts": _np.zeros((1,), dtype=_np.int32),
+            "ring_bboxes": _np.zeros((0, 4), dtype=_np.float32),
+        }
+    else:
+        cache = {
+            "points":      _np.concatenate(all_pts, axis=0).astype(_np.float32),
+            "ring_starts": _np.asarray(ring_starts, dtype=_np.int32),
+            "ring_bboxes": _np.asarray(ring_bboxes, dtype=_np.float32),
+        }
+
+    # Persist cache for next time.
+    try:
+        _np.savez(npz_path,
+                  points=cache["points"],
+                  ring_starts=cache["ring_starts"],
+                  ring_bboxes=cache["ring_bboxes"])
+    except OSError:
+        pass
+
+    _wd_shapes_cache[name] = cache
+    return cache
+
+
+def _wd_fill_ring(out, ring_xy_px):
+    """Burn one polygon ring (N×2 float pixel coords) into out (H, W)
+    uint8 array via numpy scanline fill.  Even–odd fill rule means
+    polygon-with-holes (e.g. ocean cut by continents) renders correctly
+    when outer + inner rings are passed in.
+    """
+    import numpy as _np
+    n = len(ring_xy_px)
+    if n < 3:
+        return
+    H, W = out.shape
+
+    x1 = ring_xy_px[:, 0]
+    y1 = ring_xy_px[:, 1]
+    x2 = _np.roll(x1, -1)
+    y2 = _np.roll(y1, -1)
+
+    # Edge prefilter: drop edges entirely outside the tile in any axis.
+    keep = ~(((x1 < 0) & (x2 < 0)) | ((x1 >= W) & (x2 >= W)) |
+             ((y1 < 0) & (y2 < 0)) | ((y1 >= H) & (y2 >= H)))
+    if not keep.any():
+        return
+    x1 = x1[keep]; y1 = y1[keep]
+    x2 = x2[keep]; y2 = y2[keep]
+
+    y_min = max(0, int(_np.floor(min(y1.min(), y2.min()))))
+    y_max = min(H - 1, int(_np.ceil(max(y1.max(), y2.max()))))
+    if y_min > y_max:
+        return
+
+    for y in range(y_min, y_max + 1):
+        # Edges crossing scanline y (top-inclusive, bottom-exclusive)
+        crosses = ((y1 <= y) & (y < y2)) | ((y2 <= y) & (y < y1))
+        if not crosses.any():
+            continue
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            xs = x1[crosses] + (y - y1[crosses]) * \
+                 (x2[crosses] - x1[crosses]) / (y2[crosses] - y1[crosses])
+        xs = _np.sort(xs)
+        # Even–odd fill between successive intersection pairs
+        for k in range(0, len(xs) - 1, 2):
+            x_start = max(0, int(_np.ceil(xs[k])))
+            x_end   = min(W, int(xs[k + 1]) + 1)
+            if x_start < x_end:
+                out[y, x_start:x_end] ^= 1   # XOR for even–odd
 
 
 def _wd_rasterise_tile(lat_int, lon_int, shape_names, wd):
-    """Build a (res×res) uint8 0/1 mask for the 1°×1° tile at (lat_int,
-    lon_int) by burning every polygon from `shape_names` whose bbox
-    intersects the tile.  Uses pygame's C polygon fill — no subprocess."""
+    """Build a (res×res) uint8 0/1 water mask for the 1°×1° tile at
+    (lat_int, lon_int).  Pure numpy — no pygame/SDL on the worker
+    thread, so the main render loop stays unblocked even on a huge
+    polygon."""
+    import numpy as _np
     res = _WD_TILE_RES
-    surf = pygame.Surface((res, res))
-    surf.fill((0, 0, 0))
+    out = _np.zeros((res, res), dtype=_np.uint8)
 
-    tile_lon0 = lon_int
-    tile_lon1 = lon_int + 1
-    tile_lat0 = lat_int
-    tile_lat1 = lat_int + 1
-    scale = res - 1
+    tile_lon0 = float(lon_int)
+    tile_lon1 = float(lon_int + 1)
+    tile_lat0 = float(lat_int)
+    tile_lat1 = float(lat_int + 1)
+    scale = float(res - 1)
 
     for name in shape_names:
-        polys = _wd_load_shapes(name, wd)
-        for bbox, rings in polys:
-            # bbox prefilter (open box: NE corner exclusive on the next tile)
-            if (bbox[2] < tile_lon0 or bbox[0] > tile_lon1 or
-                    bbox[3] < tile_lat0 or bbox[1] > tile_lat1):
-                continue
-            for ring in rings:
-                if len(ring) < 3:
-                    continue
-                # Convert lon/lat → pixel coords. Row 0 = north (lat=lat_int+1),
-                # col 0 = west (lon=lon_int).
-                pts = [(int(round((lon - tile_lon0) * scale)),
-                        int(round((tile_lat1 - lat) * scale)))
-                       for (lon, lat) in ring]
-                try:
-                    pygame.draw.polygon(surf, (255, 255, 255), pts)
-                except (TypeError, ValueError):
-                    continue   # degenerate ring
+        cache = _wd_load_shapes(name, wd)
+        ring_starts = cache["ring_starts"]
+        bboxes      = cache["ring_bboxes"]
+        points      = cache["points"]
+        if len(bboxes) == 0:
+            continue
 
-    # Read back red channel as the binary mask. pygame.surfarray.array3d
-    # is (W, H, 3); we want (H, W).
-    import numpy as _np
-    arr = pygame.surfarray.array3d(surf)
-    return (arr[:, :, 0].T > 0).astype(_np.uint8)
+        # Vectorised per-ring bbox prefilter
+        keep_rings = ~((bboxes[:, 2] < tile_lon0) | (bboxes[:, 0] > tile_lon1) |
+                       (bboxes[:, 3] < tile_lat0) | (bboxes[:, 1] > tile_lat1))
+        ring_idx = _np.flatnonzero(keep_rings)
+        if ring_idx.size == 0:
+            continue
+
+        for ri in ring_idx:
+            s = ring_starts[ri]
+            e = ring_starts[ri + 1]
+            ring = points[s:e]
+            # Convert lon/lat → pixel coords (col 0 = west, row 0 = north).
+            xy = _np.empty_like(ring)
+            xy[:, 0] = (ring[:, 0] - tile_lon0) * scale
+            xy[:, 1] = (tile_lat1 - ring[:, 1]) * scale
+            _wd_fill_ring(out, xy)
+
+    # XOR fill produced 0/1 pixels but inner rings (continents inside
+    # ocean) flip back to 0, which is what we want — water=1 only.
+    return out
 
 
 def _wd_existing_srtm_tiles():
