@@ -4665,7 +4665,9 @@ def _nav_clear() -> None:
     _settings.mark_dirty()
 
 
-_DIRECT_TO_DRAPE_OFFSET_FT = 5.0
+_DIRECT_TO_DRAPE_OFFSET_FT = 50.0   # ft above terrain — keeps the line clear
+                                    # of mesh interpolation/z-fighting that
+                                    # buries it inside ridges at lower offsets
 
 
 def build_direct_to_trace_vertices():
