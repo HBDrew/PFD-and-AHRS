@@ -3472,7 +3472,7 @@ _SYS_INFO_Y  = 56
 _SYS_INFO_LH = 28
 
 
-_SYS_N_LINES = 5
+_SYS_N_LINES = 6
 _SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
 _SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # DISPLAY MODE row top
 _SYS_TERRAIN_Y = _SYS_MODE_Y + _SS_RH + 8         # TERRAIN DATA row top
@@ -3505,11 +3505,20 @@ def _sys_data_tile(surf, bx, by, bw, bh, label, sub, active=True):
 def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    _gps_ok   = disp.get("gps_ok", False)
+    _gps_sats = int(disp.get("sats", 0) or 0)
+    if _gps_ok:
+        _gps_status = f"fix \u00b7 {_gps_sats} sat{'s' if _gps_sats != 1 else ''}"
+    elif _gps_sats > 0:
+        _gps_status = f"acquiring \u00b7 {_gps_sats} sat{'s' if _gps_sats != 1 else ''}"
+    else:
+        _gps_status = "no signal"
     lines = [
         ("Firmware version",  _SYS_VERSION),
         ("Build date",        _SYS_BUILD),
         ("Display",           f"{DISPLAY_W}\u00d7{DISPLAY_H}  HDMI"),
         ("Hardware",          "Pi 4 + Pico W  (OpenGL SVT)"),
+        ("GPS",               _gps_status),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
     pygame.draw.rect(surf, (0,12,32), (bx, _SYS_INFO_Y, bw, _SYS_IH), border_radius=6)
