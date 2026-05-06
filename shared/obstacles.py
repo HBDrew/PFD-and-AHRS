@@ -181,7 +181,9 @@ _DTYPE = np.dtype([
 
 
 def _build_cache(dat_path: str, cache_path: str):
-    """Parse DOF DAT and write numpy cache.  Returns list of tuples."""
+    """Parse DOF DAT and write numpy cache.  Returns the numpy structured
+    array (or the list of tuples when numpy is unavailable) so the first
+    load matches what np.load(cache_path) returns on subsequent calls."""
     records = []
     with open(dat_path, "r", encoding="latin-1", errors="ignore") as fh:
         for line in fh:
@@ -195,6 +197,7 @@ def _build_cache(dat_path: str, cache_path: str):
                                ("agl_ft","f4"),("msl_ft","f4"),
                                ("otype","U3"),("lit","?")])
         np.save(cache_path, arr)
+        return arr
 
     return records
 
