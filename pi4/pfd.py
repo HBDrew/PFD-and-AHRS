@@ -5921,13 +5921,15 @@ def render(surf, demo_mode, connected, data_stale=False):
     # Camera altitude floor: clamp the alt passed to the SVT renderer so the
     # camera never punches through terrain (the displayed altimeter tape is
     # untouched — the aircraft's *real* altitude can still go below the
-    # ground in degenerate sensor states or sim error).  50 ft above the
+    # ground in degenerate sensor states or sim error).  100 ft above the
     # interpolated SRTM elevation keeps the eye-point above the *mesh* —
     # the rendered triangulation of a coarser grid can sit a few tens of
-    # feet above the get_elevation_ft sample at the same lat/lon, so 20 ft
-    # of margin wasn't enough on real ground.
+    # feet above the get_elevation_ft sample at the same lat/lon, and at
+    # the discard-square boundary the camera sees through to sky if any
+    # mesh polygon clips the eye plane.  100 ft also keeps the runway in
+    # frame when the aircraft is rolling on it.
     _ground_elev_ft = get_elevation_ft(SRTM_DIR, lat, lon) if gps_ok else 0.0
-    alt_render = max(alt, _ground_elev_ft + 50.0)
+    alt_render = max(alt, _ground_elev_ft + 100.0)
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
     # Without a GPS fix we don't know where the aircraft is, so any SVT
     # rendering would be lying about the world.  Fall back to plain
