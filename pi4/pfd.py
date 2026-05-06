@@ -2011,11 +2011,13 @@ def sim_setup_hit(x, y):
 # ── Sim watermark / quick-exit button ────────────────────────────────────────
 # Sized to read clearly from a normal cockpit viewing distance so pilots
 # notice it's tappable.  Tap → opens the SIM CONTROLS overlay (which has
-# the EXIT SIM action).
-_SIM_BTN_W = 88
-_SIM_BTN_H = 32
-_SIM_BTN_X = CX - _SIM_BTN_W // 2
-_SIM_BTN_Y = CY - 36 - _SIM_BTN_H
+# the EXIT SIM action).  Distinct names from the sim-setup grid above
+# (which also defines _SIM_BTN_W/H) — they're different controls and
+# would otherwise shadow each other through the global namespace.
+_SIM_EXIT_W = 88
+_SIM_EXIT_H = 32
+_SIM_EXIT_X = CX - _SIM_EXIT_W // 2
+_SIM_EXIT_Y = CY - 36 - _SIM_EXIT_H
 
 
 # ── Sim controls overlay ─────────────────────────────────────────────────────
@@ -2541,8 +2543,8 @@ def handle_event(event, demo_mode):
         # ── PFD taps ──────────────────────────────────────────────────────
         # Tap on SIM button → open sim controls overlay (which has EXIT SIM)
         if _sim_state is not None and mode == "pfd":
-            if (_SIM_BTN_X <= x <= _SIM_BTN_X + _SIM_BTN_W and
-                    _SIM_BTN_Y <= y <= _SIM_BTN_Y + _SIM_BTN_H):
+            if (_SIM_EXIT_X <= x <= _SIM_EXIT_X + _SIM_EXIT_W and
+                    _SIM_EXIT_Y <= y <= _SIM_EXIT_Y + _SIM_EXIT_H):
                 disp["mode"] = "sim_controls"
                 return True
 
@@ -5465,7 +5467,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     if demo_mode:
         _text(surf, "DEMO", 14, (255, 60, 60), cx=CX, cy=CY - 20)
     elif _sim_state is not None:
-        _action_btn(surf, _SIM_BTN_X, _SIM_BTN_Y, _SIM_BTN_W, _SIM_BTN_H,
+        _action_btn(surf, _SIM_EXIT_X, _SIM_EXIT_Y, _SIM_EXIT_W, _SIM_EXIT_H,
                     "SIM  ✕", style="danger", r=6)
 
     # ── Overlay modes: veil + UI drawn on top of live PFD ────────────────────
