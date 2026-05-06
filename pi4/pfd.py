@@ -178,6 +178,10 @@ disp["ad"] = {                      # airport download/parse state
     # renders the polygons as 2D projections too).
     "show_runways":     True,
     "show_centerlines": True,
+    # SVT water bodies (oceans + lakes from Natural Earth, rasterised into
+    # the data/water/ companion of the SRTM tiles).  Off-by-default has no
+    # effect when no .water tiles are present.
+    "show_water":       True,
 }
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
@@ -4155,13 +4159,15 @@ def draw_airport_data(surf, ad):
                                      ("show_other",    "OTHER")]):
         bxi = bx + i * (btn_w + 10)
         _seg_btn(surf, bxi, filt_y, btn_w, filt_h, lbl, ad.get(key, False), r=6)
-    # Row 2: runway + centerline overlays (2 wide tiles)
+    # Row 2: runway + centerline + water overlays (3 wide tiles)
     row2_y = filt_y + filt_h + 10
-    big_w = (bw - 10) // 2
-    _seg_btn(surf, bx,                row2_y, big_w, filt_h,
+    row2_w = (bw - 20) // 3
+    _seg_btn(surf, bx,                       row2_y, row2_w, filt_h,
              "RUNWAYS", ad.get("show_runways", False), r=6)
-    _seg_btn(surf, bx + big_w + 10,   row2_y, big_w, filt_h,
+    _seg_btn(surf, bx + row2_w + 10,         row2_y, row2_w, filt_h,
              "EXT CENTERLINES", ad.get("show_centerlines", False), r=6)
+    _seg_btn(surf, bx + 2 * (row2_w + 10),   row2_y, row2_w, filt_h,
+             "WATER", ad.get("show_water", False), r=6)
 
     # Row 3: direct-to navigation controls (3 tiles).  "DIRECT TO" opens the
     # QWERTY keyboard for ident entry; "NEAREST" picks the closest public
@@ -4201,14 +4207,16 @@ def airport_data_hit(x, y, ad):
             bxi = bx + i * (btn_w + 10)
             if bxi <= x <= bxi + btn_w:
                 return f"toggle:{key}"
-    # Row 2: runway + centerline toggles (2 wide tiles)
+    # Row 2: runway + centerline + water toggles (3 wide tiles)
     row2_y = filt_y + filt_h + 10
-    big_w = (bw - 10) // 2
+    row2_w = (bw - 20) // 3
     if row2_y <= y <= row2_y + filt_h:
-        if bx <= x <= bx + big_w:
+        if bx <= x <= bx + row2_w:
             return "toggle:show_runways"
-        if bx + big_w + 10 <= x <= bx + big_w + 10 + big_w:
+        if bx + row2_w + 10 <= x <= bx + 2 * row2_w + 10:
             return "toggle:show_centerlines"
+        if bx + 2 * (row2_w + 10) <= x <= bx + 2 * (row2_w + 10) + row2_w:
+            return "toggle:show_water"
     # Row 3: direct-to navigation (3 tiles)
     row3_y = row2_y + filt_h + 10
     nav_w = (bw - 20) // 3
@@ -5359,6 +5367,8 @@ def render(surf, demo_mode, connected, data_stale=False):
             DISPLAY_W, HDG_Y,
             pitch, roll, hdg, alt, lat, lon,
             polylines=_gl_polylines,
+            water_dir=WATER_DIR,
+            water_enable=disp["ad"].get("show_water", True),
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain:

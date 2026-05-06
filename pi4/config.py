@@ -108,6 +108,7 @@ FONT_SCALE = _S_MIN
 # ── SVT / Terrain ────────────────────────────────────────────────────────────
 _HERE         = os.path.dirname(os.path.abspath(__file__))
 SRTM_DIR      = os.path.join(_HERE, "data", "srtm")
+WATER_DIR     = os.path.join(_HERE, "data", "water")
 
 # ── SVT renderer selection ────────────────────────────────────────────────────
 # "opengl"        — full 3D synthetic vision via moderngl + standalone EGL

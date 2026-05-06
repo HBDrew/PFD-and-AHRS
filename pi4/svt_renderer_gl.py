@@ -43,6 +43,15 @@ import pygame
 
 # Import shared terrain utilities
 from terrain import load_tile, get_elevation_ft
+# Water-mask loader (Natural Earth ocean+lakes rasterised per SRTM tile).
+# Optional — if no .water tiles are present the renderer paints terrain
+# everywhere as before.
+try:
+    from water import load_tile as load_water_tile
+    HAS_WATER = True
+except ImportError:
+    HAS_WATER = False
+    load_water_tile = None
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MESH_RADIUS_NM    = 20.0        # nm — terrain mesh extent around aircraft
@@ -105,6 +114,8 @@ in vec3 in_pos;          // (East, North, Up_absolute) in metres. Origin at
                          // mesh centre. East metric scales with cos(mesh_lat)
                          // (mesh covers a fixed *angular* span); Z is absolute
                          // elevation above sea level.
+in float in_water;       // 0.0 = land, 1.0 = water (sampled at vertex from
+                         // Natural Earth ocean+lakes mask).
 
 uniform mat4 u_mvp;
 uniform float u_alt_m;        // aircraft altitude (m, absolute) per-frame, so
@@ -124,6 +135,7 @@ out float v_clearance_ft;
 out vec3 v_world_pos;
 out float v_dist_m;
 out vec2 v_offset_from_aircraft;
+out float v_water;
 
 void main() {
     gl_Position = u_mvp * vec4(in_pos, 1.0);
@@ -134,6 +146,7 @@ void main() {
     v_world_pos = vec3(vec2(vx_eq, in_pos.y) + u_world_offset, in_pos.z);
     v_dist_m = length(in_pos.xy);
     v_offset_from_aircraft = in_pos.xy - u_aircraft_xy;
+    v_water = in_water;
 }
 """
 
@@ -145,6 +158,7 @@ in float v_clearance_ft;
 in vec3 v_world_pos;
 in float v_dist_m;
 in vec2 v_offset_from_aircraft;
+in float v_water;
 out vec4 frag_color;
 
 uniform float u_grid_spacing_m;     // metres per grid square (e.g. 1852 = 1 nm)
@@ -158,6 +172,9 @@ uniform float u_discard_inside_m;   // outer mesh: drop fragments inside the
 uniform vec3  u_sun_dir;            // unit vector pointing TOWARD the sun
 uniform float u_sun_intensity;      // 0.0 = no lighting, 1.0 = full
 uniform float u_ambient;            // 0.0 = pitch black shadows, 1.0 = no shadow
+uniform float u_water_enable;       // 0.0 = ignore water flag, 1.0 = render
+                                    // water with the water palette (lets the
+                                    // pilot disable water rendering for debug).
 
 // Clearance-based color palette (matches pygame PALETTE_RELATIVE)
 vec3 clearance_color(float c) {
@@ -167,6 +184,15 @@ vec3 clearance_color(float c) {
     if (c < 1000.0) return vec3(0.55, 0.39, 0.16);
     if (c < 2000.0) return vec3(0.39, 0.29, 0.14);
     return vec3(0.27, 0.22, 0.11);
+}
+
+// Water palette — deep navy with a subtle horizon-distance lift toward
+// lighter blue so distant water reads as ocean rather than a flat slab.
+vec3 water_color(float dist_m) {
+    vec3 deep   = vec3(0.05, 0.16, 0.30);
+    vec3 far    = vec3(0.18, 0.32, 0.46);
+    float t = clamp(dist_m / 30000.0, 0.0, 1.0);
+    return mix(deep, far, t);
 }
 
 // Per-fragment normal from screen-space derivatives of world position.
@@ -199,24 +225,35 @@ void main() {
         discard;
     }
 
-    vec3 base = clearance_color(v_clearance_ft);
+    // Water test: any fragment whose interpolated water flag clears the
+    // 0.5 threshold is painted as ocean/lake.  Lighting and the grid
+    // overlay are both suppressed on water — a flat blue surface looks
+    // wrong with shaded normals, and the grid lines double-up against
+    // the coastline.
+    bool is_water = (u_water_enable > 0.5) && (v_water > 0.5);
+    vec3 base;
+    if (is_water) {
+        base = water_color(v_dist_m);
+    } else {
+        base = clearance_color(v_clearance_ft);
 
-    // ── Sun-angle lighting ───────────────────────────────────────────────
-    // Simple Lambertian diffuse term on the terrain color.  Faces pointing
-    // toward the sun appear brighter; faces in shadow darken toward ambient.
-    if (u_sun_intensity > 0.001) {
-        vec3 n = compute_normal();
-        float diffuse = max(0.0, dot(n, u_sun_dir));
-        // light_factor: at N·L = 0 → ambient; at N·L = 1 → full illumination
-        float light = mix(u_ambient, 1.0, diffuse) * u_sun_intensity
-                    + (1.0 - u_sun_intensity);
-        base *= light;
+        // ── Sun-angle lighting ─────────────────────────────────────────
+        // Simple Lambertian diffuse term on the terrain color.  Faces
+        // pointing toward the sun appear brighter; faces in shadow
+        // darken toward ambient.
+        if (u_sun_intensity > 0.001) {
+            vec3 n = compute_normal();
+            float diffuse = max(0.0, dot(n, u_sun_dir));
+            float light = mix(u_ambient, 1.0, diffuse) * u_sun_intensity
+                        + (1.0 - u_sun_intensity);
+            base *= light;
+        }
     }
 
     // Distance-based grid fade: full strength near, fades out at u_grid_max_dist_m
     float fade = 1.0 - smoothstep(u_grid_max_dist_m * 0.5, u_grid_max_dist_m, v_dist_m);
 
-    if (fade > 0.01 && u_grid_spacing_m > 0.0) {
+    if (!is_water && fade > 0.01 && u_grid_spacing_m > 0.0) {
         float minor = grid_line(v_world_pos.xy, u_grid_spacing_m, 1.0);
         float major = grid_line(v_world_pos.xy,
                                 u_grid_spacing_m * u_grid_major_every, 1.5);
@@ -478,9 +515,15 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
 
     _terrain_vbo_pos = _ctx.buffer(positions.tobytes())
     _terrain_ibo     = _ctx.buffer(indices.tobytes())
+    # The vertex shader takes an `in_water` attribute (per-vertex 0/1 from
+    # the water mask).  The standalone path doesn't sample water — uploading
+    # zeros keeps the program link happy and renders everything as land.
+    _water_zeros = np.zeros(positions.shape[:2], dtype=np.float32)
+    _terrain_vbo_water = _ctx.buffer(_water_zeros.flatten().tobytes())
     _terrain_vao = _ctx.vertex_array(
         _terrain_prog,
-        [(_terrain_vbo_pos, '3f', 'in_pos')],
+        [(_terrain_vbo_pos,   '3f', 'in_pos'),
+         (_terrain_vbo_water, '1f', 'in_water')],
         index_buffer=_terrain_ibo,
     )
 
@@ -612,9 +655,12 @@ def render_svt_gl(
         _terrain_prog['u_cos_mesh_lat'].value     = max(
             1e-6, math.cos(math.radians(lat)))
         _terrain_prog['u_world_offset'].value     = (0.0, 0.0)
+        _terrain_prog['u_aircraft_xy'].value      = (0.0, 0.0)
         _terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
         _terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
         _terrain_prog['u_grid_max_dist_m'].value  = _mesh_radius_m
+        _terrain_prog['u_discard_inside_m'].value = 0.0
+        _terrain_prog['u_water_enable'].value     = 0.0   # standalone has no water data
         # Sun direction vector (world frame: X=East, Y=North, Z=Up)
         az_rad = math.radians(SUN_AZIMUTH_DEG)
         el_rad = math.radians(SUN_ELEVATION_DEG)
@@ -668,13 +714,16 @@ _shared_state = {}
 class _SharedState:
     __slots__ = ("ctx", "terrain_prog", "sky_prog", "sky_vao",
                  # Inner (high-detail) mesh — ~20 nm
-                 "terrain_vao", "terrain_vbo_pos",
+                 "terrain_vao", "terrain_vbo_pos", "terrain_vbo_water",
                  "terrain_ibo", "mesh_key", "mesh_radius_m",
                  "mesh_center_lat", "mesh_center_lon",
                  # Outer (far-LOD) mesh — ~75 nm, coarse silhouettes
-                 "outer_vao", "outer_vbo_pos", "outer_ibo",
+                 "outer_vao", "outer_vbo_pos", "outer_vbo_water", "outer_ibo",
                  "outer_mesh_key", "outer_mesh_radius_m",
                  "outer_mesh_center_lat", "outer_mesh_center_lon",
+                 # Water-mask data dir (set by render_svt_into_current_fb).
+                 # Empty string disables water sampling.
+                 "water_dir",
                  # Direct-to polyline
                  "line_prog", "line_vbo", "line_vao", "line_capacity",
                  "_last_line_width")
@@ -694,6 +743,7 @@ class _SharedState:
                                         [(sky_vbo, '2f', 'in_pos')])
         self.terrain_vao = None
         self.terrain_vbo_pos = None
+        self.terrain_vbo_water = None
         self.terrain_ibo = None
         self.mesh_key = None
         self.mesh_radius_m = MESH_RADIUS_NM * NM_TO_M
@@ -701,11 +751,13 @@ class _SharedState:
         self.mesh_center_lon = 0.0
         self.outer_vao = None
         self.outer_vbo_pos = None
+        self.outer_vbo_water = None
         self.outer_ibo = None
         self.outer_mesh_key = None
         self.outer_mesh_radius_m = OUTER_MESH_RADIUS_NM * NM_TO_M
         self.outer_mesh_center_lat = 0.0
         self.outer_mesh_center_lon = 0.0
+        self.water_dir = ""
         # Polyline rendering — single reusable VBO, grown as needed.
         self.line_prog = ctx.program(vertex_shader=LINE_VERTEX_SHADER,
                                      fragment_shader=LINE_FRAGMENT_SHADER)
@@ -808,27 +860,44 @@ class _SharedState:
         sample_lon = mesh_lon + dlon
 
         elev_ft = np.zeros((n, n), dtype=np.float32)
+        water_flag = np.zeros((n, n), dtype=np.float32)
         lat_int_arr = np.floor(sample_lat).astype(np.int32)
         lon_int_arr = np.floor(sample_lon).astype(np.int32)
         enc = ((lat_int_arr.astype(np.int64) + 90) * 1000 +
                (lon_int_arr.astype(np.int64) + 360))
+        water_dir = self.water_dir
         for tile_key in np.unique(enc):
             tla = int(tile_key) // 1000 - 90
             tlo = int(tile_key) %  1000 - 360
+            tile_mask = (lat_int_arr == tla) & (lon_int_arr == tlo)
+            if not tile_mask.any():
+                continue
             result = load_tile(srtm_dir, tla, tlo)
-            if result is None:
-                continue
-            tile_data, n_s = result
-            mask = (lat_int_arr == tla) & (lon_int_arr == tlo)
-            if not mask.any():
-                continue
-            step = 1.0 / (n_s - 1)
-            row_i = np.clip(np.round((tla + 1 - sample_lat) / step).astype(np.int32),
-                            0, n_s - 1)
-            col_i = np.clip(np.round((sample_lon - tlo) / step).astype(np.int32),
-                            0, n_s - 1)
-            elev_ft[mask] = tile_data[row_i, col_i][mask]
+            if result is not None:
+                tile_data, n_s = result
+                step = 1.0 / (n_s - 1)
+                row_i = np.clip(np.round((tla + 1 - sample_lat) / step).astype(np.int32),
+                                0, n_s - 1)
+                col_i = np.clip(np.round((sample_lon - tlo) / step).astype(np.int32),
+                                0, n_s - 1)
+                elev_ft[tile_mask] = tile_data[row_i, col_i][tile_mask]
+            # Water mask, sampled the same way.  Optional — tiles without
+            # a companion .water file just leave water_flag at 0 (all land).
+            if HAS_WATER and water_dir and load_water_tile is not None:
+                wres = load_water_tile(water_dir, tla, tlo)
+                if wres is not None:
+                    wmask, w_n = wres
+                    wstep = 1.0 / (w_n - 1)
+                    wrow = np.clip(np.round((tla + 1 - sample_lat) / wstep).astype(np.int32),
+                                   0, w_n - 1)
+                    wcol = np.clip(np.round((sample_lon - tlo) / wstep).astype(np.int32),
+                                   0, w_n - 1)
+                    water_flag[tile_mask] = wmask[wrow, wcol][tile_mask].astype(np.float32)
 
+        # Force any vertex tagged as water to lie at exactly sea level.  The
+        # SRTM cell may report a few metres of noise for ocean tiles; flat
+        # water reads better than wrinkled water.
+        elev_ft = np.where(water_flag > 0.5, 0.0, elev_ft)
         elev_m = elev_ft * FT_TO_M
 
         # Z = absolute elevation. Aircraft alt is applied per-frame in the
@@ -845,14 +914,17 @@ class _SharedState:
         indices = np.concatenate([tri1, tri2]).astype(np.uint32)
 
         new_vbo = self.ctx.buffer(positions.tobytes())
+        new_vbo_water = self.ctx.buffer(water_flag.flatten().tobytes())
         new_ibo = self.ctx.buffer(indices.tobytes())
         new_vao = self.ctx.vertex_array(
             self.terrain_prog,
-            [(new_vbo, '3f', 'in_pos')],
+            [(new_vbo,       '3f', 'in_pos'),
+             (new_vbo_water, '1f', 'in_water')],
             index_buffer=new_ibo,
         )
         return {
-            'vao': new_vao, 'vbo': new_vbo, 'ibo': new_ibo,
+            'vao': new_vao, 'vbo': new_vbo, 'vbo_water': new_vbo_water,
+            'ibo': new_ibo,
             'key': key, 'mesh_lat': mesh_lat, 'mesh_lon': mesh_lon,
             'radius_m': radius_m,
         }
@@ -876,9 +948,12 @@ class _SharedState:
         if self.terrain_vao is not None:
             self.terrain_vao.release()
             self.terrain_vbo_pos.release()
+            if self.terrain_vbo_water is not None:
+                self.terrain_vbo_water.release()
             self.terrain_ibo.release()
         self.terrain_vao = new['vao']
         self.terrain_vbo_pos = new['vbo']
+        self.terrain_vbo_water = new['vbo_water']
         self.terrain_ibo = new['ibo']
         self.mesh_key = new['key']
         self.mesh_center_lat = new['mesh_lat']
@@ -895,9 +970,12 @@ class _SharedState:
         if self.outer_vao is not None:
             self.outer_vao.release()
             self.outer_vbo_pos.release()
+            if self.outer_vbo_water is not None:
+                self.outer_vbo_water.release()
             self.outer_ibo.release()
         self.outer_vao = new['vao']
         self.outer_vbo_pos = new['vbo']
+        self.outer_vbo_water = new['vbo_water']
         self.outer_ibo = new['ibo']
         self.outer_mesh_key = new['key']
         self.outer_mesh_center_lat = new['mesh_lat']
@@ -918,6 +996,8 @@ def render_svt_into_current_fb(
     lon: float,
     v_fov_deg: float = V_FOV_DEG,
     polylines=None,
+    water_dir: str = "",
+    water_enable: bool = True,
 ) -> bool:
     """Render the SVT terrain+sky directly into the currently-bound
     framebuffer using the caller-provided moderngl context.
@@ -941,6 +1021,15 @@ def render_svt_into_current_fb(
     if st is None:
         st = _SharedState(ctx)
         _shared_state[id(ctx)] = st
+
+    # Update water dir before building meshes so the new value is applied on
+    # any rebuild this frame.  Changing water_dir invalidates the existing
+    # meshes (per-vertex water flag depends on it), so trigger a rebuild
+    # by clearing the cache keys.
+    if st.water_dir != water_dir:
+        st.water_dir = water_dir
+        st.mesh_key = None
+        st.outer_mesh_key = None
 
     st.build_mesh(srtm_dir, lat, lon, alt_ft)
     st.build_outer_mesh(srtm_dir, lat, lon, alt_ft)
@@ -1001,6 +1090,7 @@ def render_svt_into_current_fb(
         st.terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
         st.terrain_prog['u_grid_max_dist_m'].value  = grid_max_dist_m
         st.terrain_prog['u_discard_inside_m'].value = float(discard_inside_m)
+        st.terrain_prog['u_water_enable'].value     = 1.0 if water_enable else 0.0
         st.terrain_prog['u_sun_dir'].value       = sun_dir
         st.terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
         st.terrain_prog['u_ambient'].value       = SUN_AMBIENT
