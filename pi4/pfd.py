@@ -1766,9 +1766,13 @@ class SimFlyState:
 
         with _state_lock:
             # ── Targets from bugs ──────────────────────────────────────────────
-            # Honour whichever bug the pilot is actually looking at.  In TRK
-            # mode the autopilot points yaw at the track bug — the wind
-            # crab in the sim then makes the displayed track land near it.
+            # Honour whichever bug the pilot is actually looking at.  TRK mode
+            # closes the heading loop on GPS track instead of magnetic yaw —
+            # otherwise the AP holds yaw at the bug, wind crabs the track off
+            # to one side, and the displayed track never matches what the
+            # pilot dialled in.  By driving bank from track error, yaw
+            # naturally settles a few degrees into the wind so track lands
+            # on the bug.
             _bk = _active_bug_key()
             tgt_hdg = disp.get(_bk)
             if tgt_hdg is None:
@@ -1777,8 +1781,15 @@ class SimFlyState:
             tgt_spd = disp.get("spd_bug") or 90.0
 
             # ── Heading / bank ─────────────────────────────────────────────────
+            # Reference for the heading-hold error: yaw in MAG mode, track in
+            # TRK mode.  state["track"] gets refreshed below from the wind
+            # solution; first frame falls back to yaw to avoid a transient.
+            if _bk == "trk_bug":
+                ref_hdg = state.get("track", state["yaw"]) or state["yaw"]
+            else:
+                ref_hdg = state["yaw"]
             hdg     = state["yaw"]
-            hdg_err = ((tgt_hdg - hdg + 180) % 360) - 180
+            hdg_err = ((tgt_hdg - ref_hdg + 180) % 360) - 180
             turn_rate = 3.0  # standard rate deg/s
             d_hdg = max(-turn_rate * dt, min(turn_rate * dt, hdg_err * 0.4))
             state["yaw"]  = (hdg + d_hdg) % 360
