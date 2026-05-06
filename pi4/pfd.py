@@ -3903,9 +3903,14 @@ def _wd_fill_ring(out, ring_xy_px):
     x2 = _np.roll(x1, -1)
     y2 = _np.roll(y1, -1)
 
-    # Edge prefilter: drop edges entirely outside the tile in any axis.
-    keep = ~(((x1 < 0) & (x2 < 0)) | ((x1 >= W) & (x2 >= W)) |
-             ((y1 < 0) & (y2 < 0)) | ((y1 >= H) & (y2 >= H)))
+    # Edge prefilter: drop edges entirely above or below the tile in Y.
+    # Do NOT prefilter in X — closed polygons whose perimeter lies far
+    # east/west of the tile (e.g. the Pacific Ocean ring's antimeridian
+    # and Asian-coast edges for an offshore CONUS tile) still contribute
+    # scanline-crossing parity.  Their xs values land outside [0, W) and
+    # are clipped during fill, but keeping them is what makes the
+    # even–odd count even on every scanline.
+    keep = ~(((y1 < 0) & (y2 < 0)) | ((y1 >= H) & (y2 >= H)))
     if not keep.any():
         return
     x1 = x1[keep]; y1 = y1[keep]
