@@ -489,6 +489,11 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
                         0, n_s - 1)
         elev_ft[mask] = tile_data[row_i, col_i][mask]
 
+    # Clamp sub-sea-level samples (SRTM1 ocean bathymetry) to the
+    # waterline so the mesh doesn't crater offshore.  See _build_tier_mesh
+    # for the rationale.
+    np.maximum(elev_ft, 0.0, out=elev_ft)
+
     elev_m = elev_ft * FT_TO_M
 
     # Build vertex array: position (east, north, up) and clearance (metres)
@@ -926,6 +931,13 @@ class _SharedState:
                     dlon = (sample_lon - nearby_apts['lon'][k]) * cos_snap
                     near_apt |= (dlat * dlat + dlon * dlon) < burn_deg_sq
                 water_flag[near_apt] = 0.0
+
+        # SRTM1 (3601×3601) tiles ship with real ocean bathymetry —
+        # N33W119 reaches –5800 ft.  Without clamping, water vertices
+        # render as a deep crater off the coast.  Clamping to ≥ 0 leaves
+        # every land sample untouched (KLAX's 125 ft is preserved) and
+        # pulls only sub-sea-level samples up to the waterline.
+        np.maximum(elev_ft, 0.0, out=elev_ft)
 
         elev_m = elev_ft * FT_TO_M
 
