@@ -5394,7 +5394,7 @@ _CENTERLINE_RANGE_NM       = 15.0   # draw extended centerlines within this rang
 _CENTERLINE_EXTEND_NM      = 5.0    # centerline extends this far from threshold
 _CENTERLINE_DASH_NM        = 0.5    # dash length (nm)
 _CENTERLINE_GLIDE_DEG      = 3.0    # rise centerline at standard glideslope
-_AIRPORT_BOX_MIN_PX        = 70     # min on-screen size of airport environment box
+_AIRPORT_BOX_PX            = 100    # on-screen edge length of airport environment box
 
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
@@ -5553,22 +5553,25 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                         _text(surf, he_id, sz, NUM_COL, bold=True,
                               cx=he_lbl[0], cy=he_lbl[1])
 
-                # Airport environment box: green outline that's always at
-                # least 4× the runway's on-screen radius (or _AIRPORT_BOX_MIN_PX
-                # whichever is bigger) so the airport reads as a distinct
-                # symbol rather than a fatter line around the runway.
-                # The 4× lower bound keeps it visible up close; the absolute
-                # min handles distant airports where the runway is sub-pixel.
-                pts = [p1, p2, p3, p4]
-                bcx = sum(p[0] for p in pts) / 4.0
-                bcy = sum(p[1] for p in pts) / 4.0
-                max_r = max(math.hypot(p[0] - bcx, p[1] - bcy) for p in pts)
-                min_r = _AIRPORT_BOX_MIN_PX / 2.0
-                if max_r > 0.5:
-                    s = max(4.0, min_r / max_r)
-                    box_pts = [(int(bcx + (p[0] - bcx) * s),
-                                int(bcy + (p[1] - bcy) * s)) for p in pts]
-                    pygame.draw.lines(surf, BOX_COL, True, box_pts, 2)
+                # Airport environment box: fixed-size square (no scaling
+                # with range or runway projection) centred on the runway
+                # midpoint.  Drawn from the projected runway midpoint so
+                # roll/pitch/heading already place it correctly relative
+                # to the AI; only its on-screen size is fixed.  Result:
+                # the box stays the same size frame-to-frame as you fly
+                # towards the airport and never extends above the horizon
+                # any further than the midpoint itself does.
+                if mid_le is not None and mid_he is not None:
+                    box_cx = (mid_le[0] + mid_he[0]) * 0.5
+                    box_cy = (mid_le[1] + mid_he[1]) * 0.5
+                    half = _AIRPORT_BOX_PX * 0.5
+                    if (ax - half <= box_cx <= ax + aw + half and
+                            ay_r - half <= box_cy <= ay_r + ah + half):
+                        x0 = int(box_cx - half); x1 = int(box_cx + half)
+                        y0 = int(box_cy - half); y1 = int(box_cy + half)
+                        pygame.draw.lines(surf, BOX_COL, True,
+                                          [(x0, y0), (x1, y0),
+                                           (x1, y1), (x0, y1)], 2)
                 surf.set_clip(old_clip)
 
         # ── Extended centerlines from each threshold ──────────────────────
