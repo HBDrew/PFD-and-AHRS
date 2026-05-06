@@ -5850,6 +5850,15 @@ def render(surf, demo_mode, connected, data_stale=False):
     # Shared-GL composite path renders sky+terrain directly into the default
     # framebuffer instead of blitting a pygame surface; the 2D overlay here
     # leaves the AI region transparent so terrain shows through.
+    #
+    # Camera altitude floor: clamp the alt passed to the SVT renderer so the
+    # camera never punches through terrain (the displayed altimeter tape is
+    # untouched — the aircraft's *real* altitude can still go below the
+    # ground in degenerate sensor states or sim error).  20 ft above the
+    # terrain immediately under the aircraft keeps the eye-point above the
+    # mesh even on rolling ground.
+    _ground_elev_ft = get_elevation_ft(SRTM_DIR, lat, lon)
+    alt_render = max(alt, _ground_elev_ft + 20.0)
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
     if _shared_gl_ctx is not None:
         # Render terrain into the AI region of the default framebuffer.
@@ -5868,7 +5877,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         render_svt_into_current_fb(
             _shared_gl_ctx, SRTM_DIR,
             DISPLAY_W, HDG_Y,
-            pitch, roll, hdg, alt, lat, lon,
+            pitch, roll, hdg, alt_render, lat, lon,
             polylines=_gl_polylines,
             water_dir=WATER_DIR,
             water_enable=disp["ad"].get("show_water", True),
@@ -5876,7 +5885,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain:
-        draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt, lat, lon)
+        draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt_render, lat, lon)
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
