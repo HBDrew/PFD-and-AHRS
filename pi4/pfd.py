@@ -80,6 +80,7 @@ _shared_gl_compositor = None
 import obstacles as obs_mod
 import airports as apt_mod
 import runways as rwy_mod
+import water as water_mod
 import settings as _settings
 
 DEG = math.pi / 180
@@ -141,6 +142,13 @@ disp["td"] = {                      # terrain download state
     "dl_region":   "",
     "dl_current":  0,
     "dl_total":    0,
+    "dl_status":   "",
+    "dl_cancel":   False,
+}
+disp["wd"] = {                      # water-mask rasterise state (companion
+    "downloading": False,           # to terrain download — produces a .water
+    "dl_current":  0,               # file per existing SRTM tile from the
+    "dl_total":    0,               # Natural Earth ocean+lakes shapefiles)
     "dl_status":   "",
     "dl_cancel":   False,
 }
@@ -2419,9 +2427,13 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "system_setup"
             elif action == "cancel":
                 disp["td"]["dl_cancel"] = True
+                disp["wd"]["dl_cancel"] = True
             elif action == "current_area":
                 if not disp["td"]["downloading"]:
                     _td_start_current_area()
+            elif action == "water_masks":
+                if not disp["wd"]["downloading"]:
+                    _wd_start_download()
             elif action and action.startswith("region:"):
                 if not disp["td"]["downloading"]:
                     idx = int(action.split(":")[1])
@@ -3714,6 +3726,200 @@ def _td_start_current_area():
     t.start()
 
 
+# ── Water-mask download ───────────────────────────────────────────────────────
+# Companion to the SRTM download flow: pulls the Natural Earth 10m ocean +
+# lakes shapefiles once (~12 MB combined), then for each existing .hgt tile
+# rasterises a 1201×1201 binary water mask via gdal_rasterize and writes
+# it as a `.water` companion file.  Runs in a daemon thread so the UI
+# stays responsive; status is reported via disp["wd"].
+
+_WD_NE_FILES   = ("ne_10m_ocean", "ne_10m_lakes")
+_WD_NE_PRIMARY = "https://naciscdn.org/naturalearth/10m/physical"
+_WD_NE_MIRROR  = ("https://github.com/nvkelso/natural-earth-vector/"
+                  "raw/master/zips/10m_physical")
+_WD_TILE_RES   = 1201
+
+
+def _wd_shapes_dir():
+    """Where Natural Earth .shp files live (alongside data/srtm/)."""
+    return os.path.join(os.path.dirname(SRTM_DIR), "natural_earth")
+
+
+def _wd_ensure_shapefiles(wd):
+    """Download + unzip the Natural Earth shapefiles if not present.
+    Returns the list of .shp paths or None on failure."""
+    import zipfile as _zipfile
+    sdir = _wd_shapes_dir()
+    os.makedirs(sdir, exist_ok=True)
+    shps = []
+    for name in _WD_NE_FILES:
+        shp_path = os.path.join(sdir, name + ".shp")
+        if os.path.exists(shp_path):
+            shps.append(shp_path)
+            continue
+        zip_path = os.path.join(sdir, name + ".zip")
+        wd["dl_status"] = f"Downloading {name}.zip…"
+        urls = (f"{_WD_NE_PRIMARY}/{name}.zip",
+                f"{_WD_NE_MIRROR}/{name}.zip")
+        ok = False
+        for url in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=30) as resp:
+                    blob = resp.read()
+                with open(zip_path, "wb") as f:
+                    f.write(blob)
+                ok = True
+                break
+            except Exception as e:
+                wd["dl_status"] = f"  retry: {e}"
+        if not ok:
+            wd["dl_status"] = f"Failed to download {name}.zip"
+            return None
+        try:
+            with _zipfile.ZipFile(zip_path) as z:
+                z.extractall(sdir)
+            os.remove(zip_path)
+        except Exception as e:
+            wd["dl_status"] = f"Unzip failed: {e}"
+            return None
+        if not os.path.exists(shp_path):
+            wd["dl_status"] = f"{name}.shp missing after unzip"
+            return None
+        shps.append(shp_path)
+    return shps
+
+
+def _wd_rasterise_tile(lat_int, lon_int, shps, tmp_dir):
+    """Run gdal_rasterize over the union of `shps` into a 1201×1201
+    uint8 0/1 array covering the 1°×1° tile at (lat_int, lon_int)."""
+    res = _WD_TILE_RES
+    tif = os.path.join(tmp_dir, f"{lat_int}_{lon_int}.tif")
+    # First shapefile: initialise an all-zero raster, then burn 1.
+    cmd = [
+        "gdal_rasterize",
+        "-burn", "1",
+        "-of", "GTiff", "-ot", "Byte",
+        "-init", "0",
+        "-co", "COMPRESS=NONE",
+        "-ts", str(res), str(res),
+        "-te", str(lon_int), str(lat_int),
+               str(lon_int + 1), str(lat_int + 1),
+        shps[0], tif,
+    ]
+    subprocess.run(cmd, check=True,
+                   stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    # Subsequent shapefiles burn into the existing raster.
+    for shp in shps[1:]:
+        subprocess.run(["gdal_rasterize", "-burn", "1", shp, tif],
+                       check=True,
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+    # Read the GeoTIFF back as a flat byte buffer via gdal_translate.
+    binp = os.path.join(tmp_dir, f"{lat_int}_{lon_int}.bin")
+    subprocess.run(["gdal_translate", "-of", "ENVI", "-ot", "Byte", tif, binp],
+                   check=True,
+                   stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    with open(binp, "rb") as f:
+        data = f.read()
+    if len(data) != res * res:
+        raise RuntimeError(f"unexpected raster size: {len(data)}")
+    import numpy as _np
+    arr = _np.frombuffer(data, dtype=_np.uint8).reshape(res, res)
+    return (arr > 0).astype(_np.uint8)
+
+
+def _wd_existing_srtm_tiles():
+    """Enumerate (lat_int, lon_int) for every .hgt file in SRTM_DIR."""
+    tiles = []
+    if not os.path.isdir(SRTM_DIR):
+        return tiles
+    for f in os.listdir(SRTM_DIR):
+        if not f.endswith(".hgt") or len(f) < 11:
+            continue
+        try:
+            ns = f[0]
+            lat_int = int(f[1:3]) * (1 if ns == "N" else -1)
+            ew = f[3]
+            lon_int = int(f[4:7]) * (1 if ew == "E" else -1)
+        except ValueError:
+            continue
+        tiles.append((lat_int, lon_int))
+    return sorted(tiles)
+
+
+def _wd_download_thread():
+    """Background worker: download Natural Earth + rasterise per-tile masks."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    from water import save_tile, _tile_key as _water_tile_key
+
+    wd = disp["wd"]
+    wd["downloading"] = True
+    wd["dl_cancel"]   = False
+    wd["dl_current"]  = 0
+    wd["dl_total"]    = 0
+
+    if _shutil.which("gdal_rasterize") is None:
+        wd["dl_status"] = "Install gdal-bin: sudo apt install -y gdal-bin"
+        wd["downloading"] = False
+        return
+
+    wd["dl_status"] = "Loading Natural Earth shapefiles…"
+    shps = _wd_ensure_shapefiles(wd)
+    if shps is None:
+        wd["downloading"] = False
+        return
+
+    tiles = _wd_existing_srtm_tiles()
+    if not tiles:
+        wd["dl_status"] = "No SRTM tiles on disk — download terrain first"
+        wd["downloading"] = False
+        return
+
+    os.makedirs(WATER_DIR, exist_ok=True)
+    tmp_dir = _tempfile.mkdtemp(prefix="water_dl_")
+    wd["dl_total"] = len(tiles)
+    ok = skip = err = 0
+    try:
+        for i, (lat_int, lon_int) in enumerate(tiles):
+            if wd["dl_cancel"]:
+                wd["dl_status"] = (f"Cancelled  ({ok} new, "
+                                   f"{skip} skipped, {err} errors)")
+                return
+            wd["dl_current"] = i
+            key = _water_tile_key(lat_int, lon_int)
+            out_path = os.path.join(WATER_DIR, key)
+            if os.path.exists(out_path):
+                skip += 1
+                continue
+            wd["dl_status"] = f"Rasterising {key}…"
+            try:
+                arr = _wd_rasterise_tile(lat_int, lon_int, shps, tmp_dir)
+                save_tile(out_path, arr)
+                ok += 1
+            except Exception as e:
+                wd["dl_status"] = f"{key}: {e}"
+                err += 1
+        wd["dl_current"] = len(tiles)
+        wd["dl_status"]  = (f"Done ✓  {ok} new"
+                            + (f", {skip} skipped" if skip else "")
+                            + (f", {err} errors"   if err   else ""))
+    finally:
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
+        wd["downloading"] = False
+
+
+def _wd_start_download():
+    """Kick off the water-mask rasterise in a daemon thread."""
+    if disp["wd"]["downloading"]:
+        return
+    t = threading.Thread(target=_wd_download_thread, daemon=True,
+                         name="WaterMaskDL")
+    t.start()
+
+
 # ── Obstacle data download ─────────────────────────────────────────────────────
 
 def _od_load_obstacles():
@@ -4265,21 +4471,57 @@ def draw_terrain_data(surf, td):
     available_h = DISPLAY_H - _TD_MY - _TD_GAP*(rows-1) - 8
     bh = available_h // (rows + 1)   # +1 row for the "Current Area" button
 
-    # ── Current Area button (full width) ─────────────────────────────────────
+    # ── Top row: Current Area | Water Masks ──────────────────────────────────
+    # Two side-by-side full-height tiles.  Left = SRTM tile download for the
+    # current GPS area; right = rasterise Natural Earth water masks for the
+    # SRTM tiles already on disk so SVT paints oceans + lakes blue.
+    half_w = (bw - _TD_GAP) // 2
+    wd = disp["wd"]
+    wd_busy = wd.get("downloading", False)
+
+    # Left: Current Area (terrain SRTM)
     cur_col = (50,50,70) if downloading else (0,18,45)
     cur_oc  = (70,70,95)  if downloading else WHITE
-    pygame.draw.rect(surf, cur_col, (bx, _TD_MY, bw, bh), border_radius=6)
+    pygame.draw.rect(surf, cur_col, (bx, _TD_MY, half_w, bh), border_radius=6)
     gh = bh // 5
     for i in range(gh):
         t = 1.0 - i/gh
         gc = (int(15+t*25), int(20+t*40), int(40+t*65)) if not downloading else (int(20+t*20),int(20+t*20),int(30+t*30))
-        pygame.draw.line(surf, gc, (bx+6, _TD_MY+1+i), (bx+bw-6, _TD_MY+1+i))
-    pygame.draw.rect(surf, cur_oc, (bx, _TD_MY, bw, bh), width=2, border_radius=6)
-    _text(surf, "DOWNLOAD CURRENT AREA", 15, cur_oc, bold=True,
-          cx=DISPLAY_W//2, cy=_TD_MY+bh//2-8)
+        pygame.draw.line(surf, gc, (bx+6, _TD_MY+1+i), (bx+half_w-6, _TD_MY+1+i))
+    pygame.draw.rect(surf, cur_oc, (bx, _TD_MY, half_w, bh), width=2, border_radius=6)
+    _text(surf, "DOWNLOAD CURRENT AREA", 13, cur_oc, bold=True,
+          cx=bx+half_w//2, cy=_TD_MY+bh//2-8)
     lat_i = int(disp.get("lat", DEMO_LAT)); lon_i = int(disp.get("lon", DEMO_LON))
-    area_str = f"25 tiles around {lat_i}\u00b0{'N' if lat_i>=0 else 'S'}  {abs(lon_i)}\u00b0{'W' if lon_i<0 else 'E'}  \u2248 35 MB"
-    _text(surf, area_str, 10, (120,140,165), cx=DISPLAY_W//2, cy=_TD_MY+bh//2+10)
+    area_str = (f"25 tiles  {lat_i}\u00b0{'N' if lat_i>=0 else 'S'} "
+                f"{abs(lon_i)}\u00b0{'W' if lon_i<0 else 'E'}  \u2248 35 MB")
+    _text(surf, area_str, 10, (120,140,165),
+          cx=bx+half_w//2, cy=_TD_MY+bh//2+10)
+
+    # Right: Water Masks (rasterise Natural Earth for existing SRTM tiles)
+    wd_x = bx + half_w + _TD_GAP
+    wd_n_tiles, wd_used_mb = water_mod.disk_stats(WATER_DIR)
+    if wd_busy:
+        wd_bg = (50,50,70); wd_oc = (70,70,95)
+    else:
+        wd_bg = (0,15,30);  wd_oc = (90, 160, 210)   # cyan-ish for water
+    pygame.draw.rect(surf, wd_bg, (wd_x, _TD_MY, half_w, bh), border_radius=6)
+    for i in range(gh):
+        t = 1.0 - i/gh
+        gc = ((int(10+t*20), int(40+t*55), int(60+t*70)) if not wd_busy
+              else (int(20+t*20),int(20+t*20),int(30+t*30)))
+        pygame.draw.line(surf, gc,
+                         (wd_x+6, _TD_MY+1+i),
+                         (wd_x+half_w-6, _TD_MY+1+i))
+    pygame.draw.rect(surf, wd_oc, (wd_x, _TD_MY, half_w, bh),
+                     width=2, border_radius=6)
+    _text(surf, "DOWNLOAD WATER MASKS", 13, wd_oc, bold=True,
+          cx=wd_x+half_w//2, cy=_TD_MY+bh//2-8)
+    if wd_n_tiles:
+        sub = f"{wd_n_tiles} masks on disk  \u00b7  {wd_used_mb:.1f} MB"
+    else:
+        sub = "Natural Earth ocean + lakes  \u2248 12 MB once"
+    _text(surf, sub, 10, (120,160,190),
+          cx=wd_x+half_w//2, cy=_TD_MY+bh//2+10)
 
     # ── Preset region grid ────────────────────────────────────────────────────
     grid_y = _TD_MY + bh + _TD_GAP
@@ -4316,9 +4558,17 @@ def draw_terrain_data(surf, td):
               cx=rx+btn_w//2, cy=ry+bh//2+18)
 
     # ── Download progress overlay ─────────────────────────────────────────────
+    # Either terrain or water rasterisation may be active; whichever is
+    # busy gets the bottom strip + cancel button.
+    active_dict = None
     if downloading:
+        active_dict = td
+    elif wd_busy:
+        active_dict = wd
+    if active_dict is not None:
         prog_y = DISPLAY_H - 58
-        cur = td.get("dl_current", 0); total = max(1, td.get("dl_total", 1))
+        cur = active_dict.get("dl_current", 0)
+        total = max(1, active_dict.get("dl_total", 1))
         frac = cur / total
         pygame.draw.rect(surf, (0,12,32), (bx, prog_y, bw, 50), border_radius=6)
         pygame.draw.rect(surf, (55,75,105), (bx, prog_y, bw, 50), width=1, border_radius=6)
@@ -4326,15 +4576,15 @@ def draw_terrain_data(surf, td):
         pygame.draw.rect(surf, (0,25,12), (bx+10, prog_y+28, bw-20, 12), border_radius=3)
         if bar_w > 0:
             pygame.draw.rect(surf, (40,180,60), (bx+10, prog_y+28, bar_w, 12), border_radius=3)
-        _text(surf, td.get("dl_status",""), 10, (140,160,180),
+        _text(surf, active_dict.get("dl_status",""), 10, (140,160,180),
               cx=DISPLAY_W//2, cy=prog_y+14)
         pct = f"{int(frac*100)}%  ({cur}/{total})"
         _text(surf, pct, 10, (60,220,80), cx=DISPLAY_W//2, cy=prog_y+43)
         # CANCEL button
         _action_btn(surf, DISPLAY_W-100-bx, prog_y+6, 92, 36, "CANCEL", "danger", r=5)
     else:
-        # Show last status message if any
-        last = td.get("dl_status", "")
+        # Show whichever last status we have (prefer water if just finished)
+        last = wd.get("dl_status") or td.get("dl_status", "")
         if last:
             _text(surf, last, 11, (80,160,100), cx=DISPLAY_W//2, cy=DISPLAY_H-12)
 
@@ -4347,17 +4597,22 @@ def terrain_data_hit(x, y, td):
     rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
     available_h = DISPLAY_H - _TD_MY - _TD_GAP*(rows-1) - 8
     bh = available_h // (rows + 1)
+    half_w = (bw - _TD_GAP) // 2
 
-    # Cancel button during download
-    if td.get("downloading"):
+    # Cancel button during download (terrain or water)
+    if td.get("downloading") or disp["wd"].get("downloading"):
         prog_y = DISPLAY_H - 58
         if (DISPLAY_W-100-bx <= x <= DISPLAY_W-bx and
                 prog_y+6 <= y <= prog_y+42):
             return "cancel"
 
-    # Current Area button
-    if bx <= x <= bx+bw and _TD_MY <= y <= _TD_MY+bh:
-        return "current_area"
+    # Top row: left half = current area; right half = water masks
+    if _TD_MY <= y <= _TD_MY + bh:
+        if bx <= x <= bx + half_w:
+            return "current_area"
+        wd_x = bx + half_w + _TD_GAP
+        if wd_x <= x <= wd_x + half_w:
+            return "water_masks"
 
     # Region grid
     grid_y = _TD_MY + bh + _TD_GAP
@@ -5118,20 +5373,22 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                 if mid_le is not None and mid_he is not None:
                     pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
 
-                # Airport environment box: when the projected runway polygon
-                # is smaller than _AIRPORT_BOX_MIN_PX, inflate it uniformly
-                # about its centroid and outline it so the airport stays
-                # visible at distance.  Skip when the runway is already big
-                # enough — the polygon itself is the visual cue, and at very
-                # close range some corners project off-screen (bearings wrap
-                # past ±90°), which would streak the outline across the AI.
+                # Airport environment box: outline a rectangle around the
+                # airport that's at least _AIRPORT_BOX_MIN_PX on its longest
+                # axis, so distant airports stay visible even when the
+                # projected runway polygon is too small to read.  When the
+                # runway already projects bigger than the min size, the box
+                # tracks the runway exactly (s=1) and acts as a highlight
+                # ring around it.  The clip rect set above handles the
+                # off-screen projection corners that would otherwise streak
+                # at very close range.
                 pts = [p1, p2, p3, p4]
                 bcx = sum(p[0] for p in pts) / 4.0
                 bcy = sum(p[1] for p in pts) / 4.0
                 max_r = max(math.hypot(p[0] - bcx, p[1] - bcy) for p in pts)
                 min_r = _AIRPORT_BOX_MIN_PX / 2.0
-                if 0.5 < max_r < min_r:
-                    s = min_r / max_r
+                if max_r > 0.5:
+                    s = max(1.0, min_r / max_r)
                     box_pts = [(int(bcx + (p[0] - bcx) * s),
                                 int(bcy + (p[1] - bcy) * s)) for p in pts]
                     pygame.draw.lines(surf, BOX_COL, True, box_pts, 2)

@@ -1100,20 +1100,19 @@ def render_svt_into_current_fb(
     # Outer mesh first — distant ridges paint silhouettes behind the inner
     # mesh's foreground detail.  Grid lines disabled (u_grid_spacing_m = 0)
     # because they'd look weird drawn over coarse 4–5 km triangles.
-    # discard_inside_m sits slightly INSIDE the inner mesh's nominal radius
-    # so the two tiers overlap by a small band at the seam.  This eliminates
-    # the visible gap that would otherwise show when the inner mesh's
-    # snap-grid offset pulls its edge inside R on one side.  The inner mesh
-    # is drawn after, so within the overlap band it wins and grid lines stay
-    # crisp; depth values from both tiers come from the same SRTM data so
-    # z-fighting is minimal.
+    # discard_inside_m sits well INSIDE the inner mesh's nominal radius so
+    # the two tiers overlap by a wide band — eliminates any visible gap from
+    # the inner mesh's snap-grid offset, perspective foreshortening, or
+    # the discard's square-vs-mesh-square corner mismatch.  Inner draws
+    # second so it owns the foreground; the wide overlap is cheap because
+    # the outer mesh has only ~3.6 K verts.
     if st.outer_vao is not None:
         _render_tier(st.outer_vao,
                      st.outer_mesh_center_lat, st.outer_mesh_center_lon,
                      st.outer_mesh_radius_m,
                      grid_spacing_m=0.0,
                      grid_max_dist_m=st.outer_mesh_radius_m,
-                     discard_inside_m=st.mesh_radius_m * 0.95)
+                     discard_inside_m=st.mesh_radius_m * 0.80)
 
     # Inner mesh — overdraws the outer in the 0–20 nm zone.  Cyan
     # distance-grid lines are enabled here.
