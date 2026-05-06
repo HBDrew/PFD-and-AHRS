@@ -5394,7 +5394,7 @@ _CENTERLINE_RANGE_NM       = 15.0   # draw extended centerlines within this rang
 _CENTERLINE_EXTEND_NM      = 5.0    # centerline extends this far from threshold
 _CENTERLINE_DASH_NM        = 0.5    # dash length (nm)
 _CENTERLINE_GLIDE_DEG      = 3.0    # rise centerline at standard glideslope
-_AIRPORT_BOX_PX            = 100    # on-screen edge length of airport environment box
+_AIRPORT_BOX_PX            = 30     # on-screen edge length of airport environment box
 
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
@@ -5404,8 +5404,13 @@ def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
     """Project a lat/lon/elevation point onto the AI screen.
     Returns (sx, sy), or None when culled.
     max_fov_deg: cull points whose bearing is more than this off the nose.
-    ground_only: cull points that project above the pitch-adjusted horizon
-                 (ground features should never float in the sky)."""
+    ground_only: cull points that aren't physically ground features in
+                 front of the aircraft — i.e. above our altitude or
+                 behind us.  We don't cull on screen-space position any
+                 more (the previous syr<0 check rejected valid below-
+                 horizon targets when pitch was more nose-down than the
+                 angle to them, which made runways disappear on steep
+                 descent)."""
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
     dlat_nm = (lat_deg - ref_lat) * nm_per_deg_lat
@@ -5417,13 +5422,15 @@ def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
     rel_brg = (bearing - hdg_deg + 180) % 360 - 180
     if max_fov_deg is not None and abs(rel_brg) > max_fov_deg:
         return None
+    if ground_only and abs(rel_brg) > 90.0:
+        return None
     dist_ft = dist_nm * 6076.0
     alt_diff = elev_ft - ref_alt_ft
     vert_deg = math.degrees(math.atan2(alt_diff, dist_ft))
+    if ground_only and vert_deg > 0.0:
+        return None   # ground feature above our altitude — won't render
     sxr = rel_brg * px_per_deg
     syr = (pitch_deg - vert_deg) * px_per_deg
-    if ground_only and syr < 0:
-        return None
     cos_r = math.cos(math.radians(roll_deg))
     sin_r = math.sin(math.radians(roll_deg))
     return (int(cx + sxr * cos_r - syr * sin_r),
@@ -5512,7 +5519,16 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
             p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
             if None in (p1, p2, p3, p4):
                 continue
-            if _in_ai(*p1) or _in_ai(*p2) or _in_ai(*p3) or _in_ai(*p4):
+            # Draw whenever the polygon's bounding box intersects the AI
+            # rect — not just when one of the four corners lands inside.
+            # Close-up the runway can be much bigger than the screen and
+            # all four corners sit off the bottom while the polygon still
+            # crosses the AI; the old check made it disappear at short
+            # final.
+            xs_p = [p1[0], p2[0], p3[0], p4[0]]
+            ys_p = [p1[1], p2[1], p3[1], p4[1]]
+            if (max(xs_p) >= ax and min(xs_p) <= ax + aw and
+                    max(ys_p) >= ay_r and min(ys_p) <= ay_r + ah):
                 old_clip = surf.get_clip()
                 surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
                 _filled_polygon(surf, [p1, p2, p3, p4], ASPHALT)
