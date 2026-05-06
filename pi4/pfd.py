@@ -4528,8 +4528,8 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 # waypoint; the CDI shows perpendicular cross-track from the great-circle
 # course originating at the activation point.
 
-_CDI_FULL_SCALE_DEG = 10.0  # ±10° relative bearing = full-scale deflection
-_EARTH_R_NM         = 3440.065  # Earth mean radius (km/1.852)
+_CDI_FULL_SCALE_NM = 1.0    # ±1 nm full-scale cross-track deflection
+_EARTH_R_NM        = 3440.065  # Earth mean radius (km/1.852)
 
 
 def _nav_geo_dist_brg(la1, lo1, la2, lo2):
@@ -4648,17 +4648,26 @@ def _nav_clear() -> None:
 
 def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
                          hdg_deg, pitch_deg, roll_deg):
-    """Solid magenta course trace from the aircraft to the active waypoint,
-    drawn ground-anchored at the waypoint's airport elevation."""
+    """Solid magenta course line: the great circle from the activation
+    point to the active waypoint, drawn ground-anchored at the waypoint's
+    airport elevation.
+
+    This is a fixed line in space — it does not move under the aircraft
+    as you drift.  When the aircraft is off-course, the line appears
+    visibly to one side, matching the direction the CDI diamond
+    deflects.  Re-activating direct-to (DIRECT TO / NEAREST) resets the
+    activation point and draws a new line."""
     nv = disp.get("nav", {})
     if not nv.get("ident"):
         return
     wpt_lat  = float(nv["lat"])
     wpt_lon  = float(nv["lon"])
     wpt_elev = float(nv.get("elev_ft", 0.0))
+    act_lat  = float(nv.get("act_lat", lat))
+    act_lon  = float(nv.get("act_lon", lon))
 
-    dist_nm, _ = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
-    if dist_nm < 0.05:
+    course_nm, _ = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
+    if course_nm < 0.05:
         return
 
     ax, ay_r, aw, ah = ai_rect
@@ -4666,18 +4675,18 @@ def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
     cy_ai = ay_r + ah // 2
     px_per_deg = ah / 48.0
 
-    # Step 0.5 nm or finer; cap step count so very-distant waypoints don't
+    # Step 0.5 nm or finer; cap step count so very-distant courses don't
     # explode work per frame.
-    n_steps = max(8, int(dist_nm / 0.5))
+    n_steps = max(8, int(course_nm / 0.5))
     n_steps = min(n_steps, 400)
 
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
 
     prev_pt = None
-    for i in range(1, n_steps + 1):
+    for i in range(0, n_steps + 1):
         t = i / n_steps
-        s_lat, s_lon = _nav_gc_interp(lat, lon, wpt_lat, wpt_lon, t)
+        s_lat, s_lon = _nav_gc_interp(act_lat, act_lon, wpt_lat, wpt_lon, t)
         pt = _project_latlon(s_lat, s_lon, lat, lon, alt_ft, wpt_elev,
                              hdg_deg, pitch_deg, roll_deg, cx_ai, cy_ai,
                              px_per_deg, max_fov_deg=80, ground_only=True)
@@ -4691,15 +4700,13 @@ def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
     surf.set_clip(old_clip)
 
 
-def draw_cdi(surf, hdg):
-    """Bearing pointer strip above the heading readout box.
+def draw_cdi(surf):
+    """Course Deviation Indicator strip above the heading readout box.
 
-    Diamond deflects in the direction the active waypoint bears relative
-    to the displayed heading — fly toward the diamond and the airport
-    centres up.  Full-scale at ±_CDI_FULL_SCALE_DEG.  This is a bearing
-    pointer rather than a classic course-deviation CDI: simpler, matches
-    the pilot's mental model for direct-to-airport ("the needle points
-    at the airport"), and does not depend on an activation point."""
+    Classic XTK CDI: the diamond shows where the activation→waypoint great
+    circle is relative to your current position.  Right-of-course → course
+    is to your left → diamond deflects LEFT → fly LEFT to intercept (fly
+    TO the needle).  Full-scale at ±_CDI_FULL_SCALE_NM."""
     nv = disp.get("nav", {})
     ident = nv.get("ident", "")
     if not ident:
@@ -4709,9 +4716,11 @@ def draw_cdi(surf, hdg):
     lon = disp.get("lon", 0.0)
     wpt_lat = float(nv["lat"])
     wpt_lon = float(nv["lon"])
+    act_lat = float(nv.get("act_lat", lat))
+    act_lon = float(nv.get("act_lon", lon))
 
     dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
-    rel_brg = (brg - hdg + 540.0) % 360.0 - 180.0   # signed, -180..+180
+    xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
 
     # Bar geometry: sit just above the heading readout box.  Box height is
     # max(28, font_h+8); place the bar with a small margin above.
@@ -4737,12 +4746,10 @@ def draw_cdi(surf, hdg):
             pygame.draw.circle(surf, (180, 200, 220),
                                (tx, bar_y + bar_h // 2), 2)
 
-    # Diamond — deflects in the direction of the bearing-to-waypoint
-    # relative to nose.  Airport 5° right of nose → diamond 50% right at
-    # ±10° full-scale.  Pilot flies toward the diamond to centre it.
-    rel_clamped = max(-_CDI_FULL_SCALE_DEG,
-                      min(_CDI_FULL_SCALE_DEG, rel_brg))
-    dx_diamond = int(rel_clamped / _CDI_FULL_SCALE_DEG * (bar_w / 2))
+    # Diamond shows where the course line is relative to the aircraft.
+    # Right-of-course (positive xtk) → diamond LEFT (course is to your left).
+    xtk_clamped = max(-1.0, min(1.0, xtk / _CDI_FULL_SCALE_NM))
+    dx_diamond = -int(xtk_clamped * (bar_w / 2))
     dcx = CX + dx_diamond
     dcy = bar_y + bar_h // 2
     dpts = [(dcx, dcy - 9), (dcx + 8, dcy), (dcx, dcy + 9), (dcx - 8, dcy)]
@@ -5200,7 +5207,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 5b. CDI — direct-to course deviation indicator above the heading box.
     # No-op when no waypoint is active.
     if gps_ok:
-        draw_cdi(surf, hdg)
+        draw_cdi(surf)
 
     # 6. Roll arc
     draw_roll_arc(surf, roll)
