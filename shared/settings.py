@@ -41,6 +41,7 @@ _PERSIST_SUBTREES = [
 # Top-level scalar keys that persist as-is
 _PERSIST_SCALARS = [
     "hdg_bug",      # optional — pilot may prefer to start fresh each flight
+    "trk_bug",
     "alt_bug",
     "display_mode",
 ]

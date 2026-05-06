@@ -116,6 +116,7 @@ state = {
 # ── Display values (smoothed) ─────────────────────────────────────────────────
 disp = dict(state)
 disp["hdg_bug"]       = 0.0
+disp["trk_bug"]       = 0.0  # GPS-track bug (used when heading source is "trk")
 disp["alt_bug"]       = 0.0
 disp["baro_hpa"]      = BARO_DEFAULT_HPA
 disp["show_demo"]     = False
@@ -1740,8 +1741,11 @@ class SimFlyState:
             state["gps_ok"]  = True
             state["baro_ok"] = False
             state["baro_src"] = "gps"
-        # Seed bugs so the aircraft holds its initial state
+        # Seed bugs so the aircraft holds its initial state.  Both bugs
+        # start at the same value; whichever is active in the current
+        # heading-source mode is what the autopilot follows.
         disp["hdg_bug"] = sim["init_hdg"]
+        disp["trk_bug"] = sim["init_hdg"]
         disp["alt_bug"] = sim["init_alt"]
         if disp.get("spd_bug") is None:
             disp["spd_bug"] = sim["init_spd"]
@@ -1758,7 +1762,13 @@ class SimFlyState:
 
         with _state_lock:
             # ── Targets from bugs ──────────────────────────────────────────────
-            tgt_hdg = disp["hdg_bug"] if disp.get("hdg_bug") is not None else state["yaw"]
+            # Honour whichever bug the pilot is actually looking at.  In TRK
+            # mode the autopilot points yaw at the track bug — the wind
+            # crab in the sim then makes the displayed track land near it.
+            _bk = _active_bug_key()
+            tgt_hdg = disp.get(_bk)
+            if tgt_hdg is None:
+                tgt_hdg = state["yaw"]
             tgt_alt = disp["alt_bug"] if disp.get("alt_bug") is not None else state["alt"]
             tgt_spd = disp.get("spd_bug") or 90.0
 
@@ -2121,6 +2131,19 @@ def _current_str_for_kbd(target, prev_mode):
     return str(v) if v not in (None, 0, "") else ""
 
 
+def _active_bug_key():
+    """Return "trk_bug" if the active heading source is GPS track, else
+    "hdg_bug".  Used so all bug-set affordances (tap on heading box,
+    arrow keys, numpad open, knob nudge) write to the bug that matches
+    what the pilot is actually looking at."""
+    ss = disp.get("ss", {})
+    pref = ss.get("hdg_src", "auto")
+    use_track, _, _ = _resolve_hdg_source(
+        pref, disp.get("gps_ok", False), disp.get("ahrs_ok", False),
+        disp.get("speed", 0.0))
+    return "trk_bug" if use_track else "hdg_bug"
+
+
 def _open_numpad(target):
     """Switch to numpad mode for the given bug target.  The buffer
     starts empty; draw_numpad falls back to showing the current value
@@ -2154,9 +2177,11 @@ def handle_event(event, demo_mode):
             if event.key == pygame.K_DOWN:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 - 100
             if event.key == pygame.K_LEFT:
-                disp["hdg_bug"] = (round(disp["hdg_bug"]) - 10) % 360
+                _bk = _active_bug_key()
+                disp[_bk] = (round(disp[_bk]) - 10) % 360
             if event.key == pygame.K_RIGHT:
-                disp["hdg_bug"] = (round(disp["hdg_bug"]) + 10) % 360
+                _bk = _active_bug_key()
+                disp[_bk] = (round(disp[_bk]) + 10) % 360
             if event.key in (pygame.K_PLUS, pygame.K_EQUALS):
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 + 1) / 100
             if event.key == pygame.K_MINUS:
@@ -2480,6 +2505,8 @@ def handle_event(event, demo_mode):
                             disp["alt_bug"] = float(val * 100) / alt_factor
                         elif target == "hdg_bug":
                             disp["hdg_bug"] = float(val % 360)
+                        elif target == "trk_bug":
+                            disp["trk_bug"] = float(val % 360)
                         elif target == "spd_bug":
                             disp["spd_bug"] = float(val) / spd_factor
                         elif target == "baro_hpa":
@@ -2553,13 +2580,13 @@ def handle_event(event, demo_mode):
         if ALT_X <= x <= DISPLAY_W and TAPE_MID - 30 <= y <= TAPE_MID + 30:
             _open_numpad("alt_bug")
             return True
-        # Tap on hdg bug button → open numpad
+        # Tap on hdg bug button → open numpad (track bug if in TRK mode)
         if SPD_X <= x <= SPD_X + SPD_W and HDG_Y <= y <= DISPLAY_H:
-            _open_numpad("hdg_bug")
+            _open_numpad(_active_bug_key())
             return True
         # Tap on heading readout box (centre of heading tape) → open hdg numpad
         if CX - 40 <= x <= CX + 40 and HDG_Y - 40 <= y <= HDG_Y:
-            _open_numpad("hdg_bug")
+            _open_numpad(_active_bug_key())
             return True
         # Tap on baro button → open numpad
         if ALT_X <= x <= DISPLAY_W and HDG_Y <= y <= DISPLAY_H:
@@ -2569,10 +2596,14 @@ def handle_event(event, demo_mode):
         if ALT_X <= x <= DISPLAY_W and TAPE_TOP <= y <= TAPE_BOT:
             ft = round(disp["alt"] + (TAPE_MID - y) / PX_PER_FT)
             disp["alt_bug"] = round(ft / 100) * 100
-        # Tap on heading tape → adjust hdg bug by position
+        # Tap on heading tape → adjust active bug by position.  In TRK mode
+        # the centre reference is GPS track (matching what the box shows),
+        # so the bug lands under the finger relative to the displayed value.
         if HDG_Y <= y <= DISPLAY_H:
             off = (x - CX) / PX_PER_DEG
-            disp["hdg_bug"] = round(disp["yaw"] + off) % 360
+            _bk = _active_bug_key()
+            _ref = disp.get("track", disp["yaw"]) if _bk == "trk_bug" else disp["yaw"]
+            disp[_bk] = round(_ref + off) % 360
 
     return True
 
@@ -5227,6 +5258,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     baro_ok  = disp["baro_ok"]
     sats     = disp["sats"]
     hdg_bug  = disp["hdg_bug"]
+    trk_bug  = disp.get("trk_bug", 0.0)
     alt_bug  = disp["alt_bug"]
 
     # ── AHRS trim + mounting correction ──────────────────────────────────────
@@ -5390,8 +5422,11 @@ def render(surf, demo_mode, connected, data_stale=False):
     draw_alt_tape(surf, alt_d, vspeed, baro_hpa, baro_src, alt_bug_d,
                   baro_ok=baro_ok)
 
-    # 5. Heading tape
-    draw_heading_tape(surf, hdg, hdg_bug, track=track, yaw=disp["yaw"],
+    # 5. Heading tape — show the bug that matches the active source: TRK
+    # mode shows the track bug, MAG mode shows the heading bug.  Setting
+    # one doesn't disturb the other so flipping sources preserves both.
+    active_bug = trk_bug if use_track else hdg_bug
+    draw_heading_tape(surf, hdg, active_bug, track=track, yaw=disp["yaw"],
                       gps_ok=gps_ok, ahrs_ok=ahrs_ok, use_track=use_track,
                       hdg_label=hdg_label, hdg_color=hdg_color)
 
@@ -5420,7 +5455,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok, sats)
 
     # 11. Tap-buttons for heading bug, baro, and alt bug (color = data source)
-    draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
+    draw_tap_buttons(surf, hdg, active_bug, baro_hpa, baro_src, alt_bug,
                      use_track=use_track, baro_ok=baro_ok)
 
     # 12. Demo / SIM watermark.  When the simulator is running, the
@@ -5461,6 +5496,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         spd_bug_title = f"SET {spd_bug_src} BUG  ({spd_unit_lbl})"
         titles  = {"alt_bug":   f"SET ALTITUDE BUG  (\u00d7100 {alt_unit_lbl})",
                    "hdg_bug":   "SET HEADING BUG",
+                   "trk_bug":   "SET TRACK BUG",
                    "spd_bug":   spd_bug_title,
                    "baro_hpa":  baro_title,
                    "sim_init_alt": f"SET INITIAL ALTITUDE  (\u00d7100 {alt_unit_lbl})",
@@ -5469,6 +5505,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         curvals = {"alt_bug":   int(round(disp.get("alt_bug", 0)
                                           * _ALT_DISP_FACTOR())) // 100,
                    "hdg_bug":   int(disp.get("hdg_bug", 0)),
+                   "trk_bug":   int(disp.get("trk_bug", 0)),
                    "spd_bug":   int(round(disp.get("spd_bug", 0)
                                           * _SPD_DISP_FACTOR())),
                    "baro_hpa":  baro_cur,

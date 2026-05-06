@@ -274,25 +274,16 @@ void main() {
     float s = sin(u_roll_rad);
     float y_unrolled = -x_sq * s + y_sq * c;
 
-    // Sky gradient above horizon; atmospheric-haze gradient below horizon.
-    // The "below" gradient fills the gap between the mesh edge and the
-    // true geometric horizon (which at altitude is 100+ nm away — far
-    // beyond the 20 nm terrain mesh).  Colored to blend naturally with
-    // the terrain mesh so there's no visible seam.
+    // Sky everywhere: above the horizon a normal horizon→zenith gradient,
+    // below the horizon a flat sky-horizon color.  The below-horizon region
+    // exists only to fill any gap between the outer terrain mesh edge and
+    // the true geometric horizon (100+ nm away) — using the same sky-blue
+    // makes it visually invisible against the surrounding sky.
+    vec3 horizon_col = vec3(0.23, 0.51, 0.78);
     if (y_unrolled < u_horizon_y) {
-        // Below horizon: atmospheric haze gradient — desaturated sky-blue
-        // continuing down rather than warm-brown distant ground.  At
-        // altitude the gap between the SVT mesh edge and the geometric
-        // horizon naturally reads as "more hazy sky" rather than "dirt
-        // band," matching what you'd see out a real airplane window.
-        float depth_below = u_horizon_y - y_unrolled;
-        float t = clamp(depth_below / 0.15, 0.0, 1.0);
-        vec3 haze   = vec3(0.50, 0.55, 0.60);  // desaturated sky-blue near horizon
-        vec3 deep   = vec3(0.35, 0.42, 0.50);  // slightly darker further down
-        frag_color = vec4(mix(haze, deep, t), 1.0);
+        frag_color = vec4(horizon_col, 1.0);
     } else {
         float t = (y_unrolled - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
-        vec3 horizon_col = vec3(0.23, 0.51, 0.78);
         vec3 zenith_col  = vec3(0.04, 0.16, 0.31);
         frag_color = vec4(mix(horizon_col, zenith_col, t), 1.0);
     }
@@ -1019,18 +1010,20 @@ def render_svt_into_current_fb(
     # Outer mesh first — distant ridges paint silhouettes behind the inner
     # mesh's foreground detail.  Grid lines disabled (u_grid_spacing_m = 0)
     # because they'd look weird drawn over coarse 4–5 km triangles.
-    # discard_inside_m clamps slightly larger than the inner mesh's straight-
-    # edge radius so the inner tier owns the foreground (with its grid lines)
-    # without depth-tie clobbering from the coarse outer triangulation.  The
-    # 5 % margin covers the inner mesh's snap-grid offset relative to the
-    # aircraft (up to one inner sample step).
+    # discard_inside_m sits slightly INSIDE the inner mesh's nominal radius
+    # so the two tiers overlap by a small band at the seam.  This eliminates
+    # the visible gap that would otherwise show when the inner mesh's
+    # snap-grid offset pulls its edge inside R on one side.  The inner mesh
+    # is drawn after, so within the overlap band it wins and grid lines stay
+    # crisp; depth values from both tiers come from the same SRTM data so
+    # z-fighting is minimal.
     if st.outer_vao is not None:
         _render_tier(st.outer_vao,
                      st.outer_mesh_center_lat, st.outer_mesh_center_lon,
                      st.outer_mesh_radius_m,
                      grid_spacing_m=0.0,
                      grid_max_dist_m=st.outer_mesh_radius_m,
-                     discard_inside_m=st.mesh_radius_m * 1.05)
+                     discard_inside_m=st.mesh_radius_m * 0.95)
 
     # Inner mesh — overdraws the outer in the 0–20 nm zone.  Cyan
     # distance-grid lines are enabled here.
