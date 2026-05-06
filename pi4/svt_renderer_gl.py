@@ -735,7 +735,11 @@ class _SharedState:
                  "water_dir",
                  # Direct-to polyline
                  "line_prog", "line_vbo", "line_vao", "line_capacity",
-                 "_last_line_width")
+                 "_last_line_width",
+                 # Async mesh-rebuild state (worker thread + pending CPU
+                 # result + target key).  See build_mesh / build_outer_mesh.
+                 "_inner_thread", "_inner_pending", "_inner_target_key",
+                 "_outer_thread", "_outer_pending", "_outer_target_key")
 
     def __init__(self, ctx):
         self.ctx = ctx
