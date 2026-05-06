@@ -254,11 +254,16 @@ void main() {
     // beyond the 20 nm terrain mesh).  Colored to blend naturally with
     // the terrain mesh so there's no visible seam.
     if (y_unrolled < u_horizon_y) {
-        // Below horizon: haze-tinted ground (lighter at horizon, darker deep down)
-        float t = clamp((u_horizon_y - y_unrolled) / max(0.001, u_horizon_y + 1.0),
-                        0.0, 1.0);
-        vec3 haze   = vec3(0.42, 0.33, 0.22);  // dusty atmospheric haze
-        vec3 ground = vec3(0.27, 0.22, 0.11);  // darker distant ground
+        // Below horizon: narrow atmospheric haze gradient just under the
+        // horizon line, transitioning to dusty distant ground deeper down.
+        // The narrow gradient (full ground reached by 0.30 NDC below
+        // horizon) keeps the visible "brown band" between the SVT mesh
+        // edge and the geometric horizon thin and unobtrusive — instead of
+        // a tall warm-brown wash spanning the whole below-horizon region.
+        float depth_below = u_horizon_y - y_unrolled;
+        float t = clamp(depth_below / 0.30, 0.0, 1.0);
+        vec3 haze   = vec3(0.45, 0.45, 0.42);  // soft atmospheric grey-tan
+        vec3 ground = vec3(0.27, 0.22, 0.11);  // dusty distant ground
         frag_color = vec4(mix(haze, ground, t), 1.0);
     } else {
         float t = (y_unrolled - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
