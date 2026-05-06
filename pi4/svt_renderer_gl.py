@@ -176,13 +176,16 @@ uniform float u_water_enable;       // 0.0 = ignore water flag, 1.0 = render
                                     // water with the water palette (lets the
                                     // pilot disable water rendering for debug).
 
-// Clearance-based color palette (matches pygame PALETTE_RELATIVE)
+// Clearance-based color palette (matches pygame PALETTE_RELATIVE).
+// Bands shifted +100 ft vs the textbook "red when terrain reaches altitude":
+// red at clearance < 100 ft gives the pilot a 100 ft buffer warning before
+// actual contact.
 vec3 clearance_color(float c) {
-    if (c < 0.0)    return vec3(0.86, 0.12, 0.12);
-    if (c < 100.0)  return vec3(0.86, 0.31, 0.0);
-    if (c < 500.0)  return vec3(0.78, 0.51, 0.0);
-    if (c < 1000.0) return vec3(0.55, 0.39, 0.16);
-    if (c < 2000.0) return vec3(0.39, 0.29, 0.14);
+    if (c < 100.0)  return vec3(0.86, 0.12, 0.12);
+    if (c < 200.0)  return vec3(0.86, 0.31, 0.0);
+    if (c < 600.0)  return vec3(0.78, 0.51, 0.0);
+    if (c < 1100.0) return vec3(0.55, 0.39, 0.16);
+    if (c < 2100.0) return vec3(0.39, 0.29, 0.14);
     return vec3(0.27, 0.22, 0.11);
 }
 
