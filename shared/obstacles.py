@@ -88,30 +88,40 @@ class ObstacleRecord:
 
 
 # ── DOF fixed-width column offsets ────────────────────────────────────────────
-_COL_LAT_START   = 22
-_COL_LAT_END     = 34
-_COL_LON_START   = 34
-_COL_LON_END     = 47
-_COL_TYPE_START  = 48
+# Offsets calibrated to the current FAA DAILY_DOF_DAT.DAT format (verified
+# 2026-05).  Sample data line:
+#
+#   01-003083 O US AL GULF SHORES      30 14 57.82N 087 40 32.58W BLDG…
+#   0123456789012345678901234567890123456789012345678901234567890123456…
+#             1111111111222222222233333333334444444444555555555566666666…
+#
+# (Was previously off by ~13 cols on lat/lon, and DMS was assumed to be
+# hyphen-separated which silently zeroed every record.)
+_COL_LAT_START   = 35
+_COL_LAT_END     = 47
+_COL_LON_START   = 48
+_COL_LON_END     = 61
+_COL_TYPE_START  = 62
 _COL_TYPE_END    = 79
-_COL_AGL_START   = 85
-_COL_AGL_END     = 91
-_COL_MSL_START   = 91
-_COL_MSL_END     = 97
-_COL_LGT         = 97
+_COL_AGL_START   = 83
+_COL_AGL_END     = 88
+_COL_MSL_START   = 89
+_COL_MSL_END     = 94
+_COL_LGT         = 95
 
 
 def _parse_dms(s: str) -> float:
     """
     Parse a DOF DMS string to decimal degrees.
-    Latitude format:  'DD-MM-SS.SSN' (N/S)
-    Longitude format: 'DDD-MM-SS.SSEW' (E/W)
+    Latitude format:  'DD MM SS.SSN' (N/S)
+    Longitude format: 'DDD MM SS.SSEW' (E/W)
+    The trailing hemisphere letter is concatenated to the seconds field.
     """
     s = s.strip()
     if not s:
         return 0.0
     hemi = s[-1]
-    parts = s[:-1].split("-")
+    parts = s[:-1].split()
     if len(parts) != 3:
         return 0.0
     try:
