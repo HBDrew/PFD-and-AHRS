@@ -48,6 +48,13 @@ from terrain import load_tile, get_elevation_ft
 MESH_RADIUS_NM    = 20.0        # nm — terrain mesh extent around aircraft
 MESH_GRID_N       = 300         # mesh resolution (300×300 = 90K vertices)
 
+# Outer (far-LOD) mesh — drawn underneath the inner mesh to fill the gap
+# between the inner mesh edge and the geometric horizon with real terrain
+# silhouettes instead of a flat haze gradient.  Coarser sampling so the
+# extra coverage doesn't blow up vertex count.
+OUTER_MESH_RADIUS_NM = 75.0     # nm — out to ~75 nm ridges silhouette
+OUTER_MESH_GRID_N    = 60       # 60x60 = 3600 verts (~5x coarser than inner)
+
 # Mesh sizing strategy:
 #   "constant"  — always use MESH_RADIUS_NM regardless of altitude.  Keeps the
 #                 grid spacing consistent and predictable; simpler to reason
@@ -69,7 +76,7 @@ M_TO_FT        = 1.0 / FT_TO_M
 # at the same screen position for any given pitch angle.
 V_FOV_DEG      = 48.0           # vertical field of view
 NEAR_PLANE_M   = 50.0
-FAR_PLANE_M    = MESH_RADIUS_NM * NM_TO_M * 1.5
+FAR_PLANE_M    = OUTER_MESH_RADIUS_NM * NM_TO_M * 1.5
 
 # ── Distance grid overlay ─────────────────────────────────────────────────────
 # Cyan-tinted lines on the terrain to help judge distance and orientation.
@@ -650,9 +657,15 @@ _shared_state = {}
 
 class _SharedState:
     __slots__ = ("ctx", "terrain_prog", "sky_prog", "sky_vao",
+                 # Inner (high-detail) mesh — ~20 nm
                  "terrain_vao", "terrain_vbo_pos",
                  "terrain_ibo", "mesh_key", "mesh_radius_m",
                  "mesh_center_lat", "mesh_center_lon",
+                 # Outer (far-LOD) mesh — ~75 nm, coarse silhouettes
+                 "outer_vao", "outer_vbo_pos", "outer_ibo",
+                 "outer_mesh_key", "outer_mesh_radius_m",
+                 "outer_mesh_center_lat", "outer_mesh_center_lon",
+                 # Direct-to polyline
                  "line_prog", "line_vbo", "line_vao", "line_capacity",
                  "_last_line_width")
 
@@ -676,6 +689,13 @@ class _SharedState:
         self.mesh_radius_m = MESH_RADIUS_NM * NM_TO_M
         self.mesh_center_lat = 0.0
         self.mesh_center_lon = 0.0
+        self.outer_vao = None
+        self.outer_vbo_pos = None
+        self.outer_ibo = None
+        self.outer_mesh_key = None
+        self.outer_mesh_radius_m = OUTER_MESH_RADIUS_NM * NM_TO_M
+        self.outer_mesh_center_lat = 0.0
+        self.outer_mesh_center_lon = 0.0
         # Polyline rendering — single reusable VBO, grown as needed.
         self.line_prog = ctx.program(vertex_shader=LINE_VERTEX_SHADER,
                                      fragment_shader=LINE_FRAGMENT_SHADER)
@@ -728,34 +748,18 @@ class _SharedState:
             self._last_line_width = line_width
         self.line_vao.render(mode=moderngl.LINE_STRIP, vertices=len(world))
 
-    def build_mesh(self, srtm_dir, lat, lon, alt_ft):
-        """Same mesh-building logic as the module-level _build_mesh, but
-        operating on this instance's ctx/buffers instead of module globals.
+    def _build_tier_mesh(self, srtm_dir, lat, lon, radius_nm, grid_n,
+                         current_key):
+        """Build one mesh tier (inner or outer).  Returns a dict with the
+        new GPU resources + metadata, or None when the cached tier is
+        still valid (caller does nothing in that case).
 
-        Mesh is centered on a quantized world-grid point (not the moving
-        aircraft) so terrain features stay in stable world positions and
-        don't visibly jump every time we recenter. Aircraft offset from
-        the mesh centre is applied at render time via the camera eye.
+        The inner and outer tiers use this same routine with different
+        radius/grid_n.  Each tier owns its own snap lattice, so they
+        recentre independently as the aircraft moves.
         """
-        # World-aligned sampling: both the mesh centre AND the per-vertex
-        # sample positions are snapped to multiples of sample_step_m from
-        # a fixed world origin. Result: every sample is at the same world
-        # location regardless of which mesh it's part of, so a recentre
-        # only changes WHICH samples are visible — the geometry of any
-        # given mountain is identical before and after.
-        if MESH_SIZE_MODE == "altitude":
-            r_nm = max(MESH_RADIUS_MIN_NM,
-                       min(MESH_RADIUS_MAX_NM,
-                           6.0 * math.sqrt(max(100.0, alt_ft) / 1000.0)))
-        else:
-            r_nm = MESH_RADIUS_NM
-        radius_m = r_nm * NM_TO_M
-        self.mesh_radius_m = radius_m
-        alt_m = alt_ft * FT_TO_M
-
-        # Sample step in metres, derived from MESH_GRID_N for backward-
-        # compatible vertex count at the configured radius.
-        sample_step_m = (2.0 * radius_m) / (MESH_GRID_N - 1)
+        radius_m = radius_nm * NM_TO_M
+        sample_step_m = (2.0 * radius_m) / (grid_n - 1)
 
         # Snap mesh_lat to a fixed lat grid (lat snap is metric — no cos
         # dependency).
@@ -764,33 +768,22 @@ class _SharedState:
         mesh_lat = round(lat / snap_dlat) * snap_dlat
 
         # Snap mesh_lon to a *cos-independent* grid: equator-equivalent
-        # angular step, same as snap_dlat. If we instead derived snap_dlon
-        # from cos(mesh_lat), every lat-cell crossing would shift the lon
-        # snap lattice by tens of metres (cos changes ~2e-5 per snap step;
-        # multiplied by the integer cell count from the prime meridian,
-        # that's ~28 m of mesh_lon resnap per N/S recentre — visible as a
-        # foreground morph because the same vertex index samples a slightly
-        # different world point each rebuild).
+        # angular step, same as snap_dlat (see comment in upstream version
+        # of this routine for why the cos factor must NOT be in snap_dlon).
         snap_dlon = snap_dlat
         mesh_lon = round(lon / snap_dlon) * snap_dlon
 
-        # cos at the snapped lat is used for mesh-local metric projection
-        # (vertex east position) and for SRTM lookup conversion. It still
-        # changes per lat cell, but only affects vertex *positions* by a
-        # tiny amount (~i * step * Δcos ≈ 1 m at the mesh edge, ~0 m at
-        # the centre) — far smaller than the 28 m grid-snap shift it
-        # replaces, and the foreground (i near 0) is rock-stable.
         cos_snap = max(1e-6, math.cos(math.radians(mesh_lat)))
 
-        key = (round(mesh_lat, 6), round(mesh_lon, 6))
-        if key == self.mesh_key and self.terrain_vao is not None:
-            return
+        # Key includes radius/grid so a tier change forces a rebuild even
+        # if mesh_lat/lon happen to land on the same snapped point.
+        key = (round(mesh_lat, 6), round(mesh_lon, 6),
+               grid_n, round(radius_nm, 1))
+        if key == current_key:
+            return None
 
         # Sample grid: integer multiples of snap_dlat from mesh centre, in
-        # both axes. North step is metric; east step is metric * cos(mesh_lat)
-        # so that the angular spacing in longitude is snap_dlat at any
-        # latitude. Result: every (lat, lon) sample point lies on a fixed
-        # global angular grid — same world point always sampled the same way.
+        # both axes. North step is metric; east step is metric * cos(mesh_lat).
         n_half = int(round(radius_m / sample_step_m))
         i_array = np.arange(-n_half, n_half + 1, dtype=np.float32)
         north_1d = i_array * sample_step_m
@@ -829,8 +822,7 @@ class _SharedState:
         elev_m = elev_ft * FT_TO_M
 
         # Z = absolute elevation. Aircraft alt is applied per-frame in the
-        # vertex shader (u_alt_m uniform) so colour updates smoothly with
-        # altitude instead of jumping at mesh-rebuild boundaries.
+        # vertex shader (u_alt_m uniform).
         positions = np.stack([east, north, elev_m], axis=-1).astype(np.float32)
 
         i, j = np.meshgrid(np.arange(n - 1), np.arange(n - 1), indexing='ij')
@@ -842,22 +834,65 @@ class _SharedState:
         tri2 = np.stack([v1, v2, v3], axis=-1).reshape(-1)
         indices = np.concatenate([tri1, tri2]).astype(np.uint32)
 
-        if self.terrain_vbo_pos is not None:
+        new_vbo = self.ctx.buffer(positions.tobytes())
+        new_ibo = self.ctx.buffer(indices.tobytes())
+        new_vao = self.ctx.vertex_array(
+            self.terrain_prog,
+            [(new_vbo, '3f', 'in_pos')],
+            index_buffer=new_ibo,
+        )
+        return {
+            'vao': new_vao, 'vbo': new_vbo, 'ibo': new_ibo,
+            'key': key, 'mesh_lat': mesh_lat, 'mesh_lon': mesh_lon,
+            'radius_m': radius_m,
+        }
+
+    def build_mesh(self, srtm_dir, lat, lon, alt_ft):
+        """Inner mesh — high resolution, small radius for foreground detail."""
+        if MESH_SIZE_MODE == "altitude":
+            r_nm = max(MESH_RADIUS_MIN_NM,
+                       min(MESH_RADIUS_MAX_NM,
+                           6.0 * math.sqrt(max(100.0, alt_ft) / 1000.0)))
+        else:
+            r_nm = MESH_RADIUS_NM
+        # Always update mesh_radius_m so the grid-fade uniform is in sync
+        # even if the cached mesh is reused.
+        self.mesh_radius_m = r_nm * NM_TO_M
+
+        new = self._build_tier_mesh(srtm_dir, lat, lon, r_nm, MESH_GRID_N,
+                                     self.mesh_key)
+        if new is None:
+            return
+        if self.terrain_vao is not None:
             self.terrain_vao.release()
             self.terrain_vbo_pos.release()
             self.terrain_ibo.release()
+        self.terrain_vao = new['vao']
+        self.terrain_vbo_pos = new['vbo']
+        self.terrain_ibo = new['ibo']
+        self.mesh_key = new['key']
+        self.mesh_center_lat = new['mesh_lat']
+        self.mesh_center_lon = new['mesh_lon']
 
-        self.terrain_vbo_pos = self.ctx.buffer(positions.tobytes())
-        self.terrain_ibo     = self.ctx.buffer(indices.tobytes())
-        self.terrain_vao = self.ctx.vertex_array(
-            self.terrain_prog,
-            [(self.terrain_vbo_pos, '3f', 'in_pos')],
-            index_buffer=self.terrain_ibo,
-        )
-
-        self.mesh_key = key
-        self.mesh_center_lat = mesh_lat
-        self.mesh_center_lon = mesh_lon
+    def build_outer_mesh(self, srtm_dir, lat, lon, alt_ft):
+        """Outer mesh — coarse, large radius for distant ridge silhouettes."""
+        new = self._build_tier_mesh(srtm_dir, lat, lon,
+                                     OUTER_MESH_RADIUS_NM,
+                                     OUTER_MESH_GRID_N,
+                                     self.outer_mesh_key)
+        if new is None:
+            return
+        if self.outer_vao is not None:
+            self.outer_vao.release()
+            self.outer_vbo_pos.release()
+            self.outer_ibo.release()
+        self.outer_vao = new['vao']
+        self.outer_vbo_pos = new['vbo']
+        self.outer_ibo = new['ibo']
+        self.outer_mesh_key = new['key']
+        self.outer_mesh_center_lat = new['mesh_lat']
+        self.outer_mesh_center_lon = new['mesh_lon']
+        self.outer_mesh_radius_m = new['radius_m']
 
 
 def render_svt_into_current_fb(
@@ -898,22 +933,11 @@ def render_svt_into_current_fb(
         _shared_state[id(ctx)] = st
 
     st.build_mesh(srtm_dir, lat, lon, alt_ft)
+    st.build_outer_mesh(srtm_dir, lat, lon, alt_ft)
 
-    # Aircraft offset from mesh centre, in metres. Mesh sits on a quantized
-    # world grid; aircraft slides through it smoothly.
-    cos_mlat = max(1e-6, math.cos(math.radians(st.mesh_center_lat)))
-    cam_north = (lat - st.mesh_center_lat) * 60.0 * NM_TO_M
-    cam_east  = (lon - st.mesh_center_lon) * 60.0 * NM_TO_M * cos_mlat
     alt_m = alt_ft * FT_TO_M
-
-    # Vertices store absolute elevation, so eye Z must be aircraft alt
-    # (not 0). Camera-to-vertex relative geometry is unchanged.
     fwd, up = _attitude_basis(pitch_deg, roll_deg, hdg_deg)
-    eye = np.array([cam_east, cam_north, alt_m], dtype=np.float32)
-    target = eye + fwd
-    view = _look_at(eye, target, up)
     proj = _perspective(v_fov_deg, ai_w / ai_h, NEAR_PLANE_M, FAR_PLANE_M)
-    mvp = proj @ view
 
     ctx.enable(moderngl.DEPTH_TEST)
     # Explicit depth clear — without it, per-frame depth state from the 2D
@@ -928,40 +952,71 @@ def render_svt_into_current_fb(
     st.sky_vao.render()
     ctx.enable(moderngl.DEPTH_TEST)
 
-    if st.terrain_vao is not None:
-        st.terrain_prog['u_mvp'].write(mvp.T.tobytes())
-        st.terrain_prog['u_alt_m'].value            = alt_m
-        st.terrain_prog['u_cos_mesh_lat'].value     = cos_mlat
-        # World offset is in equator-equivalent metric (lon*NM*60, lat*NM*60),
-        # NO cos factor — same projection used for the per-fragment
-        # v_world_pos in the shader, so the same world point always lands
-        # at the same v_world_pos value regardless of mesh_lat.
-        grid_period_m = GRID_SPACING_NM * NM_TO_M * GRID_MAJOR_EVERY
-        mesh_world_e_eq = st.mesh_center_lon * 60.0 * NM_TO_M
-        mesh_world_n    = st.mesh_center_lat * 60.0 * NM_TO_M
+    az_rad = math.radians(SUN_AZIMUTH_DEG)
+    el_rad = math.radians(SUN_ELEVATION_DEG)
+    sun_dir = (
+        math.cos(el_rad) * math.sin(az_rad),  # east
+        math.cos(el_rad) * math.cos(az_rad),  # north
+        math.sin(el_rad),                     # up
+    )
+    grid_period_m = GRID_SPACING_NM * NM_TO_M * GRID_MAJOR_EVERY
+
+    def _render_tier(vao, mesh_lat, mesh_lon, mesh_radius_m,
+                     grid_spacing_m, grid_max_dist_m):
+        """Render one mesh tier with the right per-tier uniforms."""
+        cos_mlat = max(1e-6, math.cos(math.radians(mesh_lat)))
+        cam_north = (lat - mesh_lat) * 60.0 * NM_TO_M
+        cam_east  = (lon - mesh_lon) * 60.0 * NM_TO_M * cos_mlat
+        eye = np.array([cam_east, cam_north, alt_m], dtype=np.float32)
+        target = eye + fwd
+        view = _look_at(eye, target, up)
+        local_mvp = proj @ view
+
+        st.terrain_prog['u_mvp'].write(local_mvp.T.tobytes())
+        st.terrain_prog['u_alt_m'].value        = alt_m
+        st.terrain_prog['u_cos_mesh_lat'].value = cos_mlat
+        mesh_world_e_eq = mesh_lon * 60.0 * NM_TO_M
+        mesh_world_n    = mesh_lat * 60.0 * NM_TO_M
         st.terrain_prog['u_world_offset'].value = (
             mesh_world_e_eq % grid_period_m,
             mesh_world_n    % grid_period_m,
         )
-        st.terrain_prog['u_grid_spacing_m'].value   = GRID_SPACING_NM * NM_TO_M
+        st.terrain_prog['u_grid_spacing_m'].value   = grid_spacing_m
         st.terrain_prog['u_grid_major_every'].value = float(GRID_MAJOR_EVERY)
-        st.terrain_prog['u_grid_max_dist_m'].value  = st.mesh_radius_m
-        az_rad = math.radians(SUN_AZIMUTH_DEG)
-        el_rad = math.radians(SUN_ELEVATION_DEG)
-        sun_x = math.cos(el_rad) * math.sin(az_rad)
-        sun_y = math.cos(el_rad) * math.cos(az_rad)
-        sun_z = math.sin(el_rad)
-        st.terrain_prog['u_sun_dir'].value       = (sun_x, sun_y, sun_z)
+        st.terrain_prog['u_grid_max_dist_m'].value  = grid_max_dist_m
+        st.terrain_prog['u_sun_dir'].value       = sun_dir
         st.terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
         st.terrain_prog['u_ambient'].value       = SUN_AMBIENT
-        st.terrain_vao.render()
+        vao.render()
+        return local_mvp
+
+    # Outer mesh first — distant ridges paint silhouettes behind the inner
+    # mesh's foreground detail.  Grid lines disabled (u_grid_spacing_m = 0)
+    # because they'd look weird drawn over coarse 4–5 km triangles.
+    if st.outer_vao is not None:
+        _render_tier(st.outer_vao,
+                     st.outer_mesh_center_lat, st.outer_mesh_center_lon,
+                     st.outer_mesh_radius_m,
+                     grid_spacing_m=0.0,
+                     grid_max_dist_m=st.outer_mesh_radius_m)
+
+    # Inner mesh — overdraws the outer in the 0–20 nm zone.  Cyan
+    # distance-grid lines are enabled here.
+    inner_mvp = None
+    if st.terrain_vao is not None:
+        inner_mvp = _render_tier(st.terrain_vao,
+                                  st.mesh_center_lat, st.mesh_center_lon,
+                                  st.mesh_radius_m,
+                                  grid_spacing_m=GRID_SPACING_NM * NM_TO_M,
+                                  grid_max_dist_m=st.mesh_radius_m)
 
     # 3D polylines (e.g. magenta direct-to course trace) — drawn AFTER terrain
-    # with depth test still on, so the depth buffer set by the terrain mesh
-    # occludes line segments that fall behind ridges.
-    if polylines:
+    # with depth test still on, so the depth buffer set by both terrain
+    # tiers occludes line segments that fall behind ridges.  Polyline uses
+    # the inner mesh's MVP frame (course is mostly within mesh radius).
+    if polylines and inner_mvp is not None:
         for verts, rgba, width in polylines:
-            st.render_polyline_latlonelev(mvp, verts, rgba=rgba,
+            st.render_polyline_latlonelev(inner_mvp, verts, rgba=rgba,
                                           line_width=width)
 
     ctx.disable(moderngl.DEPTH_TEST)
