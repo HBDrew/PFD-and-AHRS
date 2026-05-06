@@ -71,7 +71,35 @@ SCENES = [
     # polygons and extended dashed centerlines prominently.
     ("preview_runway_approach",    0,  -3,  33, 5500,  80, -500,   0,
                                    34.809, -111.823),
+    # Direct-to KSEZ scene: 6 NM SSW of the airport at 6500 ft, 0.5 NM right
+    # of an established 026° course (so the CDI diamond deflects).  Shows
+    # the magenta course trace, KSEZ environment box, RWY 03/21 extended
+    # centerlines (filtered to the selected waypoint), and the CDI strip.
+    ("preview_direct_to_ksez",     2,  -2,  30, 6500, 110, -300, 0.02,
+                                   34.7600, -111.8630),
 ]
+
+
+# Scene-specific extra setup hooks: keyed by scene name, each callable runs
+# AFTER seed_state() but BEFORE render().  Used to inject state that doesn't
+# fit the (roll, pitch, hdg, alt, ...) tuple — e.g., direct-to nav.
+def _setup_direct_to_ksez():
+    pfd.disp["nav"] = {
+        "ident":   "KSEZ",
+        "lat":     34.8485,
+        "lon":     -111.7882,
+        "elev_ft": 4827.0,
+        # Activation 15 NM SSW so cross-track is a real measurement rather
+        # than zero-by-construction (which it would be if we recomputed
+        # bearing every frame).
+        "act_lat": 34.7100,
+        "act_lon": -111.9200,
+    }
+
+
+SCENE_EXTRA_SETUP = {
+    "preview_direct_to_ksez": _setup_direct_to_ksez,
+}
 
 
 def _inject_synthetic_obstacles():
@@ -183,6 +211,9 @@ def main():
         lat = scene[8] if len(scene) > 8 else DEMO_LAT
         lon = scene[9] if len(scene) > 9 else DEMO_LON
         seed_state(roll, pitch, hdg, alt, speed, vspeed, ay, lat, lon)
+        extra = SCENE_EXTRA_SETUP.get(name)
+        if extra is not None:
+            extra()
         pfd.smooth_state()
         pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
         outpath = os.path.join(args.outdir, f"{name}.png")
