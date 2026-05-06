@@ -4600,23 +4600,23 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                 if mid_le is not None and mid_he is not None:
                     pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
 
-                # Airport environment box: inflate the projected runway
-                # polygon uniformly about its centroid to a minimum on-screen
-                # radius so the airport stays visible once the runway shrinks
-                # to a handful of pixels.  Scaling preserves runway
-                # orientation (it rolls/rotates with the AI).
+                # Airport environment box: when the projected runway polygon
+                # is smaller than _AIRPORT_BOX_MIN_PX, inflate it uniformly
+                # about its centroid and outline it so the airport stays
+                # visible at distance.  Skip when the runway is already big
+                # enough — the polygon itself is the visual cue, and at very
+                # close range some corners project off-screen (bearings wrap
+                # past ±90°), which would streak the outline across the AI.
                 pts = [p1, p2, p3, p4]
                 bcx = sum(p[0] for p in pts) / 4.0
                 bcy = sum(p[1] for p in pts) / 4.0
                 max_r = max(math.hypot(p[0] - bcx, p[1] - bcy) for p in pts)
                 min_r = _AIRPORT_BOX_MIN_PX / 2.0
-                if max_r < min_r and max_r > 0.5:
+                if 0.5 < max_r < min_r:
                     s = min_r / max_r
                     box_pts = [(int(bcx + (p[0] - bcx) * s),
                                 int(bcy + (p[1] - bcy) * s)) for p in pts]
-                else:
-                    box_pts = pts
-                pygame.draw.lines(surf, BOX_COL, True, box_pts, 2)
+                    pygame.draw.lines(surf, BOX_COL, True, box_pts, 2)
                 surf.set_clip(old_clip)
 
         # ── Extended centerlines from each threshold ──────────────────────
