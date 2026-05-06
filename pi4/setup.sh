@@ -48,11 +48,12 @@ echo "[4/9] Installing Python packages…"
 # pygame and numpy are installed via apt (python3-pygame, python3-numpy) above.
 # moderngl + glcontext are not in apt — install via pip with --break-system-packages
 # (required on Bookworm+ due to PEP 668 externally-managed-environment policy).
-pip3 install --break-system-packages moderngl glcontext || {
+# pyshp powers the in-app water-mask download (Natural Earth → .water tiles).
+pip3 install --break-system-packages moderngl glcontext pyshp || {
     echo "  ⚠  pip3 install failed — trying with --user for $RUN_USER"
-    sudo -u "$RUN_USER" pip3 install --break-system-packages --user moderngl glcontext || {
+    sudo -u "$RUN_USER" pip3 install --break-system-packages --user moderngl glcontext pyshp || {
         echo "  ⚠  pip --user also failed — trying apt python3-opengl as fallback"
-        apt-get install -y --no-install-recommends python3-opengl 2>/dev/null || true
+        apt-get install -y --no-install-recommends python3-opengl python3-pyshp 2>/dev/null || true
         echo "  ⚠  moderngl may not be available — SVT will fall back to pygame renderer"
     }
 }
