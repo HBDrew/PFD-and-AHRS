@@ -243,6 +243,20 @@ def load(data_dir: str):
 
 _NM_PER_DEG_LAT = 60.0
 
+# Per-load cache of the contiguous lat column, keyed on id(arr).  The
+# obstacle structured array uses a 32-byte stride (because of the U3
+# otype field), and reading a strided column of 615 k rows blows the
+# Pi's cache.  Copying the column once into a flat float32 array and
+# searchsorted-ing on that drops the per-query cost ~10×.
+_lat_index_cache = (None, None)
+
+
+def _get_lat_index(arr):
+    global _lat_index_cache
+    if _lat_index_cache[0] is not arr:
+        _lat_index_cache = (arr, np.ascontiguousarray(arr["lat"]))
+    return _lat_index_cache[1]
+
 
 def query_nearby(obstacles, lat: float, lon: float,
                  radius_nm: float = 5.0,
@@ -279,11 +293,14 @@ def query_nearby(obstacles, lat: float, lon: float,
     dlon = radius_nm / nm_per_deg_lon if nm_per_deg_lon > 0 else radius_nm
 
     if HAS_NUMPY and hasattr(obstacles, "dtype"):
-        # Binary-search the latitude band first — array is sorted by lat at
-        # load time, so this turns the O(N) full-table scan into O(log N)
-        # plus a small slice pass.  At 615 k records this drops query time
-        # from ~22 ms to ~1 ms.
-        lat_col = obstacles["lat"]
+        # Binary-search the latitude band first.  Array is sorted by lat
+        # at load time so this turns the O(N) full-table scan into
+        # O(log N) plus a small slice pass.  searchsorted on the strided
+        # structured-array column is slow (cache thrashing on 32-byte
+        # stride over 615 k rows ≈ 20 MB of memory traffic to read a
+        # 2.4 MB column), so we keep a flat contiguous lat copy keyed on
+        # id(obstacles) — refreshed only when the array object changes.
+        lat_col = _get_lat_index(obstacles)
         i_lo = int(np.searchsorted(lat_col, lat - dlat, side="left"))
         i_hi = int(np.searchsorted(lat_col, lat + dlat, side="right"))
         candidates = obstacles[i_lo:i_hi]
