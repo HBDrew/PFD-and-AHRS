@@ -4950,6 +4950,7 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     and we only fall into a Python loop to issue the pygame draw calls
     for the obstacles whose top anchor lands inside the AI rect.
     """
+    import numpy as _np
     nearby = obs_mod.query_nearby(_obstacles, lat, lon,
                                   radius_nm=_OBS_RADIUS_NM,
                                   alt_ft=alt_ft,
@@ -4967,24 +4968,24 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
 
-    ob_lat = nearby["lat"].astype(np.float64)
-    ob_lon = nearby["lon"].astype(np.float64)
-    ob_msl = nearby["msl_ft"].astype(np.float64)
-    ob_agl = nearby["agl_ft"].astype(np.float64)
+    ob_lat = nearby["lat"].astype(_np.float64)
+    ob_lon = nearby["lon"].astype(_np.float64)
+    ob_msl = nearby["msl_ft"].astype(_np.float64)
+    ob_agl = nearby["agl_ft"].astype(_np.float64)
 
     dlat_nm = (ob_lat - lat) * nm_per_deg_lat
     dlon_nm = (ob_lon - lon) * nm_per_deg_lon
-    dist_nm = np.hypot(dlat_nm, dlon_nm)
-    bearing = np.degrees(np.arctan2(dlon_nm, dlat_nm)) % 360.0
+    dist_nm = _np.hypot(dlat_nm, dlon_nm)
+    bearing = _np.degrees(_np.arctan2(dlon_nm, dlat_nm)) % 360.0
     rel_brg = (bearing - hdg_deg + 180.0) % 360.0 - 180.0
 
     dist_ft = dist_nm * 6076.0
     # Avoid div-zero in arctan2 for co-located obstacles (just clip distance)
-    dist_ft_safe = np.maximum(dist_ft, 1.0)
+    dist_ft_safe = _np.maximum(dist_ft, 1.0)
     top_diff_ft  = ob_msl - alt_ft
     base_diff_ft = (ob_msl - ob_agl) - alt_ft
-    top_vert_deg  = np.degrees(np.arctan2(top_diff_ft,  dist_ft_safe))
-    base_vert_deg = np.degrees(np.arctan2(base_diff_ft, dist_ft_safe))
+    top_vert_deg  = _np.degrees(_np.arctan2(top_diff_ft,  dist_ft_safe))
+    base_vert_deg = _np.degrees(_np.arctan2(base_diff_ft, dist_ft_safe))
 
     cos_r = math.cos(math.radians(roll_deg))
     sin_r = math.sin(math.radians(roll_deg))
@@ -4992,15 +4993,15 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     syr_top  = (pitch_deg - top_vert_deg)  * PX_PER_DEG
     syr_base = (pitch_deg - base_vert_deg) * PX_PER_DEG
 
-    sx_top  = (cx + sxr * cos_r - syr_top  * sin_r).astype(np.int32)
-    sy_top  = (cy + sxr * sin_r + syr_top  * cos_r).astype(np.int32)
-    sy_base = (cy + sxr * sin_r + syr_base * cos_r).astype(np.int32)
+    sx_top  = (cx + sxr * cos_r - syr_top  * sin_r).astype(_np.int32)
+    sy_top  = (cy + sxr * sin_r + syr_top  * cos_r).astype(_np.int32)
+    sy_base = (cy + sxr * sin_r + syr_base * cos_r).astype(_np.int32)
 
     # Visibility mask: not co-located + top anchor inside AI rect.
     visible = ((dist_nm >= 0.01)
                & (sx_top >= ax + 4) & (sx_top <= ax + aw - 4)
                & (sy_top >= ay_r + 4) & (sy_top <= ay_r + ah - 4))
-    visible_idx = np.flatnonzero(visible)
+    visible_idx = _np.flatnonzero(visible)
     if visible_idx.size == 0:
         return
 
