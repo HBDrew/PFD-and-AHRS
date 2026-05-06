@@ -811,7 +811,7 @@ class _SharedState:
         self.line_vao.render(mode=moderngl.LINE_STRIP, vertices=len(world))
 
     def _build_tier_mesh(self, srtm_dir, lat, lon, radius_nm, grid_n,
-                         current_key):
+                         current_key, airports_arr=None):
         """Build one mesh tier (inner or outer).  Returns a dict with the
         new GPU resources + metadata, or None when the cached tier is
         still valid (caller does nothing in that case).
@@ -838,9 +838,15 @@ class _SharedState:
         cos_snap = max(1e-6, math.cos(math.radians(mesh_lat)))
 
         # Key includes radius/grid so a tier change forces a rebuild even
-        # if mesh_lat/lon happen to land on the same snapped point.
+        # if mesh_lat/lon happen to land on the same snapped point.  The
+        # `apt_marker` differentiates "no airports loaded yet" from "airports
+        # available" so the mesh rebuilds once the async airport DB loader
+        # finishes — otherwise initial frames at start-up cache an un-burned
+        # mesh and KSQL stays in the bay until the aircraft moves enough to
+        # trigger a snap-step rebuild.
+        apt_marker = 0 if airports_arr is None else len(airports_arr)
         key = (round(mesh_lat, 6), round(mesh_lon, 6),
-               grid_n, round(radius_nm, 1))
+               grid_n, round(radius_nm, 1), apt_marker)
         if key == current_key:
             return None
 
@@ -894,10 +900,33 @@ class _SharedState:
                                    0, w_n - 1)
                     water_flag[tile_mask] = wmask[wrow, wcol][tile_mask].astype(np.float32)
 
-        # Force any vertex tagged as water to lie at exactly sea level.  The
-        # SRTM cell may report a few metres of noise for ocean tiles; flat
-        # water reads better than wrinkled water.
-        elev_ft = np.where(water_flag > 0.5, 0.0, elev_ft)
+        # Override water_flag → 0 for vertices near known airport
+        # positions.  Natural Earth 10 m coastlines aren't precise enough
+        # to capture e.g. KSQL's peninsula in San Francisco Bay, so the
+        # raw water mask paints those airports under water.  Burning a
+        # small disk of "land" around each airport restores them.
+        if airports_arr is not None and len(airports_arr) > 0:
+            extent_deg = (radius_nm / 60.0) + 0.05
+            apt_lat = airports_arr['lat']
+            apt_lon = airports_arr['lon']
+            in_range = ((apt_lat >= mesh_lat - extent_deg) &
+                        (apt_lat <= mesh_lat + extent_deg) &
+                        (apt_lon >= mesh_lon - extent_deg / cos_snap) &
+                        (apt_lon <= mesh_lon + extent_deg / cos_snap))
+            nearby_apts = airports_arr[in_range]
+            if len(nearby_apts) > 0:
+                # ~0.3 nm radius covers most GA fields; bigger fields
+                # like KOAK/KLAX are still mostly captured because their
+                # SRTM elevations + the runway polygons drawn over the
+                # AI overlay anchor them visually.
+                burn_deg_sq = (0.3 / 60.0) ** 2
+                near_apt = np.zeros_like(water_flag, dtype=bool)
+                for k in range(len(nearby_apts)):
+                    dlat = sample_lat - nearby_apts['lat'][k]
+                    dlon = (sample_lon - nearby_apts['lon'][k]) * cos_snap
+                    near_apt |= (dlat * dlat + dlon * dlon) < burn_deg_sq
+                water_flag[near_apt] = 0.0
+
         elev_m = elev_ft * FT_TO_M
 
         # Z = absolute elevation. Aircraft alt is applied per-frame in the
@@ -929,7 +958,7 @@ class _SharedState:
             'radius_m': radius_m,
         }
 
-    def build_mesh(self, srtm_dir, lat, lon, alt_ft):
+    def build_mesh(self, srtm_dir, lat, lon, alt_ft, airports_arr=None):
         """Inner mesh — high resolution, small radius for foreground detail."""
         if MESH_SIZE_MODE == "altitude":
             r_nm = max(MESH_RADIUS_MIN_NM,
@@ -942,7 +971,7 @@ class _SharedState:
         self.mesh_radius_m = r_nm * NM_TO_M
 
         new = self._build_tier_mesh(srtm_dir, lat, lon, r_nm, MESH_GRID_N,
-                                     self.mesh_key)
+                                     self.mesh_key, airports_arr=airports_arr)
         if new is None:
             return
         if self.terrain_vao is not None:
@@ -959,12 +988,13 @@ class _SharedState:
         self.mesh_center_lat = new['mesh_lat']
         self.mesh_center_lon = new['mesh_lon']
 
-    def build_outer_mesh(self, srtm_dir, lat, lon, alt_ft):
+    def build_outer_mesh(self, srtm_dir, lat, lon, alt_ft, airports_arr=None):
         """Outer mesh — coarse, large radius for distant ridge silhouettes."""
         new = self._build_tier_mesh(srtm_dir, lat, lon,
                                      OUTER_MESH_RADIUS_NM,
                                      OUTER_MESH_GRID_N,
-                                     self.outer_mesh_key)
+                                     self.outer_mesh_key,
+                                     airports_arr=airports_arr)
         if new is None:
             return
         if self.outer_vao is not None:
@@ -998,6 +1028,7 @@ def render_svt_into_current_fb(
     polylines=None,
     water_dir: str = "",
     water_enable: bool = True,
+    airports_arr=None,
 ) -> bool:
     """Render the SVT terrain+sky directly into the currently-bound
     framebuffer using the caller-provided moderngl context.
@@ -1031,8 +1062,8 @@ def render_svt_into_current_fb(
         st.mesh_key = None
         st.outer_mesh_key = None
 
-    st.build_mesh(srtm_dir, lat, lon, alt_ft)
-    st.build_outer_mesh(srtm_dir, lat, lon, alt_ft)
+    st.build_mesh(srtm_dir, lat, lon, alt_ft, airports_arr=airports_arr)
+    st.build_outer_mesh(srtm_dir, lat, lon, alt_ft, airports_arr=airports_arr)
 
     alt_m = alt_ft * FT_TO_M
     fwd, up = _attitude_basis(pitch_deg, roll_deg, hdg_deg)

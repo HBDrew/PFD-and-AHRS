@@ -3997,6 +3997,27 @@ def _wd_existing_srtm_tiles():
     return sorted(tiles)
 
 
+def _wd_target_tiles(buffer_deg=1):
+    """SRTM tiles plus a `buffer_deg` border in every direction.
+
+    Adding buffer tiles means the rasteriser also produces water masks
+    for offshore tiles where the SRTM coverage stops (e.g. just east of
+    the Florida coast, or west of California).  Those tiles have no
+    .hgt file but a valid .water mask — Natural Earth's ocean polygon
+    fills them entirely with water — so the SVT outer mesh paints
+    Pacific/Atlantic blue instead of defaulting to flat brown."""
+    have = set(_wd_existing_srtm_tiles())
+    extended = set(have)
+    for lat_int, lon_int in have:
+        for dlat in range(-buffer_deg, buffer_deg + 1):
+            for dlon in range(-buffer_deg, buffer_deg + 1):
+                la = lat_int + dlat
+                lo = lon_int + dlon
+                if -90 <= la <= 89 and -180 <= lo <= 179:
+                    extended.add((la, lo))
+    return sorted(extended)
+
+
 def _wd_download_thread():
     """Background worker: download Natural Earth + rasterise per-tile masks."""
     from water import save_tile, _tile_key as _water_tile_key
@@ -4023,7 +4044,7 @@ def _wd_download_thread():
         wd["downloading"] = False
         return
 
-    tiles = _wd_existing_srtm_tiles()
+    tiles = _wd_target_tiles(buffer_deg=1)
     if not tiles:
         wd["dl_status"] = "No SRTM tiles on disk — download terrain first"
         wd["downloading"] = False
@@ -5846,6 +5867,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             polylines=_gl_polylines,
             water_dir=WATER_DIR,
             water_enable=disp["ad"].get("show_water", True),
+            airports_arr=_airports,
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain:
