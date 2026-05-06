@@ -73,13 +73,30 @@ def interp_colour(palette, value):
 
 
 # ── SRTM tile cache ────────────────────────────────────────────────────────────
-_tile_cache: dict = {}
+# LRU-capped to bound RSS on a Pi 4: each SRTM3 tile is ~5.7 MB in memory
+# (1201² float32) and SRTM1 tiles are ~52 MB (3601² float32).  Without a cap
+# the cache grew unbounded as the user visited new sim airports across CONUS,
+# eventually OOM-killing the process.  32 entries is enough for the inner +
+# outer mesh extents (~50 nm radius → ~9 tiles) plus comfortable hysteresis.
+import collections as _collections
+_TILE_CACHE_MAX = 32
+_tile_cache: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
 
 
 def _tile_key(lat_int: int, lon_int: int) -> str:
     ns = 'N' if lat_int >= 0 else 'S'
     ew = 'E' if lon_int >= 0 else 'W'
     return f"{ns}{abs(lat_int):02d}{ew}{abs(lon_int):03d}.hgt"
+
+
+def _cache_put(key, value):
+    """Insert with LRU eviction.  None entries (missing tiles) count toward
+    the cap too — without that, repeatedly probing for absent tiles would
+    fill the dict with sentinels and starve real tiles."""
+    _tile_cache[key] = value
+    _tile_cache.move_to_end(key)
+    while len(_tile_cache) > _TILE_CACHE_MAX:
+        _tile_cache.popitem(last=False)
 
 
 def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
@@ -91,11 +108,12 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
     """
     key = _tile_key(lat_int, lon_int)
     if key in _tile_cache:
+        _tile_cache.move_to_end(key)   # mark as most-recently-used
         return _tile_cache[key]
 
     path = os.path.join(srtm_dir, key)
     if not os.path.exists(path):
-        _tile_cache[key] = None
+        _cache_put(key, None)
         return None
 
     # Detect resolution from file size (2 bytes per sample)
@@ -119,7 +137,7 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
         data = [0 if v == VOID_ELEV else v * 3.28084 for v in data]
 
     result = (data, n_samples)
-    _tile_cache[key] = result
+    _cache_put(key, result)
     return result
 
 

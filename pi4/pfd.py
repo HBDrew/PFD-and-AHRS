@@ -5031,11 +5031,16 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
         alt_diff_ft = apt.elev_ft - alt_ft          # negative = below aircraft
         vert_deg = math.degrees(math.atan2(alt_diff_ft, dist_ft))
 
+        # Cull airports above our altitude (their geometric angle is above
+        # the horizon, vert_deg > 0).  The previous check `screen_y_raw < 0`
+        # tested screen-space-above-centre, which incorrectly hid valid
+        # below-horizon airports whenever pitch was more nose-down than
+        # vert_deg (same bug as the runway-disappears-on-descent issue
+        # fixed in _project_latlon).
+        if vert_deg > 0:
+            continue
         screen_x_raw = rel_brg * PX_PER_DEG
         screen_y_raw = (pitch_deg - vert_deg) * PX_PER_DEG
-        # Cull airports that project above the horizon
-        if screen_y_raw < 0:
-            continue
         sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
         sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
 
@@ -6124,8 +6129,25 @@ def main():
     os.environ.setdefault("SDL_RENDER_VSYNC", "0")
     os.environ.setdefault("SDL_VIDEO_KMSDRM_VSYNC", "0")
 
-    pygame.init()
-    pygame.mouse.set_visible(False)
+    # pygame.init() returns (n_success, n_failed).  If the video subsystem
+    # silently fails (typically because something else is holding the DRM
+    # master after a previous crash), every later display call errors with
+    # "video system not initialized".  Detect and exit clean — without this
+    # systemd would tight-loop the service for hours.
+    init_ok, init_failed = pygame.init()
+    if init_failed > 0 or not pygame.display.get_init():
+        sys.stderr.write(
+            f"[PFD] pygame.init failed (success={init_ok}, failed={init_failed}).\n"
+            f"[PFD] Video subsystem is not initialised — usually means another\n"
+            f"[PFD] process is holding /dev/dri/card0.  Try `sudo lsof /dev/dri/card*`\n"
+            f"[PFD] or reboot to clear stuck DRM state.  Exiting.\n"
+        )
+        sys.exit(2)
+    try:
+        pygame.mouse.set_visible(False)
+    except pygame.error:
+        # Mouse subsystem not available under some headless drivers; ignore.
+        pass
 
     # ── Shared-context GL composite path ─────────────────────────────────────
     # When SVT_RENDERER == "opengl_shared", pygame owns the display in

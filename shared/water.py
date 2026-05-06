@@ -36,7 +36,18 @@ WATER_FILE_EXT = ".water"
 
 
 # ── Tile cache (keyed identically to terrain._tile_key) ───────────────────────
-_tile_cache: dict = {}
+# LRU-capped — see shared/terrain.py for rationale.  Each unpacked water tile
+# is ~1.4 MB (1201² uint8) so a 64-entry cap is ~90 MB worst-case.
+import collections as _collections
+_TILE_CACHE_MAX = 64
+_tile_cache: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
+
+
+def _cache_put(key, value):
+    _tile_cache[key] = value
+    _tile_cache.move_to_end(key)
+    while len(_tile_cache) > _TILE_CACHE_MAX:
+        _tile_cache.popitem(last=False)
 
 
 def _tile_key(lat_int: int, lon_int: int) -> str:
@@ -55,11 +66,12 @@ def load_tile(water_dir: str, lat_int: int, lon_int: int):
         return None
     key = _tile_key(lat_int, lon_int)
     if key in _tile_cache:
+        _tile_cache.move_to_end(key)   # mark as most-recently-used
         return _tile_cache[key]
 
     path = os.path.join(water_dir, key)
     if not os.path.exists(path):
-        _tile_cache[key] = None
+        _cache_put(key, None)
         return None
 
     try:
@@ -70,13 +82,13 @@ def load_tile(water_dir: str, lat_int: int, lon_int: int):
             w, h = struct.unpack("<ii", header)
             packed = f.read()
     except OSError:
-        _tile_cache[key] = None
+        _cache_put(key, None)
         return None
 
     if HAS_NUMPY:
         bits = np.unpackbits(np.frombuffer(packed, dtype=np.uint8))
         if bits.size < h * w:
-            _tile_cache[key] = None
+            _cache_put(key, None)
             return None
         mask = bits[: h * w].reshape(h, w).astype(np.uint8)
     else:
@@ -86,7 +98,7 @@ def load_tile(water_dir: str, lat_int: int, lon_int: int):
         mask = packed
 
     result = (mask, w)
-    _tile_cache[key] = result
+    _cache_put(key, result)
     return result
 
 
