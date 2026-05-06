@@ -1792,13 +1792,32 @@ class SimFlyState:
             state["speed"] = max(0.0, spd + d_spd)
 
             # ── Position ───────────────────────────────────────────────────────
-            nm_s           = state["speed"] / 3600.0
-            hdg_rad        = math.radians(state["yaw"])
+            # Constant simulated wind from 270° (west) at 15 kt — yields a
+            # ~5–10° crab angle at typical training-aircraft speeds, so the
+            # cross-source pointer on the heading tape has something to show
+            # (track ≠ heading) and the magenta direct-to course shifts off
+            # the nose visibly when flying east/west legs.
+            SIM_WIND_FROM_DEG = 270.0
+            SIM_WIND_KT       = 15.0
+            wind_rad = math.radians(SIM_WIND_FROM_DEG + 180.0)  # blowing TO
+            wind_n_kt = SIM_WIND_KT * math.cos(wind_rad)
+            wind_e_kt = SIM_WIND_KT * math.sin(wind_rad)
+            tas_kt    = state["speed"]   # treat sim speed as TAS
+            hdg_rad   = math.radians(state["yaw"])
+            ac_n_kt   = tas_kt * math.cos(hdg_rad)
+            ac_e_kt   = tas_kt * math.sin(hdg_rad)
+            gnd_n_kt  = ac_n_kt + wind_n_kt
+            gnd_e_kt  = ac_e_kt + wind_e_kt
+            gs_kt     = math.hypot(gnd_n_kt, gnd_e_kt)
+            track_deg = math.degrees(math.atan2(gnd_e_kt, gnd_n_kt)) % 360.0
+
+            nm_s           = gs_kt / 3600.0
+            track_rad      = math.radians(track_deg)
             nm_per_deg_lat = 60.0
             nm_per_deg_lon = max(1.0, 60.0 * math.cos(math.radians(state["lat"])))
-            state["lat"]  += nm_s * dt * math.cos(hdg_rad) / nm_per_deg_lat
-            state["lon"]  += nm_s * dt * math.sin(hdg_rad) / nm_per_deg_lon
-            state["track"] = state["yaw"]
+            state["lat"]  += nm_s * dt * math.cos(track_rad) / nm_per_deg_lat
+            state["lon"]  += nm_s * dt * math.sin(track_rad) / nm_per_deg_lon
+            state["track"] = track_deg
 
             # ── Sensor failure simulation ──────────────────────────────────────
             state["gps_ok"]  = not gps_fail
