@@ -1364,8 +1364,10 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
         if abs(off) > 1.0:  # only show when there's visible wind/crab angle
             tx = int(CX + off * PX_PER_DEG)
             if 0 < tx < DISPLAY_W:
-                pygame.draw.polygon(surf, (220, 60, 220),
-                    [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
+                tri = [(tx, HDG_Y + 2),
+                       (tx - 8, HDG_Y + 18), (tx + 8, HDG_Y + 18)]
+                _filled_polygon(surf, tri, MAGENTA)
+                pygame.draw.polygon(surf, WHITE, tri, 1)
 
     # Heading box — scaled for font size. GPS TRK → magenta, MAG → white.
     hdg_col = MAGENTA if hdg_src == "gps" else WHITE
@@ -2427,6 +2429,23 @@ def handle_event(event, demo_mode):
         if _sim_state is not None and mode == "pfd":
             if CX - 30 <= x <= CX + 30 and CY - 30 <= y <= CY - 10:
                 disp["mode"] = "sim_controls"
+                return True
+
+        # Tap on the CDI strip (when a waypoint is active) → open keyboard
+        # to change waypoint.  Hit region matches the translucent backplate.
+        nv = disp.get("nav", {})
+        if nv.get("ident") and mode == "pfd":
+            _cdi_bar_w = max(140, int(DISPLAY_W * 0.20))
+            _cdi_bar_y = HDG_Y - 50
+            _cdi_l = CX - _cdi_bar_w // 2 - 18
+            _cdi_r = CX + _cdi_bar_w // 2 + 18
+            _cdi_t = _cdi_bar_y - 24
+            _cdi_b = _cdi_bar_y + 12
+            if _cdi_l <= x <= _cdi_r and _cdi_t <= y <= _cdi_b:
+                disp["kbd_target"] = "nav_ident"
+                disp["kbd_prev"]   = "pfd"
+                disp["kbd_buf"]    = nv.get("ident", "")
+                disp["mode"]       = "keyboard"
                 return True
 
         # Tap on alt bug button (top of alt tape) — hit region extends to HDG_H
@@ -4649,14 +4668,20 @@ def _nav_clear() -> None:
 def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
                          hdg_deg, pitch_deg, roll_deg):
     """Solid magenta course line: the great circle from the activation
-    point to the active waypoint, drawn ground-anchored at the waypoint's
-    airport elevation.
+    point to the active waypoint, drawn ground-anchored to the actual
+    terrain elevation at each step (so the line drapes over ridges and
+    follows valleys rather than floating at a constant altitude).
 
-    This is a fixed line in space — it does not move under the aircraft
-    as you drift.  When the aircraft is off-course, the line appears
-    visibly to one side, matching the direction the CDI diamond
+    The line is a fixed line in space — it does not move under the
+    aircraft as you drift.  When the aircraft is off-course, the line
+    appears visibly to one side, matching the direction the CDI diamond
     deflects.  Re-activating direct-to (DIRECT TO / NEAREST) resets the
-    activation point and draws a new line."""
+    activation point and draws a new line.
+
+    No forward-FOV cap on segment endpoints: behind-aircraft points
+    project way off the side of the AI and get clipped naturally, so
+    the line "slides off the edge" as the waypoint passes abeam rather
+    than truncating mid-screen."""
     nv = disp.get("nav", {})
     if not nv.get("ident"):
         return
@@ -4676,20 +4701,33 @@ def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
     px_per_deg = ah / 48.0
 
     # Step 0.5 nm or finer; cap step count so very-distant courses don't
-    # explode work per frame.
+    # explode work per frame (per-step DEM lookup is the costly bit).
     n_steps = max(8, int(course_nm / 0.5))
     n_steps = min(n_steps, 400)
 
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
 
+    # Small offset above terrain so the line draws on top of the SVT
+    # mesh instead of z-fighting with it.
+    DRAPE_OFFSET_FT = 5.0
+
     prev_pt = None
     for i in range(0, n_steps + 1):
         t = i / n_steps
         s_lat, s_lon = _nav_gc_interp(act_lat, act_lon, wpt_lat, wpt_lon, t)
-        pt = _project_latlon(s_lat, s_lon, lat, lon, alt_ft, wpt_elev,
+        try:
+            terrain_elev = get_elevation_ft(SRTM_DIR, s_lat, s_lon)
+            if terrain_elev is None or terrain_elev < -100:
+                terrain_elev = wpt_elev   # fallback: SRTM gap
+        except Exception:
+            terrain_elev = wpt_elev
+        elev_ft = terrain_elev + DRAPE_OFFSET_FT
+
+        pt = _project_latlon(s_lat, s_lon, lat, lon, alt_ft, elev_ft,
                              hdg_deg, pitch_deg, roll_deg, cx_ai, cy_ai,
-                             px_per_deg, max_fov_deg=80, ground_only=True)
+                             px_per_deg, max_fov_deg=None,
+                             ground_only=False)
         if pt is None:
             prev_pt = None
             continue
@@ -4729,10 +4767,10 @@ def draw_cdi(surf):
     bar_y = HDG_Y - 50            # leaves room for the readout box (28-32 px)
     bar_x = CX - bar_w // 2
 
-    # Translucent backplate so the bar reads against terrain
-    plate = pygame.Surface((bar_w + 24, 24), pygame.SRCALPHA)
+    # Translucent backplate sized for the larger readout font
+    plate = pygame.Surface((bar_w + 36, 36), pygame.SRCALPHA)
     plate.fill((0, 8, 22, 180))
-    surf.blit(plate, (bar_x - 12, bar_y - 9))
+    surf.blit(plate, (bar_x - 18, bar_y - 24))
 
     # Bar + tick marks (centre + ±50% + full-scale dots)
     pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
@@ -4755,9 +4793,11 @@ def draw_cdi(surf):
     dpts = [(dcx, dcy - 9), (dcx + 8, dcy), (dcx, dcy + 9), (dcx - 8, dcy)]
     _filled_polygon(surf, dpts, MAGENTA)
 
-    # Readout: ident · BRG · DIST — centred above the bar
+    # Readout: ident · BRG · DIST — centred above the bar.  Font 50% larger
+    # than original (11→16); positioned so the text bottom sits 3 px higher
+    # than the original layout would have placed it.
     readout = f"{ident}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
-    _text(surf, readout, 11, MAGENTA, bold=True, cx=CX, cy=bar_y - 14)
+    _text(surf, readout, 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
 
 
 # ── Runway polygons + extended centerlines ───────────────────────────────────
