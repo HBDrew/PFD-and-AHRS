@@ -185,7 +185,13 @@ disp["ds"] = {                      # display settings
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
     "mag_cal":       "idle", "mounting": "normal",
-    "hdg_src":       "mag",   # "mag" | "gps"  — heading source (magnetic or GPS track)
+    # Heading source — matches the iPhone display:
+    #   "mag"  : magnetic heading from AHRS (cyan/white "M" subscript).
+    #   "trk"  : GPS ground track via complementary filter (magenta "G").
+    #            Falls back to "G?" when GPS fix is missing or speed < 3 kt
+    #            (track is unreliable below taxi speed).
+    #   "auto" : prefer "trk" when GPS is moving, fall back to "mag" otherwise.
+    "hdg_src":       "auto",
     "airspeed_src":  "gps",   # "gps" | "ias"  — speed source (GPS groundspeed or IAS sensor)
 }
 disp["cs"] = {                      # connectivity settings
@@ -219,6 +225,41 @@ disp["nav"] = {                     # rudimentary direct-to-airport navigation
 }
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
+
+# Heading-source resolution thresholds — match the iPhone display.
+HDG_TRK_MIN_KT = 3.0   # below this speed, GPS track is unreliable
+
+
+def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
+    """Resolve the user's preference (hdg_src in {"mag","trk","auto"}) +
+    runtime conditions into the active source, label, and colour shown in
+    the heading box / on the tape.
+
+    Mirrors iphone_display/index.html#_activeHdg so the two displays use
+    identical UX:
+
+        Returns (use_track: bool, label: str, color: tuple).
+
+    label is one of "M" / "G" / "M?" / "G?" / "?" ; color is white for
+    valid magnetic, MAGENTA for valid GPS track, amber for unavailable.
+    """
+    track_ok = gps_ok and (speed_kt or 0.0) > HDG_TRK_MIN_KT
+    mag_ok   = ahrs_ok
+
+    if hdg_src_pref == "mag":
+        if mag_ok:
+            return False, "M", WHITE
+        return False, "M?", AMBER
+    if hdg_src_pref == "trk":
+        if track_ok:
+            return True, "G", MAGENTA
+        return True, "G?", AMBER
+    # auto: prefer TRK when GPS is moving, fall back to MAG
+    if track_ok:
+        return True, "G", MAGENTA
+    if mag_ok:
+        return False, "M", WHITE
+    return False, "?", AMBER
 
 # ── Module-level SSE handle (set in main, restarted by handle_event) ─────────
 _sse_client  = None
@@ -1315,12 +1356,19 @@ _CARDINALS = {0: "N", 45: "NE", 90: "E", 135: "SE",
               180: "S", 225: "SW", 270: "W", 315: "NW"}
 
 
-def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src="mag"):
-    """Bottom heading strip with bug and current-heading box.
+def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, yaw=None,
+                      gps_ok=False, ahrs_ok=True, use_track=False,
+                      hdg_label="M", hdg_color=WHITE):
+    """Bottom heading strip with bug, current-heading box, and a
+    cross-source diamond showing the *other* heading source's value.
 
-    hdg_src="gps" means hdg is already the GPS track value; the magenta track
-    pointer is suppressed (it would just sit at centre) and the readout box
-    shows a small "TRK" sub-label instead of "MAG".
+    Args:
+        hdg:        the heading value to display in the box (track or yaw)
+        track:      raw GPS track (deg)        — used for cross-source pointer
+        yaw:        raw AHRS magnetic yaw (deg) — used for cross-source pointer
+        use_track:  True if the active source is GPS track
+        hdg_label:  subscript "M" / "G" / "M?" / "G?" / "?"
+        hdg_color:  WHITE for valid mag, MAGENTA for valid track, AMBER for ?
     """
     hdg_surf = pygame.Surface((DISPLAY_W, HDG_H), pygame.SRCALPHA)
     hdg_surf.fill((0, 8, 22, 210))
@@ -1344,7 +1392,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
             col = YELLOW if deg in _CARDINALS else (230, 230, 230)
             _text(surf, lbl, 17, col, bold=True, cx=x, cy=HDG_Y + HDG_H * 3 // 4)
 
-    # Heading bug chevron
+    # Heading bug chevron — color matches the active source
     if hdg_bug is not None:
         off = ((hdg_bug - hdg + 180) % 360) - 180
         hbx = int(CX + off * PX_PER_DEG)
@@ -1352,30 +1400,41 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
         bug = [(hbx - 17, HDG_Y + 14), (hbx - 17, HDG_Y),
                (hbx - 5,  HDG_Y), (hbx, HDG_Y + 7), (hbx + 5, HDG_Y),
                (hbx + 17, HDG_Y), (hbx + 17, HDG_Y + 14)]
-        hdg_bug_col = MAGENTA if hdg_src == "gps" else CYAN
+        hdg_bug_col = MAGENTA if use_track else CYAN
         _filled_polygon(surf, bug, hdg_bug_col)
         pygame.gfxdraw.aapolygon(surf, bug, hdg_bug_col)
 
-    # GPS track pointer (magenta, when GPS OK and heading source is MAG)
-    # Suppressed in GPS TRK mode — hdg is already the track value.
-    # Also suppressed when track ≈ hdg (within 1°) to avoid clutter at centre.
-    if gps_ok and track is not None and hdg_src != "gps":
-        off = ((track - hdg + 180) % 360) - 180
-        if abs(off) > 1.0:  # only show when there's visible wind/crab angle
+    # Cross-source pointer — when the OTHER source is also valid, mark its
+    # value on the tape so the pilot can see the discrepancy (wind correction
+    # angle, mag variation, compass drift) without having to flip modes.
+    # Cyan triangle = magnetic; magenta triangle = GPS track.
+    cross_val = None
+    cross_col = None
+    if use_track and ahrs_ok and yaw is not None:
+        cross_val = yaw
+        cross_col = CYAN
+    elif (not use_track) and gps_ok and track is not None:
+        cross_val = track
+        cross_col = MAGENTA
+    if cross_val is not None:
+        off = ((cross_val - hdg + 180) % 360) - 180
+        if abs(off) > 1.0:   # avoid clutter when sources agree
             tx = int(CX + off * PX_PER_DEG)
             if 0 < tx < DISPLAY_W:
                 tri = [(tx, HDG_Y + 2),
                        (tx - 8, HDG_Y + 18), (tx + 8, HDG_Y + 18)]
-                _filled_polygon(surf, tri, MAGENTA)
+                _filled_polygon(surf, tri, cross_col)
                 pygame.draw.polygon(surf, WHITE, tri, 1)
 
-    # Heading box — scaled for font size. GPS TRK → magenta, MAG → white.
-    hdg_col = MAGENTA if hdg_src == "gps" else WHITE
+    # Heading box — colour reflects active source.
+    hdg_col = hdg_color
     # Measure actual rendered width of "133°" to size the box
     _hf = _get_font(17)
     _hdg_str = f"{round(hdg) % 360:03d}\u00b0"
     _hw = _hf.size(_hdg_str)[0]
-    bw = max(66, _hw + 28)  # text width + padding for M subscript + margins
+    # Subscript can be 1 char ("M"/"G") or 2 chars ("M?"/"G?"); pad accordingly.
+    sub_pad = 22 if len(hdg_label) > 1 else 14
+    bw = max(66, _hw + sub_pad + 14)
     bh = max(28, _hf.get_height() + 8)
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
     th = bw // 3
@@ -1393,10 +1452,9 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
     pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
     # Three-digit readout — centred in the box
     _text(surf, _hdg_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)
-    # G/M subscript — outboard of the ° glyph
+    # Source subscript ("M" / "G" / "M?" / "G?" / "?") — outboard of ° glyph
     deg_right = CX + _hw // 2 + 3
-    src_lbl  = "G" if hdg_src == "gps" else "M"
-    _text(surf, src_lbl, 8, hdg_col, x=deg_right, y=by2 + bh - 12)
+    _text(surf, hdg_label, 8, hdg_col, x=deg_right, y=by2 + bh - 12)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────
@@ -1497,7 +1555,7 @@ def draw_terrain_alert(surf):
 
 # ── Status badges ─────────────────────────────────────────────────────────────
 def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected,
-                       hdg_src="mag"):
+                       use_track=False):
     """
     Badges are shown only when something requires pilot attention.
     Nominal state = clean strip.  Problem state = badge appears.
@@ -1549,7 +1607,7 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
         _text(surf, text, 10, fg, x=rx + 5, y=5)
 
     # GPS-slaved heading mode indicator — magenta badge (matches track-pointer colour)
-    if hdg_src == "gps" and gps_ok:
+    if use_track and gps_ok:
         badge_r("GPS TRK", (70, 0, 70), (220, 80, 220))
 
     # Show GPS ALT only when baro sensor is absent (pilot needs to know alt source)
@@ -3110,16 +3168,21 @@ def draw_ahrs_setup(surf, ss):
     for i, (v, lbl) in enumerate(opts):
         _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
 
-    # Row 4: Heading source (MAG compass vs GPS track)
-    bx, by, bw, bh = _setting_row(surf, 4, "HEADING SOURCE",
-                                   "Primary heading reference")
-    cur_src = ss.get("hdg_src", "mag")
-    opts_src = [("mag", "MAG"), ("gps", "GPS TRK")]
-    total_src = 2*120 + _DSP_BTN_G
+    # Row 4: Heading source (MAG / TRK / AUTO) — matches the iPhone display.
+    # Sub-line documents what each option does so a pilot can pick without
+    # reaching for the manual.
+    bx, by, bw, bh = _setting_row(
+        surf, 4, "HEADING SOURCE",
+        "MAG=compass  TRK=GPS track  AUTO=TRK when moving, MAG otherwise")
+    cur_src = ss.get("hdg_src", "auto")
+    opts_src = [("mag", "MAG"), ("trk", "TRK"), ("auto", "AUTO")]
+    seg_w = 96
+    total_src = 3 * seg_w + 2 * _DSP_BTN_G
     rx = bx + bw - total_src - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts_src):
-        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur_src)
+        _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
+                 lbl, v == cur_src)
 
     # Row 5: Airspeed source (GPS groundspeed vs dedicated IAS sensor)
     bx, by, bw, bh = _setting_row(surf, 5, "AIRSPEED SOURCE",
@@ -3177,13 +3240,14 @@ def ahrs_setup_hit(x, y, ss):
                     if ry <= y <= ry+_DSP_BTN_H:
                         return f"set:mounting:{v}"
         elif ri == 4:
-            total_src = 2*120 + _DSP_BTN_G
+            seg_w = 96
+            total_src = 3 * seg_w + 2 * _DSP_BTN_G
             rx = bx + bw - total_src - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            for i, v in enumerate(("mag", "gps")):
-                if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
-                    if ry <= y <= ry+_DSP_BTN_H:
-                        return f"set:hdg_src:{v}"
+            for i, v in enumerate(("mag", "trk", "auto")):
+                xi = rx + i * (seg_w + _DSP_BTN_G)
+                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:hdg_src:{v}"
         elif ri == 5:
             total_as = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_as - 14
@@ -4252,7 +4316,7 @@ def _cyan_box(surf, value_str, x, y, w=74, h=22, font_sz=14, col=None):
 
 
 def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
-                     hdg_src="mag", baro_ok=True):
+                     use_track=False, baro_ok=True):
     """
     Tap buttons in the heading strip — left and right only so the centre
     heading readout remains unobstructed:
@@ -4264,7 +4328,7 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
 
     # HDG bug — left side of heading strip; color matches heading bug triangle
     _hdg_btn = f"{round(hdg_bug) % 360:03d}\u00b0" if hdg_bug is not None else "---\u00b0"
-    hdg_box_col = MAGENTA if hdg_src == "gps" else CYAN
+    hdg_box_col = MAGENTA if use_track else CYAN
     _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=HDG_H, col=hdg_box_col)
 
     # Baro — right side of heading strip; CYAN when baro sensor active, MAGENTA when GPS ALT
@@ -5151,15 +5215,19 @@ def render(surf, demo_mode, connected, data_stale=False):
         ahrs_ok = False
 
     # ── Heading source selection ──────────────────────────────────────────────
-    # MAG  (default): use magnetometer/gyro yaw from AHRS (already fused)
-    # GPS TRK:        complementary filter — gyro propagates each frame,
-    #                 GPS track slowly slaves the absolute reference.
-    #                 Falls back to yaw if GPS fix is lost.
-    hdg_src = ss.get("hdg_src", "mag")
-    if hdg_src == "gps":
+    # The user picks a preference (mag / trk / auto); _resolve_hdg_source
+    # turns that into the actual source given runtime conditions and
+    # produces the label + colour that the heading box / setup show.
+    hdg_pref = ss.get("hdg_src", "auto")
+    use_track, hdg_label, hdg_color = _resolve_hdg_source(
+        hdg_pref, gps_ok, ahrs_ok, speed)
+    if use_track:
+        # Complementary filter: AHRS yaw rate propagates each frame, GPS
+        # track slowly slaves the absolute reference.  Smoother than raw
+        # GPS track at low speeds.
         hdg = _update_gps_heading(disp["yaw"], disp["track"], gps_ok)
     else:
-        global _gps_hdg, _prev_yaw_disp  # reset filter when switching back to MAG
+        global _gps_hdg, _prev_yaw_disp  # reset filter when not using TRK
         _gps_hdg = _prev_yaw_disp = None
         hdg = disp["yaw"]
 
@@ -5293,7 +5361,9 @@ def render(surf, demo_mode, connected, data_stale=False):
                   baro_ok=baro_ok)
 
     # 5. Heading tape
-    draw_heading_tape(surf, hdg, hdg_bug, track, gps_ok, hdg_src=hdg_src)
+    draw_heading_tape(surf, hdg, hdg_bug, track=track, yaw=disp["yaw"],
+                      gps_ok=gps_ok, ahrs_ok=ahrs_ok, use_track=use_track,
+                      hdg_label=hdg_label, hdg_color=hdg_color)
 
     # 5b. CDI — direct-to course deviation indicator above the heading box.
     # No-op when no waypoint is active.
@@ -5311,7 +5381,7 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 9. Status badges
     draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected,
-                       hdg_src=hdg_src)
+                       use_track=use_track)
 
     # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
     draw_terrain_alert(surf)
@@ -5321,7 +5391,7 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 11. Tap-buttons for heading bug, baro, and alt bug (color = data source)
     draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
-                     hdg_src=hdg_src, baro_ok=baro_ok)
+                     use_track=use_track, baro_ok=baro_ok)
 
     # 12. Demo / SIM watermark
     if demo_mode:
@@ -5478,6 +5548,11 @@ def main():
     # restored brightness is used.  No-op on first run (no file yet).
     if _settings.load_into(disp, SETTINGS_PATH):
         print(f"[PFD] Settings restored from {SETTINGS_PATH}")
+    # Migrate legacy hdg_src values: "gps" was the old name for "trk".
+    if disp["ss"].get("hdg_src") == "gps":
+        disp["ss"]["hdg_src"] = "trk"
+    if disp["ss"].get("hdg_src") not in ("mag", "trk", "auto"):
+        disp["ss"]["hdg_src"] = "auto"
     _settings.start(disp, SETTINGS_PATH)
 
     _init_backlight()
@@ -5694,7 +5769,7 @@ def main():
         _save("preview_sedona_approach.png")
 
         # GPS TRK heading mode
-        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115, hdg_src="gps")
+        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115, hdg_src="trk")
         _save("preview_gps_trk_mode.png")
 
         # Badge states
@@ -5754,7 +5829,7 @@ def main():
             _save(fname)
 
         # AHRS setup with GPS TRK selected
-        disp["ss"]["hdg_src"] = "gps"
+        disp["ss"]["hdg_src"] = "trk"
         disp["mode"] = "ahrs_setup"
         _save("preview_setup_ahrs_gpstrk.png")
         disp["ss"]["hdg_src"] = "mag"
