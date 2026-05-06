@@ -2575,10 +2575,11 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "sim_controls"
                 return True
 
-        # Tap on the CDI strip (when a waypoint is active) → open keyboard
-        # to change waypoint.  Hit region matches the translucent backplate.
+        # Tap on the CDI strip → open keyboard for waypoint entry.  Strip
+        # is rendered whenever GPS is fixed (with or without an active
+        # waypoint), and the hit region matches the translucent backplate.
         nv = disp.get("nav", {})
-        if nv.get("ident") and mode == "pfd":
+        if mode == "pfd" and disp.get("gps_ok", False):
             _cdi_bar_w = max(140, int(DISPLAY_W * 0.20))
             _cdi_bar_y = HDG_Y - 50
             _cdi_l = CX - _cdi_bar_w // 2 - 18
@@ -5371,21 +5372,15 @@ def draw_cdi(surf):
     Classic XTK CDI: the diamond shows where the activation→waypoint great
     circle is relative to your current position.  Right-of-course → course
     is to your left → diamond deflects LEFT → fly LEFT to intercept (fly
-    TO the needle).  Full-scale at ±_CDI_FULL_SCALE_NM."""
+    TO the needle).  Full-scale at ±_CDI_FULL_SCALE_NM.
+
+    With no active waypoint we still draw the empty bar + a "DIRECT  →"
+    placeholder so the strip is always tappable and the pilot has a fixed
+    entry point for the keyboard.  Caller gates the whole thing on
+    gps_ok — a fix is required before the strip means anything."""
     nv = disp.get("nav", {})
     ident = nv.get("ident", "")
-    if not ident:
-        return
-
-    lat = disp.get("lat", 0.0)
-    lon = disp.get("lon", 0.0)
-    wpt_lat = float(nv["lat"])
-    wpt_lon = float(nv["lon"])
-    act_lat = float(nv.get("act_lat", lat))
-    act_lon = float(nv.get("act_lon", lon))
-
-    dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
-    xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+    have_wpt = bool(ident)
 
     # Bar geometry: sit just above the heading readout box.  Box height is
     # max(28, font_h+8); place the bar with a small margin above.
@@ -5411,20 +5406,36 @@ def draw_cdi(surf):
             pygame.draw.circle(surf, (180, 200, 220),
                                (tx, bar_y + bar_h // 2), 2)
 
-    # Diamond shows where the course line is relative to the aircraft.
-    # Right-of-course (positive xtk) → diamond LEFT (course is to your left).
-    xtk_clamped = max(-1.0, min(1.0, xtk / _CDI_FULL_SCALE_NM))
-    dx_diamond = -int(xtk_clamped * (bar_w / 2))
-    dcx = CX + dx_diamond
-    dcy = bar_y + bar_h // 2
-    dpts = [(dcx, dcy - 9), (dcx + 8, dcy), (dcx, dcy + 9), (dcx - 8, dcy)]
-    _filled_polygon(surf, dpts, MAGENTA)
+    if have_wpt:
+        lat = disp.get("lat", 0.0)
+        lon = disp.get("lon", 0.0)
+        wpt_lat = float(nv["lat"])
+        wpt_lon = float(nv["lon"])
+        act_lat = float(nv.get("act_lat", lat))
+        act_lon = float(nv.get("act_lon", lon))
 
-    # Readout: ident · BRG · DIST — centred above the bar.  Font 50% larger
-    # than original (11→16); positioned so the text bottom sits 3 px higher
-    # than the original layout would have placed it.
-    readout = f"{ident}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
-    _text(surf, readout, 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
+        dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
+        xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+
+        # Diamond shows where the course line is relative to the aircraft.
+        # Right-of-course (positive xtk) → diamond LEFT (course is to your left).
+        xtk_clamped = max(-1.0, min(1.0, xtk / _CDI_FULL_SCALE_NM))
+        dx_diamond = -int(xtk_clamped * (bar_w / 2))
+        dcx = CX + dx_diamond
+        dcy = bar_y + bar_h // 2
+        dpts = [(dcx, dcy - 9), (dcx + 8, dcy), (dcx, dcy + 9), (dcx - 8, dcy)]
+        _filled_polygon(surf, dpts, MAGENTA)
+
+        # Readout: ident · BRG · DIST — centred above the bar.  Font 50% larger
+        # than original (11→16); positioned so the text bottom sits 3 px higher
+        # than the original layout would have placed it.
+        readout = f"{ident}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
+        _text(surf, readout, 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
+    else:
+        # No active waypoint — leave the bar empty (no diamond) and show
+        # the "DIRECT  →" affordance so the pilot knows tapping opens the
+        # keyboard.
+        _text(surf, "DIRECT  →", 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
 
 
 # ── Runway polygons + extended centerlines ───────────────────────────────────
