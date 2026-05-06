@@ -4972,19 +4972,12 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     and we only fall into a Python loop to issue the pygame draw calls
     for the obstacles whose top anchor lands inside the AI rect.
     """
-    global _obs_dbg_count
     import numpy as _np
-    import time as _time
-    _t0 = _time.perf_counter()
     nearby = obs_mod.query_nearby(_obstacles, lat, lon,
                                   radius_nm=_OBS_RADIUS_NM,
                                   alt_ft=alt_ft,
                                   below_ft=_OBS_BELOW_FT)
-    _t_query = (_time.perf_counter() - _t0) * 1000.0
     if nearby is None or len(nearby) == 0:
-        _obs_dbg_count = (_obs_dbg_count + 1) if '_obs_dbg_count' in globals() else 1
-        if _obs_dbg_count % 60 == 1:
-            print(f"[OBS] query={_t_query:.2f}ms  nearby=0")
         return
 
     ax, ay_r, aw, ah = ai_rect
@@ -5031,12 +5024,7 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
                & (sx_top >= ax + 4) & (sx_top <= ax + aw - 4)
                & (sy_top >= ay_r + 4) & (sy_top <= ay_r + ah - 4))
     visible_idx = _np.flatnonzero(visible)
-    _t_proj = (_time.perf_counter() - _t0) * 1000.0
     if visible_idx.size == 0:
-        _obs_dbg_count = (_obs_dbg_count + 1) if '_obs_dbg_count' in globals() else 1
-        if _obs_dbg_count % 60 == 1:
-            print(f"[OBS] query={_t_query:.2f}ms  proj={_t_proj-_t_query:.2f}ms  "
-                  f"nearby={len(nearby)}  visible=0")
         return
 
     clearance = alt_ft - ob_msl
@@ -5077,13 +5065,6 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
         if ob_agl[i] >= 1000 or dist_nm[i] < 1.0:
             lbl = f"{int(ob_msl[i]//100)*100}"
             _obs_label_blit(surf, lbl, col, sx, sy - 14)
-
-    _t_total = (_time.perf_counter() - _t0) * 1000.0
-    _obs_dbg_count = (_obs_dbg_count + 1) if '_obs_dbg_count' in globals() else 1
-    if _obs_dbg_count % 60 == 1:
-        print(f"[OBS] query={_t_query:.2f}ms  proj={_t_proj-_t_query:.2f}ms  "
-              f"draw={_t_total-_t_proj:.2f}ms  nearby={len(nearby)}  "
-              f"visible={visible_idx.size}")
 
 
 def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,

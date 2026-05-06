@@ -26,6 +26,7 @@ to the pygame renderer.
 
 import math
 import os
+import threading
 
 try:
     import numpy as np
@@ -775,6 +776,21 @@ class _SharedState:
         self.line_capacity = 4096
         self._last_line_width = None
 
+        # Async mesh-rebuild state.  When the snap grid moves we kick off
+        # a background thread that does the CPU-side numpy work (SRTM
+        # sampling, water mask sampling, airport burn, position/index
+        # array build) and stashes the result in `_pending_*`.  The next
+        # call to build_mesh / build_outer_mesh on the main thread sees
+        # the pending result and does the (small) GL upload.  The OLD
+        # mesh keeps rendering until the swap, so the per-snap-step
+        # 100-500 ms stall is hidden.
+        self._inner_thread       = None
+        self._inner_pending      = None
+        self._inner_target_key   = None
+        self._outer_thread       = None
+        self._outer_pending      = None
+        self._outer_target_key   = None
+
     def render_polyline_latlonelev(self, mvp, vertices_latlonelev,
                                     rgba=(0.86, 0.0, 0.86, 1.0),
                                     line_width=3.0):
@@ -818,15 +834,30 @@ class _SharedState:
             self._last_line_width = line_width
         self.line_vao.render(mode=moderngl.LINE_STRIP, vertices=len(world))
 
-    def _build_tier_mesh(self, srtm_dir, lat, lon, radius_nm, grid_n,
-                         current_key, airports_arr=None):
-        """Build one mesh tier (inner or outer).  Returns a dict with the
-        new GPU resources + metadata, or None when the cached tier is
-        still valid (caller does nothing in that case).
+    def _tier_target_key(self, lat, lon, radius_nm, grid_n, airports_arr):
+        """Compute the cache key a tier WOULD have for this position.
+        Used by the async dispatcher to decide whether the cached mesh
+        is still valid before paying for a CPU build."""
+        radius_m = radius_nm * NM_TO_M
+        sample_step_m = (2.0 * radius_m) / (grid_n - 1)
+        m_per_deg_lat = 60.0 * NM_TO_M
+        snap_dlat = sample_step_m / m_per_deg_lat
+        mesh_lat = round(lat / snap_dlat) * snap_dlat
+        snap_dlon = snap_dlat
+        mesh_lon = round(lon / snap_dlon) * snap_dlon
+        apt_marker = 0 if airports_arr is None else len(airports_arr)
+        return (round(mesh_lat, 6), round(mesh_lon, 6),
+                grid_n, round(radius_nm, 1), apt_marker)
 
-        The inner and outer tiers use this same routine with different
-        radius/grid_n.  Each tier owns its own snap lattice, so they
-        recentre independently as the aircraft moves.
+    def _build_tier_mesh_cpu(self, srtm_dir, lat, lon, radius_nm, grid_n,
+                             current_key, airports_arr=None):
+        """CPU-only half of the mesh build — SRTM/water sampling, airport
+        burn, position + index array assembly.  Returns a dict of numpy
+        arrays + meta, or None when the cached tier is still valid.
+
+        This routine does NOT touch the GL context, so it's safe to call
+        from a worker thread.  The tiny GL upload step lives in
+        _upload_tier_mesh and runs on the main thread.
         """
         radius_m = radius_nm * NM_TO_M
         sample_step_m = (2.0 * radius_m) / (grid_n - 1)
@@ -965,9 +996,27 @@ class _SharedState:
         tri2 = np.stack([v1, v2, v3], axis=-1).reshape(-1)
         indices = np.concatenate([tri1, tri2]).astype(np.uint32)
 
-        new_vbo = self.ctx.buffer(positions.tobytes())
+        return {
+            'positions': positions,
+            'water_flag': water_flag,
+            'indices': indices,
+            'key': key,
+            'mesh_lat': mesh_lat,
+            'mesh_lon': mesh_lon,
+            'radius_m': radius_m,
+        }
+
+    def _upload_tier_mesh(self, cpu_result):
+        """GL-side half of the mesh build — must run on the main thread.
+        Allocates VBO/IBO/VAO from the numpy arrays produced by
+        _build_tier_mesh_cpu and returns a dict the caller swaps into
+        the tier slot."""
+        positions  = cpu_result['positions']
+        water_flag = cpu_result['water_flag']
+        indices    = cpu_result['indices']
+        new_vbo       = self.ctx.buffer(positions.tobytes())
         new_vbo_water = self.ctx.buffer(water_flag.flatten().tobytes())
-        new_ibo = self.ctx.buffer(indices.tobytes())
+        new_ibo       = self.ctx.buffer(indices.tobytes())
         new_vao = self.ctx.vertex_array(
             self.terrain_prog,
             [(new_vbo,       '3f', 'in_pos'),
@@ -977,26 +1026,16 @@ class _SharedState:
         return {
             'vao': new_vao, 'vbo': new_vbo, 'vbo_water': new_vbo_water,
             'ibo': new_ibo,
-            'key': key, 'mesh_lat': mesh_lat, 'mesh_lon': mesh_lon,
-            'radius_m': radius_m,
+            'key': cpu_result['key'],
+            'mesh_lat': cpu_result['mesh_lat'],
+            'mesh_lon': cpu_result['mesh_lon'],
+            'radius_m': cpu_result['radius_m'],
         }
 
-    def build_mesh(self, srtm_dir, lat, lon, alt_ft, airports_arr=None):
-        """Inner mesh — high resolution, small radius for foreground detail."""
-        if MESH_SIZE_MODE == "altitude":
-            r_nm = max(MESH_RADIUS_MIN_NM,
-                       min(MESH_RADIUS_MAX_NM,
-                           6.0 * math.sqrt(max(100.0, alt_ft) / 1000.0)))
-        else:
-            r_nm = MESH_RADIUS_NM
-        # Always update mesh_radius_m so the grid-fade uniform is in sync
-        # even if the cached mesh is reused.
-        self.mesh_radius_m = r_nm * NM_TO_M
-
-        new = self._build_tier_mesh(srtm_dir, lat, lon, r_nm, MESH_GRID_N,
-                                     self.mesh_key, airports_arr=airports_arr)
-        if new is None:
-            return
+    def _swap_inner(self, cpu_result):
+        """Upload a CPU-built inner mesh and swap it in.  Releases the
+        previous tier's GL buffers."""
+        new = self._upload_tier_mesh(cpu_result)
         if self.terrain_vao is not None:
             self.terrain_vao.release()
             self.terrain_vbo_pos.release()
@@ -1011,15 +1050,8 @@ class _SharedState:
         self.mesh_center_lat = new['mesh_lat']
         self.mesh_center_lon = new['mesh_lon']
 
-    def build_outer_mesh(self, srtm_dir, lat, lon, alt_ft, airports_arr=None):
-        """Outer mesh — coarse, large radius for distant ridge silhouettes."""
-        new = self._build_tier_mesh(srtm_dir, lat, lon,
-                                     OUTER_MESH_RADIUS_NM,
-                                     OUTER_MESH_GRID_N,
-                                     self.outer_mesh_key,
-                                     airports_arr=airports_arr)
-        if new is None:
-            return
+    def _swap_outer(self, cpu_result):
+        new = self._upload_tier_mesh(cpu_result)
         if self.outer_vao is not None:
             self.outer_vao.release()
             self.outer_vbo_pos.release()
@@ -1034,6 +1066,118 @@ class _SharedState:
         self.outer_mesh_center_lat = new['mesh_lat']
         self.outer_mesh_center_lon = new['mesh_lon']
         self.outer_mesh_radius_m = new['radius_m']
+
+    def build_mesh(self, srtm_dir, lat, lon, alt_ft, airports_arr=None):
+        """Inner mesh — high resolution, small radius for foreground detail.
+
+        Async: kicks off the CPU half in a worker thread when the snap
+        grid moves and the previous build (if any) has finished.  The
+        old mesh keeps rendering until the worker's result lands."""
+        if MESH_SIZE_MODE == "altitude":
+            r_nm = max(MESH_RADIUS_MIN_NM,
+                       min(MESH_RADIUS_MAX_NM,
+                           6.0 * math.sqrt(max(100.0, alt_ft) / 1000.0)))
+        else:
+            r_nm = MESH_RADIUS_NM
+        self.mesh_radius_m = r_nm * NM_TO_M
+
+        # 1. If the worker stashed a result since the last frame, swap
+        #    it in (cheap GL upload — buffer + vao, no SRTM I/O).
+        if self._inner_pending is not None:
+            cpu_result = self._inner_pending
+            self._inner_pending = None
+            self._swap_inner(cpu_result)
+
+        # First frame: no mesh on the GPU at all.  Build synchronously so
+        # the user doesn't see a blank AI for the ~100 ms it takes the
+        # worker to finish.  Subsequent rebuilds are async.
+        if self.mesh_key is None:
+            cpu_result = self._build_tier_mesh_cpu(
+                srtm_dir, lat, lon, r_nm, MESH_GRID_N, None,
+                airports_arr=airports_arr)
+            if cpu_result is not None:
+                self._swap_inner(cpu_result)
+            return
+
+        # 2. Decide whether to dispatch a new build.
+        target_key = self._tier_target_key(lat, lon, r_nm, MESH_GRID_N,
+                                           airports_arr)
+        if target_key == self.mesh_key:
+            return  # cached mesh still valid
+        if (self._inner_thread is not None
+                and self._inner_thread.is_alive()
+                and target_key == self._inner_target_key):
+            return  # already building this exact tile, don't pile up
+        if self._inner_thread is not None and self._inner_thread.is_alive():
+            return  # different target — let the in-flight build finish first
+
+        self._inner_target_key = target_key
+        self._inner_thread = threading.Thread(
+            target=self._inner_worker,
+            args=(srtm_dir, lat, lon, r_nm, MESH_GRID_N, airports_arr),
+            daemon=True,
+        )
+        self._inner_thread.start()
+
+    def _inner_worker(self, srtm_dir, lat, lon, r_nm, grid_n, airports_arr):
+        try:
+            cpu_result = self._build_tier_mesh_cpu(
+                srtm_dir, lat, lon, r_nm, grid_n,
+                self.mesh_key, airports_arr=airports_arr)
+        except Exception as e:
+            print(f"[SVT-GL] inner mesh worker failed: {e}")
+            return
+        if cpu_result is not None:
+            self._inner_pending = cpu_result
+
+    def build_outer_mesh(self, srtm_dir, lat, lon, alt_ft, airports_arr=None):
+        """Outer mesh — coarse, large radius.  Same async pattern as
+        build_mesh."""
+        if self._outer_pending is not None:
+            cpu_result = self._outer_pending
+            self._outer_pending = None
+            self._swap_outer(cpu_result)
+
+        if self.outer_mesh_key is None:
+            cpu_result = self._build_tier_mesh_cpu(
+                srtm_dir, lat, lon,
+                OUTER_MESH_RADIUS_NM, OUTER_MESH_GRID_N, None,
+                airports_arr=airports_arr)
+            if cpu_result is not None:
+                self._swap_outer(cpu_result)
+            return
+
+        target_key = self._tier_target_key(lat, lon,
+                                           OUTER_MESH_RADIUS_NM,
+                                           OUTER_MESH_GRID_N, airports_arr)
+        if target_key == self.outer_mesh_key:
+            return
+        if (self._outer_thread is not None
+                and self._outer_thread.is_alive()
+                and target_key == self._outer_target_key):
+            return
+        if self._outer_thread is not None and self._outer_thread.is_alive():
+            return
+
+        self._outer_target_key = target_key
+        self._outer_thread = threading.Thread(
+            target=self._outer_worker,
+            args=(srtm_dir, lat, lon, airports_arr),
+            daemon=True,
+        )
+        self._outer_thread.start()
+
+    def _outer_worker(self, srtm_dir, lat, lon, airports_arr):
+        try:
+            cpu_result = self._build_tier_mesh_cpu(
+                srtm_dir, lat, lon,
+                OUTER_MESH_RADIUS_NM, OUTER_MESH_GRID_N,
+                self.outer_mesh_key, airports_arr=airports_arr)
+        except Exception as e:
+            print(f"[SVT-GL] outer mesh worker failed: {e}")
+            return
+        if cpu_result is not None:
+            self._outer_pending = cpu_result
 
 
 def render_svt_into_current_fb(
