@@ -2475,6 +2475,14 @@ def handle_event(event, demo_mode):
                 elif sty == 'x':              # CANCEL
                     disp["kbd_buf"] = ""
                     disp["mode"] = disp["kbd_prev"]
+                elif sty == 'nrst':           # DIRECT TO NEAREST
+                    _nav_set_nearest()
+                    disp["kbd_buf"] = ""
+                    disp["mode"] = disp["kbd_prev"]
+                elif sty == 'clrfp':          # CANCEL FLIGHT PLAN
+                    _nav_clear()
+                    disp["kbd_buf"] = ""
+                    disp["mode"] = disp["kbd_prev"]
                 elif sty == 'ok':             # DONE
                     buf = disp["kbd_buf"].strip()
                     if target == "nav_ident":
@@ -2952,6 +2960,24 @@ _KB_ROWS = [
 ]
 _KB_ROW_H=66; _KB_GAP_Y=6; _KB_GAP_X=4; _KB_Y0=112
 
+# Nav-ident extras row: two big action buttons below the QWERTY when the
+# keyboard is open for waypoint entry.  Only rendered/hit-tested on
+# displays tall enough to fit them — short displays (480 px) keep the
+# bare keyboard and the pilot uses the usual CANCEL/DONE flow.
+_KB_NAV_BTN_Y = _KB_Y0 + 5 * _KB_ROW_H + 4 * _KB_GAP_Y + 12
+_KB_NAV_BTN_H = 70
+
+
+def _kb_nav_extras_visible():
+    return (disp.get("kbd_target") == "nav_ident"
+            and DISPLAY_H >= _KB_NAV_BTN_Y + _KB_NAV_BTN_H + 6)
+
+
+def _kb_nav_extras_geometry():
+    """(bx_left, bx_right, btn_w) for the two nav-ident extras buttons."""
+    btn_w = (DISPLAY_W - 2 * 12 - 8) // 2
+    return 12, 12 + btn_w + 8, btn_w
+
 
 def _kb_row_x0(row):
     total = sum(w for _,w,_ in row) + _KB_GAP_X*(len(row)-1)
@@ -3003,9 +3029,30 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False):
             x += kw+_KB_GAP_X
         y += _KB_ROW_H+_KB_GAP_Y
 
+    # Nav-ident extras: jump straight to NEAREST or wipe the active flight
+    # plan without typing.  Only on tall enough displays.
+    if _kb_nav_extras_visible():
+        bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        _action_btn(surf, bx_l, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
+                    "DIRECT TO NEAREST", "ok")
+        _action_btn(surf, bx_r, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
+                    "CANCEL FLIGHT PLAN", "danger")
+
 
 def keyboard_hit(x, y):
-    """Return (label, style) of the tapped key, or None."""
+    """Return (label, style) of the tapped key, or None.
+
+    Style 'nrst' / 'clrfp' are synthetic — emitted by the nav-ident
+    extras buttons (not part of _KB_ROWS).  The dispatcher in the main
+    event loop handles them by activating the nearest airport or
+    clearing the active waypoint, then closing the keyboard."""
+    if (_kb_nav_extras_visible()
+            and _KB_NAV_BTN_Y <= y <= _KB_NAV_BTN_Y + _KB_NAV_BTN_H):
+        bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        if bx_l <= x <= bx_l + btn_w:
+            return ("NRST", "nrst")
+        if bx_r <= x <= bx_r + btn_w:
+            return ("CLRFP", "clrfp")
     ky = _KB_Y0
     for row in _KB_ROWS:
         if ky <= y <= ky+_KB_ROW_H:
