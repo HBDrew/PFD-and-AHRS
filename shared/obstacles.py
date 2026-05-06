@@ -232,21 +232,38 @@ _NM_PER_DEG_LAT = 60.0
 
 
 def query_nearby(obstacles, lat: float, lon: float,
-                 radius_nm: float = 10.0,
+                 radius_nm: float = 5.0,
                  alt_ft: float = 0.0,
-                 window_ft: float = 2000.0):
+                 below_ft: float = 1000.0,
+                 above_ft: float = 0.0,
+                 window_ft: float = None):
     """
-    Return list of ObstacleRecord within radius_nm of (lat,lon) whose MSL
-    height is within window_ft above or below alt_ft.
+    Return obstacles within radius_nm of (lat, lon) whose MSL height is
+    within `below_ft` below the aircraft.  Towers above the aircraft are
+    always returned (collision risk); set `above_ft > 0` to also filter
+    them.
+
+    With numpy available, returns the filtered structured-array slice —
+    callers iterate by row['lat'] / row['msl_ft'] / etc.  The pure-Python
+    fallback returns a list of ObstacleRecord.  Per-record object
+    construction was the dominant cost at high obstacle density (KPHX
+    metro etc.); the structured-array return drops that cost to zero
+    and lets callers vectorise downstream math.
     """
     if obstacles is None:
         return []
 
+    # Back-compat: legacy callers pass window_ft for a symmetric ±window.
+    # Map it to the new asymmetric below_ft (above always allowed) — the
+    # net effect is "show all towers within window_ft below us, plus all
+    # towers at or above the aircraft".
+    if window_ft is not None:
+        below_ft = window_ft
+        above_ft = 0.0
+
     nm_per_deg_lon = _NM_PER_DEG_LAT * math.cos(math.radians(lat))
     dlat = radius_nm / _NM_PER_DEG_LAT
     dlon = radius_nm / nm_per_deg_lon if nm_per_deg_lon > 0 else radius_nm
-
-    results = []
 
     if HAS_NUMPY and hasattr(obstacles, "dtype"):
         mask = (
@@ -257,44 +274,41 @@ def query_nearby(obstacles, lat: float, lon: float,
         )
         candidates = obstacles[mask]
 
-        if window_ft > 0:
-            alt_mask = (
-                (candidates["msl_ft"] >= alt_ft - window_ft) &
-                (candidates["msl_ft"] <= alt_ft + window_ft)
-            )
-            candidates = candidates[alt_mask]
+        if below_ft > 0:
+            candidates = candidates[
+                candidates["msl_ft"] >= alt_ft - below_ft]
+        if above_ft > 0:
+            candidates = candidates[
+                candidates["msl_ft"] <= alt_ft + above_ft]
 
-        for row in candidates:
-            dlat_r = float(row["lat"]) - lat
-            dlon_r = float(row["lon"]) - lon
-            dist_nm = math.hypot(dlat_r * _NM_PER_DEG_LAT,
-                                 dlon_r * nm_per_deg_lon)
-            if dist_nm <= radius_nm:
-                results.append(ObstacleRecord(
-                    lat=float(row["lat"]),
-                    lon=float(row["lon"]),
-                    agl_ft=float(row["agl_ft"]),
-                    msl_ft=float(row["msl_ft"]),
-                    otype=str(row["otype"]),
-                    lit=bool(row["lit"]),
-                ))
-    else:
-        for rec in obstacles:
-            rlat, rlon, ragl, rmsl, rtype, rlit = rec
-            if abs(rlat - lat) > dlat or abs(rlon - lon) > dlon:
-                continue
-            if window_ft > 0 and abs(rmsl - alt_ft) > window_ft:
-                continue
-            dlat_r = rlat - lat
-            dlon_r = rlon - lon
-            dist_nm = math.hypot(dlat_r * _NM_PER_DEG_LAT,
-                                 dlon_r * nm_per_deg_lon)
-            if dist_nm <= radius_nm:
-                results.append(ObstacleRecord(
-                    lat=rlat, lon=rlon,
-                    agl_ft=ragl, msl_ft=rmsl,
-                    otype=rtype, lit=rlit,
-                ))
+        # Vectorised circle test (the prior loop was ~5–10 ms at KPHX).
+        if len(candidates) > 0:
+            dlat_r = candidates["lat"] - lat
+            dlon_r = candidates["lon"] - lon
+            dist_sq = ((dlat_r * _NM_PER_DEG_LAT) ** 2
+                       + (dlon_r * nm_per_deg_lon) ** 2)
+            candidates = candidates[dist_sq <= radius_nm * radius_nm]
+        return candidates
+
+    results = []
+    for rec in obstacles:
+        rlat, rlon, ragl, rmsl, rtype, rlit = rec
+        if abs(rlat - lat) > dlat or abs(rlon - lon) > dlon:
+            continue
+        if below_ft > 0 and rmsl < alt_ft - below_ft:
+            continue
+        if above_ft > 0 and rmsl > alt_ft + above_ft:
+            continue
+        dlat_r = rlat - lat
+        dlon_r = rlon - lon
+        dist_nm = math.hypot(dlat_r * _NM_PER_DEG_LAT,
+                             dlon_r * nm_per_deg_lon)
+        if dist_nm <= radius_nm:
+            results.append(ObstacleRecord(
+                lat=rlat, lon=rlon,
+                agl_ft=ragl, msl_ft=rmsl,
+                otype=rtype, lit=rlit,
+            ))
 
     return results
 

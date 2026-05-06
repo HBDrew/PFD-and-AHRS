@@ -1515,13 +1515,13 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok):
         nearby = obs_mod.query_nearby(_obstacles, lat, lon,
                                       radius_nm=radius,
                                       alt_ft=alt_ft,
-                                      window_ft=OBSTACLE_CAUTION_FT)
-        for ob in nearby:
-            clearance = alt_ft - ob.msl_ft
-            if clearance < OBSTACLE_WARNING_FT:
+                                      below_ft=OBSTACLE_CAUTION_FT)
+        if len(nearby) > 0:
+            # Vectorised clearance check — nearby is a structured array.
+            clearance = alt_ft - nearby["msl_ft"]
+            if (clearance < OBSTACLE_WARNING_FT).any():
                 level = max(level, 2)
-                break
-            elif clearance < OBSTACLE_CAUTION_FT:
+            elif (clearance < OBSTACLE_CAUTION_FT).any():
                 level = max(level, 1)
 
     _terrain_alert_level = level
@@ -4935,7 +4935,7 @@ def _draw_veil(surf):
 # ── Obstacle symbol renderer ──────────────────────────────────────────────────
 
 _OBS_RADIUS_NM  = OBSTACLE_RADIUS_NM
-_OBS_WINDOW_FT  = OBSTACLE_WINDOW_FT
+_OBS_BELOW_FT   = OBSTACLE_BELOW_FT
 _OBS_CAUTION_FT = OBSTACLE_CAUTION_FT
 _OBS_WARNING_FT = OBSTACLE_WARNING_FT
 
@@ -4944,16 +4944,17 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     """
     Project nearby obstacles onto the AI viewport as red/amber tower symbols.
 
-    Each obstacle is placed at its bearing/distance from the aircraft.
-    We compute a synthetic azimuth and elevation angle, then rotate it
-    by roll and translate by pitch — the same coordinate system as the
-    pitch ladder — to get pixel position.
+    Vectorised projection: candidate obstacles come back from
+    obs_mod.query_nearby as a numpy structured array, all bearing/
+    distance/vertical-angle math runs over the whole batch in numpy,
+    and we only fall into a Python loop to issue the pygame draw calls
+    for the obstacles whose top anchor lands inside the AI rect.
     """
     nearby = obs_mod.query_nearby(_obstacles, lat, lon,
                                   radius_nm=_OBS_RADIUS_NM,
                                   alt_ft=alt_ft,
-                                  window_ft=_OBS_WINDOW_FT)
-    if not nearby:
+                                  below_ft=_OBS_BELOW_FT)
+    if nearby is None or len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect
@@ -4966,76 +4967,75 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
 
-    for ob in nearby:
-        # Bearing from aircraft to obstacle (degrees true)
-        dlat_nm = (ob.lat - lat) * nm_per_deg_lat
-        dlon_nm = (ob.lon - lon) * nm_per_deg_lon
-        dist_nm = math.hypot(dlat_nm, dlon_nm)
-        if dist_nm < 0.01:
-            continue
-        bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
+    ob_lat = nearby["lat"].astype(np.float64)
+    ob_lon = nearby["lon"].astype(np.float64)
+    ob_msl = nearby["msl_ft"].astype(np.float64)
+    ob_agl = nearby["agl_ft"].astype(np.float64)
 
-        # Relative bearing (from nose)
-        rel_brg = (bearing - hdg_deg + 180) % 360 - 180   # −180…+180
+    dlat_nm = (ob_lat - lat) * nm_per_deg_lat
+    dlon_nm = (ob_lon - lon) * nm_per_deg_lon
+    dist_nm = np.hypot(dlat_nm, dlon_nm)
+    bearing = np.degrees(np.arctan2(dlon_nm, dlat_nm)) % 360.0
+    rel_brg = (bearing - hdg_deg + 180.0) % 360.0 - 180.0
 
-        # Project BOTH the base (at ground = msl_ft - agl_ft) and the top
-        # (at msl_ft).  This anchors the tower to the terrain rather than
-        # leaving it as a fixed-height floating symbol.
-        dist_ft     = dist_nm * 6076.0
-        top_diff_ft = ob.msl_ft - alt_ft
-        base_diff_ft = (ob.msl_ft - ob.agl_ft) - alt_ft    # ground at obstacle
-        top_vert_deg  = math.degrees(math.atan2(top_diff_ft,  dist_ft))
-        base_vert_deg = math.degrees(math.atan2(base_diff_ft, dist_ft))
+    dist_ft = dist_nm * 6076.0
+    # Avoid div-zero in arctan2 for co-located obstacles (just clip distance)
+    dist_ft_safe = np.maximum(dist_ft, 1.0)
+    top_diff_ft  = ob_msl - alt_ft
+    base_diff_ft = (ob_msl - ob_agl) - alt_ft
+    top_vert_deg  = np.degrees(np.arctan2(top_diff_ft,  dist_ft_safe))
+    base_vert_deg = np.degrees(np.arctan2(base_diff_ft, dist_ft_safe))
 
-        cos_r = math.cos(math.radians(roll_deg))
-        sin_r = math.sin(math.radians(roll_deg))
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
+    sxr = rel_brg * PX_PER_DEG
+    syr_top  = (pitch_deg - top_vert_deg)  * PX_PER_DEG
+    syr_base = (pitch_deg - base_vert_deg) * PX_PER_DEG
 
-        def _project(vert_deg):
-            sxr = rel_brg * PX_PER_DEG
-            syr = (pitch_deg - vert_deg) * PX_PER_DEG
-            return (int(cx + sxr * cos_r - syr * sin_r),
-                    int(cy + sxr * sin_r + syr * cos_r))
+    sx_top  = (cx + sxr * cos_r - syr_top  * sin_r).astype(np.int32)
+    sy_top  = (cy + sxr * sin_r + syr_top  * cos_r).astype(np.int32)
+    sy_base = (cy + sxr * sin_r + syr_base * cos_r).astype(np.int32)
 
-        bx, by = _project(base_vert_deg)   # tower base (on the ground)
-        sx, sy = _project(top_vert_deg)    # tower top (at MSL height)
+    # Visibility mask: not co-located + top anchor inside AI rect.
+    visible = ((dist_nm >= 0.01)
+               & (sx_top >= ax + 4) & (sx_top <= ax + aw - 4)
+               & (sy_top >= ay_r + 4) & (sy_top <= ay_r + ah - 4))
+    visible_idx = np.flatnonzero(visible)
+    if visible_idx.size == 0:
+        return
 
-        # Clip based on the top anchor (most relevant for visibility)
-        if not (ax + 4 <= sx <= ax + aw - 4 and ay_r + 4 <= sy <= ay_r + ah - 4):
-            continue
+    clearance = alt_ft - ob_msl
+    ob_lit = nearby["lit"]
 
-        # Colour by clearance — red/yellow/white (standard aviation convention)
-        clearance = alt_ft - ob.msl_ft
-        if clearance < _OBS_WARNING_FT:
+    for i in visible_idx:
+        cl = clearance[i]
+        if cl < _OBS_WARNING_FT:
             col = RED
-        elif clearance < _OBS_CAUTION_FT:
+        elif cl < _OBS_CAUTION_FT:
             col = YELLOW
         else:
             col = WHITE
 
-        # Draw tower as a caret/chevron shape: apex at the top (MSL height),
-        # base anchored to the ground.  Tapers from base to apex so tall
-        # towers look like obelisks rather than needles.
-        # Minimum 6 px height so short antennas stay visible at long range.
+        sx, sy = int(sx_top[i]),  int(sy_top[i])
+        by     = int(sy_base[i])
         tower_h = max(6, by - sy)
         apex = (sx, sy)
-        base_half = max(3, tower_h // 3)   # base width ~2/3 of height
+        base_half = max(3, tower_h // 3)
         left_base  = (sx - base_half, sy + tower_h)
         right_base = (sx + base_half, sy + tower_h)
         pygame.draw.line(surf, col, left_base,  apex, 2)
         pygame.draw.line(surf, col, right_base, apex, 2)
 
-        # Lit tower: 4-point asterisk/star at the apex
-        if ob.lit:
+        if ob_lit[i]:
             r = 4
-            star_col = (255, 230, 100)     # bright yellow star
+            star_col = (255, 230, 100)
             pygame.draw.line(surf, star_col, (sx - r, sy),     (sx + r, sy),     2)
             pygame.draw.line(surf, star_col, (sx,     sy - r), (sx,     sy + r), 2)
             pygame.draw.line(surf, star_col, (sx - r, sy - r), (sx + r, sy + r), 1)
             pygame.draw.line(surf, star_col, (sx - r, sy + r), (sx + r, sy - r), 1)
 
-        # Height label for tall/close obstacles (above the apex)
-        if ob.agl_ft >= 500 or dist_nm < 3.0:
-            lbl = f"{int(ob.msl_ft//100)*100}"
+        if ob_agl[i] >= 500 or dist_nm[i] < 3.0:
+            lbl = f"{int(ob_msl[i]//100)*100}"
             _text(surf, lbl, 8, col, cx=sx, cy=sy - 14)
 
 

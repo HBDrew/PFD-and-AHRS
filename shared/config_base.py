@@ -34,8 +34,16 @@ TERRAIN_CAUTION_FT = 700    # terrain within 700 ft → amber alert (yellow band
 TERRAIN_WARNING_FT = 200    # terrain within 200 ft → red alert (red band)
 
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
-OBSTACLE_RADIUS_NM  = 10.0    # AI symbol render radius
-OBSTACLE_WINDOW_FT  = 2000.0  # only show obstacles within ±2000 ft of alt
+OBSTACLE_RADIUS_NM   = 5.0    # AI symbol render radius — beyond a few miles
+                              # towers are too small to read and crowd the view
+OBSTACLE_BELOW_FT    = 1000   # hide towers more than this far below aircraft
+                              # (towers at or above us are always shown)
+OBSTACLE_WINDOW_FT   = OBSTACLE_BELOW_FT  # back-compat alias — older code
+                                          # used a symmetric ±window, the new
+                                          # semantic is "below only" and
+                                          # OBSTACLE_BELOW_FT is the source
+                                          # of truth.  Kept so pi_zero keeps
+                                          # importing without churn.
 OBSTACLE_CAUTION_FT  = 500    # amber below this clearance
 OBSTACLE_WARNING_FT  = 100    # red below this clearance
 OBSTACLE_EXPIRY_DAYS = 28     # FAA DOF update cycle (days)
