@@ -5097,9 +5097,10 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
     if not any(show.values()):
         return
 
+    import numpy as _np
     nearby = apt_mod.query_nearby(_airports, lat, lon,
                                   radius_nm=AIRPORT_RADIUS_NM)
-    if not nearby:
+    if nearby is None or len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect
@@ -5114,8 +5115,6 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
     cos_r = math.cos(math.radians(roll_deg))
     sin_r = math.sin(math.radians(roll_deg))
 
-    # Maximum relative bearing that will actually render within the AI rect.
-    # Half-width in px / px_per_deg gives the angular extent of the AI.
     max_rel_brg = (aw // 2) / PX_PER_DEG
 
     APT_PUBLIC  = (120, 220, 255)   # cyan — public paved/unpaved
@@ -5123,67 +5122,75 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
     APT_WATER   = (150, 200, 255)   # lighter blue — seaplane base
     APT_OTHER   = (180, 180, 200)   # grey — other
 
-    # Render farthest first so nearer ones are drawn on top (Z-order ish)
-    for apt in reversed(nearby):
-        if not show.get(apt.atype, False):
-            continue
-        dlat_nm = (apt.lat - lat) * nm_per_deg_lat
-        dlon_nm = (apt.lon - lon) * nm_per_deg_lon
-        dist_nm = math.hypot(dlat_nm, dlon_nm)
-        if dist_nm < 0.05:
-            continue
-        bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
-        rel_brg = (bearing - hdg_deg + 180) % 360 - 180
-        # Cull airports outside the AI's angular field of view
-        if abs(rel_brg) > max_rel_brg:
-            continue
+    # Vectorised type filter (still in user's show set) on the structured
+    # array so we never project airports that wouldn't draw anyway.
+    atype_col = nearby["atype"]
+    type_mask = _np.zeros(len(nearby), dtype=bool)
+    for t, on in show.items():
+        if on:
+            type_mask |= (atype_col == t)
+    if not type_mask.any():
+        return
+    nearby = nearby[type_mask]
 
-        dist_ft = dist_nm * 6076.0
-        alt_diff_ft = apt.elev_ft - alt_ft          # negative = below aircraft
-        vert_deg = math.degrees(math.atan2(alt_diff_ft, dist_ft))
+    apt_lat = nearby["lat"].astype(_np.float64)
+    apt_lon = nearby["lon"].astype(_np.float64)
+    apt_elev = nearby["elev_ft"].astype(_np.float64)
 
-        # Cull airports above our altitude (their geometric angle is above
-        # the horizon, vert_deg > 0).  The previous check `screen_y_raw < 0`
-        # tested screen-space-above-centre, which incorrectly hid valid
-        # below-horizon airports whenever pitch was more nose-down than
-        # vert_deg (same bug as the runway-disappears-on-descent issue
-        # fixed in _project_latlon).
-        if vert_deg > 0:
-            continue
-        screen_x_raw = rel_brg * PX_PER_DEG
-        screen_y_raw = (pitch_deg - vert_deg) * PX_PER_DEG
-        sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
-        sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
+    dlat_nm = (apt_lat - lat) * nm_per_deg_lat
+    dlon_nm = (apt_lon - lon) * nm_per_deg_lon
+    dist_nm = _np.hypot(dlat_nm, dlon_nm)
+    bearing = _np.degrees(_np.arctan2(dlon_nm, dlat_nm)) % 360.0
+    rel_brg = (bearing - hdg_deg + 180.0) % 360.0 - 180.0
 
-        if not (ax + 8 <= sx <= ax + aw - 8 and ay_r + 8 <= sy <= ay_r + ah - 8):
-            continue
+    dist_ft = dist_nm * 6076.0
+    dist_ft_safe = _np.maximum(dist_ft, 1.0)
+    alt_diff_ft = apt_elev - alt_ft
+    vert_deg = _np.degrees(_np.arctan2(alt_diff_ft, dist_ft_safe))
 
-        # Symbol by type
-        if apt.atype == "H":
+    sxr = rel_brg * PX_PER_DEG
+    syr = (pitch_deg - vert_deg) * PX_PER_DEG
+    sx_arr = (cx + sxr * cos_r - syr * sin_r).astype(_np.int32)
+    sy_arr = (cy + sxr * sin_r + syr * cos_r).astype(_np.int32)
+
+    visible = ((dist_nm >= 0.05)
+               & (_np.abs(rel_brg) <= max_rel_brg)
+               & (vert_deg <= 0)
+               & (sx_arr >= ax + 8) & (sx_arr <= ax + aw - 8)
+               & (sy_arr >= ay_r + 8) & (sy_arr <= ay_r + ah - 8))
+    visible_idx = _np.flatnonzero(visible)
+    if visible_idx.size == 0:
+        return
+
+    # Render farthest first so nearer ones are drawn on top (Z-order ish).
+    # nearby is already sorted by distance ascending (query_nearby), so we
+    # walk visible_idx in reverse.
+    apt_ident = nearby["ident"]
+    apt_atype = nearby["atype"]
+    for i in reversed(visible_idx.tolist()):
+        atype = str(apt_atype[i])
+        sx, sy = int(sx_arr[i]), int(sy_arr[i])
+
+        if atype == "H":
             col = APT_HELI
             _text(surf, "H", 12, col, bold=True, cx=sx, cy=sy)
-        elif apt.atype == "W":
+        elif atype == "W":
             col = APT_WATER
             pygame.draw.circle(surf, col, (sx, sy), 4, 1)
             pygame.draw.line(surf, col, (sx - 4, sy + 5), (sx + 4, sy + 5), 1)
-        elif apt.atype == "B":
+        elif atype == "B":
             col = APT_OTHER
             pts = [(sx, sy - 4), (sx - 4, sy + 3), (sx + 4, sy + 3)]
             pygame.draw.polygon(surf, col, pts, 1)
-        else:  # S / M / L = public airport
+        else:
             col = APT_PUBLIC
-            # Filled outer ring, dark centre — runway-ring style
             pygame.draw.circle(surf, col, (sx, sy), 5, 0)
             pygame.draw.circle(surf, (0, 10, 30), (sx, sy), 3, 0)
-            # Medium/large airports get a larger ring
-            if apt.atype in ("M", "L"):
+            if atype in ("M", "L"):
                 pygame.draw.circle(surf, col, (sx, sy), 7, 1)
 
-        # Ident label as a small "road sign" on a post above the symbol.
-        # Post anchors at the airport, sign sits ~25 px above so the label
-        # rises clear of nearby terrain features.
-        if dist_nm <= AIRPORT_LABEL_NM:
-            lbl = apt.ident
+        if dist_nm[i] <= AIRPORT_LABEL_NM:
+            lbl = str(apt_ident[i])
             font_sz = 9
             f = _get_font(font_sz, bold=True)
             tw, th = f.size(lbl)
@@ -5192,13 +5199,10 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
             post_h = 22
             sign_x = sx - sign_w // 2
             sign_y = sy - post_h - sign_h
-            # Clamp sign to stay on screen
             if sign_y < ay_r + 2:
                 sign_y = ay_r + 2
                 post_h = max(4, sy - sign_y - sign_h)
-            # Post: thin vertical line from symbol up to bottom of sign
             pygame.draw.line(surf, col, (sx, sy - 6), (sx, sign_y + sign_h), 1)
-            # Sign: dark fill with coloured border
             pygame.draw.rect(surf, (0, 10, 26),
                              (sign_x, sign_y, sign_w, sign_h), border_radius=2)
             pygame.draw.rect(surf, col,
@@ -5308,6 +5312,24 @@ def _nav_set_nearest() -> bool:
     lat = disp.get("lat", 0.0)
     lon = disp.get("lon", 0.0)
     nearby = apt_mod.query_nearby(_airports, lat, lon, radius_nm=100.0)
+    if nearby is None or len(nearby) == 0:
+        return False
+    # Numpy structured array path — iterate by row index, read fields by
+    # name.  query_nearby sorts by distance ascending so the first
+    # public airport we find is the nearest one.
+    if hasattr(nearby, "dtype"):
+        for i in range(len(nearby)):
+            atype = str(nearby["atype"][i])
+            if atype in ("S", "M", "L"):
+                disp["nav"]["ident"]   = str(nearby["ident"][i])
+                disp["nav"]["lat"]     = float(nearby["lat"][i])
+                disp["nav"]["lon"]     = float(nearby["lon"][i])
+                disp["nav"]["elev_ft"] = float(nearby["elev_ft"][i])
+                disp["nav"]["act_lat"] = lat
+                disp["nav"]["act_lon"] = lon
+                _settings.mark_dirty()
+                return True
+        return False
     for apt in nearby:
         if apt.atype in ("S", "M", "L"):
             disp["nav"]["ident"]   = apt.ident

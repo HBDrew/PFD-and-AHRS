@@ -110,14 +110,20 @@ def _build_cache(csv_path: str, cache_path: str):
                               ("lat",     "f4"),
                               ("lon",     "f4"),
                               ("elev_ft", "f4")])
+        # Sort by lat so query_nearby can binary-search the lat band.
+        arr = arr[np.argsort(arr["lat"], kind="stable")]
         np.save(cache_path, arr)
-        return arr     # return numpy array for consistency with cached-load path
+        return arr
     return records
 
 
 def load(data_dir: str):
     """Load airport DB from data_dir.  Cache preferred; falls back to CSV parse.
-    Returns numpy structured array or None if no data present."""
+    Returns numpy structured array or None if no data present.
+
+    The array is sorted by latitude so spatial queries can binary-search
+    the lat band.  Existing un-sorted caches are sorted in memory at
+    load (cheap)."""
     csv_path   = os.path.join(data_dir, CSV_FILENAME)
     cache_path = os.path.join(data_dir, CACHE_FILENAME)
 
@@ -125,7 +131,10 @@ def load(data_dir: str):
         if (not os.path.exists(csv_path) or
                 os.path.getmtime(cache_path) >= os.path.getmtime(csv_path)):
             try:
-                return np.load(cache_path, allow_pickle=False)
+                arr = np.load(cache_path, allow_pickle=False)
+                if len(arr) > 1 and not (np.diff(arr["lat"]) >= 0).all():
+                    arr = arr[np.argsort(arr["lat"], kind="stable")]
+                return arr
             except Exception:
                 pass
 
@@ -139,11 +148,27 @@ def load(data_dir: str):
 
 _NM_PER_DEG_LAT = 60.0
 
+# Per-load cache of the contiguous lat column for searchsorted; same trick
+# as obstacles.py.  72 k records is small, but the strided structured
+# access still costs a few ms when run every frame.
+_lat_index_cache = (None, None)
+
+
+def _get_lat_index(arr):
+    global _lat_index_cache
+    if _lat_index_cache[0] is not arr:
+        _lat_index_cache = (arr, np.ascontiguousarray(arr["lat"]))
+    return _lat_index_cache[1]
+
 
 def query_nearby(airports, lat: float, lon: float, radius_nm: float = 20.0):
-    """Return list of AirportRecord within radius_nm of (lat, lon).
+    """Return airports within radius_nm of (lat, lon).
 
-    Results are sorted by distance (nearest first) so caller can limit display.
+    With numpy available, returns a structured-array slice sorted by
+    distance (nearest first); the per-row Python loop that built
+    AirportRecord objects in the previous version added ~5 ms per call
+    at 20 nm density.  Pure-Python fallback returns the AirportRecord
+    list as before so non-numpy callers still work.
     """
     if airports is None:
         return []
@@ -152,44 +177,44 @@ def query_nearby(airports, lat: float, lon: float, radius_nm: float = 20.0):
     dlat = radius_nm / _NM_PER_DEG_LAT
     dlon = radius_nm / nm_per_deg_lon if nm_per_deg_lon > 0 else radius_nm
 
-    results = []
-
     if HAS_NUMPY and hasattr(airports, "dtype"):
-        mask = (
-            (airports["lat"] >= lat - dlat) &
-            (airports["lat"] <= lat + dlat) &
-            (airports["lon"] >= lon - dlon) &
-            (airports["lon"] <= lon + dlon)
-        )
-        candidates = airports[mask]
-        for row in candidates:
-            dlat_r = float(row["lat"]) - lat
-            dlon_r = float(row["lon"]) - lon
-            dist_nm = math.hypot(dlat_r * _NM_PER_DEG_LAT,
-                                 dlon_r * nm_per_deg_lon)
-            if dist_nm <= radius_nm:
-                results.append((dist_nm, AirportRecord(
-                    ident=str(row["ident"]),
-                    atype=str(row["atype"]),
-                    lat=float(row["lat"]),
-                    lon=float(row["lon"]),
-                    elev_ft=float(row["elev_ft"]),
-                )))
-    else:
-        for rec in airports:
-            rident, ratype, rlat, rlon, relev = rec
-            if abs(rlat - lat) > dlat or abs(rlon - lon) > dlon:
-                continue
-            dlat_r = rlat - lat
-            dlon_r = rlon - lon
-            dist_nm = math.hypot(dlat_r * _NM_PER_DEG_LAT,
-                                 dlon_r * nm_per_deg_lon)
-            if dist_nm <= radius_nm:
-                results.append((dist_nm, AirportRecord(
-                    ident=rident, atype=ratype,
-                    lat=rlat, lon=rlon, elev_ft=relev,
-                )))
+        lat_col = _get_lat_index(airports)
+        i_lo = int(np.searchsorted(lat_col, lat - dlat, side="left"))
+        i_hi = int(np.searchsorted(lat_col, lat + dlat, side="right"))
+        candidates = airports[i_lo:i_hi]
+        if len(candidates) > 0:
+            lon_mask = ((candidates["lon"] >= lon - dlon) &
+                        (candidates["lon"] <= lon + dlon))
+            candidates = candidates[lon_mask]
+        if len(candidates) > 0:
+            dlat_r = candidates["lat"] - lat
+            dlon_r = candidates["lon"] - lon
+            dist_sq = ((dlat_r * _NM_PER_DEG_LAT) ** 2
+                       + (dlon_r * nm_per_deg_lon) ** 2)
+            within = dist_sq <= radius_nm * radius_nm
+            candidates = candidates[within]
+            dist_sq = dist_sq[within]
+            # Sort by distance ascending (nearest first) — caller relies
+            # on this ordering for the "draw farthest first" z-order and
+            # for picking the nearest in nav_set_nearest.
+            order = np.argsort(dist_sq)
+            candidates = candidates[order]
+        return candidates
 
+    results = []
+    for rec in airports:
+        rident, ratype, rlat, rlon, relev = rec
+        if abs(rlat - lat) > dlat or abs(rlon - lon) > dlon:
+            continue
+        dlat_r = rlat - lat
+        dlon_r = rlon - lon
+        dist_nm = math.hypot(dlat_r * _NM_PER_DEG_LAT,
+                             dlon_r * nm_per_deg_lon)
+        if dist_nm <= radius_nm:
+            results.append((dist_nm, AirportRecord(
+                ident=rident, atype=ratype,
+                lat=rlat, lon=rlon, elev_ft=relev,
+            )))
     results.sort(key=lambda t: t[0])
     return [r for _, r in results]
 
