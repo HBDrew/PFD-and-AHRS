@@ -928,11 +928,19 @@ class _SharedState:
                 # SRTM elevations + the runway polygons drawn over the
                 # AI overlay anchor them visually.
                 burn_deg_sq = (0.3 / 60.0) ** 2
-                near_apt = np.zeros_like(water_flag, dtype=bool)
-                for k in range(len(nearby_apts)):
-                    dlat = sample_lat - nearby_apts['lat'][k]
-                    dlon = (sample_lon - nearby_apts['lon'][k]) * cos_snap
-                    near_apt |= (dlat * dlat + dlon * dlon) < burn_deg_sq
+                # Vectorised distance test: stack airports to (M, 1, 1) and
+                # broadcast against the (n, n) sample grid in one shot
+                # instead of looping in Python.  Memory peak is M·n·n bools
+                # (~1.8 MB at M=20, n=300) which is well under what the
+                # per-iter dlat/dlon allocations cost in the loop form.
+                a_lat = np.asarray(nearby_apts['lat'],
+                                   dtype=np.float32).reshape(-1, 1, 1)
+                a_lon = np.asarray(nearby_apts['lon'],
+                                   dtype=np.float32).reshape(-1, 1, 1)
+                dlat_a = sample_lat[None, :, :] - a_lat
+                dlon_a = (sample_lon[None, :, :] - a_lon) * cos_snap
+                near_apt = ((dlat_a * dlat_a + dlon_a * dlon_a)
+                            < burn_deg_sq).any(axis=0)
                 water_flag[near_apt] = 0.0
 
         # SRTM1 (3601×3601) tiles ship with real ocean bathymetry —
