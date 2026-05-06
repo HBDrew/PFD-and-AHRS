@@ -270,6 +270,29 @@ void main() {
 """
 
 
+# ── Polyline (depth-tested 3D line) shader ────────────────────────────────────
+# Used to draw the magenta direct-to course trace as 3D world geometry so the
+# terrain depth buffer occludes line segments hidden behind ridges.
+
+LINE_VERTEX_SHADER = """
+#version 300 es
+precision highp float;
+in vec3 in_pos;            // (East, North, Up_absolute) in metres, mesh-local frame
+uniform mat4 u_mvp;
+void main() {
+    gl_Position = u_mvp * vec4(in_pos, 1.0);
+}
+"""
+
+LINE_FRAGMENT_SHADER = """
+#version 300 es
+precision highp float;
+uniform vec4 u_color;
+out vec4 frag_color;
+void main() { frag_color = u_color; }
+"""
+
+
 # ── Module-level state ────────────────────────────────────────────────────────
 _ctx        = None       # moderngl Context
 _fbo        = None       # framebuffer object
@@ -625,7 +648,8 @@ class _SharedState:
     __slots__ = ("ctx", "terrain_prog", "sky_prog", "sky_vao",
                  "terrain_vao", "terrain_vbo_pos",
                  "terrain_ibo", "mesh_key", "mesh_radius_m",
-                 "mesh_center_lat", "mesh_center_lon")
+                 "mesh_center_lat", "mesh_center_lon",
+                 "line_prog", "line_vbo", "line_vao", "line_capacity")
 
     def __init__(self, ctx):
         self.ctx = ctx
@@ -647,6 +671,52 @@ class _SharedState:
         self.mesh_radius_m = MESH_RADIUS_NM * NM_TO_M
         self.mesh_center_lat = 0.0
         self.mesh_center_lon = 0.0
+        # Polyline rendering — single reusable VBO, grown as needed.
+        self.line_prog = ctx.program(vertex_shader=LINE_VERTEX_SHADER,
+                                     fragment_shader=LINE_FRAGMENT_SHADER)
+        self.line_vbo = ctx.buffer(reserve=4096)   # ~340 vec3 vertices
+        self.line_vao = ctx.vertex_array(
+            self.line_prog, [(self.line_vbo, '3f', 'in_pos')])
+        self.line_capacity = 4096
+
+    def render_polyline_latlonelev(self, mvp, vertices_latlonelev,
+                                    rgba=(0.86, 0.0, 0.86, 1.0),
+                                    line_width=3.0):
+        """Render a depth-tested polyline through the terrain's depth buffer.
+
+        vertices_latlonelev: ndarray of shape (N, 3) — (lat_deg, lon_deg, elev_ft).
+        Vertices are converted to the mesh-local metric frame so they share
+        the same MVP as the terrain mesh; the depth buffer set by the terrain
+        therefore occludes line segments hidden behind ridges.
+        """
+        if vertices_latlonelev is None or len(vertices_latlonelev) < 2:
+            return
+        v = np.asarray(vertices_latlonelev, dtype=np.float32)
+        cos_mlat = max(1e-6, math.cos(math.radians(self.mesh_center_lat)))
+        # (East, North, Up_absolute) in the mesh-local frame the terrain uses.
+        east_m  = (v[:, 1] - self.mesh_center_lon) * 60.0 * NM_TO_M * cos_mlat
+        north_m = (v[:, 0] - self.mesh_center_lat) * 60.0 * NM_TO_M
+        up_m    = v[:, 2] * FT_TO_M
+        world = np.stack([east_m, north_m, up_m], axis=1).astype(np.float32)
+        data = world.tobytes()
+        # Grow the GPU buffer if the polyline outgrew it.
+        if len(data) > self.line_capacity:
+            self.line_vbo.release()
+            self.line_vao.release()
+            self.line_capacity = max(len(data), self.line_capacity * 2)
+            self.line_vbo = self.ctx.buffer(reserve=self.line_capacity)
+            self.line_vao = self.ctx.vertex_array(
+                self.line_prog, [(self.line_vbo, '3f', 'in_pos')])
+        self.line_vbo.write(data)
+        self.line_prog['u_mvp'].write(mvp.T.tobytes())
+        self.line_prog['u_color'].value = rgba
+        # Width support is driver-dependent; many GLES drivers cap at 1 px.
+        # Set anyway so V3D and llvmpipe can honour wider lines when they do.
+        try:
+            self.ctx.line_width = float(line_width)
+        except Exception:
+            pass
+        self.line_vao.render(mode=moderngl.LINE_STRIP, vertices=len(world))
 
     def build_mesh(self, srtm_dir, lat, lon, alt_ft):
         """Same mesh-building logic as the module-level _build_mesh, but
@@ -792,6 +862,7 @@ def render_svt_into_current_fb(
     lat: float,
     lon: float,
     v_fov_deg: float = V_FOV_DEG,
+    polylines=None,
 ) -> bool:
     """Render the SVT terrain+sky directly into the currently-bound
     framebuffer using the caller-provided moderngl context.
@@ -874,6 +945,14 @@ def render_svt_into_current_fb(
         st.terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
         st.terrain_prog['u_ambient'].value       = SUN_AMBIENT
         st.terrain_vao.render()
+
+    # 3D polylines (e.g. magenta direct-to course trace) — drawn AFTER terrain
+    # with depth test still on, so the depth buffer set by the terrain mesh
+    # occludes line segments that fall behind ridges.
+    if polylines:
+        for verts, rgba, width in polylines:
+            st.render_polyline_latlonelev(mvp, verts, rgba=rgba,
+                                          line_width=width)
 
     ctx.disable(moderngl.DEPTH_TEST)
     return True

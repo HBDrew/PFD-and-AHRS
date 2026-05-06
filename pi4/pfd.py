@@ -4665,34 +4665,59 @@ def _nav_clear() -> None:
     _settings.mark_dirty()
 
 
-def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
-                         hdg_deg, pitch_deg, roll_deg):
-    """Solid magenta course line: the great circle from the activation
-    point to the active waypoint, drawn ground-anchored to the actual
-    terrain elevation at each step (so the line drapes over ridges and
-    follows valleys rather than floating at a constant altitude).
+_DIRECT_TO_DRAPE_OFFSET_FT = 5.0
 
-    The line is a fixed line in space — it does not move under the
-    aircraft as you drift.  When the aircraft is off-course, the line
-    appears visibly to one side, matching the direction the CDI diamond
-    deflects.  Re-activating direct-to (DIRECT TO / NEAREST) resets the
-    activation point and draws a new line.
 
-    No forward-FOV cap on segment endpoints: behind-aircraft points
-    project way off the side of the AI and get clipped naturally, so
-    the line "slides off the edge" as the waypoint passes abeam rather
-    than truncating mid-screen."""
+def build_direct_to_trace_vertices():
+    """Sample the active direct-to course at 0.5 nm steps and return an
+    (N, 3) ndarray of (lat, lon, elev_ft) world points draped over the
+    SRTM terrain.  Returns None when no waypoint is active or when the
+    course is degenerate."""
     nv = disp.get("nav", {})
     if not nv.get("ident"):
-        return
+        return None
     wpt_lat  = float(nv["lat"])
     wpt_lon  = float(nv["lon"])
     wpt_elev = float(nv.get("elev_ft", 0.0))
-    act_lat  = float(nv.get("act_lat", lat))
-    act_lon  = float(nv.get("act_lon", lon))
+    act_lat  = float(nv.get("act_lat", 0.0))
+    act_lon  = float(nv.get("act_lon", 0.0))
+    if act_lat == 0.0 and act_lon == 0.0:
+        return None
 
     course_nm, _ = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
     if course_nm < 0.05:
+        return None
+
+    n_steps = max(8, int(course_nm / 0.5))
+    n_steps = min(n_steps, 400)
+
+    pts = []
+    for i in range(0, n_steps + 1):
+        t = i / n_steps
+        s_lat, s_lon = _nav_gc_interp(act_lat, act_lon, wpt_lat, wpt_lon, t)
+        try:
+            terrain_elev = get_elevation_ft(SRTM_DIR, s_lat, s_lon)
+            if terrain_elev is None or terrain_elev < -100:
+                terrain_elev = wpt_elev
+        except Exception:
+            terrain_elev = wpt_elev
+        pts.append((s_lat, s_lon, terrain_elev + _DIRECT_TO_DRAPE_OFFSET_FT))
+    try:
+        import numpy as _np
+        return _np.array(pts, dtype=_np.float32)
+    except ImportError:
+        return pts
+
+
+def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
+                         hdg_deg, pitch_deg, roll_deg):
+    """2D pygame fallback: solid magenta course trace projected without
+    depth occlusion.  Used only when the OpenGL SVT path is unavailable;
+    in the GL path the trace renders through the depth buffer via
+    svt_renderer_gl.render_polyline_latlonelev so ridges occlude it
+    naturally."""
+    verts = build_direct_to_trace_vertices()
+    if verts is None or len(verts) < 2:
         return
 
     ax, ay_r, aw, ah = ai_rect
@@ -4700,31 +4725,13 @@ def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
     cy_ai = ay_r + ah // 2
     px_per_deg = ah / 48.0
 
-    # Step 0.5 nm or finer; cap step count so very-distant courses don't
-    # explode work per frame (per-step DEM lookup is the costly bit).
-    n_steps = max(8, int(course_nm / 0.5))
-    n_steps = min(n_steps, 400)
-
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
 
-    # Small offset above terrain so the line draws on top of the SVT
-    # mesh instead of z-fighting with it.
-    DRAPE_OFFSET_FT = 5.0
-
     prev_pt = None
-    for i in range(0, n_steps + 1):
-        t = i / n_steps
-        s_lat, s_lon = _nav_gc_interp(act_lat, act_lon, wpt_lat, wpt_lon, t)
-        try:
-            terrain_elev = get_elevation_ft(SRTM_DIR, s_lat, s_lon)
-            if terrain_elev is None or terrain_elev < -100:
-                terrain_elev = wpt_elev   # fallback: SRTM gap
-        except Exception:
-            terrain_elev = wpt_elev
-        elev_ft = terrain_elev + DRAPE_OFFSET_FT
-
-        pt = _project_latlon(s_lat, s_lon, lat, lon, alt_ft, elev_ft,
+    for s_lat, s_lon, elev_ft in verts:
+        pt = _project_latlon(float(s_lat), float(s_lon), lat, lon, alt_ft,
+                             float(elev_ft),
                              hdg_deg, pitch_deg, roll_deg, cx_ai, cy_ai,
                              px_per_deg, max_fov_deg=None,
                              ground_only=False)
@@ -5176,10 +5183,20 @@ def render(surf, demo_mode, connected, data_stale=False):
         # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
         # GL rows HDG_H..DISPLAY_H.
         _shared_gl_ctx.viewport = (0, HDG_H, DISPLAY_W, HDG_Y)
+        # Build polyline list for depth-tested rendering on top of terrain.
+        _gl_polylines = []
+        _trace_verts = build_direct_to_trace_vertices()
+        if _trace_verts is not None and len(_trace_verts) >= 2:
+            _gl_polylines.append((
+                _trace_verts,
+                (220 / 255.0, 0.0, 220 / 255.0, 1.0),
+                3.0,
+            ))
         render_svt_into_current_fb(
             _shared_gl_ctx, SRTM_DIR,
             DISPLAY_W, HDG_Y,
             pitch, roll, hdg, alt, lat, lon,
+            polylines=_gl_polylines,
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain:
@@ -5211,7 +5228,11 @@ def render(surf, demo_mode, connected, data_stale=False):
             draw_obstacle_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
         # Direct-to course trace — drawn on the rotated overlay so it banks
         # with the AI together with the other ground-anchored symbols.
-        draw_direct_to_trace(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+        # Skipped when the shared-GL path is active: that path renders the
+        # trace as 3D world geometry through the depth buffer (so terrain
+        # ridges occlude it).  The 2D fallback runs only when no GL.
+        if _shared_gl_ctx is None:
+            draw_direct_to_trace(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
         if abs(roll) > 0.5:
             rotated = pygame.transform.rotate(_overlay, roll)
             rx, ry = rotated.get_size()
