@@ -2592,7 +2592,7 @@ def handle_event(event, demo_mode):
             _cdi_bar_y = HDG_Y - 50
             _cdi_l = CX - _cdi_bar_w // 2 - 18
             _cdi_r = CX + _cdi_bar_w // 2 + 18
-            _cdi_t = _cdi_bar_y - 24
+            _cdi_t = _cdi_bar_y - 32
             _cdi_b = _cdi_bar_y + 12
             if _cdi_l <= x <= _cdi_r and _cdi_t <= y <= _cdi_b:
                 disp["kbd_target"] = "nav_ident"
@@ -5437,9 +5437,9 @@ def draw_cdi(surf):
     bar_x = CX - bar_w // 2
 
     # Translucent backplate sized for the larger readout font
-    plate = pygame.Surface((bar_w + 36, 36), pygame.SRCALPHA)
+    plate = pygame.Surface((bar_w + 36, 44), pygame.SRCALPHA)
     plate.fill((0, 8, 22, 180))
-    surf.blit(plate, (bar_x - 18, bar_y - 24))
+    surf.blit(plate, (bar_x - 18, bar_y - 32))
 
     # Bar + tick marks (centre + ±50% + full-scale dots)
     pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
