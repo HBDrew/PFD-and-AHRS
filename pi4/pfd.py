@@ -5973,16 +5973,22 @@ def render(surf, demo_mode, connected, data_stale=False):
     # per-feature projection-roll for that win.
     if gps_ok and (
             _runways is not None or _airports is not None or _obstacles is not None):
+        # Roll sign: the per-feature projections rotate by (cos/sin) in math
+        # convention but write to screen-Y-down pixels, which flips CW/CCW.
+        # The original SRCALPHA-rotate path used pygame.transform.rotate's
+        # screen convention, so we negate roll here to match it — symbols
+        # and terrain bank together as the pilot expects.
+        _ov_roll = -roll
         if _runways is not None:
-            draw_runway_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
+            draw_runway_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, _ov_roll)
         if _airports is not None:
-            draw_airport_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
+            draw_airport_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, _ov_roll)
         if _obstacles is not None:
-            draw_obstacle_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
+            draw_obstacle_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, _ov_roll)
         # Direct-to course trace — depth-tested 3D in the shared-GL path,
         # 2D pygame fallback when no GL.
         if _shared_gl_ctx is None:
-            draw_direct_to_trace(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
+            draw_direct_to_trace(surf, _full_ai, lat, lon, alt, hdg, pitch, _ov_roll)
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
