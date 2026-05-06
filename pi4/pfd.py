@@ -4972,6 +4972,7 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     and we only fall into a Python loop to issue the pygame draw calls
     for the obstacles whose top anchor lands inside the AI rect.
     """
+    global _obs_dbg_count
     import numpy as _np
     import time as _time
     _t0 = _time.perf_counter()
@@ -4981,7 +4982,6 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
                                   below_ft=_OBS_BELOW_FT)
     _t_query = (_time.perf_counter() - _t0) * 1000.0
     if nearby is None or len(nearby) == 0:
-        global _obs_dbg_count
         _obs_dbg_count = (_obs_dbg_count + 1) if '_obs_dbg_count' in globals() else 1
         if _obs_dbg_count % 60 == 1:
             print(f"[OBS] query={_t_query:.2f}ms  nearby=0")
@@ -5033,7 +5033,6 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     visible_idx = _np.flatnonzero(visible)
     _t_proj = (_time.perf_counter() - _t0) * 1000.0
     if visible_idx.size == 0:
-        global _obs_dbg_count
         _obs_dbg_count = (_obs_dbg_count + 1) if '_obs_dbg_count' in globals() else 1
         if _obs_dbg_count % 60 == 1:
             print(f"[OBS] query={_t_query:.2f}ms  proj={_t_proj-_t_query:.2f}ms  "
@@ -5080,7 +5079,6 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
             _obs_label_blit(surf, lbl, col, sx, sy - 14)
 
     _t_total = (_time.perf_counter() - _t0) * 1000.0
-    global _obs_dbg_count
     _obs_dbg_count = (_obs_dbg_count + 1) if '_obs_dbg_count' in globals() else 1
     if _obs_dbg_count % 60 == 1:
         print(f"[OBS] query={_t_query:.2f}ms  proj={_t_proj-_t_query:.2f}ms  "
