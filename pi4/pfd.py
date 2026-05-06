@@ -4529,36 +4529,61 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 # course originating at the activation point.
 
 _CDI_FULL_SCALE_NM = 1.0    # ±1 nm full-scale deflection (en-route default)
+_EARTH_R_NM        = 3440.065  # Earth mean radius (km/1.852)
 
 
 def _nav_geo_dist_brg(la1, lo1, la2, lo2):
-    """Flat-earth distance (nm) and true bearing (deg) from 1 to 2."""
-    nm_per_deg_lat = 60.0
-    nm_per_deg_lon = 60.0 * math.cos(math.radians(la1))
-    dN = (la2 - la1) * nm_per_deg_lat
-    dE = (lo2 - lo1) * nm_per_deg_lon
-    dist = math.hypot(dN, dE)
-    brg = math.degrees(math.atan2(dE, dN)) % 360.0
+    """Great-circle distance (nm) and initial bearing (deg) from 1 to 2.
+    Haversine + spherical-law-of-cosines bearing — accurate at any leg
+    length, unlike flat-earth approximations that drift on long legs."""
+    phi1 = math.radians(la1)
+    phi2 = math.radians(la2)
+    dphi = math.radians(la2 - la1)
+    dlam = math.radians(lo2 - lo1)
+    a = (math.sin(dphi * 0.5) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam * 0.5) ** 2)
+    dist = 2.0 * _EARTH_R_NM * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    y = math.sin(dlam) * math.cos(phi2)
+    x = (math.cos(phi1) * math.sin(phi2)
+         - math.sin(phi1) * math.cos(phi2) * math.cos(dlam))
+    brg = math.degrees(math.atan2(y, x)) % 360.0
     return dist, brg
 
 
 def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
-    """Signed cross-track distance (nm) from the great-circle course
+    """Signed great-circle cross-track distance (nm) from the course
     (act → wpt) to the current position.  Positive = right of course."""
-    nm_per_deg_lat = 60.0
-    nm_per_deg_lon = 60.0 * math.cos(math.radians(act_lat))
-    # Course unit vector in (N, E)
-    cN = (wpt_lat - act_lat) * nm_per_deg_lat
-    cE = (wpt_lon - act_lon) * nm_per_deg_lon
-    cmag = math.hypot(cN, cE)
-    if cmag < 1e-6:
+    d13, brg13 = _nav_geo_dist_brg(act_lat, act_lon, cur_lat, cur_lon)
+    _,   brg12 = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
+    if d13 < 1e-6:
         return 0.0
-    cN /= cmag; cE /= cmag
-    # Aircraft offset from activation point
-    dN = (cur_lat - act_lat) * nm_per_deg_lat
-    dE = (cur_lon - act_lon) * nm_per_deg_lon
-    # Right-of-course = component along the +90° rotation of the course
-    return dE * cN - dN * cE
+    return _EARTH_R_NM * math.asin(
+        math.sin(d13 / _EARTH_R_NM)
+        * math.sin(math.radians(brg13 - brg12))
+    )
+
+
+def _nav_gc_interp(la1, lo1, la2, lo2, f):
+    """Lat/lon at fraction f ∈ [0, 1] along the great circle from 1 to 2.
+    Standard slerp on the unit sphere; degenerates gracefully when the
+    endpoints coincide."""
+    phi1 = math.radians(la1); lam1 = math.radians(lo1)
+    phi2 = math.radians(la2); lam2 = math.radians(lo2)
+    dphi = phi2 - phi1
+    dlam = lam2 - lam1
+    a = (math.sin(dphi * 0.5) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam * 0.5) ** 2)
+    d = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    if d < 1e-9:
+        return la1, lo1
+    sd = math.sin(d)
+    A = math.sin((1.0 - f) * d) / sd
+    B = math.sin(f * d) / sd
+    x = A * math.cos(phi1) * math.cos(lam1) + B * math.cos(phi2) * math.cos(lam2)
+    y = A * math.cos(phi1) * math.sin(lam1) + B * math.cos(phi2) * math.sin(lam2)
+    z = A * math.sin(phi1) + B * math.sin(phi2)
+    return (math.degrees(math.atan2(z, math.hypot(x, y))),
+            math.degrees(math.atan2(y, x)))
 
 
 def _nav_set_by_ident(ident: str) -> bool:
@@ -4646,17 +4671,13 @@ def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
     n_steps = max(8, int(dist_nm / 0.5))
     n_steps = min(n_steps, 400)
 
-    dlat = wpt_lat - lat
-    dlon = wpt_lon - lon
-
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
 
     prev_pt = None
     for i in range(1, n_steps + 1):
         t = i / n_steps
-        s_lat = lat + dlat * t
-        s_lon = lon + dlon * t
+        s_lat, s_lon = _nav_gc_interp(lat, lon, wpt_lat, wpt_lon, t)
         pt = _project_latlon(s_lat, s_lon, lat, lon, alt_ft, wpt_elev,
                              hdg_deg, pitch_deg, roll_deg, cx_ai, cy_ai,
                              px_per_deg, max_fov_deg=80, ground_only=True)
