@@ -5964,43 +5964,25 @@ def render(surf, demo_mode, connected, data_stale=False):
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
-    # 1b. Symbol overlays on the AI — painted in the TERRAIN coordinate
-    # frame (heading + pitch only, no roll), then the entire overlay is
-    # rotated by the roll angle so symbols stay locked to the terrain
-    # during banked turns.  Applied uniformly to GL and pygame render
-    # paths (pygame.transform.rotate on a sparse overlay is cheap).
+    # 1b. Symbol overlays on the AI — runways, airports, obstacles, and the
+    # direct-to course trace.  The draw functions already project with the
+    # given roll_deg (cos/sin in their per-feature math), so we pass the
+    # real roll and write straight onto the main surface.  An older path
+    # drew everything onto a SRCALPHA overlay rotated by pygame at the end,
+    # which cost ~20 ms/frame in a turn at 1024×600 — replaced with the
+    # per-feature projection-roll for that win.
     if gps_ok and (
             _runways is not None or _airports is not None or _obstacles is not None):
-        _ov_w = DISPLAY_W
-        _ov_h = HDG_Y
-        diag = int(math.hypot(_ov_w, _ov_h)) + 4
-        _rw = max(_ov_w, diag)
-        _rh = max(_ov_h, diag)
-        _overlay = pygame.Surface((_rw, _rh), pygame.SRCALPHA)
-        _ox = (_rw - _ov_w) // 2
-        _oy = (_rh - _ov_h) // 2
-        _ov_rect = (_ox, _oy, _ov_w, _ov_h)
         if _runways is not None:
-            draw_runway_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+            draw_runway_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
         if _airports is not None:
-            draw_airport_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
+            draw_airport_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
         if _obstacles is not None:
-            draw_obstacle_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
-        # Direct-to course trace — drawn on the rotated overlay so it banks
-        # with the AI together with the other ground-anchored symbols.
-        # Skipped when the shared-GL path is active: that path renders the
-        # trace as 3D world geometry through the depth buffer (so terrain
-        # ridges occlude it).  The 2D fallback runs only when no GL.
+            draw_obstacle_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
+        # Direct-to course trace — depth-tested 3D in the shared-GL path,
+        # 2D pygame fallback when no GL.
         if _shared_gl_ctx is None:
-            draw_direct_to_trace(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
-        if abs(roll) > 0.5:
-            rotated = pygame.transform.rotate(_overlay, roll)
-            rx, ry = rotated.get_size()
-            crop_x = (rx - _ov_w) // 2
-            crop_y = (ry - _ov_h) // 2
-            surf.blit(rotated, (0, 0), area=pygame.Rect(crop_x, crop_y, _ov_w, _ov_h))
-        else:
-            surf.blit(_overlay, (0, 0), area=pygame.Rect(_ox, _oy, _ov_w, _ov_h))
+            draw_direct_to_trace(surf, _full_ai, lat, lon, alt, hdg, pitch, roll)
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
