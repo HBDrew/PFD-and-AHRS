@@ -5695,12 +5695,15 @@ def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
 
 
 # ── AGL readout (lower-right, just left of alt tape) ──────────────────────────
-_AGL_W = 88
-_AGL_H = 28
+# Two-line stack: small "AGL" label on top, value below.  Grew vertically
+# to give 4-digit values (e.g. 5,500) full clearance on either side of
+# the inset box.
+_AGL_W = 78
+_AGL_H = 42
 
 
 def draw_agl_readout(surf, alt_ft, ground_elev_ft, gps_ok):
-    """Show "AGL 1234" in the lower-right corner of the AI region —
+    """Show "AGL\\n1234" in the lower-right corner of the AI region —
     just left of the altitude tape and just above the heading tape.
     Hidden when there's no GPS fix (no terrain lookup) or when the
     SRTM sample comes back as None / clearly invalid (out of coverage)."""
@@ -5731,10 +5734,9 @@ def draw_agl_readout(surf, alt_ft, ground_elev_ft, gps_ok):
         val_str = f"{agl_ft:,}"
         val_col = WHITE
     _text(surf, "AGL", 11, (170, 185, 210), bold=True,
-          x=bx + 6, cy=by + _AGL_H // 2)
-    _text(surf, val_str, 16, val_col, bold=True,
-          x=bx + _AGL_W - 6 - _get_font(16, bold=True).size(val_str)[0],
-          cy=by + _AGL_H // 2)
+          cx=bx + _AGL_W // 2, cy=by + 11)
+    _text(surf, val_str, 18, val_col, bold=True,
+          cx=bx + _AGL_W // 2, cy=by + _AGL_H - 14)
 
 
 def draw_cdi(surf):
@@ -5819,21 +5821,35 @@ _CENTERLINE_GLIDE_DEG      = 3.0    # rise centerline at standard glideslope
 
 # When we're effectively on or beside the runway, baro/GPS altitude
 # disagrees with the surveyed threshold elevation by 10-50 ft, which
-# (a) used to make the polygon vanish via the above-horizon cull, or
-# (b) projects the corner several pixels above the actual horizon —
-# visibly wrong while sitting on the runway.  Within ANCHOR_NM and an
-# ANCHOR_FT vertical band, project the corner as if it were at the
-# aircraft altitude so the polygon pins to the horizon.  Beyond that,
-# real elevation is used so cruise / approach geometry stays correct.
-_RUNWAY_ANCHOR_NM = 1.5
-_RUNWAY_ANCHOR_FT = 250.0
+# either (a) makes the polygon vanish via an above-horizon cull, or
+# (b) projects the corner several pixels above horizon — visibly wrong
+# while sitting on the runway.  We blend the projected elevation
+# between the real surveyed elev (cruise / approach geometry) and the
+# aircraft altitude (pinned to horizon) along two axes — distance and
+# altitude difference — so the transition is invisible to the eye and
+# the polygon never snaps when the pilot crosses a single threshold.
+_RWY_ANCHOR_NM_FULL = 0.6     # fully anchored inside this radius
+_RWY_ANCHOR_NM_OFF  = 2.0     # no anchor at or beyond this radius
+_RWY_ANCHOR_FT_FULL = 75.0    # fully anchored inside this alt-diff
+_RWY_ANCHOR_FT_OFF  = 400.0   # no anchor at or beyond this alt-diff
 
 
 def _anchor_corner_elev(corner_elev_ft, d_nm, alt_ft):
-    if (d_nm < _RUNWAY_ANCHOR_NM and
-            abs(corner_elev_ft - alt_ft) < _RUNWAY_ANCHOR_FT):
-        return alt_ft
-    return corner_elev_ft
+    """Smoothly blend the corner elevation toward the aircraft altitude
+    when we're on or near the runway, so baro/GPS noise doesn't pop
+    the polygon above horizon and so a normal descent through a fixed
+    "anchor on / off" threshold doesn't snap."""
+    abs_diff = abs(corner_elev_ft - alt_ft)
+    if d_nm >= _RWY_ANCHOR_NM_OFF or abs_diff >= _RWY_ANCHOR_FT_OFF:
+        return corner_elev_ft
+    d_blend = max(0.0, min(1.0,
+        (_RWY_ANCHOR_NM_OFF - d_nm) /
+        (_RWY_ANCHOR_NM_OFF - _RWY_ANCHOR_NM_FULL)))
+    a_blend = max(0.0, min(1.0,
+        (_RWY_ANCHOR_FT_OFF - abs_diff) /
+        (_RWY_ANCHOR_FT_OFF - _RWY_ANCHOR_FT_FULL)))
+    blend = d_blend * a_blend
+    return blend * alt_ft + (1.0 - blend) * corner_elev_ft
 
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
@@ -5920,19 +5936,28 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
 
     def _proj(la, lo, elev):
-        # ground_only=True keeps the behind-aircraft cull (otherwise
-        # rel_brg wraps near ±180° and the LE / HE corners project to
-        # opposite sides of the AI, painting a phantom polygon across
-        # the whole screen when the runway is behind us).  The strict
-        # above-horizon side of the cull is sidestepped by
-        # _anchor_corner_elev: when we're on / beside the runway it
-        # pins eff_elev to alt_ft so vert_deg == 0 and the cull is a
-        # no-op.  Beyond the anchor zone any runway projecting above
-        # horizon is by definition above us and is correctly hidden.
+        # ground_only=False: the per-corner behind-cull (|rel_brg|>90)
+        # was killing the polygon during fly-overs and steep
+        # perpendicular geometry (one corner at +85°, the other at
+        # +95° → polygon dropped).  We catch the actual wrap artifact
+        # explicitly per-runway below by checking the rel_brg span of
+        # the four corners.  The above-horizon side of the cull was
+        # also discarding low-altitude approaches due to baro / GPS
+        # offsets — _anchor_corner_elev now smoothly pins close
+        # corners to alt_ft instead.
         return _project_latlon(la, lo, lat, lon, alt_ft,
                                elev, hdg_deg, pitch_deg, roll_deg,
-                               cx, cy, px_per_deg, ground_only=True,
+                               cx, cy, px_per_deg, ground_only=False,
                                nm_per_deg_lon=nm_per_deg_lon)
+
+    def _rel_brg(la, lo):
+        """Aircraft-relative bearing in degrees [-180, 180).  Used for
+        the wrap detection — pulled out so we can compute it without
+        spinning up the full _project_latlon."""
+        dlat_nm = (la - lat) * nm_per_deg_lat
+        dlon_nm = (lo - lon) * nm_per_deg_lon
+        return ((math.degrees(math.atan2(dlon_nm, dlat_nm)) - hdg_deg + 180.0)
+                % 360.0 - 180.0)
 
     def _in_ai(sx, sy):
         return ax <= sx <= ax + aw and ay_r <= sy <= ay_r + ah
@@ -5965,6 +5990,25 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                 half_w_nm = r.width_ft / 6076.0
                 perp_lat = (perp_lat_nm * half_w_nm) / nm_per_deg_lat
                 perp_lon = (perp_lon_nm * half_w_nm) / nm_per_deg_lon
+
+                # Wrap detection.  When the polygon straddles the rear
+                # of the aircraft the corner bearings split across
+                # ±180° and project to opposite ends of the screen,
+                # painting a phantom polygon across the whole AI.  A
+                # rel_brg span > 180° between the four corners is the
+                # tell — skip the polygon in that case.  A genuinely
+                # close perpendicular runway spans <180° (corners
+                # symmetric around 0° even at low distance), so this
+                # only catches the wrap artifact, not legitimate
+                # forward views.
+                brg_corners = [
+                    _rel_brg(r.le_lat + perp_lat, r.le_lon + perp_lon),
+                    _rel_brg(r.he_lat + perp_lat, r.he_lon + perp_lon),
+                    _rel_brg(r.he_lat - perp_lat, r.he_lon - perp_lon),
+                    _rel_brg(r.le_lat - perp_lat, r.le_lon - perp_lon),
+                ]
+                if max(brg_corners) - min(brg_corners) > 180.0:
+                    continue
 
                 # Anchor each threshold's corner elevation to our altitude
                 # when we're on / beside the runway so baro/GPS noise
