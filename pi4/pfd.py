@@ -6386,8 +6386,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         roll  = -roll
     pitch += pitch_trim
     roll  += roll_trim
-    if hdg_offset:
-        hdg = (hdg + hdg_offset) % 360.0
+    # hdg_offset is applied later, after `hdg` is resolved from the
+    # heading-source selector (mag / trk / auto).
 
     # ── Stale-data timeout: no link for > STALE_TIMEOUT_S → treat as AHRS fail
     if data_stale:
@@ -6400,15 +6400,22 @@ def render(surf, demo_mode, connected, data_stale=False):
     hdg_pref = ss.get("hdg_src", "auto")
     use_track, hdg_label, hdg_color = _resolve_hdg_source(
         hdg_pref, gps_ok, ahrs_ok, speed)
+    # Apply the AHRS-orientation magnetic offset to the raw yaw before
+    # feeding it to the heading-source selector.  In TRK mode the
+    # complementary filter combines yaw with GPS ground track, so the
+    # corrected yaw must go IN to the filter — applying the offset to
+    # the filter's output would shift the GPS-track component too and
+    # show the wrong heading.
+    yaw_corr = (disp["yaw"] + hdg_offset) % 360.0 if hdg_offset else disp["yaw"]
     if use_track:
         # Complementary filter: AHRS yaw rate propagates each frame, GPS
         # track slowly slaves the absolute reference.  Smoother than raw
         # GPS track at low speeds.
-        hdg = _update_gps_heading(disp["yaw"], disp["track"], gps_ok)
+        hdg = _update_gps_heading(yaw_corr, disp["track"], gps_ok)
     else:
         global _gps_hdg, _prev_yaw_disp  # reset filter when not using TRK
         _gps_hdg = _prev_yaw_disp = None
-        hdg = disp["yaw"]
+        hdg = yaw_corr
 
     # ── Airspeed source selection ─────────────────────────────────────────────
     # "gps" (default): GPS groundspeed  → bug triangle is magenta
