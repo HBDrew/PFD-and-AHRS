@@ -2504,6 +2504,7 @@ def handle_event(event, demo_mode):
                 disp["kbd_target"] = "nav_ident"
                 disp["kbd_prev"]   = "airport_data"
                 disp["kbd_buf"]    = ""
+                disp["kbd_error"]  = ""
                 disp["mode"]       = "keyboard"
             elif action == "nav_nearest":
                 _nav_set_nearest()
@@ -2561,44 +2562,60 @@ def handle_event(event, demo_mode):
                     ch = ' ' if lbl == 'SPACE' else lbl
                     if len(disp["kbd_buf"]) < max_len:
                         disp["kbd_buf"] += ch
+                    disp["kbd_error"] = ""    # any keystroke clears the error
                 elif sty == 'del':            # backspace
                     disp["kbd_buf"] = disp["kbd_buf"][:-1]
+                    disp["kbd_error"] = ""
                 elif sty == 'x':              # CANCEL
                     disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'nrst':           # DIRECT TO NEAREST
                     _nav_set_nearest()
                     disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'clrfp':          # CANCEL FLIGHT PLAN
                     _nav_clear()
                     disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'ok':             # ENTER
                     buf = disp["kbd_buf"].strip()
                     if target == "nav_ident":
-                        # Two distinct paths:
-                        #   1. Buffer is empty AND a waypoint is already
-                        #      active → user hit ENTER without typing,
-                        #      meaning "keep what's there but re-activate
-                        #      so the magenta line redraws from my
-                        #      current position".  Confirm with the same
-                        #      ident.
-                        #   2. Buffer has text → look up the typed ident
-                        #      in the airport DB.  If valid, prompt to
-                        #      confirm; if unknown, close silently
-                        #      (keeps the existing waypoint untouched).
+                        # Three paths:
+                        #   1. Buffer empty AND a waypoint is already
+                        #      active → "keep what's there but
+                        #      re-activate so the magenta line redraws
+                        #      from my current position".  Confirm.
+                        #   2. Buffer has text and resolves to a known
+                        #      airport → confirm.
+                        #   3. Buffer has text but doesn't resolve →
+                        #      stay on the keyboard and surface
+                        #      "UNKNOWN WAYPOINT" so the pilot can fix
+                        #      the typo without retyping from scratch.
                         cur_ident = disp.get("nav", {}).get("ident", "")
-                        candidate = buf.upper() if buf else cur_ident
-                        if candidate and _nav_lookup_ident(candidate):
-                            disp["nav_confirm_ident"] = candidate
+                        if buf:
+                            candidate = buf.upper()
+                            if _nav_lookup_ident(candidate):
+                                disp["nav_confirm_ident"] = candidate
+                                disp["nav_confirm_prev"]  = disp["kbd_prev"]
+                                disp["kbd_buf"] = ""
+                                disp["kbd_error"] = ""
+                                disp["mode"] = "nav_confirm"
+                            else:
+                                disp["kbd_error"] = f"UNKNOWN WAYPOINT  {candidate}"
+                            return True
+                        if cur_ident:
+                            disp["nav_confirm_ident"] = cur_ident
                             disp["nav_confirm_prev"]  = disp["kbd_prev"]
                             disp["kbd_buf"] = ""
+                            disp["kbd_error"] = ""
                             disp["mode"] = "nav_confirm"
                             return True
-                        # No candidate (empty buf with no active wpt) or
-                        # unknown ident — just close the keyboard.
+                        # Empty buf with no active waypoint → close.
                         disp["kbd_buf"] = ""
+                        disp["kbd_error"] = ""
                         disp["mode"] = disp["kbd_prev"]
                         return True
                     elif buf:
@@ -2707,6 +2724,7 @@ def handle_event(event, demo_mode):
                 disp["kbd_target"] = "nav_ident"
                 disp["kbd_prev"]   = "pfd"
                 disp["kbd_buf"]    = ""
+                disp["kbd_error"]  = ""
                 disp["mode"]       = "keyboard"
                 return True
 
@@ -3118,7 +3136,8 @@ def _kb_key(surf, bx, by, bw, bh, label, style, r=6):
     _text(surf, label, fs, tc, bold=True, cx=bx+bw//2, cy=by+bh//2)
 
 
-def draw_keyboard(surf, title, current_val, entered="", transparent=False):
+def draw_keyboard(surf, title, current_val, entered="", transparent=False,
+                  error=""):
     """Full-screen QWERTY keyboard for text entry."""
     if not transparent:
         surf.fill((0,8,22))
@@ -3131,7 +3150,14 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False):
     pygame.draw.rect(surf,(0,15,38),(10,50,DISPLAY_W-21,50),border_radius=6)
     pygame.draw.rect(surf,WHITE,(10,50,DISPLAY_W-21,50),width=1,border_radius=6)
     _text(surf,disp_str,28,CYAN,bold=True,cx=DISPLAY_W//2,cy=75)
-    _text(surf,f"Current: {current_val}",10,(110,120,140),cx=DISPLAY_W//2,cy=104)
+    if error:
+        # Error overrides the "Current:" hint so the pilot's eye lands on
+        # the problem.  Cleared on the next keystroke or backspace.
+        _text(surf, error, 12, (255, 90, 90), bold=True,
+              cx=DISPLAY_W//2, cy=104)
+    else:
+        _text(surf, f"Current: {current_val}", 10, (110, 120, 140),
+              cx=DISPLAY_W//2, cy=104)
     y = _KB_Y0
     for row in _KB_ROWS:
         x = _kb_row_x0(row)
@@ -6410,7 +6436,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         else:
             cur   = disp["fp"].get(target, "")
             title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
-        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True)
+        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True,
+                      error=disp.get("kbd_error", ""))
 
 
 # ── Terrain availability (computed once at import time) ───────────────────────
