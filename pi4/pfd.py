@@ -198,8 +198,12 @@ disp["ds"] = {                      # display settings
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
     "mag_cal":       "idle", "mounting": "normal",
-    "mag_cal_offset": 0.0,           # additive heading offset learned by the
-                                      # cardinal-walk wizard (compass cal)
+    "mag_cal_deltas": [0.0] * 4,     # per-cardinal (N/E/S/W) heading
+                                      # corrections from the compass-cal
+                                      # wizard.  Piecewise-linear
+                                      # interpolation between cardinals
+                                      # gives each 90° quadrant its own
+                                      # correction curve.
 
     # Heading source — matches the iPhone display:
     #   "mag"  : magnetic heading from AHRS (cyan/white "M" subscript).
@@ -2243,6 +2247,26 @@ _MCAL_H   = 260
 _MCAL_BTN_H = 44
 
 
+def _apply_mag_cal(raw_hdg, deltas):
+    """Piecewise-linear mag cal correction.  `deltas` is a 4-list of
+    signed (expected − raw) deltas at N / E / S / W.  Linearly
+    interpolates between adjacent cardinals so each 90° quadrant gets
+    its own correction curve — same convention as a real aircraft
+    compass swing card.  Returns calibrated heading in [0, 360)."""
+    if not deltas or len(deltas) != 4 or not any(deltas):
+        return raw_hdg % 360.0
+    h = raw_hdg % 360.0
+    band = int(h // 90) % 4
+    t = (h - band * 90.0) / 90.0
+    d0 = deltas[band]
+    d1 = deltas[(band + 1) % 4]
+    # Short-arc interpolation in case adjacent deltas straddle ±180
+    # (rare with sane mag bias but keeps the math safe).
+    diff = ((d1 - d0 + 540.0) % 360.0) - 180.0
+    delta = d0 + diff * t
+    return (h + delta) % 360.0
+
+
 def _mag_cal_open(prev_mode: str):
     disp["mag_cal_wiz"] = {"step": 0, "samples": [], "msg": "",
                            "prev": prev_mode}
@@ -2260,24 +2284,24 @@ def _mag_cal_capture():
     wiz["step"] = step + 1
     wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
     if wiz["step"] >= len(_MAG_CAL_CARDINALS):
-        # Circular mean of (expected − raw) deltas.
-        sx = 0.0
-        sy = 0.0
+        # Per-cardinal piecewise-linear cal: store the signed
+        # (expected − raw) deltas at N / E / S / W.  Each quadrant
+        # gets its own correction curve via interpolation in
+        # _apply_mag_cal — same pattern as an aircraft compass
+        # correction card.  Strictly more capable than a single
+        # offset (which only fixes the average bias).
+        deltas = []
         for exp, rawv in wiz["samples"]:
             d = ((exp - rawv + 540.0) % 360.0) - 180.0
-            r = math.radians(d)
-            sx += math.cos(r)
-            sy += math.sin(r)
-        mean_deg = math.degrees(math.atan2(sy, sx))
-        offset = mean_deg % 360.0
-        # Store in [-180, 180] form for human-readable persistence;
-        # render path applies modulo regardless.
-        disp["ss"]["mag_cal_offset"] = ((offset + 180.0) % 360.0) - 180.0
+            deltas.append(round(d, 2))
+        disp["ss"]["mag_cal_deltas"] = deltas
+        # Drop legacy single-offset key — superseded.
+        disp["ss"].pop("mag_cal_offset", None)
         disp["ss"]["mag_cal"] = "done"
         _settings.mark_dirty()
-        wiz["msg"] = f"Done — offset {disp['ss']['mag_cal_offset']:+.1f}°."
-        # Reset wizard step so the user can re-run from the same modal
-        # if they want to refine; the offset is committed.
+        max_abs = max(abs(d) for d in deltas)
+        wiz["msg"] = (f"Done — N{deltas[0]:+.1f}° E{deltas[1]:+.1f}° "
+                      f"S{deltas[2]:+.1f}° W{deltas[3]:+.1f}°")
         wiz["step"]    = 0
         wiz["samples"] = []
 
@@ -2290,9 +2314,10 @@ def _mag_cal_restart():
 
 
 def _mag_cal_reset():
-    """Wipe the stored offset.  Useful after moving the AHRS to a
+    """Wipe the stored cal.  Useful after moving the AHRS to a
     different aircraft / panel."""
-    disp["ss"]["mag_cal_offset"] = 0.0
+    disp["ss"]["mag_cal_deltas"] = [0.0, 0.0, 0.0, 0.0]
+    disp["ss"].pop("mag_cal_offset", None)   # legacy key
     disp["ss"]["mag_cal"] = "idle"
     _settings.mark_dirty()
     wiz = disp.get("mag_cal_wiz") or {}
@@ -2338,8 +2363,8 @@ def draw_mag_cal(surf):
     _text(surf, instr, 14, WHITE, cx=bx + _MCAL_W // 2, cy=by + 56)
 
     raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
-    cur_offset = disp["ss"].get("mag_cal_offset", 0.0)
-    applied = (raw + cur_offset) % 360.0
+    cur_deltas = disp["ss"].get("mag_cal_deltas") or [0.0] * 4
+    applied = _apply_mag_cal(raw, cur_deltas)
 
     _text(surf, "RAW", 11, (170, 185, 210), bold=True,
           x=bx + 30, y=by + 92)
@@ -2351,8 +2376,16 @@ def draw_mag_cal(surf):
     _text(surf, f"{applied:6.1f}°", 22, WHITE, bold=True,
           x=bx + _MCAL_W // 2 + 20, y=by + 108)
 
-    _text(surf, f"Offset: {cur_offset:+.1f}°", 12, (170, 185, 210),
-          cx=bx + _MCAL_W // 2, cy=by + 156)
+    # Per-cardinal deltas — the compass swing card.
+    cards_y = by + 154
+    for i, (name, _exp) in enumerate(_MAG_CAL_CARDINALS):
+        cx_card = bx + 60 + i * (_MCAL_W - 120) // 3
+        d = cur_deltas[i]
+        _text(surf, name[0], 11, (170, 185, 210), bold=True,
+              cx=cx_card, cy=cards_y)
+        _text(surf, f"{d:+.1f}°", 13,
+              WHITE if abs(d) > 0.05 else (110, 120, 140),
+              bold=True, cx=cx_card, cy=cards_y + 16)
 
     msg = wiz.get("msg", "") or ""
     if msg:
@@ -3633,10 +3666,15 @@ def draw_ahrs_setup(surf, ss):
     cal = ss.get("mag_cal", "idle")
     state_lbl, state_col = _SS_MAG_LABELS.get(cal, ("?", WHITE))
     _text(surf, state_lbl, 13, state_col, bold=True, x=bx+220, y=by+(bh-30)//2)
-    cur_offset = ss.get("mag_cal_offset", 0.0)
-    if abs(cur_offset) > 0.05:
-        _text(surf, f"offset {cur_offset:+.1f}°", 11, (140, 160, 190),
+    cur_deltas = ss.get("mag_cal_deltas") or []
+    if cur_deltas and any(abs(d) > 0.05 for d in cur_deltas):
+        peak = max(abs(d) for d in cur_deltas)
+        _text(surf, f"max |Δ| {peak:.1f}°", 11, (140, 160, 190),
               x=bx+220, y=by+(bh-30)//2 + 18)
+    elif abs(ss.get("mag_cal_offset", 0.0)) > 0.05:
+        # Legacy single-offset still on disk (pre-piecewise)
+        _text(surf, f"offset {ss['mag_cal_offset']:+.1f}°", 11,
+              (140, 160, 190), x=bx+220, y=by+(bh-30)//2 + 18)
     cbx = bx+bw-138-14; cby = by+(bh-_DSP_BTN_H)//2
     _action_btn(surf, cbx, cby, 138, _DSP_BTN_H, "CALIBRATE", "ok")
 
@@ -6654,13 +6692,24 @@ def render(surf, demo_mode, connected, data_stale=False):
     # complementary filter combines yaw with GPS ground track, so the
     # corrected yaw must go IN to the filter — applying a correction
     # to the filter's output would shift the GPS-track component too.
-    # mag_cal_offset is the residual additive correction learned by
-    # the compass-cal wizard; it shifts MAG-mode display but doesn't
-    # affect TRK mode because the complementary filter operates on
-    # yaw DELTAS (a constant offset drops out).
-    mag_cal_offset = ss.get("mag_cal_offset", 0.0) if not ahrs_synthetic else 0.0
+    # Piecewise-linear mag cal: each 90° quadrant has its own
+    # correction curve from the cardinal-walk wizard.  Linearly
+    # interpolated by _apply_mag_cal between the four captured
+    # deltas at N / E / S / W.  Shifts MAG-mode display but doesn't
+    # affect TRK mode (the complementary filter operates on yaw
+    # deltas — a smoothly-varying correction's derivative just
+    # blends in with normal yaw motion).
     yaw_corr_uncal = (ahrs_sign * disp["yaw"] + hdg_offset) % 360.0
-    yaw_corr = (yaw_corr_uncal + mag_cal_offset) % 360.0
+    if ahrs_synthetic:
+        yaw_corr = yaw_corr_uncal
+    else:
+        deltas = ss.get("mag_cal_deltas")
+        if not deltas:
+            # Backward-compat: if a legacy single-offset is on disk,
+            # promote it to a uniform 4-cardinal correction.
+            old_off = ss.get("mag_cal_offset", 0.0)
+            deltas = [old_off] * 4 if old_off else None
+        yaw_corr = _apply_mag_cal(yaw_corr_uncal, deltas) if deltas else yaw_corr_uncal
     # Stash the uncalibrated yaw so the compass-cal wizard can read
     # the current "what the AHRS sees right now" value when the
     # pilot taps CAPTURE on each cardinal.
