@@ -6355,35 +6355,43 @@ def render(surf, demo_mode, connected, data_stale=False):
     trk_bug  = disp.get("trk_bug", 0.0)
     alt_bug  = disp["alt_bug"]
 
-    # ── AHRS trim + orientation + mounting correction ───────────────────────
+    # ── AHRS convention correction + orientation + mounting + trim ─────────
+    # Base correction: the AHRS firmware reports roll and yaw with an
+    # ENU-like sign convention (positive roll = LEFT wing down,
+    # positive yaw = CCW from above) while the display assumes NED
+    # (positive roll = RIGHT wing down, positive yaw = CW from above).
+    # Pitch sign matches between ENU and NED.  Negate roll up front so
+    # orientation rotations layer on top of a clean NED-aligned base;
+    # yaw is negated below in the heading-source path.
+    #
     # ORIENTATION (which side of the AHRS the connector points toward,
-    # viewed from the pilot's seat) is applied first as a yaw-axis
+    # viewed from the pilot's seat) is applied next as a yaw-axis
     # rotation that remaps the IMU's pitch / roll axes onto the
-    # aircraft's pitch / roll axes, and adds a magnetic heading offset
-    # so the compass reads correctly.  MOUNTING (right-side-up vs
-    # inverted) is applied second as an independent flip about the
-    # longitudinal axis.  Trim is added last.
+    # aircraft's, and adds a magnetic heading offset so the compass
+    # reads correctly.  MOUNTING (right-side-up vs inverted) is the
+    # final independent flip about the longitudinal axis.  Trim is
+    # added last.
     ss = disp["ss"]
     pitch_trim = ss.get("pitch_trim", 0.0)
     roll_trim  = ss.get("roll_trim",  0.0)
+    roll = -roll   # base ENU→NED roll correction
     orientation = ss.get("orientation", "right")
     if orientation == "forward":
-        # AHRS rotated 90° from RIGHT, connector toward nose.  Empirical
-        # signs from in-flight test: pitch transposes from ahrs_roll
-        # (correct), roll transposes from +ahrs_pitch (was -ahrs_pitch
-        # — caused the indicator to bank opposite the actual aircraft).
-        pitch, roll = roll, pitch
+        # AHRS rotated 90° from RIGHT (connector now toward nose) —
+        # 90° CCW yaw rotation: pitch / roll axes swap, roll picks up
+        # a sign flip per right-hand-rule.
+        pitch, roll = roll, -pitch
         hdg_offset = 90.0
     elif orientation == "left":
-        # AHRS rotated 180° from RIGHT, connector toward left wing.
+        # 180° yaw rotation: pitch and roll both negate.
         pitch, roll = -pitch, -roll
         hdg_offset = 180.0
     elif orientation == "aft":
-        # AHRS rotated 90° from RIGHT in the opposite direction,
-        # connector toward tail.  Mirrors the FORWARD sign correction.
-        pitch, roll = -roll, -pitch
+        # 90° CW yaw rotation — mirror of FORWARD.
+        pitch, roll = -roll, pitch
         hdg_offset = 270.0
-    else:    # "right" — default, matches legacy behaviour
+    else:    # "right" — default, no rotation
+        hdg_offset = 0.0
         hdg_offset = 0.0
     if ss.get("mounting") == "inverted":
         pitch = -pitch
@@ -6405,12 +6413,13 @@ def render(surf, demo_mode, connected, data_stale=False):
     use_track, hdg_label, hdg_color = _resolve_hdg_source(
         hdg_pref, gps_ok, ahrs_ok, speed)
     # Apply the AHRS-orientation magnetic offset to the raw yaw before
-    # feeding it to the heading-source selector.  In TRK mode the
+    # feeding it to the heading-source selector, AND negate raw yaw to
+    # convert the firmware's ENU-style positive-yaw-CCW convention to
+    # the display's NED-style positive-yaw-CW.  In TRK mode the
     # complementary filter combines yaw with GPS ground track, so the
-    # corrected yaw must go IN to the filter — applying the offset to
-    # the filter's output would shift the GPS-track component too and
-    # show the wrong heading.
-    yaw_corr = (disp["yaw"] + hdg_offset) % 360.0 if hdg_offset else disp["yaw"]
+    # corrected yaw must go IN to the filter — applying a correction
+    # to the filter's output would shift the GPS-track component too.
+    yaw_corr = (-disp["yaw"] + hdg_offset) % 360.0
     if use_track:
         # Complementary filter: AHRS yaw rate propagates each frame, GPS
         # track slowly slaves the absolute reference.  Smoother than raw
