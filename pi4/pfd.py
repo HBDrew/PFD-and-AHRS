@@ -5376,44 +5376,24 @@ _DIRECT_TO_DRAPE_OFFSET_FT = 200.0  # ft above terrain.  Has to clear the
 # rebuilt only when the active direct-to changes.  Without this, the per-
 # frame DEM sampling costs ~5 µs per step × hundreds of steps and visibly
 # drops the GL frame rate.
+#
+# The actual SRTM sampling happens off-thread because cold-tile reads on
+# a long course (up to 400 steps × several ms each) used to freeze the
+# screen for 1-4 seconds after the user pressed ENTER on a new waypoint.
 _direct_to_trace_cache_key = None
 _direct_to_trace_cache_arr = None
+_direct_to_trace_thread    = None
 
 
-def build_direct_to_trace_vertices():
-    """Sample the active direct-to course at 0.5 nm steps and return an
-    (N, 3) ndarray of (lat, lon, elev_ft) world points draped over the
-    SRTM terrain.  Returns None when no waypoint is active or when the
-    course is degenerate.
-
-    Result is cached on (act, waypoint); the course is fixed for the
-    duration of a direct-to so we only pay the DEM sampling cost once
-    per activation, not once per frame."""
+def _build_direct_to_trace_async(key, wpt_elev):
+    """Worker: sample the great-circle course over SRTM and publish the
+    result to the module-level cache.  Runs off the render thread so a
+    just-activated direct-to doesn't stall the next frame."""
     global _direct_to_trace_cache_key, _direct_to_trace_cache_arr
-
-    nv = disp.get("nav", {})
-    if not nv.get("ident"):
-        _direct_to_trace_cache_key = None
-        _direct_to_trace_cache_arr = None
-        return None
-    wpt_lat  = float(nv["lat"])
-    wpt_lon  = float(nv["lon"])
-    wpt_elev = float(nv.get("elev_ft", 0.0))
-    act_lat  = float(nv.get("act_lat", 0.0))
-    act_lon  = float(nv.get("act_lon", 0.0))
-    if act_lat == 0.0 and act_lon == 0.0:
-        return None
-
-    key = (act_lat, act_lon, wpt_lat, wpt_lon)
-    if key == _direct_to_trace_cache_key and _direct_to_trace_cache_arr is not None:
-        return _direct_to_trace_cache_arr
-
+    act_lat, act_lon, wpt_lat, wpt_lon = key
     course_nm, _ = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
     if course_nm < 0.05:
-        _direct_to_trace_cache_key = None
-        _direct_to_trace_cache_arr = None
-        return None
-
+        return
     n_steps = max(8, int(course_nm / 0.5))
     n_steps = min(n_steps, 400)
 
@@ -5434,9 +5414,67 @@ def build_direct_to_trace_vertices():
     except ImportError:
         arr = pts
 
-    _direct_to_trace_cache_key = key
+    # Discard the result if the user changed direct-to mid-build — we
+    # don't want a stale course to flash up before the new one finishes.
+    nv_now = disp.get("nav", {})
+    cur_key = (
+        float(nv_now.get("act_lat", 0.0)),
+        float(nv_now.get("act_lon", 0.0)),
+        float(nv_now.get("lat", 0.0)),
+        float(nv_now.get("lon", 0.0)),
+    )
+    if cur_key != key or not nv_now.get("ident"):
+        return
+
+    # Publish: arr first so a render that observes the new key always
+    # finds the matching arr in place (CPython attribute writes are
+    # individually atomic; we rely on that ordering, not on a lock).
     _direct_to_trace_cache_arr = arr
-    return arr
+    _direct_to_trace_cache_key = key
+
+
+def build_direct_to_trace_vertices():
+    """Return the cached trace for the active direct-to, or None while a
+    background sample is still in flight.
+
+    The course is sampled at 0.5 nm steps over SRTM in
+    _build_direct_to_trace_async.  Returning None during the build
+    keeps the render loop fast — the magenta course line just appears
+    on the next frame after the worker finishes (typically <2 s on the
+    Pi 4)."""
+    global _direct_to_trace_cache_key, _direct_to_trace_cache_arr
+    global _direct_to_trace_thread
+
+    nv = disp.get("nav", {})
+    if not nv.get("ident"):
+        _direct_to_trace_cache_key = None
+        _direct_to_trace_cache_arr = None
+        return None
+    wpt_lat  = float(nv["lat"])
+    wpt_lon  = float(nv["lon"])
+    wpt_elev = float(nv.get("elev_ft", 0.0))
+    act_lat  = float(nv.get("act_lat", 0.0))
+    act_lon  = float(nv.get("act_lon", 0.0))
+    if act_lat == 0.0 and act_lon == 0.0:
+        return None
+
+    key = (act_lat, act_lon, wpt_lat, wpt_lon)
+    if key == _direct_to_trace_cache_key and _direct_to_trace_cache_arr is not None:
+        return _direct_to_trace_cache_arr
+
+    # Cache miss — kick off (or continue) a background build.  If a
+    # worker is already running for the previous course it'll discover
+    # the mismatch when it finishes and discard its result; the next
+    # call here will start a fresh worker for the new course.
+    if _direct_to_trace_thread is None or not _direct_to_trace_thread.is_alive():
+        _direct_to_trace_thread = threading.Thread(
+            target=_build_direct_to_trace_async,
+            args=(key, wpt_elev),
+            daemon=True,
+            name="direct-to-trace",
+        )
+        _direct_to_trace_thread.start()
+    return None
 
 
 def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
@@ -5555,6 +5593,24 @@ _CENTERLINE_EXTEND_NM      = 5.0    # centerline extends this far from threshold
 _CENTERLINE_DASH_NM        = 0.5    # dash length (nm)
 _CENTERLINE_GLIDE_DEG      = 3.0    # rise centerline at standard glideslope
 
+# When we're effectively on or beside the runway, baro/GPS altitude
+# disagrees with the surveyed threshold elevation by 10-50 ft, which
+# (a) used to make the polygon vanish via the above-horizon cull, or
+# (b) projects the corner several pixels above the actual horizon —
+# visibly wrong while sitting on the runway.  Within ANCHOR_NM and an
+# ANCHOR_FT vertical band, project the corner as if it were at the
+# aircraft altitude so the polygon pins to the horizon.  Beyond that,
+# real elevation is used so cruise / approach geometry stays correct.
+_RUNWAY_ANCHOR_NM = 1.5
+_RUNWAY_ANCHOR_FT = 250.0
+
+
+def _anchor_corner_elev(corner_elev_ft, d_nm, alt_ft):
+    if (d_nm < _RUNWAY_ANCHOR_NM and
+            abs(corner_elev_ft - alt_ft) < _RUNWAY_ANCHOR_FT):
+        return alt_ft
+    return corner_elev_ft
+
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
                     elev_ft, hdg_deg, pitch_deg, roll_deg,
@@ -5640,9 +5696,14 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
 
     def _proj(la, lo, elev):
+        # ground_only=False here: the per-runway range cull (8 nm) and
+        # the bbox cull below already keep this safe, and the strict
+        # above-horizon cull was rejecting valid corners whenever baro
+        # read a few feet below the surveyed threshold (runway vanished
+        # while taxiing).
         return _project_latlon(la, lo, lat, lon, alt_ft,
                                elev, hdg_deg, pitch_deg, roll_deg,
-                               cx, cy, px_per_deg, ground_only=True,
+                               cx, cy, px_per_deg, ground_only=False,
                                nm_per_deg_lon=nm_per_deg_lon)
 
     def _in_ai(sx, sy):
@@ -5677,10 +5738,16 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                 perp_lat = (perp_lat_nm * half_w_nm) / nm_per_deg_lat
                 perp_lon = (perp_lon_nm * half_w_nm) / nm_per_deg_lon
 
-                p1 = _proj(r.le_lat + perp_lat, r.le_lon + perp_lon, r.le_elev_ft)
-                p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, r.he_elev_ft)
-                p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, r.he_elev_ft)
-                p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
+                # Anchor each threshold's corner elevation to our altitude
+                # when we're on / beside the runway so baro/GPS noise
+                # doesn't float the polygon visibly above the horizon.
+                le_elev_eff = _anchor_corner_elev(r.le_elev_ft, d_nm, alt_ft)
+                he_elev_eff = _anchor_corner_elev(r.he_elev_ft, d_nm, alt_ft)
+
+                p1 = _proj(r.le_lat + perp_lat, r.le_lon + perp_lon, le_elev_eff)
+                p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, he_elev_eff)
+                p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, he_elev_eff)
+                p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, le_elev_eff)
                 if not (p1 and p2 and p3 and p4):
                     pass  # at least one corner culled — skip polygon
                 else:
@@ -5710,8 +5777,8 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                         # Centreline: dashed segments from LE midpoint to HE
                         # midpoint.  Number of dashes scales with on-screen
                         # length so it reads at any range.
-                        mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
-                        mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
+                        mid_le = _proj(r.le_lat, r.le_lon, le_elev_eff)
+                        mid_he = _proj(r.he_lat, r.he_lon, he_elev_eff)
                         if mid_le is not None and mid_he is not None:
                             dx = mid_he[0] - mid_le[0]
                             dy = mid_he[1] - mid_le[1]
@@ -5753,10 +5820,10 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                         ext_lon = axis_lon_unit * pad_nm
                         pl = perp_lat * BOX_W_SCALE
                         po = perp_lon * BOX_W_SCALE
-                        b1 = _proj(r.le_lat - ext_lat + pl, r.le_lon - ext_lon + po, r.le_elev_ft)
-                        b2 = _proj(r.he_lat + ext_lat + pl, r.he_lon + ext_lon + po, r.he_elev_ft)
-                        b3 = _proj(r.he_lat + ext_lat - pl, r.he_lon + ext_lon - po, r.he_elev_ft)
-                        b4 = _proj(r.le_lat - ext_lat - pl, r.le_lon - ext_lon - po, r.le_elev_ft)
+                        b1 = _proj(r.le_lat - ext_lat + pl, r.le_lon - ext_lon + po, le_elev_eff)
+                        b2 = _proj(r.he_lat + ext_lat + pl, r.he_lon + ext_lon + po, he_elev_eff)
+                        b3 = _proj(r.he_lat + ext_lat - pl, r.he_lon + ext_lon - po, he_elev_eff)
+                        b4 = _proj(r.le_lat - ext_lat - pl, r.le_lon - ext_lon - po, le_elev_eff)
                         if b1 and b2 and b3 and b4:
                             bxs_min = min(b1[0], b2[0], b3[0], b4[0])
                             bxs_max = max(b1[0], b2[0], b3[0], b4[0])
@@ -5818,11 +5885,20 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
     # the aircraft would streak horizontally across the AI.
     _FOV = 60.0
 
+    # Anchor each threshold elev to our altitude when sitting on / next
+    # to the runway (matches the runway-polygon anchor) — keeps the
+    # near end of the centerline glued to the horizon instead of
+    # stair-stepping with baro/GPS noise.
+    d_nm = math.hypot((r.centre_lat - lat) * nm_per_deg_lat,
+                      (r.centre_lon - lon) * nm_per_deg_lon)
+    le_elev_eff = _anchor_corner_elev(r.le_elev_ft, d_nm, alt_ft)
+    he_elev_eff = _anchor_corner_elev(r.he_elev_ft, d_nm, alt_ft)
+
     # For each threshold, extend OUTWARD (opposite of the axis toward the
     # other end).  For LE: step in -u direction.  For HE: step in +u.
     for thresh_lat, thresh_lon, thresh_elev, sign in (
-        (r.le_lat, r.le_lon, r.le_elev_ft, -1),
-        (r.he_lat, r.he_lon, r.he_elev_ft, +1),
+        (r.le_lat, r.le_lon, le_elev_eff, -1),
+        (r.he_lat, r.he_lon, he_elev_eff, +1),
     ):
         s_dlat = sign * u_dlat
         s_dlon = sign * u_dlon
