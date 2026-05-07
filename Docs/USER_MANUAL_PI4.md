@@ -26,6 +26,8 @@
 14. [Terrain Data Download](#14-terrain-data-download)
 15. [Obstacle Data Download](#15-obstacle-data-download)
 16. [Airport Data Download](#16-airport-data-download)
+16A. [Direct-to Navigation](#16a-direct-to-navigation)
+16B. [AGL Readout](#16b-agl-readout)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
 
@@ -340,7 +342,64 @@ The period and colon keys are useful for entering URLs (e.g. `http://192.168.4.1
 
 ![AHRS setup screen](../pi4/previews/preview_setup_ahrs.png)
 
-**Pitch/Roll trim:** ±0.5° steps. **Mounting:** NORMAL / INVERTED. **Heading source:** MAG / GPS TRK. **Airspeed source:** GPS GS / IAS SENSOR (future).
+Seven rows on this screen, each independent:
+
+| Row | Control | Default | Notes |
+|-----|---------|---------|-------|
+| **PITCH TRIM** | ± steppers | 0.0° | 0.1° per tap. Use to fine-trim a horizon that sits above/below level on the ground. |
+| **ROLL TRIM** | ± steppers | 0.0° | 0.1° per tap. Use to fine-trim a wing that reads low on the ground. |
+| **MAGNETOMETER** | CALIBRATE button | (idle) | Opens the cardinal-walk compass-cal wizard. Status row shows `max \|Δ\| X.X°` once a cal is stored. |
+| **ORIENTATION** | FWD / LEFT / RIGHT / AFT | RIGHT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. |
+| **MOUNTING** | NORMAL / INVERTED | NORMAL | Whether the AHRS is right-side-up or upside-down. Independent of orientation. |
+| **HEADING SOURCE** | MAG / TRK / AUTO | AUTO | Magnetometer, GPS ground track (via complementary filter), or auto-select (TRK in motion, MAG when stationary). |
+| **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | GPS GS | GPS ground speed (default); IAS sensor is greyed-out until pitot/static is fitted. |
+
+### Mounting and orientation
+
+The AHRS box can be installed with the connector facing any of four directions, plus right-side-up or upside-down:
+
+- **ORIENTATION = RIGHT** (default): connector toward the right wing. No transform applied.
+- **ORIENTATION = FWD**: connector toward the nose. Pitch and roll axes swap; magnetic heading shifted +90°.
+- **ORIENTATION = LEFT**: connector toward the left wing. Pitch and roll both negate; heading shifted +180°.
+- **ORIENTATION = AFT**: connector toward the tail. Pitch and roll axes swap (opposite of FWD); heading shifted +270°.
+
+Combine with **MOUNTING = INVERTED** for upside-down installs — the inversion is a separate flip about the longitudinal axis applied after orientation.
+
+The base AHRS firmware reports yaw and roll with an ENU-style sign convention; the display assumes NED. The PFD negates roll and yaw at the base before any orientation transform layers on, so once you've picked the right ORIENTATION + MOUNTING the AI banks the same direction as the airplane and the heading number rises when you turn right. Pitch is unchanged between the two conventions.
+
+**Sim and Demo modes bypass every AHRS-mounting compensation** (orientation, mounting, base correction, trim, compass cal) so a calibrated trim doesn't show up as wing-down on a level sim flight.
+
+### Compass calibration (cardinal walk-through)
+
+![Compass cal wizard — point cardinal, capture, repeat](../pi4/previews/preview_compass_cal.png)
+
+Tap CALIBRATE on the MAGNETOMETER row to open the wizard. Step through the four cardinals:
+
+1. Point the aircraft's nose **NORTH** (000°). Tap **⊕ CAPTURE N** (or press ENTER on a keyboard).
+2. **EAST** (090°) → CAPTURE E.
+3. **SOUTH** (180°) → CAPTURE S.
+4. **WEST** (270°) → CAPTURE W.
+
+The modal shows live readouts for **RAW** (the raw compass output before cal) and **APPLIED** (with the cal applied), plus the four captured Δ values once they're recorded. After the fourth capture, the cal is committed automatically — you'll see the four values displayed across N / E / S / W.
+
+| Button | Action |
+|--------|--------|
+| **EXIT** | Close the modal. The cal is committed on the 4th capture so this is non-destructive. Reads CANCEL only mid-walk when there are partial captures to discard. |
+| **RESET** | Wipe the stored cal back to zero. |
+| **RESTART** | Abandon partial captures and restart the four-capture sequence. |
+| **⊕ CAPTURE *N*** | Record the current heading at the cardinal. Available throughout. |
+
+The cal is stored as a **piecewise-linear correction card** — four signed deltas at N / E / S / W persisted in `data/settings.json`. At render time each 90° quadrant gets its own correction curve via linear interpolation between the two bracketing cardinals (same convention as a real aircraft compass swing card; strictly better than a single average offset for a sinusoidal hard-iron error or higher-order soft-iron error).
+
+### Heading source — MAG / TRK / AUTO
+
+- **MAG** — magnetometer heading from the AHRS. Compass cal applies. Fastest response; subject to local magnetic deviation.
+- **TRK** — GPS ground track via a complementary filter (high-frequency from AHRS yaw rate, low-frequency from GPS track). Shows the direction the aircraft is actually moving over the ground, including wind drift.
+- **AUTO** — TRK while moving above ~3 kt ground speed; MAG when stationary or below the threshold (where GPS track is meaningless). Default.
+
+Displayed heading sub-tag: `M` (cyan) for MAG, `G` (magenta) for TRK. AUTO shows whichever it's currently using.
+
+The compass calibration only affects MAG-mode display. TRK mode is naturally drift-free because it's slaved to GPS ground track — a constant cal correction's frame-to-frame derivative blends invisibly into the complementary filter.
 
 ---
 
@@ -519,6 +578,92 @@ The Pi 4 must be on an internet-reachable network to download. Use the Connectiv
 
 ---
 
+## 16A. Direct-to Navigation
+
+![Direct-to keyboard with WAYPOINT title and existing ident as placeholder](../pi4/previews/preview_direct_to_keyboard.png)
+
+The PFD has built-in direct-to navigation: pick an airport ident, the pilot is asked to confirm, and a magenta course line draws from the activation point to the waypoint, draped over the SRTM terrain.
+
+### Opening the keyboard
+
+| From | How |
+|------|-----|
+| **PFD (live flight)** | Tap the **CDI strip** above the heading box. The keyboard opens with the existing ident as a dim placeholder; the buffer starts empty so first-keystroke replaces. |
+| **AIRPORT DATA screen** | Tap the **DIRECT TO** tile in the action row. |
+
+### Three keyboard outcomes
+
+| You do | What happens |
+|--------|--------------|
+| Type a known ident → ENTER | Modal pops up: **"Activate Direct to *XXXX*?"** with **CANCEL** / **ACTIVATE** buttons. Tap ACTIVATE (or hit physical ENTER) to commit. Two-tap commit prevents accidental flight-plan edits. |
+| Hit ENTER on **empty** buffer (with an active waypoint already loaded) | Same confirmation modal opens with the **existing** ident — confirms re-activation, which refreshes the magenta course line from your **current** position. Use this when you want a new course line drawn from where you are now. |
+| Type an **unknown** ident → ENTER | Keyboard stays open with a red **"UNKNOWN WAYPOINT *XXXX*"** hint under the entry field. Backspace or any keystroke clears the error so you can correct the ident in place. |
+
+### NEAREST quick-button
+
+If the keyboard is opened from PFD and the display is tall enough (1024×600 fits it), an extra row appears below the keys:
+
+- **DIRECT TO *XXXX*** — green. *XXXX* is the resolved nearest public airport (small / medium / large) within 100 NM of your current position. Tap to route through the same Activate? confirmation modal. The ident on the button refreshes every ~2 s so it's accurate even while you're typing.
+- **CANCEL FLIGHT PLAN** — red. Wipes the active direct-to immediately (no confirmation; the impact is recoverable by re-typing the ident).
+
+### Confirmation modal
+
+![Activate Direct to KSEZ?](../pi4/previews/preview_nav_confirm.png)
+
+Modal text:
+- **DIRECT TO** label.
+- The ident in large magenta text.
+- **Activate?** prompt.
+- **CANCEL** (red) and **ACTIVATE** (green) buttons. Physical ESC = cancel. Physical ENTER = activate.
+
+### Magenta course trace
+
+After activation, a magenta line draws from the **activation point** (your position when you confirmed) to the destination, draped over the SRTM terrain mesh. The line is sampled at 0.2 NM steps with a rolling-max smoothing so it always sits at least 200 ft above the highest terrain in each segment — never cuts through ridges, including in dense terrain like Sedona.
+
+The trace is built **asynchronously** in a background thread and **published progressively** as samples come in: the near end of the line shows up within ~1 s of activation; the rest fills in as the worker walks the SRTM tiles toward the waypoint. No UI freeze on long cross-country activations. If you change the direct-to mid-build, the in-flight worker discovers the mismatch and discards its result so no stale course flashes.
+
+### CDI strip
+
+Above the heading box: a horizontal bar with cross-track-error scale. ±1 NM full-scale. The magenta diamond shows where the activation→waypoint great-circle is **relative to your aircraft** — diamond-LEFT means the course line is to your left, so steer left to intercept. Right of course → diamond LEFT (fly left). Standard "fly to the needle" CDI.
+
+The line on the bar shows tick marks at ±50 % and ±full-scale. The line itself is dim grey; the diamond magenta. Above the bar a readout shows **ident · BRG · DIST** in magenta (e.g. `KSEZ  155°  3.2 NM`).
+
+When no waypoint is active the strip is still drawn but reads **"DIRECT  →"** as a tap target.
+
+---
+
+## 16B. AGL Readout
+
+![AGL readout bottom-right of the AI](../pi4/previews/preview_agl_readout.png)
+
+A small box in the lower-right corner of the AI shows your **altitude above the local terrain** in feet — useful as a sanity check against the baro altimeter, especially when overflying mountainous terrain where field elevations vary widely.
+
+Layout: a translucent dark backplate with a 1-px light-grey border, sized 78 × 42 px, sitting just left of the altitude tape and just above the heading tape. Two-line stack:
+- Top: **"AGL"** label in dim grey.
+- Bottom: numeric value in white (or dashes if invalid), e.g. `1234`.
+
+### What it reads
+
+`AGL = real_alt − ground_elev_ft_at_lat_lon`
+
+- `real_alt` is the unclamped sensor altitude (NOT the camera-floor-clamped value used to keep the SVT camera above terrain), so a punched-ground state shows in dashes as a sanity-check warning rather than being silently clamped to ≥0.
+- `ground_elev_ft_at_lat_lon` is the SRTM tile sample at your current GPS position, taken once per render frame and shared with the SVT camera-floor calculation.
+
+### Display states
+
+| State | Reading | Why |
+|-------|---------|-----|
+| Above ground | `1234` (white, comma-grouped for ≥1000) | Normal flight. |
+| At or below ground | `---` (dim grey) | Sensor / DEM disagreement (baro miss-set, runway elev vs SRTM, missing tile). Not useful info — show dashes rather than a misleading negative. |
+| No GPS | (hidden) | No position, no terrain lookup. |
+| Outside SRTM coverage | (hidden) | Tile not loaded; would be misleading. |
+
+### Cost
+
+Reuses the same SRTM lookup the SVT renderer does for the camera-floor clamp, so it costs zero additional disk I/O per frame.
+
+---
+
 ## 17. Demo Mode
 
 Scripted Sedona, AZ flight. No hardware needed.
@@ -591,6 +736,16 @@ SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is co
 | Clear a bug | `0` + ENTER on its numpad |
 | Tap alt tape | Jumps alt bug to nearest 100 ft |
 | Tap heading tape | Jumps HDG bug to tapped heading |
+| **Direct-to: enter waypoint** | Tap CDI strip → type ident → ENTER → ACTIVATE |
+| **Direct-to: refresh course line from current pos** | Tap CDI strip → ENTER (no typing) → ACTIVATE |
+| **Direct-to: nearest** | Setup → AIRPORTS → DIRECT TO → keyboard NEAREST button → ACTIVATE |
+| **Cancel direct-to** | Tap CDI strip → keyboard CANCEL FLIGHT PLAN |
+| **Run compass cal** | Setup → AHRS / SENSORS → CALIBRATE → walk through N / E / S / W |
+| **Reset compass cal** | Setup → AHRS / SENSORS → CALIBRATE → RESET |
+| **Set AHRS mounting orientation** | Setup → AHRS / SENSORS → ORIENTATION row (FWD/LEFT/RIGHT/AFT) |
+| **Set AHRS upside-down** | Setup → AHRS / SENSORS → MOUNTING → INVERTED |
+| **Pitch / roll trim** | Setup → AHRS / SENSORS → ± steppers (0.1° each tap) |
+| Read AGL | Bottom-right of AI (`AGL` box, dashes when invalid) |
 | Check live AHRS values | Setup → CONNECTIVITY (R/P/Y/ALT on diag row) |
 | Check WiFi the Pi is on | Setup → CONNECTIVITY (STATUS row shows SSID) |
 | Download nearest terrain | Setup → SYSTEM → TERRAIN → DOWNLOAD CURRENT AREA |
@@ -598,6 +753,7 @@ SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is co
 | Start sim | Setup → System → FLIGHT SIMULATOR → START |
 | SIM controls | Tap SIM watermark |
 | Exit sim | SIM controls → EXIT SIM |
+| Refresh autostart unit | `sudo bash tools/install_autostart.sh` |
 
 ---
 

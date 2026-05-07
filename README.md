@@ -291,16 +291,68 @@ See `Docs/USER_MANUAL_ZERO.md` or `Docs/USER_MANUAL_PI4.md` for full operational
 
 ---
 
-## AHRS Trim Calibration
+## AHRS Setup
 
-If the horizon is not level on the ground, adjust the trim offsets via the on-screen setup menu:
+Configure how the AHRS box is physically mounted in the aircraft, fine-trim residual offsets, and run the compass calibration wizard. All on the same screen:
 
-1. Two-finger hold anywhere on the PFD for 0.8 s to open the setup menu
-2. Tap **AHRS / SENSORS**
-3. Adjust **PITCH TRIM** and **ROLL TRIM** with the − / + buttons (0.5° steps)
-4. Tap **EXIT** to return to the PFD — changes take effect immediately
+**Setup → AHRS / SENSORS**
 
-If the Pico W sensor board is mounted upside-down, set **MOUNTING** to **INVERTED** on the same screen.
+| Row | Control | What it does |
+|-----|---------|--------------|
+| PITCH TRIM | ± steppers (0.1° per tap) | Fine-trim if the horizon sits above/below level on the ground |
+| ROLL TRIM | ± steppers (0.1° per tap) | Fine-trim if a wing reads low on the ground |
+| MAGNETOMETER | CALIBRATE button | Opens the compass-calibration wizard (cardinal walk-through, see below) |
+| ORIENTATION | FWD / LEFT / RIGHT / AFT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. Default is RIGHT |
+| MOUNTING | NORMAL / INVERTED | Whether the AHRS is right-side-up or upside-down. Independent of orientation |
+| HEADING SOURCE | MAG / TRK / AUTO | Magnetometer, GPS ground track, or auto-select (TRK in motion, MAG when stationary) |
+| AIRSPEED SOURCE | GPS GS / IAS SENSOR | GPS ground speed (default) or pitot-static (future) |
+
+Trim, orientation, mounting, and the compass cal all combine cleanly — orientation remaps pitch/roll axes for a non-RIGHT mounting, mounting flips for upside-down, the cal corrects the residual mag bias, and trim is the final fine-tuning. Sim and Demo modes bypass every AHRS-mounting compensation so a calibrated trim doesn't show up as wing-down on a level sim flight.
+
+### Compass Calibration
+
+Tap CALIBRATE to open the cardinal walk-through wizard:
+
+1. Point the aircraft's nose **NORTH** (000°) and tap **⊕ CAPTURE N**.
+2. Point **EAST** (090°), tap CAPTURE E.
+3. Point **SOUTH** (180°), tap CAPTURE S.
+4. Point **WEST** (270°), tap CAPTURE W.
+
+The wizard captures `(expected − raw)` at each cardinal and stores them as a four-value compass-correction card (`mag_cal_deltas` in `data/settings.json`). At render time each 90° quadrant gets its own correction curve via linear interpolation between adjacent cardinals — same convention as a real aircraft compass swing card, and strictly better than a single average offset for hard-iron / soft-iron error.
+
+Buttons:
+- **EXIT** — close the modal (the cal is committed on the 4th capture, so this is non-destructive). Reads CANCEL only mid-walk when there are partial captures to discard.
+- **RESET** — wipe the stored cal and return to zero.
+- **RESTART** — abandon partial captures and start the four-capture sequence over.
+- **⊕ CAPTURE X** — record the current heading at the cardinal indicated by X (N/E/S/W).
+
+The status row on the AHRS Setup screen shows `max |Δ|` (worst-case residual across the four cardinals) so a glance tells you whether the cal is current.
+
+The cal only shifts MAG-mode display — TRK mode is unaffected because the complementary filter operates on yaw deltas, where a constant-shape correction's frame-to-frame derivative is negligible.
+
+---
+
+## Direct-to Navigation
+
+Tap the empty **CDI strip** above the heading box (or **DIRECT TO** on the AIRPORT DATA screen) to open the on-screen keyboard for waypoint entry.
+
+| Action | Effect |
+|--------|--------|
+| Type ident → ENTER | Look up the airport. If found, prompt "Activate Direct to *XXXX*?" with ACTIVATE / CANCEL. Two-tap commit prevents accidental flight-plan edits. |
+| Hit ENTER on empty buffer (with an active waypoint) | Re-activate the existing waypoint. Use this to refresh the magenta course line from your current position without retyping. |
+| Type unknown ident → ENTER | Keyboard stays open with a red "UNKNOWN WAYPOINT *XXXX*" hint. Backspace or any keystroke clears the error so you can correct in place. |
+| **DIRECT TO *XXXX*** button (on tall keyboards) | Resolves and shows the nearest public airport's ident on the button itself, then routes through the same Activate? confirmation. |
+| **CANCEL FLIGHT PLAN** | Wipes the active direct-to. |
+
+After activation, a magenta course-trace line draws from your activation point to the destination, **draped over the SRTM terrain mesh**. The trace is sampled in a background thread (every 0.2 NM) so the line shows up immediately at the near end and grows outward toward the waypoint as the worker walks the SRTM tiles — no UI freeze even on long cross-country courses.
+
+The **CDI** strip above the heading box shows ident · bearing · distance and a magenta XTK diamond at full-scale ±1 NM.
+
+---
+
+## AGL Readout
+
+A small "AGL" box in the lower-right corner of the AI shows your real altitude above the SRTM terrain at your current lat/lon — independent of baro, calculated from real GPS / sensor altitude minus the local ground elevation. Reads dashes when at or below ground level (sensor / DEM disagreement). Hidden when there's no GPS fix or the SRTM lookup returns "missing tile".
 
 ---
 
@@ -377,6 +429,41 @@ sudo systemctl restart pfd.service
 
 ---
 
+## Autostart on Boot
+
+The `pi4/setup.sh` and `setup.sh` installers both create and enable a `pfd.service` systemd unit so the PFD launches automatically on every power-up — no keyboard, no SSH, no manual command. If you've already installed but want to refresh just the service definition (for example after pulling a fix to the unit's environment), run the standalone helper:
+
+```bash
+sudo bash tools/install_autostart.sh
+```
+
+This writes a clean unit, reloads systemd, and starts the service. Common control commands:
+
+```bash
+sudo systemctl status  pfd.service     # current state + last few log lines
+sudo journalctl -u     pfd.service -n 100 --no-pager   # recent log
+sudo systemctl restart pfd.service     # bounce
+sudo systemctl stop    pfd.service     # take it down (until reboot)
+sudo systemctl disable pfd.service     # don't auto-start next boot
+```
+
+The unit uses `SDL_VIDEODRIVER=kmsdrm`, `SupplementaryGroups=video render input`, and `StartLimitIntervalSec=0` so the service can grab the framebuffer cleanly and keeps retrying after transient crashes instead of giving up.
+
+---
+
+## Branch Model
+
+This repository carries two independent device timelines on the remote:
+
+| Branch | Targets | Notes |
+|--------|---------|-------|
+| `main` | Pi 4 + Pi Zero 2W displays | Default branch. The displays auto-pull this on update. |
+| `iphone-main` | Browser / iPhone display under `iphone_display/` | Independent history — used for in-flight iPhone testing without disturbing the dedicated displays. |
+
+Shared work (firmware, `shared/` modules, docs touched by both) is generally applied twice — once on each branch — rather than merging across the timelines. The two branches can be merged later if/when the device feature sets converge.
+
+---
+
 ## Roadmap
 
 | Phase | Feature |
@@ -389,8 +476,14 @@ sudo systemctl restart pfd.service
 | ✅ V4.2 | FAA obstacle database + caret symbols with R/Y/W height colour coding |
 | ✅ V4.3 | Runway polygons + extended dashed centerlines with toggles |
 | ✅ V4.4 | User settings persistence (atomic JSON, debounced writer) |
-| V5 | 100 Hz WT901 + magnetic deviation calibration |
+| ✅ V4.5 | Runway forward-clip + per-corner anchoring so the polygon stays visible during taxi / fly-over and never wraps as a phantom across the AI |
+| ✅ V4.6 | Obstacle airport-boundary clutter filter — hides terminal / ramp infrastructure under 50 ft AGL within 1 NM of any runway centroid; true MSL labels |
+| ✅ V4.7 | AGL readout (lower-right of AI) + magenta direct-to course trace draped over SRTM terrain (async, progressive build) |
+| ✅ V4.8 | Direct-to nav with on-screen keyboard, "Activate Direct to XXXX?" confirmation modal, NEAREST quick-button showing the resolved ident |
+| ✅ V4.9 | AHRS 4-way mounting orientation (FWD / LEFT / RIGHT / AFT) with magnetic offset, ENU→NED base correction, sim/demo bypass |
+| ✅ V5.0 | Compass calibration wizard — cardinal walk-through with piecewise-linear per-quadrant correction, persistent across power cycles |
 | V6 | TruTrak Vizion RS-232 autopilot interface |
 | V7 | Moving map / MFD (separate dedicated hardware unit) |
 | V8 | Flight path vector, highway-in-the-sky waypoint tunnel |
 | V9 | Time-of-day sun position, texture-mapped terrain |
+| V10 | Setup-screen vertical scrolling for compact display profiles |

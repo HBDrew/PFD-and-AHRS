@@ -370,6 +370,93 @@ All overlays presume Phase 5 downloads completed. Run in demo or simulator mode.
 
 ---
 
+## Phase 6.5 — AHRS Mounting Orientation
+
+Run this with the AHRS unit live (Phase 3 link up). Verify each orientation maps the AHRS-reported pitch / roll / yaw correctly to the displayed attitude indicator.
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.5.1 | Open Setup → AHRS / SENSORS. Confirm 7 rows visible: PITCH TRIM, ROLL TRIM, MAGNETOMETER, ORIENTATION, MOUNTING, HEADING SOURCE, AIRSPEED SOURCE | All rows present | | |
+| 6.5.2 | Confirm trim ± steppers operate at 0.1° per tap | Value changes by 0.1° each tap; format `+0.1°` / `-0.5°` etc. | | |
+| 6.5.3 | Set ORIENTATION = RIGHT, MOUNTING = NORMAL. Bench-tilt AHRS box right (top tipping toward aircraft right wing) | AI banks right (right wing of airplane symbol drops, horizon tilts left side high) | | |
+| 6.5.4 | Bench-pitch AHRS box nose up | AI horizon descends | | |
+| 6.5.5 | Yaw AHRS box clockwise from above | Heading number on tape increases | | |
+| 6.5.6 | Set ORIENTATION = FORWARD (connector physically toward nose). Repeat 6.5.3 - 6.5.5 with the new mounting | All directions correct (right roll → right bank, nose up → horizon descends, CW yaw → heading increases) | | |
+| 6.5.7 | Set ORIENTATION = LEFT. Repeat | All directions correct | | |
+| 6.5.8 | Set ORIENTATION = AFT. Repeat | All directions correct | | |
+| 6.5.9 | Return ORIENTATION to actual physical mounting. Set MOUNTING = INVERTED with the AHRS still right-side-up (deliberate mismatch) | Pitch and roll on AI both invert from physical motion | | |
+| 6.5.10 | Set MOUNTING back to NORMAL | Display correct again | | |
+| 6.5.11 | Sim mode: launch sim with `python3 pi4/pfd.py --sim --demo`. Verify orientation / trim / mounting do NOT affect sim attitude (left turn → bank left, no pitch coupling) | Sim attitude tracks autopilot commands only | | |
+
+---
+
+## Phase 6.6 — Compass Calibration Wizard
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.6.1 | Setup → AHRS / SENSORS. Tap CALIBRATE button (was greyed in pre-V5; now active green) | Modal opens with title "COMPASS CAL" | | |
+| 6.6.2 | Verify modal shows: step text "Step 1 of 4 — point aircraft NORTH (000°)", live RAW heading, live APPLIED heading, four cardinal Δ slots (initially `+0.0°` × 4), buttons EXIT / RESET / RESTART / ⊕ CAPTURE N | All elements present | | |
+| 6.6.3 | Point aircraft NORTH. Tap ⊕ CAPTURE N (or press physical ENTER) | Step advances to "Step 2 of 4 — EAST"; "Captured NORTH." status message appears | | |
+| 6.6.4 | Point EAST, tap CAPTURE E | Step advances to SOUTH | | |
+| 6.6.5 | Point SOUTH, tap CAPTURE S | Step advances to WEST | | |
+| 6.6.6 | Point WEST, tap CAPTURE W | "Done" message with all four Δ values displayed (e.g. `N +1.2° E -0.8° S +0.7° W -1.5°`) | | |
+| 6.6.7 | Tap EXIT (was CANCEL pre-completion; now reads EXIT in green since cal is committed) | Modal closes; AHRS Setup screen shows `max \|Δ\| 1.5°` (or whichever) under MAGNETOMETER row | | |
+| 6.6.8 | Verify heading on PFD reads near a known landmark's true bearing (within ~2° after cal vs pre-cal error) | Heading accurate at the cardinal where pre-cal error was largest | | |
+| 6.6.9 | Verify cal persists: power-cycle the Pi, confirm `data/settings.json` has `mag_cal_deltas` key with four values, confirm `max \|Δ\|` still shown on AHRS Setup row | Persisted correctly | | |
+| 6.6.10 | Re-open CALIBRATE wizard, tap RESET | Stored cal cleared, status returns to IDLE, `max \|Δ\|` text disappears | | |
+| 6.6.11 | RESTART test: open wizard, capture N + E (partial), tap RESTART | Step returns to N; no commit | | |
+| 6.6.12 | CANCEL test: open wizard, capture N + E (partial), tap CANCEL (now red because partial captures exist) | Modal closes with NO change; cal remains at zero | | |
+
+---
+
+## Phase 6.7 — Direct-to Navigation
+
+Requires GPS fix and OurAirports data loaded. Use a known nearby airport ident.
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.7.1 | On PFD, tap CDI strip above the heading box | Keyboard opens with "ENTER WAYPOINT" title | | |
+| 6.7.2 | If a waypoint was previously active, confirm its ident is shown as a dim placeholder (input buffer is empty) | Placeholder visible; first keystroke replaces | | |
+| 6.7.3 | Type a known nearby airport ident (e.g. KSEZ); tap ENTER | Modal "Activate Direct to KSEZ?" appears with CANCEL / ACTIVATE buttons | | |
+| 6.7.4 | Tap ACTIVATE (or press physical ENTER) | Modal closes; CDI strip shows ident · BRG · DIST; magenta course-trace line appears on AI from current pos toward waypoint | | |
+| 6.7.5 | Verify the magenta line is draped over terrain (does not cut through visible peaks/ridges in SVT view) | Line stays above terrain | | |
+| 6.7.6 | Verify line builds progressively for a long course (>50 NM): near end visible immediately, far end fills in over a few seconds | Progressive build; no UI freeze | | |
+| 6.7.7 | Tap CDI strip again, immediately press ENTER without typing | Modal pops with the same active ident (re-activate path) | | |
+| 6.7.8 | Tap ACTIVATE | Course line redraws from current position (if you've moved since first activation) | | |
+| 6.7.9 | Tap CDI, type a fictitious ident (e.g. ZZZZ), press ENTER | Keyboard stays open; red "UNKNOWN WAYPOINT ZZZZ" text under entry field | | |
+| 6.7.10 | Backspace once | Error text clears; entry buffer reads "ZZZ" | | |
+| 6.7.11 | Tap CANCEL on keyboard | Keyboard closes; existing active waypoint unchanged | | |
+| 6.7.12 | Open Setup → AIRPORTS → DIRECT TO. Verify keyboard NEAREST extras row shows resolved ident on the green button (e.g. "DIRECT TO KSEZ") | Button label contains an actual ident, not "DIRECT TO NEAREST" placeholder | | |
+| 6.7.13 | Tap the NEAREST button | Same Activate? modal flow | | |
+| 6.7.14 | Tap CDI → CANCEL FLIGHT PLAN button on keyboard | Active waypoint cleared; CDI strip returns to "DIRECT  →" prompt; magenta line disappears | | |
+
+---
+
+## Phase 6.8 — AGL Readout
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.8.1 | With GPS fix and SRTM tiles loaded, observe lower-right of AI | Box visible: small "AGL" label on top, value below, light-grey border | | |
+| 6.8.2 | At a known airport elevation, compare reading to (real_alt − field_elev) | Within ±20 ft of expected | | |
+| 6.8.3 | At cruise altitude over varied terrain, verify AGL number tracks terrain elevation changes | Number changes as terrain below the aircraft changes | | |
+| 6.8.4 | Sit on the runway, simulate baro setting low by 30 ft | AGL reads "---" instead of negative | | |
+| 6.8.5 | Disable GPS (Setup → SIM CONTROLS → GPS FAIL or unplug GPS) | AGL box hides | | |
+| 6.8.6 | Re-enable GPS but at a location with no SRTM tile | AGL box hides | | |
+
+---
+
+## Phase 6.9 — Autostart on Boot
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.9.1 | Confirm `pfd.service` is enabled: `sudo systemctl is-enabled pfd.service` | Output: `enabled` | | |
+| 6.9.2 | Power-cycle the Pi 4 (pull power, restore power) | Pi boots; PFD launches automatically — display shows the AI within ~10–20 s of power-on with no manual intervention required | | |
+| 6.9.3 | `sudo systemctl status pfd.service` | Active (running) | | |
+| 6.9.4 | If the unit is stale (e.g. after pulling a fix to the env vars), refresh with `sudo bash tools/install_autostart.sh`. Verify the script reports "Done" and that `systemctl status` shows the new unit running | Service refreshed without reinstalling apt/pip dependencies | | |
+| 6.9.5 | Test crash recovery: SSH in and `sudo killall python3` (or `kill <pid>`) | Service restarts within 5 s (Restart=always, RestartSec=5) | | |
+
+---
+
 ## Phase 7 — User Settings Persistence
 
 | Step | Action | Expected Result | Result | Notes |
@@ -413,6 +500,11 @@ Use this table to record any unexpected behaviour for later investigation.
 | Phase 5.5 — OpenGL SVT | Y / N | | |
 | Phase 5.6 — Drum cascade | Y / N | | |
 | Phase 6 — AI overlays | Y / N | | |
+| Phase 6.5 — AHRS orientation | Y / N | | |
+| Phase 6.6 — Compass cal wizard | Y / N | | |
+| Phase 6.7 — Direct-to navigation | Y / N | | |
+| Phase 6.8 — AGL readout | Y / N | | |
+| Phase 6.9 — Autostart on boot | Y / N | | |
 | Phase 7 — Settings persistence | Y / N | | |
 
 ---

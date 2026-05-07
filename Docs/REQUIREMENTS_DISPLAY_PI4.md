@@ -212,6 +212,52 @@ The display unit shall show nearby airports on the attitude indicator to provide
 >
 > An `EXT CENTERLINES` toggle on the AIRPORT DATA screen shall enable or disable extended centerlines independently of the runway polygons (default: on). Toggle state shall persist across power cycles via the settings persistence layer.
 
+> **REQ-DISP-PI4-APT-013** The runway polygon shall be clipped to the aircraft's forward half-plane via Sutherland-Hodgman against the perpendicular line through the aircraft. When the aircraft is on / past one threshold (taxi, takeoff roll, landing rollout, low fly-over), the half behind the wing line shall be discarded and the half ahead shall continue to render — the polygon shall not all-or-nothing disappear when one corner crosses the rear of the aircraft.
+
+> **REQ-DISP-PI4-APT-014** Runway-number labels shall be gated per-end by an actual forward-distance check on the threshold lat/lon. Labels shall stop drawing the moment the corresponding threshold passes the wing line, rather than floating on the runway surface where the clip-derived midpoint landed.
+
+> **REQ-DISP-PI4-APT-015** The airport-environment box (green frame around the runway polygon) shall be suppressed when the aircraft is within 2 NM of the runway centroid AND under 500 ft above the threshold elevation. Close-in the box's far corners foreshorten enough that the rectangle reads as broken; the runway polygon itself is the primary cue at that range.
+
+> **REQ-DISP-PI4-APT-016** Obstacle rendering shall apply an airport-boundary clutter filter: obstacles shorter than `_OBS_AIRPORT_FLOOR_FT` (50 ft) AGL within `_OBS_AIRPORT_RADIUS_NM` (1.0 NM) of any runway centroid shall be hidden. This suppresses the dense low-AGL terminal / ramp infrastructure (signs, jetway masts, terminal cornices, taxiway lighting) that otherwise paints across the runway visual at busy fields. Tall airport obstructions like ATC towers (typically 200+ ft) clear the floor and remain visible.
+
+> **REQ-DISP-PI4-APT-017** Obstacles shall additionally be subject to a global `_OBS_MIN_AGL_FT` (25 ft) AGL floor regardless of airport proximity, so airport-surface signs and similar trivial obstructions never render.
+
+> **REQ-DISP-PI4-APT-018** Obstacle labels shall display the obstacle's true MSL top elevation in feet (e.g. `1185`) rather than a bucketed-to-100-ft form. The label format shall make clear the value represents an altitude (MSL) not a height (AGL).
+
+> **REQ-DISP-PI4-APT-019** Obstacle vertical-angle projection shall use the real (sensor) altitude, NOT the camera-floor-clamped `alt_render`. Using the clamped value at low altitudes (when alt_render exceeds real alt to keep the SVT camera above terrain) produces obstacles projected below their actual top angle and made them appear stamped onto the runway visual at major fields like PHX.
+
+---
+
+## 9B. Direct-to Navigation
+
+> **REQ-DISP-PI4-NAV-001** The display shall provide a direct-to navigation feature accessible by tapping the CDI strip above the heading box (live PFD) or the DIRECT TO tile on the AIRPORT DATA screen.
+
+> **REQ-DISP-PI4-NAV-002** A keyboard for waypoint entry shall open with the existing active ident (if any) shown as a dim placeholder under an empty input buffer. The first keystroke shall replace the placeholder rather than appending to it.
+
+> **REQ-DISP-PI4-NAV-003** Pressing ENTER on the keyboard with a non-empty buffer shall validate the typed ident against the airport database. On a match, a centered modal "Activate Direct to *XXXX*?" with CANCEL / ACTIVATE buttons shall be shown. Tapping ACTIVATE (or pressing physical ENTER) shall commit the activation; tapping CANCEL (or pressing ESC) shall dismiss.
+
+> **REQ-DISP-PI4-NAV-004** Pressing ENTER on an empty buffer with an active waypoint loaded shall offer to re-activate the existing waypoint via the same confirmation modal. Re-activation shall reset `act_lat`/`act_lon` to the current aircraft position so the magenta course line redraws from the present position.
+
+> **REQ-DISP-PI4-NAV-005** Pressing ENTER on an unknown ident shall keep the keyboard open with a red "UNKNOWN WAYPOINT *XXXX*" hint under the entry field. Any subsequent keystroke or backspace shall clear the error.
+
+> **REQ-DISP-PI4-NAV-006** A NEAREST quick-button shall be available on the waypoint keyboard. The button label shall display the resolved nearest public airport's ident (S/M/L type within 100 NM of current position, refreshed approximately every 2 s). Tapping shall route through the same Activate? confirmation modal.
+
+> **REQ-DISP-PI4-NAV-007** A magenta course-trace line shall be drawn on the attitude indicator from the activation point to the destination waypoint along the great-circle path, draped over SRTM terrain at a 200 ft offset above the maximum local elevation. Vertices shall be sampled at 0.2 NM intervals (capped at 1000 vertices per course) with rolling-max smoothing so the line never dips below terrain between sample points.
+
+> **REQ-DISP-PI4-NAV-008** The course trace shall be built asynchronously in a background daemon thread and published progressively as samples are computed, so the UI remains responsive during long cross-country activations. If the user changes the active waypoint mid-build, the in-flight worker shall discard its result on detecting the key mismatch.
+
+> **REQ-DISP-PI4-NAV-009** A CDI (Course Deviation Indicator) strip above the heading box shall display ident · bearing · distance and a magenta diamond at full-scale ±1 NM cross-track error. The diamond shall display on the side OPPOSITE the course relative to the aircraft (right-of-course → diamond LEFT, indicating "fly left to intercept"). When no waypoint is active the strip shall display a "DIRECT →" prompt as a tap target.
+
+---
+
+## 9C. AGL Readout
+
+> **REQ-DISP-PI4-AGL-001** A small AGL readout box shall be displayed in the lower-right corner of the attitude indicator, between the altitude tape (right edge) and the heading tape (top edge). Box size: 78 × 42 px on the 1024×600 display. Layout: dim "AGL" label on top line, numeric value (white) on bottom line.
+
+> **REQ-DISP-PI4-AGL-002** AGL value = (real sensor altitude) − (SRTM ground elevation at current lat/lon). The real (unclamped) altitude shall be used, NOT the camera-floor-clamped `alt_render`, so a punched-ground state surfaces as a sanity-check warning rather than being silently clamped to ≥0.
+
+> **REQ-DISP-PI4-AGL-003** When the computed AGL is at or below 0, the readout shall display dashes ("---") in dim grey rather than a misleading negative number. When there is no GPS fix or the SRTM lookup returns the missing-tile sentinel, the readout shall be hidden entirely.
+
 ---
 
 ## 9a. User Settings Persistence
@@ -255,6 +301,24 @@ The display unit shall show nearby airports on the attitude indicator to provide
 > **REQ-DISP-PI4-SETUP-004** Display units independently selectable for speed (kt/mph/kph), altitude (ft/m), pressure (inHg/hPa).
 
 > **REQ-DISP-PI4-SETUP-005** Backlight brightness adjustable in 10 steps.
+
+> **REQ-DISP-PI4-SETUP-006** Pitch and roll trim shall be independently settable in 0.1° increments via on-screen ± steppers.
+
+> **REQ-DISP-PI4-SETUP-007** AHRS mounting orientation shall be selectable from FORWARD / LEFT / RIGHT / AFT (which side of the AHRS the connector points toward, viewed from the pilot's seat). Default RIGHT. The display shall remap pitch / roll axes and apply a magnetic heading offset such that the displayed values match the aircraft's frame regardless of physical mounting.
+
+> **REQ-DISP-PI4-SETUP-008** AHRS NORMAL / INVERTED mounting shall combine independently with orientation to support upside-down installations.
+
+> **REQ-DISP-PI4-SETUP-009** AHRS firmware reports yaw and roll with an ENU sign convention; the display shall negate both at the base before applying orientation, mounting, and trim transforms so MAG-mode heading reads CW-positive and roll reads right-wing-down-positive.
+
+> **REQ-DISP-PI4-SETUP-010** Sim and Demo modes shall bypass all AHRS-mounting compensations (orientation rotation, mounting flip, base ENU→NED correction, pitch/roll trim, compass cal). Synthetic data is generated in aircraft-frame NED; applying mounting transforms would double-flip values.
+
+> **REQ-DISP-PI4-SETUP-011** A compass-calibration wizard shall be available from the AHRS / Sensors screen. Implementation: cardinal walk-through capturing the (expected − raw) heading delta at NORTH / EAST / SOUTH / WEST. Persistence: four signed deltas stored in `data/settings.json`. Render application: piecewise-linear interpolation between adjacent cardinals so each 90° quadrant has its own correction curve. RESET shall wipe the stored cal back to zero.
+
+> **REQ-DISP-PI4-SETUP-012** The compass cal correction shall apply only to MAG-mode heading. TRK mode shall remain GPS-track-slaved (the complementary filter operates on yaw deltas, where a constant cal correction's frame-to-frame derivative is negligible).
+
+> **REQ-DISP-PI4-SETUP-013** Heading source AUTO mode shall use TRK when ground speed is above ~3 kt, MAG otherwise.
+
+> **REQ-DISP-PI4-SETUP-014** A systemd service (`pfd.service`) shall be installed and enabled by `setup.sh`. The service shall auto-start the PFD on every power-up using `SDL_VIDEODRIVER=kmsdrm` for OpenGL ES compatibility, with `SupplementaryGroups=video render input` for KMS/DRM device access, and `StartLimitIntervalSec=0` to keep retrying after transient crashes. A separate refresh helper (`tools/install_autostart.sh`) shall be available to update just the unit definition without re-running the full installer.
 
 ---
 

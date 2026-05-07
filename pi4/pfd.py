@@ -7455,6 +7455,79 @@ def main():
         disp["ad"]["downloading"] = False
         disp["ad"]["dl_status"]   = ""
 
+        # ── Direct-to keyboard with placeholder + NEAREST extras row ─────────
+        # Set up an active waypoint so the placeholder shows and the
+        # NEAREST extras button has something to render.
+        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115)
+        disp["nav"] = {
+            "ident": "KSEZ", "lat": 34.85, "lon": -111.79, "elev_ft": 4830,
+            "act_lat": 34.84, "act_lon": -111.80,
+        }
+        disp["kbd_target"] = "nav_ident"
+        disp["kbd_prev"]   = "pfd"
+        disp["kbd_buf"]    = ""
+        disp["kbd_error"]  = ""
+        disp["mode"]       = "keyboard"
+        _save("preview_direct_to_keyboard.png")
+
+        # Same keyboard mid-error: pilot typed an unknown ident
+        disp["kbd_buf"]   = "ZZZZ"
+        disp["kbd_error"] = "UNKNOWN WAYPOINT  ZZZZ"
+        _save("preview_unknown_waypoint.png")
+        disp["kbd_buf"]   = ""
+        disp["kbd_error"] = ""
+
+        # ── Direct-to confirmation modal (Activate Direct to KSEZ?) ──────────
+        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115)
+        disp["nav_confirm_ident"] = "KSEZ"
+        disp["nav_confirm_prev"]  = "pfd"
+        disp["mode"]              = "nav_confirm"
+        _save("preview_nav_confirm.png")
+
+        # ── Compass calibration wizard mid-walk (step 2 = EAST) ──────────────
+        # Pre-load the wizard with one captured cardinal so the modal shows
+        # the "Captured NORTH." status, the step-2 NORTH→EAST transition, and
+        # the four cardinal Δ slots (still zeroed before the cal commits on
+        # the 4th capture).  Heading aligned near EAST so RAW reads right.
+        _seed(roll=0, pitch=0, hdg=88, alt=4830, speed=0,
+              vspeed=0, ay=0, gps_ok=True)
+        disp["yaw"]        = 88.0
+        disp["_yaw_uncal"] = 88.0
+        disp["mag_cal_wiz"] = {
+            "step": 1, "samples": [(0.0, 358.5)],
+            "msg":  "Captured NORTH.",
+            "prev": "ahrs_setup",
+        }
+        disp["mode"] = "mag_cal"
+        _save("preview_compass_cal.png")
+
+        # Compass cal completed — show the four cardinal Δ values
+        disp["ss"]["mag_cal_deltas"] = [1.2, -0.8, 0.7, -1.5]
+        disp["mag_cal_wiz"] = {
+            "step": 0, "samples": [],
+            "msg":  "Done — N+1.2° E-0.8° S+0.7° W-1.5°",
+            "prev": "ahrs_setup",
+        }
+        _save("preview_compass_cal_done.png")
+        disp["ss"]["mag_cal_deltas"] = [0.0] * 4
+
+        # AGL readout — close-up of lower-right corner via a normal cruise
+        # frame; the 78×42 box appears above the heading tape automatically.
+        _seed(roll=0, pitch=2, hdg=133, alt=6800, speed=115, vspeed=0)
+        disp["mode"] = "pfd"
+        _save("preview_agl_readout.png")
+
+        # AHRS orientation row variants — capture each of the four selections
+        # so the docs can show the highlight state of each segment.
+        for orient, fname in (("forward", "preview_setup_ahrs_orient_fwd.png"),
+                              ("left",    "preview_setup_ahrs_orient_left.png"),
+                              ("right",   "preview_setup_ahrs_orient_right.png"),
+                              ("aft",     "preview_setup_ahrs_orient_aft.png")):
+            disp["ss"]["orientation"] = orient
+            disp["mode"] = "ahrs_setup"
+            _save(fname)
+        disp["ss"]["orientation"] = "right"
+
         # ── Terrain proximity alert scenes ────────────────────────────────────
         # Force terrain alert by seeding alert state directly.  Renders over
         # normal PFD so alerts show even without SRTM tiles loaded.
