@@ -5693,13 +5693,19 @@ def draw_agl_readout(surf, alt_ft, ground_elev_ft, gps_ok):
                      width=1, border_radius=4)
 
     agl_ft = int(round(alt_ft - ground_elev_ft))
-    # Below ground (sensor error or SRTM mismatch on a runway) reads in
-    # amber rather than white so the pilot's eye picks up the anomaly.
-    val_col = WHITE if agl_ft >= 0 else (240, 180, 60)
+    # Below the ground in the SRTM sample is sensor / DEM disagreement
+    # (baro miss-set, runway elev vs SRTM, missing tile), not useful
+    # info — show dashes rather than a misleading negative value.
+    if agl_ft <= 0:
+        val_str = "---"
+        val_col = (170, 185, 210)
+    else:
+        val_str = f"{agl_ft:,}"
+        val_col = WHITE
     _text(surf, "AGL", 11, (170, 185, 210), bold=True,
           x=bx + 6, cy=by + _AGL_H // 2)
-    _text(surf, f"{agl_ft:,}", 16, val_col, bold=True,
-          x=bx + _AGL_W - 6 - _get_font(16, bold=True).size(f"{agl_ft:,}")[0],
+    _text(surf, val_str, 16, val_col, bold=True,
+          x=bx + _AGL_W - 6 - _get_font(16, bold=True).size(val_str)[0],
           cy=by + _AGL_H // 2)
 
 
