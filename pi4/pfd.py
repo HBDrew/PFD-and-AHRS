@@ -6362,7 +6362,9 @@ def render(surf, demo_mode, connected, data_stale=False):
     # (positive roll = RIGHT wing down, positive yaw = CW from above).
     # Pitch sign matches between ENU and NED.  Negate roll up front so
     # orientation rotations layer on top of a clean NED-aligned base;
-    # yaw is negated below in the heading-source path.
+    # yaw is negated below in the heading-source path.  The simulator
+    # and demo path generate aircraft-frame (NED) values directly, so
+    # skip the correction in those modes.
     #
     # ORIENTATION (which side of the AHRS the connector points toward,
     # viewed from the pilot's seat) is applied next as a yaw-axis
@@ -6374,7 +6376,9 @@ def render(surf, demo_mode, connected, data_stale=False):
     ss = disp["ss"]
     pitch_trim = ss.get("pitch_trim", 0.0)
     roll_trim  = ss.get("roll_trim",  0.0)
-    roll = -roll   # base ENU→NED roll correction
+    ahrs_synthetic = demo_mode or (_sim_state is not None)
+    ahrs_sign = 1 if ahrs_synthetic else -1   # -1 negates for ENU→NED
+    roll = roll * ahrs_sign
     orientation = ss.get("orientation", "right")
     if orientation == "forward":
         # 90° yaw rotation, connector toward nose.  Empirical: pitch
@@ -6417,11 +6421,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     # Apply the AHRS-orientation magnetic offset to the raw yaw before
     # feeding it to the heading-source selector, AND negate raw yaw to
     # convert the firmware's ENU-style positive-yaw-CCW convention to
-    # the display's NED-style positive-yaw-CW.  In TRK mode the
+    # the display's NED-style positive-yaw-CW.  Sim / demo skip the
+    # negation (they generate NED directly).  In TRK mode the
     # complementary filter combines yaw with GPS ground track, so the
     # corrected yaw must go IN to the filter — applying a correction
     # to the filter's output would shift the GPS-track component too.
-    yaw_corr = (-disp["yaw"] + hdg_offset) % 360.0
+    yaw_corr = (ahrs_sign * disp["yaw"] + hdg_offset) % 360.0
     if use_track:
         # Complementary filter: AHRS yaw rate propagates each frame, GPS
         # track slowly slaves the absolute reference.  Smoother than raw
