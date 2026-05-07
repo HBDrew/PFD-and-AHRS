@@ -2211,6 +2211,18 @@ def _nav_confirm_cancel():
     disp["mode"] = disp.get("nav_confirm_prev", "pfd")
 
 
+def _nav_open_confirm(ident: str, prev_mode: str) -> bool:
+    """Switch to the nav_confirm modal for `ident`.  Returns False if
+    the ident is empty (caller should fall through to its no-op
+    path)."""
+    if not ident:
+        return False
+    disp["nav_confirm_ident"] = ident
+    disp["nav_confirm_prev"]  = prev_mode
+    disp["mode"] = "nav_confirm"
+    return True
+
+
 # ── Touch handler ─────────────────────────────────────────────────────────────
 _touch_t0      = {}
 _bug_dragging  = None    # "hdg" | "alt"
@@ -2507,7 +2519,10 @@ def handle_event(event, demo_mode):
                 disp["kbd_error"]  = ""
                 disp["mode"]       = "keyboard"
             elif action == "nav_nearest":
-                _nav_set_nearest()
+                # Same confirmation gate as a typed waypoint — surface
+                # the resolved ident so the pilot can verify before the
+                # flight plan changes.
+                _nav_open_confirm(_nav_lookup_nearest(), "airport_data")
             elif action == "nav_clear":
                 _nav_clear()
             return True
@@ -2571,10 +2586,17 @@ def handle_event(event, demo_mode):
                     disp["kbd_error"] = ""
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'nrst':           # DIRECT TO NEAREST
-                    _nav_set_nearest()
+                    # Resolve the nearest ident, close the keyboard,
+                    # and route through the confirmation modal so the
+                    # pilot can verify before the flight plan changes.
+                    nearest = _nav_lookup_nearest()
+                    prev = disp["kbd_prev"]
                     disp["kbd_buf"] = ""
                     disp["kbd_error"] = ""
-                    disp["mode"] = disp["kbd_prev"]
+                    if not _nav_open_confirm(nearest, prev):
+                        # No nearest airport (no fix or empty DB) —
+                        # just close the keyboard.
+                        disp["mode"] = prev
                 elif sty == 'clrfp':          # CANCEL FLIGHT PLAN
                     _nav_clear()
                     disp["kbd_buf"] = ""
@@ -5453,42 +5475,34 @@ def _nav_set_by_ident(ident: str) -> bool:
     return True
 
 
-def _nav_set_nearest() -> bool:
-    """Activate direct-to to the nearest public airport (S/M/L) within 100 nm."""
+def _nav_lookup_nearest():
+    """Return the ident of the nearest public airport (S/M/L) within
+    100 nm, or "" if no airports / no fix.  Used by the confirmation
+    flow which displays the ident before activating."""
     if _airports is None:
-        return False
+        return ""
     lat = disp.get("lat", 0.0)
     lon = disp.get("lon", 0.0)
     nearby = apt_mod.query_nearby(_airports, lat, lon, radius_nm=100.0)
     if nearby is None or len(nearby) == 0:
-        return False
-    # Numpy structured array path — iterate by row index, read fields by
-    # name.  query_nearby sorts by distance ascending so the first
-    # public airport we find is the nearest one.
+        return ""
     if hasattr(nearby, "dtype"):
         for i in range(len(nearby)):
-            atype = str(nearby["atype"][i])
-            if atype in ("S", "M", "L"):
-                disp["nav"]["ident"]   = str(nearby["ident"][i])
-                disp["nav"]["lat"]     = float(nearby["lat"][i])
-                disp["nav"]["lon"]     = float(nearby["lon"][i])
-                disp["nav"]["elev_ft"] = float(nearby["elev_ft"][i])
-                disp["nav"]["act_lat"] = lat
-                disp["nav"]["act_lon"] = lon
-                _settings.mark_dirty()
-                return True
-        return False
+            if str(nearby["atype"][i]) in ("S", "M", "L"):
+                return str(nearby["ident"][i])
+        return ""
     for apt in nearby:
         if apt.atype in ("S", "M", "L"):
-            disp["nav"]["ident"]   = apt.ident
-            disp["nav"]["lat"]     = float(apt.lat)
-            disp["nav"]["lon"]     = float(apt.lon)
-            disp["nav"]["elev_ft"] = float(apt.elev_ft)
-            disp["nav"]["act_lat"] = lat
-            disp["nav"]["act_lon"] = lon
-            _settings.mark_dirty()
-            return True
-    return False
+            return apt.ident
+    return ""
+
+
+def _nav_set_nearest() -> bool:
+    """Activate direct-to to the nearest public airport (S/M/L) within 100 nm."""
+    ident = _nav_lookup_nearest()
+    if not ident:
+        return False
+    return _nav_set_by_ident(ident)
 
 
 def _nav_clear() -> None:
