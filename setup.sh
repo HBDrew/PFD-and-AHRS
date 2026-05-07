@@ -63,17 +63,22 @@ echo "[6/8] Installing systemd service…"
 cat > /etc/systemd/system/pfd.service << SVCEOF
 [Unit]
 Description=PFD Flight Display
-After=network.target
+After=multi-user.target
 
 [Service]
+Type=simple
 User=$RUN_USER
+SupplementaryGroups=video render input
 WorkingDirectory=$DISPLAY_DIR
-Environment="SDL_FBDEV=/dev/fb0"
-Environment="SDL_VIDEODRIVER=fbcon"
+# kmsdrm matches pfd.py's own default and is required for OpenGL
+# ES via Mesa.  fbcon (the previous default here) can't drive a
+# GL context, so SVT init crashed on autostart.
+Environment="SDL_VIDEODRIVER=kmsdrm"
 Environment="DISPLAY="
 ExecStart=/usr/bin/python3 $DISPLAY_DIR/pfd.py
 Restart=always
 RestartSec=5
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target

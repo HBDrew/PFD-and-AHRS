@@ -97,18 +97,27 @@ echo "[7/9] Installing systemd service…"
 cat > /etc/systemd/system/pfd.service << SVCEOF
 [Unit]
 Description=PFD Flight Display (Pi 4 – Full SVT)
-After=network.target
+After=multi-user.target
 
 [Service]
+Type=simple
 User=$RUN_USER
+SupplementaryGroups=video render input
 WorkingDirectory=$PI4_DIR
-Environment="SDL_FBDEV=/dev/fb0"
-Environment="SDL_VIDEODRIVER=fbcon"
+# Use the kernel mode-setting / DRM driver — matches pfd.py's own
+# default and is required for OpenGL ES via Mesa.  fbcon (the old
+# default here) can't drive a GL context, so SVT init crashed on
+# autostart even when manual launches via SSH worked.
+Environment="SDL_VIDEODRIVER=kmsdrm"
 Environment="DISPLAY="
 Environment="PYTHONPATH=$SHARED_DIR"
+Environment="HOME=$USER_HOME"
 ExecStart=/usr/bin/python3 $PI4_DIR/pfd.py
 Restart=always
 RestartSec=5
+# Don't let systemd give up after a few crashes — if SVT is
+# struggling to grab the framebuffer at boot, keep retrying.
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
