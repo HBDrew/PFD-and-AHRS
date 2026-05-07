@@ -5650,19 +5650,28 @@ def _build_direct_to_trace_async(key, wpt_elev):
     course_nm, _ = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
     if course_nm < 0.05:
         return
-    n_steps = max(8, int(course_nm / 0.5))
-    n_steps = min(n_steps, 400)
+    # 0.2 nm step: catches Sedona-grade terrain features that fit
+    # between coarser samples.  Cap at 1000 so very long courses
+    # don't blow the SRTM read budget on the worker thread.
+    n_steps = max(8, int(course_nm / 0.2))
+    n_steps = min(n_steps, 1000)
 
     # Publish the partial vertex array every PUBLISH_EVERY samples.
     # Sampling proceeds near→far (i=0 is the activation point near the
     # aircraft), so each publish extends the visible line outward.
-    PUBLISH_EVERY = 4
+    PUBLISH_EVERY = 8
     try:
         import numpy as _np
         _have_np = True
     except ImportError:
         _have_np = False
 
+    # Track raw terrain elevations (pre-drape) so we can apply a
+    # rolling max over each vertex's two neighbours before the
+    # offset is added.  Without the rolling max, the line between
+    # two valley samples can still dip below a peak that sits
+    # between them.
+    raw_elevs = []
     pts = []
     for i in range(0, n_steps + 1):
         # Bail if the user changed direct-to — the next call to
@@ -5678,7 +5687,42 @@ def _build_direct_to_trace_async(key, wpt_elev):
                 terrain_elev = wpt_elev
         except Exception:
             terrain_elev = wpt_elev
-        pts.append((s_lat, s_lon, terrain_elev + _DIRECT_TO_DRAPE_OFFSET_FT))
+        raw_elevs.append(terrain_elev)
+
+        # Rolling max over (i-1, i, i+1) becomes the publish elev for
+        # vertex i.  Vertex i+1 isn't sampled yet, so we fall back to
+        # max(i-1, i) for the trailing vertex; it gets corrected when
+        # i+1 lands on the next iteration.
+        if i == 0:
+            commit_idx = 0
+            commit_elev = raw_elevs[0]
+        else:
+            commit_idx = i - 1
+            commit_elev = max(raw_elevs[commit_idx],
+                              raw_elevs[commit_idx + 1])
+            if commit_idx > 0:
+                commit_elev = max(commit_elev, raw_elevs[commit_idx - 1])
+        # Recover the lat/lon for commit_idx
+        ct = commit_idx / n_steps
+        c_lat, c_lon = _nav_gc_interp(act_lat, act_lon, wpt_lat, wpt_lon, ct)
+        # Either append a new vertex or rewrite the previous one with
+        # the now-known forward neighbour.
+        if commit_idx == len(pts):
+            pts.append((c_lat, c_lon, commit_elev + _DIRECT_TO_DRAPE_OFFSET_FT))
+        else:
+            pts[commit_idx] = (c_lat, c_lon,
+                               commit_elev + _DIRECT_TO_DRAPE_OFFSET_FT)
+        # On the final iteration, also commit the last vertex (which
+        # only has a backward neighbour).
+        if i == n_steps:
+            last_elev = max(raw_elevs[i], raw_elevs[i - 1])
+            l_lat, l_lon = s_lat, s_lon
+            if i == len(pts):
+                pts.append((l_lat, l_lon,
+                            last_elev + _DIRECT_TO_DRAPE_OFFSET_FT))
+            else:
+                pts[i] = (l_lat, l_lon,
+                          last_elev + _DIRECT_TO_DRAPE_OFFSET_FT)
 
         if (i + 1) % PUBLISH_EVERY == 0 or i == n_steps:
             arr = _np.array(pts, dtype=_np.float32) if _have_np else list(pts)
