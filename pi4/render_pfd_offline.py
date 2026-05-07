@@ -264,6 +264,87 @@ def main():
     pfd.disp["ad"]["used_mb"]     = 12.3
     pfd.disp["ad"]["dl_status"]   = "Done \u2713  72,007 airports loaded"
 
+    # \u2500\u2500 New modals + feature scenes (V4.5\u2013V5.0) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Direct-to keyboard with KSEZ as placeholder + NEAREST extras row.  The
+    # background is the live PFD so the modal sits on a real attitude scene.
+    seed_state(roll=0, pitch=2, hdg=133, alt=8500, speed=115, vspeed=0, ay=0)
+    pfd.disp["nav"] = {
+        "ident": "KSEZ", "lat": 34.85, "lon": -111.79, "elev_ft": 4830,
+        "act_lat": 34.84, "act_lon": -111.80,
+    }
+    pfd.disp["kbd_target"] = "nav_ident"
+    pfd.disp["kbd_prev"]   = "pfd"
+    pfd.disp["kbd_buf"]    = ""
+    pfd.disp["kbd_error"]  = ""
+    pfd.disp["mode"]       = "keyboard"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_direct_to_keyboard.png"))
+    print("  \u2192 preview_direct_to_keyboard.png")
+
+    # Same keyboard mid-error: pilot typed an unknown ident.
+    pfd.disp["kbd_buf"]   = "ZZZZ"
+    pfd.disp["kbd_error"] = "UNKNOWN WAYPOINT  ZZZZ"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_unknown_waypoint.png"))
+    print("  \u2192 preview_unknown_waypoint.png")
+    pfd.disp["kbd_buf"]   = ""
+    pfd.disp["kbd_error"] = ""
+
+    # "Activate Direct to KSEZ?" confirmation modal.
+    seed_state(roll=0, pitch=2, hdg=133, alt=8500, speed=115, vspeed=0, ay=0)
+    pfd.disp["nav_confirm_ident"] = "KSEZ"
+    pfd.disp["nav_confirm_prev"]  = "pfd"
+    pfd.disp["mode"]              = "nav_confirm"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_nav_confirm.png"))
+    print("  \u2192 preview_nav_confirm.png")
+
+    # Compass calibration wizard mid-walk (step 2 = EAST), one cardinal already
+    # captured.  Heading near 088 so RAW reads near east.
+    seed_state(roll=0, pitch=0, hdg=88, alt=4830, speed=0, vspeed=0, ay=0)
+    pfd.disp["yaw"]        = 88.0
+    pfd.disp["_yaw_uncal"] = 88.0
+    pfd.disp["mag_cal_wiz"] = {
+        "step": 1, "samples": [(0.0, 358.5)],
+        "msg":  "Captured NORTH.",
+        "prev": "ahrs_setup",
+    }
+    pfd.disp["mode"] = "mag_cal"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_compass_cal.png"))
+    print("  \u2192 preview_compass_cal.png")
+
+    # Wizard after the four-cardinal walk completes \u2014 shows the four delta values.
+    pfd.disp["ss"]["mag_cal_deltas"] = [1.2, -0.8, 0.7, -1.5]
+    pfd.disp["mag_cal_wiz"] = {
+        "step": 0, "samples": [],
+        "msg":  "Done \u2014 N+1.2 E-0.8 S+0.7 W-1.5",
+        "prev": "ahrs_setup",
+    }
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_compass_cal_done.png"))
+    print("  \u2192 preview_compass_cal_done.png")
+    pfd.disp["ss"]["mag_cal_deltas"] = [0.0] * 4
+
+    # AGL readout - normal cruise frame (the box appears bottom-right of AI).
+    seed_state(roll=0, pitch=2, hdg=133, alt=6800, speed=115, vspeed=0, ay=0)
+    pfd.disp["mode"] = "pfd"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_agl_readout.png"))
+    print("  \u2192 preview_agl_readout.png")
+
+    # AHRS Setup with each ORIENTATION segment highlighted.
+    for orient, fname in (("forward", "preview_setup_ahrs_orient_fwd.png"),
+                          ("left",    "preview_setup_ahrs_orient_left.png"),
+                          ("right",   "preview_setup_ahrs_orient_right.png"),
+                          ("aft",     "preview_setup_ahrs_orient_aft.png")):
+        pfd.disp["ss"]["orientation"] = orient
+        pfd.disp["mode"] = "ahrs_setup"
+        pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+        pygame.image.save(surf, os.path.join(setup_outdir, fname))
+        print(f"  \u2192 {fname}")
+    pfd.disp["ss"]["orientation"] = "right"
+
     print("\nDone.")
 
 
