@@ -3460,8 +3460,27 @@ def draw_ahrs_setup(surf, ss):
     _text(surf, "CALIBRATE", 15, (75,75,88), bold=False, cx=cbx+69, cy=cby+18)
     _text(surf, "future", 9, (60,60,72), cx=cbx+69, cy=cby+29)
 
-    # Row 3: Mounting orientation
-    bx, by, bw, bh = _setting_row(surf, 3, "MOUNTING", "Board orientation")
+    # Row 3: AHRS orientation (which side of the board the connector
+    # points toward, viewed from the pilot's seat).  Pitch / roll / heading
+    # get remapped at render time so the AHRS reads correctly regardless
+    # of how it's bolted in.
+    bx, by, bw, bh = _setting_row(surf, 3, "ORIENTATION",
+                                   "Direction the connector faces")
+    cur_ori = ss.get("orientation", "right")
+    opts_ori = [("forward", "FWD"), ("left", "LEFT"),
+                ("right",   "RIGHT"), ("aft", "AFT")]
+    seg_w = 88
+    total_ori = 4 * seg_w + 3 * _DSP_BTN_G
+    rx = bx + bw - total_ori - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    for i, (v, lbl) in enumerate(opts_ori):
+        _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
+                 lbl, v == cur_ori)
+
+    # Row 4: Mounting (right-side-up vs upside-down).  Independent of
+    # orientation — combines with it at render time.
+    bx, by, bw, bh = _setting_row(surf, 4, "MOUNTING",
+                                   "Right-side-up or inverted")
     cur = ss.get("mounting", "normal")
     opts = [("normal","NORMAL"),("inverted","INVERTED")]
     total = 2*120 + _DSP_BTN_G
@@ -3470,11 +3489,11 @@ def draw_ahrs_setup(surf, ss):
     for i, (v, lbl) in enumerate(opts):
         _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
 
-    # Row 4: Heading source (MAG / TRK / AUTO) — matches the iPhone display.
+    # Row 5: Heading source (MAG / TRK / AUTO) — matches the iPhone display.
     # Sub-line documents what each option does so a pilot can pick without
     # reaching for the manual.
     bx, by, bw, bh = _setting_row(
-        surf, 4, "HEADING SOURCE",
+        surf, 5, "HEADING SOURCE",
         "MAG=compass  TRK=GPS track  AUTO=TRK when moving, MAG otherwise")
     cur_src = ss.get("hdg_src", "auto")
     opts_src = [("mag", "MAG"), ("trk", "TRK"), ("auto", "AUTO")]
@@ -3486,8 +3505,8 @@ def draw_ahrs_setup(surf, ss):
         _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
                  lbl, v == cur_src)
 
-    # Row 5: Airspeed source (GPS groundspeed vs dedicated IAS sensor)
-    bx, by, bw, bh = _setting_row(surf, 5, "AIRSPEED SOURCE",
+    # Row 6: Airspeed source (GPS groundspeed vs dedicated IAS sensor)
+    bx, by, bw, bh = _setting_row(surf, 6, "AIRSPEED SOURCE",
                                    "GPS groundspeed or IAS sensor")
     cur_as = ss.get("airspeed_src", "gps")
     opts_as = [("gps", "GPS GS"), ("ias", "IAS SENSOR")]
@@ -3516,7 +3535,7 @@ def ahrs_setup_hit(x, y, ss):
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(5):
+    for ri in range(7):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
@@ -3534,6 +3553,15 @@ def ahrs_setup_hit(x, y, ss):
         elif ri == 2:
             pass  # CALIBRATE is greyed out (future feature)
         elif ri == 3:
+            seg_w = 88
+            total_o = 4 * seg_w + 3 * _DSP_BTN_G
+            rx = bx + bw - total_o - 14
+            ry = by + (_SS_RH - _DSP_BTN_H) // 2
+            for i, v in enumerate(("forward", "left", "right", "aft")):
+                xi = rx + i * (seg_w + _DSP_BTN_G)
+                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:orientation:{v}"
+        elif ri == 4:
             total_m = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_m - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
@@ -3541,7 +3569,7 @@ def ahrs_setup_hit(x, y, ss):
                 if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
                     if ry <= y <= ry+_DSP_BTN_H:
                         return f"set:mounting:{v}"
-        elif ri == 4:
+        elif ri == 5:
             seg_w = 96
             total_src = 3 * seg_w + 2 * _DSP_BTN_G
             rx = bx + bw - total_src - 14
@@ -3550,7 +3578,7 @@ def ahrs_setup_hit(x, y, ss):
                 xi = rx + i * (seg_w + _DSP_BTN_G)
                 if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
                     return f"set:hdg_src:{v}"
-        elif ri == 5:
+        elif ri == 6:
             total_as = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_as - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
@@ -6317,16 +6345,39 @@ def render(surf, demo_mode, connected, data_stale=False):
     trk_bug  = disp.get("trk_bug", 0.0)
     alt_bug  = disp["alt_bug"]
 
-    # ── AHRS trim + mounting correction ──────────────────────────────────────
+    # ── AHRS trim + orientation + mounting correction ───────────────────────
+    # ORIENTATION (which side of the AHRS the connector points toward,
+    # viewed from the pilot's seat) is applied first as a yaw-axis
+    # rotation that remaps the IMU's pitch / roll axes onto the
+    # aircraft's pitch / roll axes, and adds a magnetic heading offset
+    # so the compass reads correctly.  MOUNTING (right-side-up vs
+    # inverted) is applied second as an independent flip about the
+    # longitudinal axis.  Trim is added last.
     ss = disp["ss"]
     pitch_trim = ss.get("pitch_trim", 0.0)
     roll_trim  = ss.get("roll_trim",  0.0)
+    orientation = ss.get("orientation", "right")
+    if orientation == "forward":
+        # AHRS rotated 90° CCW from RIGHT (connector now toward nose).
+        pitch, roll = roll, -pitch
+        hdg_offset = 90.0
+    elif orientation == "left":
+        # AHRS rotated 180° from RIGHT (connector now toward left wing).
+        pitch, roll = -pitch, -roll
+        hdg_offset = 180.0
+    elif orientation == "aft":
+        # AHRS rotated 90° CW from RIGHT (connector now toward tail).
+        pitch, roll = -roll, pitch
+        hdg_offset = 270.0
+    else:    # "right" — default, matches legacy behaviour
+        hdg_offset = 0.0
     if ss.get("mounting") == "inverted":
-        pitch = -pitch + pitch_trim
-        roll  = -roll  + roll_trim
-    else:
-        pitch = pitch + pitch_trim
-        roll  = roll  + roll_trim
+        pitch = -pitch
+        roll  = -roll
+    pitch += pitch_trim
+    roll  += roll_trim
+    if hdg_offset:
+        hdg = (hdg + hdg_offset) % 360.0
 
     # ── Stale-data timeout: no link for > STALE_TIMEOUT_S → treat as AHRS fail
     if data_stale:
