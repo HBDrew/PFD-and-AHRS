@@ -5103,10 +5103,14 @@ def _draw_veil(surf):
 _OBS_RADIUS_NM  = OBSTACLE_RADIUS_NM
 _OBS_BELOW_FT   = OBSTACLE_BELOW_FT
 _OBS_CAUTION_FT = OBSTACLE_CAUTION_FT
-_OBS_MIN_AGL_FT = 25.0    # hide DOF entries shorter than this so airport-
-                          # surface clutter (signs, jetway masts, low
-                          # lighting) doesn't paint phantom towers all
-                          # over the runway / ramp.
+_OBS_MIN_AGL_FT = 100.0   # hide DOF entries shorter than this so airport-
+                          # surface clutter (signs, jetway masts, terminal
+                          # cornices, low light poles) doesn't paint
+                          # phantom towers all over the runway / ramp.
+                          # FAA Part 77 obstruction surfaces start at
+                          # 200 ft AGL — anything below that is rarely
+                          # the kind of thing a VFR pilot needs to dodge.
+                          # Raise to 200 if 100 still feels noisy.
 
 # Cache rendered obstacle labels keyed on (text, colour) — pygame.font
 # rendering is ~1 ms each call, and a busy metro view can show 50+ towers
