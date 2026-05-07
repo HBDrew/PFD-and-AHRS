@@ -6396,12 +6396,15 @@ def render(surf, demo_mode, connected, data_stale=False):
         if ss.get("mounting") == "inverted":
             pitch = -pitch
             roll  = -roll
+        # Trim only matters for the real AHRS — sim / demo write
+        # aircraft-frame values directly so a non-zero trim would
+        # show as a permanent wing-down on a level sim flight.
+        pitch += pitch_trim
+        roll  += roll_trim
     else:
         # Sim / demo: state values are already aircraft-frame (NED).
-        # Skip every AHRS-mounting compensation; trim still applies.
+        # Skip every AHRS-mounting compensation, including trim.
         hdg_offset = 0.0
-    pitch += pitch_trim
-    roll  += roll_trim
     # hdg_offset is applied later, after `hdg` is resolved from the
     # heading-source selector (mag / trk / auto).
 
