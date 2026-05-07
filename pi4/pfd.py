@@ -6374,7 +6374,18 @@ def render(surf, demo_mode, connected, data_stale=False):
         if _airports is not None:
             draw_airport_symbols(surf, _full_ai, lat, lon, alt_render, hdg, pitch, _ov_roll)
         if _obstacles is not None:
-            draw_obstacle_symbols(surf, _full_ai, lat, lon, alt_render, hdg, pitch, _ov_roll)
+            # Obstacles project from REAL alt, not alt_render.  The
+            # camera-floor clamp pushes alt_render up to ~100 ft above
+            # the SRTM-derived ground when we're near the surface, and
+            # using that for obstacle math made low-AGL FAA DOF entries
+            # (jetway masts, terminal cornices, lighting around major
+            # airports like PHX) project below the horizon — they
+            # painted "phantom" tower symbols all over the runway and
+            # ramp because their real top elevation reads below the
+            # clamped camera position.  Real alt restores the correct
+            # geometry: a 30 ft tower 1000 ft away is above the horizon
+            # by 1.7°, regardless of where the SVT camera floor sits.
+            draw_obstacle_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, _ov_roll)
         # Direct-to course trace — depth-tested 3D in the shared-GL path,
         # 2D pygame fallback when no GL.
         if _shared_gl_ctx is None:
