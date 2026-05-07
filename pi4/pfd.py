@@ -4984,8 +4984,11 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     cx = ax + aw // 2
     cy = ay_r + ah // 2
 
-    # Pixels per degree (same scale as pitch ladder: 8px/deg at default)
-    PX_PER_DEG = 8.0
+    # Same px/deg as the SVT and airport overlays (ai_h / 48° vertical FOV).
+    # Obstacles previously used a hardcoded 8 px/deg, which didn't match the
+    # SVT camera so towers shifted relative to the terrain on turn/pitch
+    # and floated above ground.
+    PX_PER_DEG = ah / 48.0
 
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
