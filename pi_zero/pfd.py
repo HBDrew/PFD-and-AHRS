@@ -1313,9 +1313,10 @@ def draw_terrain_alert(surf):
     pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=3)
     pygame.draw.rect(surf, fg, (bx, by, bw, bh), width=1, border_radius=3)
 
-    # Two-word label: primary left, secondary right
-    _text(surf, lbl, 11, fg, bold=True, x=bx + 6, y=by + 2)
-    _text(surf, sub, 9,  fg, bold=False, x=bx + bw - 52, y=by + 4)
+    # Two-word label: primary left, secondary right.  Nudged up 2 px so
+    # the descenders don't kiss the lower edge of the rounded rect.
+    _text(surf, lbl, 11, fg, bold=True, x=bx + 6, y=by)
+    _text(surf, sub, 9,  fg, bold=False, x=bx + bw - 52, y=by + 2)
 
 
 # ── Status badges ─────────────────────────────────────────────────────────────

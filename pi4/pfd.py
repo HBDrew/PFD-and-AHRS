@@ -1561,9 +1561,10 @@ def draw_terrain_alert(surf):
     pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=3)
     pygame.draw.rect(surf, fg, (bx, by, bw, bh), width=1, border_radius=3)
 
-    # Two-word label: primary left, secondary right
-    _text(surf, lbl, 11, fg, bold=True, x=bx + 6, y=by + 2)
-    _text(surf, sub, 9,  fg, bold=False, x=bx + bw - 52, y=by + 4)
+    # Two-word label: primary left, secondary right.  Nudged up 2 px so
+    # the descenders don't kiss the lower edge of the rounded rect.
+    _text(surf, lbl, 11, fg, bold=True, x=bx + 6, y=by)
+    _text(surf, sub, 9,  fg, bold=False, x=bx + bw - 52, y=by + 2)
 
 
 # ── Status badges ─────────────────────────────────────────────────────────────
@@ -2410,9 +2411,14 @@ def handle_event(event, demo_mode):
                 disp["ad"][key] = not disp["ad"].get(key, False)
                 _settings.mark_dirty()
             elif action == "nav_direct":
+                # Open with empty buf so the first keystroke replaces the
+                # current ident, matching the heading/altitude/airspeed
+                # numpad UX.  The active ident still shows as the
+                # placeholder (resolved via disp["nav"]["ident"] in the
+                # keyboard renderer).
                 disp["kbd_target"] = "nav_ident"
                 disp["kbd_prev"]   = "airport_data"
-                disp["kbd_buf"]    = disp.get("nav", {}).get("ident", "")
+                disp["kbd_buf"]    = ""
                 disp["mode"]       = "keyboard"
             elif action == "nav_nearest":
                 _nav_set_nearest()
@@ -2595,9 +2601,12 @@ def handle_event(event, demo_mode):
             _cdi_t = _cdi_bar_y - 32
             _cdi_b = _cdi_bar_y + 12
             if _cdi_l <= x <= _cdi_r and _cdi_t <= y <= _cdi_b:
+                # Empty buf → first keystroke replaces the current ident
+                # (matches the heading/altitude/airspeed numpad behaviour).
+                # Existing ident still appears as the keyboard placeholder.
                 disp["kbd_target"] = "nav_ident"
                 disp["kbd_prev"]   = "pfd"
-                disp["kbd_buf"]    = nv.get("ident", "")
+                disp["kbd_buf"]    = ""
                 disp["mode"]       = "keyboard"
                 return True
 
@@ -6192,7 +6201,13 @@ def render(surf, demo_mode, connected, data_stale=False):
         target = disp.get("kbd_target", "")
         buf    = disp.get("kbd_buf", "")
         prev   = disp.get("kbd_prev", "flight_profile")
-        if prev == "connectivity_setup":
+        if target == "nav_ident":
+            # Direct-to ident lives under disp["nav"], not the connectivity
+            # or flight-profile dicts.  Surface it as the placeholder so
+            # the user sees what's active while typing the replacement.
+            cur   = disp.get("nav", {}).get("ident", "")
+            title = "WAYPOINT"
+        elif prev == "connectivity_setup":
             cur   = disp["cs"].get(target, "")
             title = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID",
                      "wifi_pass": "WiFi PASSWORD"}.get(target, "ENTER TEXT")
