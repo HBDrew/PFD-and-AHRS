@@ -5143,7 +5143,7 @@ _OBS_MIN_AGL_FT = 25.0    # hide DOF entries shorter than this so airport-
 # buildings, light poles, jet bridges) is typically 25-49 ft AGL and
 # clutters the runway view; tall obstructions like the ATC tower
 # (321 ft AGL at PHX) stay visible because they exceed the floor.
-_OBS_AIRPORT_RADIUS_NM = 0.6
+_OBS_AIRPORT_RADIUS_NM = 1.0
 _OBS_AIRPORT_FLOOR_FT  = 50.0
 
 # Cache rendered obstacle labels keyed on (text, colour) — pygame.font
@@ -6168,6 +6168,16 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                     # past each threshold so it reads as a frame.
                     # Clipped against the forward half-plane like the
                     # runway polygon for consistent fly-over behaviour.
+                    #
+                    # Suppressed close-in (within 2 nm AND under 500 ft
+                    # above the threshold elev) — at that range the box
+                    # is mostly off-screen anyway and its corners
+                    # foreshorten enough to look broken; pilot is on
+                    # final / rolling out and the runway polygon itself
+                    # is the primary cue.
+                    field_elev = min(r.le_elev_ft, r.he_elev_ft)
+                    box_close_in = (d_nm < 2.0
+                                    and (alt_ft - field_elev) < 500.0)
                     BOX_W_SCALE   = 2.5
                     BOX_LEN_PAD   = 0.10
                     axis_lat_unit = ax_lat / axis_len_nm
@@ -6184,7 +6194,7 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                          (r.le_lat - ext_lat - pl, r.le_lon - ext_lon - po, r.le_elev_ft)],
                         lat, lon, hdg_rad,
                         nm_per_deg_lat, nm_per_deg_lon)
-                    if len(box_quad) >= 3:
+                    if len(box_quad) >= 3 and not box_close_in:
                         box_pts = [_proj(p[0], p[1], p[2]) for p in box_quad]
                         if all(pt is not None for pt in box_pts):
                             bxs = [pt[0] for pt in box_pts]
