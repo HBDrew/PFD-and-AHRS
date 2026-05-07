@@ -25,8 +25,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, '..', 'shared'))
 sys.path.insert(0, _HERE)
 
-# Use SDL dummy driver before pygame import — no display server needed
+# Use SDL dummy driver before pygame import — no display server needed.
+# Also force a dummy audio driver so pygame doesn't open an idle ALSA
+# stream (which logs harmless but noisy "underrun" lines).
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
+os.environ['SDL_AUDIODRIVER'] = 'dummy'
 import pygame
 pygame.init()
 # Mouse subsystem may not init under dummy driver; ignore failure

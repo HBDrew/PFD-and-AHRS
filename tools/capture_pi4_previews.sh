@@ -32,9 +32,17 @@ if [ ! -f "$PI4_DIR/render_pfd_offline.py" ]; then
     exit 1
 fi
 
-# If pfd.service is running it owns the display — but the offline renderer
-# uses SDL_VIDEODRIVER=dummy and an offscreen GL context, so they can
-# coexist.  We don't stop the service.
+# pfd.service holds an EGL context against the V3D driver; the offline
+# renderer also wants one (offscreen).  On the Pi 4 the driver doesn't
+# tolerate two consumers and the live service ends up SIGSEGV'd.  Stop
+# the service for the capture and bring it back when we're done.
+RESTART_PFD=0
+if systemctl is-active --quiet pfd.service 2>/dev/null; then
+    echo "(stopping pfd.service for the capture session…)"
+    sudo systemctl stop pfd.service
+    RESTART_PFD=1
+fi
+trap '[ "$RESTART_PFD" = "1" ] && sudo systemctl start pfd.service' EXIT
 
 mkdir -p "$OUT_DIR"
 mkdir -p "$(dirname "$OUT_DIR")"
