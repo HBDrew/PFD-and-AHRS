@@ -2141,6 +2141,76 @@ def sim_controls_hit(x, y):
     return "noop"   # tapped inside panel but not on a control — consume event
 
 
+# ── Nav-confirm modal ("Activate Direct to XXXX?") ──────────────────────────
+# Standard avionics convention: typing/refreshing a waypoint pops up a
+# confirmation, requiring a second ENTER (or tap on ACTIVATE) before the
+# active flight plan changes.  Prevents accidental flight-plan edits from
+# a stray screen tap.
+_NAVCNF_W   = 360
+_NAVCNF_H   = 170
+_NAVCNF_BTN_H = 48
+
+
+def _navcnf_geom():
+    bx = (DISPLAY_W - _NAVCNF_W) // 2
+    by = (DISPLAY_H - _NAVCNF_H) // 2
+    btn_y = by + _NAVCNF_H - _NAVCNF_BTN_H - 14
+    btn_w = (_NAVCNF_W - 14 - 14 - 12) // 2
+    bx_l  = bx + 14
+    bx_r  = bx + _NAVCNF_W - 14 - btn_w
+    return bx, by, btn_y, btn_w, bx_l, bx_r
+
+
+def draw_nav_confirm(surf):
+    """Centered "Activate Direct to XXXX?" modal."""
+    ident = disp.get("nav_confirm_ident", "")
+    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
+
+    _draw_veil(surf)
+    panel = pygame.Surface((_NAVCNF_W, _NAVCNF_H), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _NAVCNF_W, _NAVCNF_H),
+                     width=2, border_radius=10)
+
+    _text(surf, "DIRECT TO", 13, (160, 200, 230), bold=True,
+          cx=bx + _NAVCNF_W // 2, cy=by + 22)
+    _text(surf, ident or "—", 32, MAGENTA, bold=True,
+          cx=bx + _NAVCNF_W // 2, cy=by + 64)
+    _text(surf, "Activate?", 14, (200, 215, 235),
+          cx=bx + _NAVCNF_W // 2, cy=by + 96)
+
+    _action_btn(surf, bx_l, btn_y, btn_w, _NAVCNF_BTN_H, "CANCEL",   "danger")
+    _action_btn(surf, bx_r, btn_y, btn_w, _NAVCNF_BTN_H, "ACTIVATE", "ok")
+
+
+def nav_confirm_hit(x, y):
+    """Return 'activate' / 'cancel' / 'noop' / None for a tap on the modal."""
+    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
+    if not (bx <= x <= bx + _NAVCNF_W and by <= y <= by + _NAVCNF_H):
+        return None
+    if btn_y <= y <= btn_y + _NAVCNF_BTN_H:
+        if bx_l <= x <= bx_l + btn_w:
+            return "cancel"
+        if bx_r <= x <= bx_r + btn_w:
+            return "activate"
+    return "noop"
+
+
+def _nav_confirm_apply():
+    """Activate the pending direct-to and dismiss the modal."""
+    ident = disp.get("nav_confirm_ident", "")
+    if ident:
+        _nav_set_by_ident(ident)
+    disp["nav_confirm_ident"] = ""
+    disp["mode"] = disp.get("nav_confirm_prev", "pfd")
+
+
+def _nav_confirm_cancel():
+    disp["nav_confirm_ident"] = ""
+    disp["mode"] = disp.get("nav_confirm_prev", "pfd")
+
+
 # ── Touch handler ─────────────────────────────────────────────────────────────
 _touch_t0      = {}
 _bug_dragging  = None    # "hdg" | "alt"
@@ -2191,10 +2261,15 @@ def handle_event(event, demo_mode):
     # ── Keyboard shortcuts ────────────────────────────────────────────────────
     if event.type == pygame.KEYDOWN:
         if event.key == pygame.K_ESCAPE:
-            if disp["mode"] != "pfd":
+            if disp["mode"] == "nav_confirm":
+                _nav_confirm_cancel()
+            elif disp["mode"] != "pfd":
                 disp["mode"] = "pfd"   # ESC exits any overlay
             else:
                 return False
+        if event.key == pygame.K_RETURN and disp["mode"] == "nav_confirm":
+            _nav_confirm_apply()
+            return True
         if event.key == pygame.K_d:
             return "toggle_demo"
         if disp["mode"] == "pfd":
@@ -2384,6 +2459,16 @@ def handle_event(event, demo_mode):
             # "noop" or None: consume the event either way
             return True
 
+        # ── Nav-confirm modal (Activate Direct to XXXX?) ──────────────────
+        if mode == "nav_confirm":
+            action = nav_confirm_hit(x, y)
+            if action == "activate":
+                _nav_confirm_apply()
+            elif action == "cancel":
+                _nav_confirm_cancel()
+            # "noop" / None / outside-panel: consume to keep the modal up
+            return True
+
         # ── Obstacle data screen taps ─────────────────────────────────────
         if mode == "obstacle_data":
             action = obstacle_data_hit(x, y, disp["od"])
@@ -2489,18 +2574,33 @@ def handle_event(event, demo_mode):
                     _nav_clear()
                     disp["kbd_buf"] = ""
                     disp["mode"] = disp["kbd_prev"]
-                elif sty == 'ok':             # DONE
+                elif sty == 'ok':             # ENTER
                     buf = disp["kbd_buf"].strip()
                     if target == "nav_ident":
-                        # Look up the entered ident in the airport DB and
-                        # activate it as the direct-to waypoint.  Empty buf
-                        # cancels.  Unknown ident is a no-op (UI stays open
-                        # would be ideal, but matching the rest of the
-                        # keyboard flow we just close it).
-                        if buf:
-                            _nav_set_by_ident(buf.upper())
-                        else:
-                            _nav_clear()
+                        # Two distinct paths:
+                        #   1. Buffer is empty AND a waypoint is already
+                        #      active → user hit ENTER without typing,
+                        #      meaning "keep what's there but re-activate
+                        #      so the magenta line redraws from my
+                        #      current position".  Confirm with the same
+                        #      ident.
+                        #   2. Buffer has text → look up the typed ident
+                        #      in the airport DB.  If valid, prompt to
+                        #      confirm; if unknown, close silently
+                        #      (keeps the existing waypoint untouched).
+                        cur_ident = disp.get("nav", {}).get("ident", "")
+                        candidate = buf.upper() if buf else cur_ident
+                        if candidate and _nav_lookup_ident(candidate):
+                            disp["nav_confirm_ident"] = candidate
+                            disp["nav_confirm_prev"]  = disp["kbd_prev"]
+                            disp["kbd_buf"] = ""
+                            disp["mode"] = "nav_confirm"
+                            return True
+                        # No candidate (empty buf with no active wpt) or
+                        # unknown ident — just close the keyboard.
+                        disp["kbd_buf"] = ""
+                        disp["mode"] = disp["kbd_prev"]
+                        return True
                     elif buf:
                         if disp["kbd_prev"] == "connectivity_setup":
                             disp["cs"][target] = buf
@@ -5289,26 +5389,34 @@ def _nav_gc_interp(la1, lo1, la2, lo2, f):
             math.degrees(math.atan2(y, x)))
 
 
+def _nav_lookup_ident(ident: str):
+    """Return (ident, lat, lon, elev_ft) for the first matching airport,
+    or None.  Shared between the activate path and the confirmation
+    modal (which validates before showing the prompt)."""
+    if _airports is None or not ident:
+        return None
+    if hasattr(_airports, "dtype"):
+        mask = _airports["ident"] == ident
+        rows = _airports[mask]
+        if len(rows) == 0:
+            return None
+        row = rows[0]
+        return (str(row["ident"]), float(row["lat"]),
+                float(row["lon"]), float(row["elev_ft"]))
+    for rec in _airports:
+        if rec[0] == ident:
+            return (rec[0], float(rec[2]), float(rec[3]), float(rec[4]))
+    return None
+
+
 def _nav_set_by_ident(ident: str) -> bool:
     """Activate direct-to to the airport with this ident.  Returns True on hit."""
-    if _airports is None or not ident:
+    hit = _nav_lookup_ident(ident)
+    if hit is None:
         return False
     lat = disp.get("lat", 0.0)
     lon = disp.get("lon", 0.0)
-    candidates = []
-    if hasattr(_airports, "dtype"):
-        mask = _airports["ident"] == ident
-        for row in _airports[mask]:
-            candidates.append((str(row["ident"]), float(row["lat"]),
-                               float(row["lon"]), float(row["elev_ft"])))
-    else:
-        for rec in _airports:
-            if rec[0] == ident:
-                candidates.append((rec[0], float(rec[2]), float(rec[3]),
-                                   float(rec[4])))
-    if not candidates:
-        return False
-    ai, alat, alon, aelev = candidates[0]
+    ai, alat, alon, aelev = hit
     disp["nav"]["ident"]   = ai
     disp["nav"]["lat"]     = alat
     disp["nav"]["lon"]     = alon
@@ -6219,6 +6327,9 @@ def render(surf, demo_mode, connected, data_stale=False):
     # ── Overlay modes: veil + UI drawn on top of live PFD ────────────────────
     if mode == "sim_controls":
         draw_sim_controls(surf)
+
+    elif mode == "nav_confirm":
+        draw_nav_confirm(surf)
 
     elif mode == "numpad":
         _draw_veil(surf)
