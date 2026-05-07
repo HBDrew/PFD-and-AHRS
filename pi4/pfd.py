@@ -2359,7 +2359,14 @@ def draw_mag_cal(surf):
         _text(surf, msg, 12, (60, 220, 80), cx=bx + _MCAL_W // 2,
               cy=by + 178)
 
-    _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, "CANCEL",   "danger")
+    # Left button reads CANCEL only when there's something to cancel —
+    # i.e. partial captures haven't been committed yet.  Once the
+    # 4-cardinal walk completes, the offset is already persisted and
+    # the button just closes the modal, so EXIT is the honest label.
+    in_progress = step > 0 and step < len(_MAG_CAL_CARDINALS)
+    left_lbl   = "CANCEL" if in_progress else "EXIT"
+    left_style = "danger" if in_progress else "ok"
+    _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, left_lbl, left_style)
     _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",    "warn")
     _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, "RESTART",  "warn")
     _action_btn(surf, btn_xs[3], btn_y, btn_w, _MCAL_BTN_H,
