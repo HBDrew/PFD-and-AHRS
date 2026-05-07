@@ -6378,30 +6378,28 @@ def render(surf, demo_mode, connected, data_stale=False):
     roll_trim  = ss.get("roll_trim",  0.0)
     ahrs_synthetic = demo_mode or (_sim_state is not None)
     ahrs_sign = 1 if ahrs_synthetic else -1   # -1 negates for ENU→NED
-    roll = roll * ahrs_sign
-    orientation = ss.get("orientation", "right")
-    if orientation == "forward":
-        # 90° yaw rotation, connector toward nose.  Empirical: pitch
-        # and roll BOTH need the sign-swapped form so the AI banks /
-        # pitches the correct way.  Composes correctly: forward ×
-        # forward = left (180° → -pitch, -roll), forward × aft =
-        # right (identity).
-        pitch, roll = -roll, pitch
-        hdg_offset = 90.0
-    elif orientation == "left":
-        # 180° yaw rotation: pitch and roll both negate.
-        pitch, roll = -pitch, -roll
-        hdg_offset = 180.0
-    elif orientation == "aft":
-        # 90° opposite of FORWARD — connector toward tail.
-        pitch, roll = roll, -pitch
-        hdg_offset = 270.0
-    else:    # "right" — default, no rotation
+
+    if not ahrs_synthetic:
+        roll = -roll   # base ENU→NED roll correction
+        orientation = ss.get("orientation", "right")
+        if orientation == "forward":
+            pitch, roll = -roll, pitch
+            hdg_offset = 90.0
+        elif orientation == "left":
+            pitch, roll = -pitch, -roll
+            hdg_offset = 180.0
+        elif orientation == "aft":
+            pitch, roll = roll, -pitch
+            hdg_offset = 270.0
+        else:    # "right" — default, no rotation
+            hdg_offset = 0.0
+        if ss.get("mounting") == "inverted":
+            pitch = -pitch
+            roll  = -roll
+    else:
+        # Sim / demo: state values are already aircraft-frame (NED).
+        # Skip every AHRS-mounting compensation; trim still applies.
         hdg_offset = 0.0
-        hdg_offset = 0.0
-    if ss.get("mounting") == "inverted":
-        pitch = -pitch
-        roll  = -roll
     pitch += pitch_trim
     roll  += roll_trim
     # hdg_offset is applied later, after `hdg` is resolved from the
