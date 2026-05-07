@@ -5819,37 +5819,14 @@ _CENTERLINE_EXTEND_NM      = 5.0    # centerline extends this far from threshold
 _CENTERLINE_DASH_NM        = 0.5    # dash length (nm)
 _CENTERLINE_GLIDE_DEG      = 3.0    # rise centerline at standard glideslope
 
-# When we're effectively on or beside the runway, baro/GPS altitude
-# disagrees with the surveyed threshold elevation by 10-50 ft, which
-# either (a) makes the polygon vanish via an above-horizon cull, or
-# (b) projects the corner several pixels above horizon — visibly wrong
-# while sitting on the runway.  We blend the projected elevation
-# between the real surveyed elev (cruise / approach geometry) and the
-# aircraft altitude (pinned to horizon) along two axes — distance and
-# altitude difference — so the transition is invisible to the eye and
-# the polygon never snaps when the pilot crosses a single threshold.
-_RWY_ANCHOR_NM_FULL = 0.6     # fully anchored inside this radius
-_RWY_ANCHOR_NM_OFF  = 2.0     # no anchor at or beyond this radius
-_RWY_ANCHOR_FT_FULL = 75.0    # fully anchored inside this alt-diff
-_RWY_ANCHOR_FT_OFF  = 400.0   # no anchor at or beyond this alt-diff
-
-
-def _anchor_corner_elev(corner_elev_ft, d_nm, alt_ft):
-    """Smoothly blend the corner elevation toward the aircraft altitude
-    when we're on or near the runway, so baro/GPS noise doesn't pop
-    the polygon above horizon and so a normal descent through a fixed
-    "anchor on / off" threshold doesn't snap."""
-    abs_diff = abs(corner_elev_ft - alt_ft)
-    if d_nm >= _RWY_ANCHOR_NM_OFF or abs_diff >= _RWY_ANCHOR_FT_OFF:
-        return corner_elev_ft
-    d_blend = max(0.0, min(1.0,
-        (_RWY_ANCHOR_NM_OFF - d_nm) /
-        (_RWY_ANCHOR_NM_OFF - _RWY_ANCHOR_NM_FULL)))
-    a_blend = max(0.0, min(1.0,
-        (_RWY_ANCHOR_FT_OFF - abs_diff) /
-        (_RWY_ANCHOR_FT_OFF - _RWY_ANCHOR_FT_FULL)))
-    blend = d_blend * a_blend
-    return blend * alt_ft + (1.0 - blend) * corner_elev_ft
+# Runway corners use the surveyed threshold elevation directly — the
+# polygon stays on the ground where it belongs.  Earlier versions
+# tried to "anchor" the corner elev to the aircraft's altitude when
+# close, but that made the polygon track your altitude (not the
+# ground), so descending through it looked like the runway rose to
+# meet you and then vanished as the anchor disengaged.  Whatever
+# small wobble baro/GPS noise produces near a corner is honest sensor
+# behaviour, not something to mask.
 
 
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
@@ -6010,16 +5987,13 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                 if max(brg_corners) - min(brg_corners) > 180.0:
                     continue
 
-                # Anchor each threshold's corner elevation to our altitude
-                # when we're on / beside the runway so baro/GPS noise
-                # doesn't float the polygon visibly above the horizon.
-                le_elev_eff = _anchor_corner_elev(r.le_elev_ft, d_nm, alt_ft)
-                he_elev_eff = _anchor_corner_elev(r.he_elev_ft, d_nm, alt_ft)
-
-                p1 = _proj(r.le_lat + perp_lat, r.le_lon + perp_lon, le_elev_eff)
-                p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, he_elev_eff)
-                p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, he_elev_eff)
-                p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, le_elev_eff)
+                # Use the surveyed threshold elevations directly so the
+                # polygon always sits where the runway physically is —
+                # on the ground.  No anchor / no track-the-aircraft.
+                p1 = _proj(r.le_lat + perp_lat, r.le_lon + perp_lon, r.le_elev_ft)
+                p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, r.he_elev_ft)
+                p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, r.he_elev_ft)
+                p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
                 if not (p1 and p2 and p3 and p4):
                     pass  # at least one corner culled — skip polygon
                 else:
@@ -6049,8 +6023,8 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                         # Centreline: dashed segments from LE midpoint to HE
                         # midpoint.  Number of dashes scales with on-screen
                         # length so it reads at any range.
-                        mid_le = _proj(r.le_lat, r.le_lon, le_elev_eff)
-                        mid_he = _proj(r.he_lat, r.he_lon, he_elev_eff)
+                        mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
+                        mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
                         if mid_le is not None and mid_he is not None:
                             dx = mid_he[0] - mid_le[0]
                             dy = mid_he[1] - mid_le[1]
@@ -6092,10 +6066,10 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
                         ext_lon = axis_lon_unit * pad_nm
                         pl = perp_lat * BOX_W_SCALE
                         po = perp_lon * BOX_W_SCALE
-                        b1 = _proj(r.le_lat - ext_lat + pl, r.le_lon - ext_lon + po, le_elev_eff)
-                        b2 = _proj(r.he_lat + ext_lat + pl, r.he_lon + ext_lon + po, he_elev_eff)
-                        b3 = _proj(r.he_lat + ext_lat - pl, r.he_lon + ext_lon - po, he_elev_eff)
-                        b4 = _proj(r.le_lat - ext_lat - pl, r.le_lon - ext_lon - po, le_elev_eff)
+                        b1 = _proj(r.le_lat - ext_lat + pl, r.le_lon - ext_lon + po, r.le_elev_ft)
+                        b2 = _proj(r.he_lat + ext_lat + pl, r.he_lon + ext_lon + po, r.he_elev_ft)
+                        b3 = _proj(r.he_lat + ext_lat - pl, r.he_lon + ext_lon - po, r.he_elev_ft)
+                        b4 = _proj(r.le_lat - ext_lat - pl, r.le_lon - ext_lon - po, r.le_elev_ft)
                         if b1 and b2 and b3 and b4:
                             bxs_min = min(b1[0], b2[0], b3[0], b4[0])
                             bxs_max = max(b1[0], b2[0], b3[0], b4[0])
@@ -6157,20 +6131,13 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
     # the aircraft would streak horizontally across the AI.
     _FOV = 60.0
 
-    # Anchor each threshold elev to our altitude when sitting on / next
-    # to the runway (matches the runway-polygon anchor) — keeps the
-    # near end of the centerline glued to the horizon instead of
-    # stair-stepping with baro/GPS noise.
-    d_nm = math.hypot((r.centre_lat - lat) * nm_per_deg_lat,
-                      (r.centre_lon - lon) * nm_per_deg_lon)
-    le_elev_eff = _anchor_corner_elev(r.le_elev_ft, d_nm, alt_ft)
-    he_elev_eff = _anchor_corner_elev(r.he_elev_ft, d_nm, alt_ft)
-
-    # For each threshold, extend OUTWARD (opposite of the axis toward the
-    # other end).  For LE: step in -u direction.  For HE: step in +u.
+    # For each threshold, extend OUTWARD (opposite of the axis toward
+    # the other end).  Threshold elevations are surveyed values used
+    # directly so the near end of the centerline starts on the actual
+    # ground, not pinned to the aircraft altitude.
     for thresh_lat, thresh_lon, thresh_elev, sign in (
-        (r.le_lat, r.le_lon, le_elev_eff, -1),
-        (r.he_lat, r.he_lon, he_elev_eff, +1),
+        (r.le_lat, r.le_lon, r.le_elev_ft, -1),
+        (r.he_lat, r.he_lon, r.he_elev_ft, +1),
     ):
         s_dlat = sign * u_dlat
         s_dlon = sign * u_dlon
