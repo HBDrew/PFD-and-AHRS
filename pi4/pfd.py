@@ -5109,6 +5109,14 @@ _OBS_MIN_AGL_FT = 25.0    # hide DOF entries shorter than this so airport-
                           # the runway / ramp.  Anything 25 ft or taller
                           # is something a VFR pilot might want to know
                           # about.
+# Airport-boundary declutter: anything shorter than _OBS_AIRPORT_FLOOR_FT
+# AGL gets hidden when it sits within _OBS_AIRPORT_RADIUS_NM of any
+# runway centroid.  Real airport surface infrastructure (terminal
+# buildings, light poles, jet bridges) is typically 25-49 ft AGL and
+# clutters the runway view; tall obstructions like the ATC tower
+# (321 ft AGL at PHX) stay visible because they exceed the floor.
+_OBS_AIRPORT_RADIUS_NM = 0.6
+_OBS_AIRPORT_FLOOR_FT  = 50.0
 
 # Cache rendered obstacle labels keyed on (text, colour) — pygame.font
 # rendering is ~1 ms each call, and a busy metro view can show 50+ towers
@@ -5194,14 +5202,40 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     sy_top  = (cy + sxr * sin_r + syr_top  * cos_r).astype(_np.int32)
     sy_base = (cy + sxr * sin_r + syr_base * cos_r).astype(_np.int32)
 
+    # Airport-boundary declutter.  For every obstacle, find the
+    # nearest runway centroid; if it's within _OBS_AIRPORT_RADIUS_NM
+    # AND the obstacle is shorter than _OBS_AIRPORT_FLOOR_FT AGL,
+    # it's airport-surface clutter (terminal buildings, jet bridges,
+    # taxiway lighting) and gets hidden.  Tall airport obstructions
+    # (ATC tower, long-range antennas) clear the floor and stay
+    # visible.  Outside the airport boundary the only height filter
+    # is _OBS_MIN_AGL_FT.
+    inside_airport = _np.zeros(len(ob_lat), dtype=bool)
+    if _runways is not None and len(_runways) > 0:
+        nearby_rwys = rwy_mod.query_nearby(
+            _runways, lat, lon,
+            radius_nm=_OBS_RADIUS_NM + _OBS_AIRPORT_RADIUS_NM)
+        if nearby_rwys:
+            rwy_lat = _np.fromiter(
+                (rw.centre_lat for rw in nearby_rwys),
+                dtype=_np.float64, count=len(nearby_rwys))
+            rwy_lon = _np.fromiter(
+                (rw.centre_lon for rw in nearby_rwys),
+                dtype=_np.float64, count=len(nearby_rwys))
+            # Min-distance per obstacle against all nearby runway
+            # centroids.  Broadcast (N_obs, 1) - (1, N_rwy).
+            dlat_r = (ob_lat[:, None] - rwy_lat[None, :]) * nm_per_deg_lat
+            dlon_r = (ob_lon[:, None] - rwy_lon[None, :]) * nm_per_deg_lon
+            min_d_nm = _np.sqrt(dlat_r * dlat_r + dlon_r * dlon_r).min(axis=1)
+            inside_airport = min_d_nm <= _OBS_AIRPORT_RADIUS_NM
+
     # Visibility mask: not co-located + top anchor inside AI rect +
-    # at least _OBS_MIN_AGL_FT tall.  The DOF includes lots of
-    # airport-surface obstructions (signage, low lighting, jetway
-    # masts, terminal cornices etc.) at 10-30 ft AGL that paint
-    # phantom-looking towers all over a busy field; the AGL floor
-    # keeps the display readable while still showing real towers.
+    # AGL clears the global floor + (if inside an airport boundary,
+    # AGL also clears the airport-clutter floor).
+    agl_ok = (ob_agl >= _OBS_MIN_AGL_FT) & (
+        ~inside_airport | (ob_agl >= _OBS_AIRPORT_FLOOR_FT))
     visible = ((dist_nm >= 0.01)
-               & (ob_agl >= _OBS_MIN_AGL_FT)
+               & agl_ok
                & (sx_top >= ax + 4) & (sx_top <= ax + aw - 4)
                & (sy_top >= ay_r + 4) & (sy_top <= ay_r + ah - 4))
     visible_idx = _np.flatnonzero(visible)
@@ -5240,11 +5274,13 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
 
         # Selective labelling — pygame text render is ~1 ms each, so we
         # only label the towers that the pilot most needs to read.  Tall
-        # towers (≥ 1000 ft AGL) anywhere in range, plus everything within
-        # 1 nm.  Cached at module scope so repeated MSL values (1000,
-        # 1500…) only render once per colour.
+        # towers (≥ 1000 ft AGL) anywhere in range, plus everything
+        # within 1 nm.  Label is the obstacle's true MSL top (was
+        # bucketed to nearest 100 ft, which read like the obstacle's
+        # height instead of its altitude — "1100" looked like a 1100-ft
+        # tower when it was a 50-ft pole at 1185 MSL).
         if ob_agl[i] >= 1000 or dist_nm[i] < 1.0:
-            lbl = f"{int(ob_msl[i]//100)*100}"
+            lbl = f"{int(ob_msl[i])}"
             _obs_label_blit(surf, lbl, col, sx, sy - 14)
 
 
