@@ -5666,6 +5666,43 @@ def draw_direct_to_trace(surf, ai_rect, lat, lon, alt_ft,
     surf.set_clip(old_clip)
 
 
+# ── AGL readout (lower-right, just left of alt tape) ──────────────────────────
+_AGL_W = 88
+_AGL_H = 28
+
+
+def draw_agl_readout(surf, alt_ft, ground_elev_ft, gps_ok):
+    """Show "AGL 1234" in the lower-right corner of the AI region —
+    just left of the altitude tape and just above the heading tape.
+    Hidden when there's no GPS fix (no terrain lookup) or when the
+    SRTM sample comes back as None / clearly invalid (out of coverage)."""
+    if not gps_ok or ground_elev_ft is None:
+        return
+    if ground_elev_ft < -100.0:
+        # Out of SRTM coverage (terrain.py returns extreme negatives
+        # for missing tiles); don't display rather than misleading.
+        return
+
+    bx = ALT_X - 2 - _AGL_W
+    by = HDG_Y - 2 - _AGL_H
+
+    plate = pygame.Surface((_AGL_W, _AGL_H), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 180))
+    surf.blit(plate, (bx, by))
+    pygame.draw.rect(surf, (140, 150, 170), (bx, by, _AGL_W, _AGL_H),
+                     width=1, border_radius=4)
+
+    agl_ft = int(round(alt_ft - ground_elev_ft))
+    # Below ground (sensor error or SRTM mismatch on a runway) reads in
+    # amber rather than white so the pilot's eye picks up the anomaly.
+    val_col = WHITE if agl_ft >= 0 else (240, 180, 60)
+    _text(surf, "AGL", 11, (170, 185, 210), bold=True,
+          x=bx + 6, cy=by + _AGL_H // 2)
+    _text(surf, f"{agl_ft:,}", 16, val_col, bold=True,
+          x=bx + _AGL_W - 6 - _get_font(16, bold=True).size(f"{agl_ft:,}")[0],
+          cy=by + _AGL_H // 2)
+
+
 def draw_cdi(surf):
     """Course Deviation Indicator strip above the heading readout box.
 
@@ -6317,6 +6354,13 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 4. Alt tape (display unit)
     draw_alt_tape(surf, alt_d, vspeed, baro_hpa, baro_src, alt_bug_d,
                   baro_ok=baro_ok)
+
+    # 4b. AGL readout — sits in the gap between the alt tape and the
+    # heading tape.  Reuses the SRTM sample we already took for the
+    # camera-floor clamp, so it costs ~nothing.  Uses real (sensor)
+    # alt, not the clamped alt_render, so a punched-ground state still
+    # reads negative as a warning.
+    draw_agl_readout(surf, alt, _ground_elev_ft, gps_ok)
 
     # 5. Heading tape — show the bug that matches the active source: TRK
     # mode shows the track bug, MAG mode shows the heading bug.  Setting
