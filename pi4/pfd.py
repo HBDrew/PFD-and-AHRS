@@ -198,6 +198,9 @@ disp["ds"] = {                      # display settings
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
     "mag_cal":       "idle", "mounting": "normal",
+    "mag_cal_offset": 0.0,           # additive heading offset learned by the
+                                      # cardinal-walk wizard (compass cal)
+
     # Heading source — matches the iPhone display:
     #   "mag"  : magnetic heading from AHRS (cyan/white "M" subscript).
     #   "trk"  : GPS ground track via complementary filter (magenta "G").
@@ -2223,6 +2226,157 @@ def _nav_open_confirm(ident: str, prev_mode: str) -> bool:
     return True
 
 
+# ── Compass calibration wizard ───────────────────────────────────────────────
+# Cardinal walk-through: pilot points the aircraft at N / E / S / W in turn
+# and taps CAPTURE.  We record (expected, raw) at each cardinal, then
+# compute the circular mean of the (expected − raw) deltas and persist it
+# as a single additive offset in ss["mag_cal_offset"].  The offset is added
+# to the corrected yaw at render time so MAG-mode display reads true.  TRK
+# mode is unaffected (the complementary filter sees yaw deltas, which a
+# constant offset drops out of).  Same approach the iPhone display uses.
+_MAG_CAL_CARDINALS = [("NORTH",   0.0),
+                      ("EAST",   90.0),
+                      ("SOUTH", 180.0),
+                      ("WEST",  270.0)]
+_MCAL_W   = 460
+_MCAL_H   = 260
+_MCAL_BTN_H = 44
+
+
+def _mag_cal_open(prev_mode: str):
+    disp["mag_cal_wiz"] = {"step": 0, "samples": [], "msg": "",
+                           "prev": prev_mode}
+    disp["mode"] = "mag_cal"
+
+
+def _mag_cal_capture():
+    wiz = disp.get("mag_cal_wiz") or {}
+    step = wiz.get("step", 0)
+    if step >= len(_MAG_CAL_CARDINALS):
+        return
+    raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0)))
+    expected = _MAG_CAL_CARDINALS[step][1]
+    wiz.setdefault("samples", []).append((expected, raw))
+    wiz["step"] = step + 1
+    wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
+    if wiz["step"] >= len(_MAG_CAL_CARDINALS):
+        # Circular mean of (expected − raw) deltas.
+        sx = 0.0
+        sy = 0.0
+        for exp, rawv in wiz["samples"]:
+            d = ((exp - rawv + 540.0) % 360.0) - 180.0
+            r = math.radians(d)
+            sx += math.cos(r)
+            sy += math.sin(r)
+        mean_deg = math.degrees(math.atan2(sy, sx))
+        offset = mean_deg % 360.0
+        # Store in [-180, 180] form for human-readable persistence;
+        # render path applies modulo regardless.
+        disp["ss"]["mag_cal_offset"] = ((offset + 180.0) % 360.0) - 180.0
+        disp["ss"]["mag_cal"] = "done"
+        _settings.mark_dirty()
+        wiz["msg"] = f"Done — offset {disp['ss']['mag_cal_offset']:+.1f}°."
+        # Reset wizard step so the user can re-run from the same modal
+        # if they want to refine; the offset is committed.
+        wiz["step"]    = 0
+        wiz["samples"] = []
+
+
+def _mag_cal_restart():
+    wiz = disp.get("mag_cal_wiz") or {}
+    wiz["step"] = 0
+    wiz["samples"] = []
+    wiz["msg"] = "Restarted."
+
+
+def _mag_cal_reset():
+    """Wipe the stored offset.  Useful after moving the AHRS to a
+    different aircraft / panel."""
+    disp["ss"]["mag_cal_offset"] = 0.0
+    disp["ss"]["mag_cal"] = "idle"
+    _settings.mark_dirty()
+    wiz = disp.get("mag_cal_wiz") or {}
+    wiz["step"] = 0
+    wiz["samples"] = []
+    wiz["msg"] = "Calibration cleared."
+
+
+def _mag_cal_close():
+    wiz = disp.get("mag_cal_wiz") or {}
+    disp["mode"] = wiz.get("prev", "ahrs_setup")
+
+
+def _mcal_geom():
+    bx = (DISPLAY_W - _MCAL_W) // 2
+    by = (DISPLAY_H - _MCAL_H) // 2
+    btn_y = by + _MCAL_H - _MCAL_BTN_H - 14
+    btn_w = (_MCAL_W - 14 - 14 - 3 * 8) // 4
+    btn_xs = [bx + 14 + i * (btn_w + 8) for i in range(4)]
+    return bx, by, btn_y, btn_w, btn_xs
+
+
+def draw_mag_cal(surf):
+    """Compass-calibration modal — cardinal walk-through."""
+    wiz = disp.get("mag_cal_wiz") or {"step": 0, "samples": [], "msg": ""}
+    step = wiz.get("step", 0)
+    card_name, card_exp = _MAG_CAL_CARDINALS[min(step,
+                                                  len(_MAG_CAL_CARDINALS) - 1)]
+    bx, by, btn_y, btn_w, btn_xs = _mcal_geom()
+
+    _draw_veil(surf)
+    panel = pygame.Surface((_MCAL_W, _MCAL_H), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _MCAL_W, _MCAL_H),
+                     width=2, border_radius=10)
+
+    _text(surf, "COMPASS CAL", 14, (160, 200, 230), bold=True,
+          cx=bx + _MCAL_W // 2, cy=by + 22)
+
+    instr = (f"Step {step + 1} of {len(_MAG_CAL_CARDINALS)} — "
+             f"point aircraft  {card_name}  ({int(card_exp):03d}°)")
+    _text(surf, instr, 14, WHITE, cx=bx + _MCAL_W // 2, cy=by + 56)
+
+    raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
+    cur_offset = disp["ss"].get("mag_cal_offset", 0.0)
+    applied = (raw + cur_offset) % 360.0
+
+    _text(surf, "RAW", 11, (170, 185, 210), bold=True,
+          x=bx + 30, y=by + 92)
+    _text(surf, f"{raw:6.1f}°", 22, CYAN, bold=True,
+          x=bx + 30, y=by + 108)
+
+    _text(surf, "APPLIED", 11, (170, 185, 210), bold=True,
+          x=bx + _MCAL_W // 2 + 20, y=by + 92)
+    _text(surf, f"{applied:6.1f}°", 22, WHITE, bold=True,
+          x=bx + _MCAL_W // 2 + 20, y=by + 108)
+
+    _text(surf, f"Offset: {cur_offset:+.1f}°", 12, (170, 185, 210),
+          cx=bx + _MCAL_W // 2, cy=by + 156)
+
+    msg = wiz.get("msg", "") or ""
+    if msg:
+        _text(surf, msg, 12, (60, 220, 80), cx=bx + _MCAL_W // 2,
+              cy=by + 178)
+
+    _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, "CANCEL",   "danger")
+    _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",    "warn")
+    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, "RESTART",  "warn")
+    _action_btn(surf, btn_xs[3], btn_y, btn_w, _MCAL_BTN_H,
+                f"⊕ CAPTURE {card_name[0]}", "ok")
+
+
+def mag_cal_hit(x, y):
+    bx, by, btn_y, btn_w, btn_xs = _mcal_geom()
+    if not (bx <= x <= bx + _MCAL_W and by <= y <= by + _MCAL_H):
+        return None
+    if btn_y <= y <= btn_y + _MCAL_BTN_H:
+        for i, action in enumerate(("cancel", "reset", "restart", "capture")):
+            if btn_xs[i] <= x <= btn_xs[i] + btn_w:
+                return action
+    return "noop"
+
+
 # ── Touch handler ─────────────────────────────────────────────────────────────
 _touch_t0      = {}
 _bug_dragging  = None    # "hdg" | "alt"
@@ -2275,12 +2429,17 @@ def handle_event(event, demo_mode):
         if event.key == pygame.K_ESCAPE:
             if disp["mode"] == "nav_confirm":
                 _nav_confirm_cancel()
+            elif disp["mode"] == "mag_cal":
+                _mag_cal_close()
             elif disp["mode"] != "pfd":
                 disp["mode"] = "pfd"   # ESC exits any overlay
             else:
                 return False
         if event.key == pygame.K_RETURN and disp["mode"] == "nav_confirm":
             _nav_confirm_apply()
+            return True
+        if event.key == pygame.K_RETURN and disp["mode"] == "mag_cal":
+            _mag_cal_capture()
             return True
         if event.key == pygame.K_d:
             return "toggle_demo"
@@ -2359,8 +2518,8 @@ def handle_event(event, demo_mode):
                 _, key, delta_str = action.split(":")
                 disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
                 _settings.mark_dirty()
-            elif action == "mag_cal":
-                disp["ss"]["mag_cal"] = "running"
+            elif action == "mag_cal_open":
+                _mag_cal_open("ahrs_setup")
             elif action and action.startswith("set:"):
                 _, key, val = action.split(":", 2)
                 disp["ss"][key] = val
@@ -2479,6 +2638,20 @@ def handle_event(event, demo_mode):
             elif action == "cancel":
                 _nav_confirm_cancel()
             # "noop" / None / outside-panel: consume to keep the modal up
+            return True
+
+        # ── Compass calibration wizard taps ──────────────────────────────
+        if mode == "mag_cal":
+            action = mag_cal_hit(x, y)
+            if action == "capture":
+                _mag_cal_capture()
+            elif action == "restart":
+                _mag_cal_restart()
+            elif action == "reset":
+                _mag_cal_reset()
+            elif action == "cancel":
+                _mag_cal_close()
+            # "noop" / None / outside-panel: keep the modal up
             return True
 
         # ── Obstacle data screen taps ─────────────────────────────────────
@@ -3448,17 +3621,17 @@ def draw_ahrs_setup(surf, ss):
     bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction")
     _trim_stepper(surf, bx, by, bw, bh, ss.get("roll_trim", 0.0), "roll_trim")
 
-    # Row 2: Magnetometer calibration (greyed out — not yet implemented)
+    # Row 2: Magnetometer calibration — cardinal walk-through wizard
     bx, by, bw, bh = _setting_row(surf, 2, "MAGNETOMETER", "Compass calibration")
     cal = ss.get("mag_cal", "idle")
     state_lbl, state_col = _SS_MAG_LABELS.get(cal, ("?", WHITE))
-    _text(surf, state_lbl, 13, state_col, bold=True, x=bx+220, y=by+(bh-18)//2)
-    # Draw disabled button (dim, no interaction)
-    cbx = bx+bw-138-14; cby = by+(bh-36)//2
-    pygame.draw.rect(surf, (18,18,20), (cbx, cby, 138, 36), border_radius=6)
-    pygame.draw.rect(surf, (55,55,65), (cbx, cby, 138, 36), width=2, border_radius=6)
-    _text(surf, "CALIBRATE", 15, (75,75,88), bold=False, cx=cbx+69, cy=cby+18)
-    _text(surf, "future", 9, (60,60,72), cx=cbx+69, cy=cby+29)
+    _text(surf, state_lbl, 13, state_col, bold=True, x=bx+220, y=by+(bh-30)//2)
+    cur_offset = ss.get("mag_cal_offset", 0.0)
+    if abs(cur_offset) > 0.05:
+        _text(surf, f"offset {cur_offset:+.1f}°", 11, (140, 160, 190),
+              x=bx+220, y=by+(bh-30)//2 + 18)
+    cbx = bx+bw-138-14; cby = by+(bh-_DSP_BTN_H)//2
+    _action_btn(surf, cbx, cby, 138, _DSP_BTN_H, "CALIBRATE", "ok")
 
     # Row 3: AHRS orientation (which side of the board the connector
     # points toward, viewed from the pilot's seat).  Pitch / roll / heading
@@ -3551,7 +3724,10 @@ def ahrs_setup_hit(x, y, ss):
             if plus_x <= x <= plus_x+_SS_TRIM_SW:
                 return f"trim:{key}:+0.1"
         elif ri == 2:
-            pass  # CALIBRATE is greyed out (future feature)
+            cbx = _SS_MX + bw - 138 - 14
+            cby = by + (_SS_RH - _DSP_BTN_H) // 2
+            if cbx <= x <= cbx + 138 and cby <= y <= cby + _DSP_BTN_H:
+                return "mag_cal_open"
         elif ri == 3:
             seg_w = 88
             total_o = 4 * seg_w + 3 * _DSP_BTN_G
@@ -6471,7 +6647,17 @@ def render(surf, demo_mode, connected, data_stale=False):
     # complementary filter combines yaw with GPS ground track, so the
     # corrected yaw must go IN to the filter — applying a correction
     # to the filter's output would shift the GPS-track component too.
-    yaw_corr = (ahrs_sign * disp["yaw"] + hdg_offset) % 360.0
+    # mag_cal_offset is the residual additive correction learned by
+    # the compass-cal wizard; it shifts MAG-mode display but doesn't
+    # affect TRK mode because the complementary filter operates on
+    # yaw DELTAS (a constant offset drops out).
+    mag_cal_offset = ss.get("mag_cal_offset", 0.0) if not ahrs_synthetic else 0.0
+    yaw_corr_uncal = (ahrs_sign * disp["yaw"] + hdg_offset) % 360.0
+    yaw_corr = (yaw_corr_uncal + mag_cal_offset) % 360.0
+    # Stash the uncalibrated yaw so the compass-cal wizard can read
+    # the current "what the AHRS sees right now" value when the
+    # pilot taps CAPTURE on each cardinal.
+    disp["_yaw_uncal"] = yaw_corr_uncal
     if use_track:
         # Complementary filter: AHRS yaw rate propagates each frame, GPS
         # track slowly slaves the absolute reference.  Smoother than raw
@@ -6689,6 +6875,9 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     elif mode == "nav_confirm":
         draw_nav_confirm(surf)
+
+    elif mode == "mag_cal":
+        draw_mag_cal(surf)
 
     elif mode == "numpad":
         _draw_veil(surf)
