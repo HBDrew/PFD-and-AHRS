@@ -6368,16 +6368,20 @@ def render(surf, demo_mode, connected, data_stale=False):
     roll_trim  = ss.get("roll_trim",  0.0)
     orientation = ss.get("orientation", "right")
     if orientation == "forward":
-        # AHRS rotated 90° CCW from RIGHT (connector now toward nose).
-        pitch, roll = roll, -pitch
+        # AHRS rotated 90° from RIGHT, connector toward nose.  Empirical
+        # signs from in-flight test: pitch transposes from ahrs_roll
+        # (correct), roll transposes from +ahrs_pitch (was -ahrs_pitch
+        # — caused the indicator to bank opposite the actual aircraft).
+        pitch, roll = roll, pitch
         hdg_offset = 90.0
     elif orientation == "left":
-        # AHRS rotated 180° from RIGHT (connector now toward left wing).
+        # AHRS rotated 180° from RIGHT, connector toward left wing.
         pitch, roll = -pitch, -roll
         hdg_offset = 180.0
     elif orientation == "aft":
-        # AHRS rotated 90° CW from RIGHT (connector now toward tail).
-        pitch, roll = -roll, pitch
+        # AHRS rotated 90° from RIGHT in the opposite direction,
+        # connector toward tail.  Mirrors the FORWARD sign correction.
+        pitch, roll = -roll, -pitch
         hdg_offset = 270.0
     else:    # "right" — default, matches legacy behaviour
         hdg_offset = 0.0
