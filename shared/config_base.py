@@ -45,7 +45,10 @@ OBSTACLE_WINDOW_FT   = OBSTACLE_BELOW_FT  # back-compat alias — older code
                                           # of truth.  Kept so pi_zero keeps
                                           # importing without churn.
 OBSTACLE_CAUTION_FT  = 500    # amber below this clearance
-OBSTACLE_WARNING_FT  = 100    # red below this clearance
+OBSTACLE_WARNING_FT  = 200    # red below this clearance — matches
+                              # TERRAIN_WARNING_FT so the obstacle and
+                              # terrain palettes flip to red on the same
+                              # 200 ft buffer.
 OBSTACLE_EXPIRY_DAYS = 28     # FAA DOF update cycle (days)
 
 # ── Airport database (OurAirports CSV) ────────────────────────────────────────
