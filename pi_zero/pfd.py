@@ -2539,7 +2539,7 @@ _KB_ROWS = [
      ('N',60,'n'),('M',60,'n'),('.',60,'n'),(':',60,'n'),('\u232b',60,'del')],
     # Row 4: CANCEL, hyphen, SPACE, DONE. Hyphen moved here because row 3
     # had to drop it to make room for . and : within the pi_zero width budget.
-    [('CANCEL',108,'x'),('-',60,'n'),('SPACE',232,'n'),('DONE',108,'ok')],
+    [('CANCEL',108,'x'),('-',60,'n'),('SPACE',232,'n'),('ENTER',108,'ok')],
 ]
 _KB_ROW_H=66; _KB_GAP_Y=6; _KB_GAP_X=4; _KB_Y0=112
 

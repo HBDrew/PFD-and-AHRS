@@ -2963,9 +2963,11 @@ _KB_ROWS = [
     # 10 keys × 60 + 9 gaps × 4 = 636 px — fits pi_zero 640 and pi4 1024.
     [('Z',60,'n'),('X',60,'n'),('C',60,'n'),('V',60,'n'),('B',60,'n'),
      ('N',60,'n'),('M',60,'n'),('.',60,'n'),(':',60,'n'),('\u232b',60,'del')],
-    # Row 4: CANCEL, hyphen, SPACE, DONE. Hyphen moved here because row 3
+    # Row 4: CANCEL, hyphen, SPACE, ENTER. Hyphen moved here because row 3
     # had to drop it to make room for . and : within the pi_zero width budget.
-    [('CANCEL',108,'x'),('-',60,'n'),('SPACE',232,'n'),('DONE',108,'ok')],
+    # The 'ok' style tag (not the label) is what dispatches the action,
+    # so this rename is purely cosmetic.
+    [('CANCEL',108,'x'),('-',60,'n'),('SPACE',232,'n'),('ENTER',108,'ok')],
 ]
 _KB_ROW_H=66; _KB_GAP_Y=6; _KB_GAP_X=4; _KB_Y0=112
 
@@ -5386,10 +5388,12 @@ _direct_to_trace_thread    = None
 
 
 def _build_direct_to_trace_async(key, wpt_elev):
-    """Worker: sample the great-circle course over SRTM and publish the
-    result to the module-level cache.  Runs off the render thread so a
-    just-activated direct-to doesn't stall the next frame."""
-    global _direct_to_trace_cache_key, _direct_to_trace_cache_arr
+    """Worker: sample the great-circle course over SRTM and publish
+    partial vertex arrays to the cache as we go.  The near end of the
+    magenta line appears within the first second; the far end fills in
+    as more SRTM tiles are read.  Exits early if the user changes the
+    active direct-to mid-build."""
+    global _direct_to_trace_cache_arr
     act_lat, act_lon, wpt_lat, wpt_lon = key
     course_nm, _ = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
     if course_nm < 0.05:
@@ -5397,8 +5401,23 @@ def _build_direct_to_trace_async(key, wpt_elev):
     n_steps = max(8, int(course_nm / 0.5))
     n_steps = min(n_steps, 400)
 
+    # Publish the partial vertex array every PUBLISH_EVERY samples.
+    # Sampling proceeds near→far (i=0 is the activation point near the
+    # aircraft), so each publish extends the visible line outward.
+    PUBLISH_EVERY = 4
+    try:
+        import numpy as _np
+        _have_np = True
+    except ImportError:
+        _have_np = False
+
     pts = []
     for i in range(0, n_steps + 1):
+        # Bail if the user changed direct-to — the next call to
+        # build_direct_to_trace_vertices() will overwrite the cache key
+        # and start a fresh worker for the new course.
+        if _direct_to_trace_cache_key != key:
+            return
         t = i / n_steps
         s_lat, s_lon = _nav_gc_interp(act_lat, act_lon, wpt_lat, wpt_lon, t)
         try:
@@ -5408,40 +5427,22 @@ def _build_direct_to_trace_async(key, wpt_elev):
         except Exception:
             terrain_elev = wpt_elev
         pts.append((s_lat, s_lon, terrain_elev + _DIRECT_TO_DRAPE_OFFSET_FT))
-    try:
-        import numpy as _np
-        arr = _np.array(pts, dtype=_np.float32)
-    except ImportError:
-        arr = pts
 
-    # Discard the result if the user changed direct-to mid-build — we
-    # don't want a stale course to flash up before the new one finishes.
-    nv_now = disp.get("nav", {})
-    cur_key = (
-        float(nv_now.get("act_lat", 0.0)),
-        float(nv_now.get("act_lon", 0.0)),
-        float(nv_now.get("lat", 0.0)),
-        float(nv_now.get("lon", 0.0)),
-    )
-    if cur_key != key or not nv_now.get("ident"):
-        return
-
-    # Publish: arr first so a render that observes the new key always
-    # finds the matching arr in place (CPython attribute writes are
-    # individually atomic; we rely on that ordering, not on a lock).
-    _direct_to_trace_cache_arr = arr
-    _direct_to_trace_cache_key = key
+        if (i + 1) % PUBLISH_EVERY == 0 or i == n_steps:
+            arr = _np.array(pts, dtype=_np.float32) if _have_np else list(pts)
+            # Re-check ownership immediately before publishing.  In
+            # CPython attribute writes are atomic, so the render thread
+            # always sees either the previous snapshot or this one.
+            if _direct_to_trace_cache_key == key:
+                _direct_to_trace_cache_arr = arr
 
 
 def build_direct_to_trace_vertices():
-    """Return the cached trace for the active direct-to, or None while a
-    background sample is still in flight.
-
-    The course is sampled at 0.5 nm steps over SRTM in
-    _build_direct_to_trace_async.  Returning None during the build
-    keeps the render loop fast — the magenta course line just appears
-    on the next frame after the worker finishes (typically <2 s on the
-    Pi 4)."""
+    """Return the cached trace for the active direct-to.  May return a
+    partial vertex array while the background sampler is still walking
+    the course — the magenta line grows from the aircraft outward as
+    more vertices are added.  Returns None until the worker publishes
+    its first chunk (~4 samples / 2 nm)."""
     global _direct_to_trace_cache_key, _direct_to_trace_cache_arr
     global _direct_to_trace_thread
 
@@ -5459,21 +5460,25 @@ def build_direct_to_trace_vertices():
         return None
 
     key = (act_lat, act_lon, wpt_lat, wpt_lon)
-    if key == _direct_to_trace_cache_key and _direct_to_trace_cache_arr is not None:
+    if key == _direct_to_trace_cache_key:
+        # Either still building or fully done — return whatever's been
+        # published so far so the renderer can show the partial line.
         return _direct_to_trace_cache_arr
 
-    # Cache miss — kick off (or continue) a background build.  If a
-    # worker is already running for the previous course it'll discover
-    # the mismatch when it finishes and discard its result; the next
-    # call here will start a fresh worker for the new course.
-    if _direct_to_trace_thread is None or not _direct_to_trace_thread.is_alive():
-        _direct_to_trace_thread = threading.Thread(
-            target=_build_direct_to_trace_async,
-            args=(key, wpt_elev),
-            daemon=True,
-            name="direct-to-trace",
-        )
-        _direct_to_trace_thread.start()
+    # New course.  Claim the cache key and invalidate the stale arr;
+    # any in-flight worker for the previous course will see the
+    # mismatched key on its next iteration and exit before stomping
+    # the new cache.  We always start a fresh worker (we don't poll
+    # is_alive) so back-to-back waypoint changes don't drop a build.
+    _direct_to_trace_cache_key = key
+    _direct_to_trace_cache_arr = None
+    _direct_to_trace_thread = threading.Thread(
+        target=_build_direct_to_trace_async,
+        args=(key, wpt_elev),
+        daemon=True,
+        name="direct-to-trace",
+    )
+    _direct_to_trace_thread.start()
     return None
 
 
@@ -5696,14 +5701,18 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
 
     def _proj(la, lo, elev):
-        # ground_only=False here: the per-runway range cull (8 nm) and
-        # the bbox cull below already keep this safe, and the strict
-        # above-horizon cull was rejecting valid corners whenever baro
-        # read a few feet below the surveyed threshold (runway vanished
-        # while taxiing).
+        # ground_only=True keeps the behind-aircraft cull (otherwise
+        # rel_brg wraps near ±180° and the LE / HE corners project to
+        # opposite sides of the AI, painting a phantom polygon across
+        # the whole screen when the runway is behind us).  The strict
+        # above-horizon side of the cull is sidestepped by
+        # _anchor_corner_elev: when we're on / beside the runway it
+        # pins eff_elev to alt_ft so vert_deg == 0 and the cull is a
+        # no-op.  Beyond the anchor zone any runway projecting above
+        # horizon is by definition above us and is correctly hidden.
         return _project_latlon(la, lo, lat, lon, alt_ft,
                                elev, hdg_deg, pitch_deg, roll_deg,
-                               cx, cy, px_per_deg, ground_only=False,
+                               cx, cy, px_per_deg, ground_only=True,
                                nm_per_deg_lon=nm_per_deg_lon)
 
     def _in_ai(sx, sy):
