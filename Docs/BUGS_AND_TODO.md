@@ -110,6 +110,22 @@ wins:
   - Reduce `MESH_GRID_N` from 300 → 200 — fewer triangles, cheaper
     rasterisation, almost-invisible quality loss at typical FOV.
 
+### RUNWAY-VECTORIZE  Runway symbol overlay is the last per-frame Python loop
+Status: **OPEN — low priority**
+Target: `pi4/pfd.py` `draw_runway_symbols`.
+Context: obstacles (commit c0fbdd7+) and airports (commit ba644cb)
+were vectorised — query_nearby returns a numpy structured array, the
+projection runs in numpy, and only the visible-on-screen subset
+falls into the pygame draw loop.  Runways still iterate per-feature
+in Python (trig + pygame.draw.polygon for each runway end + extended
+centerline dashes).  At KPHX (4 runways) it's a small contributor,
+but at busy metro fields (KORD, KATL, etc.) it could be ~5-10 ms/
+frame.  Same recipe: sort runways by lat at load, searchsorted in
+query_nearby, vectorise the lat→pixel projection in
+draw_runway_symbols, then loop only over visible indices for the
+pygame polygon draws.  Picks up another ~5-10 ms off the steady
+baseline once render times start to matter again.
+
 ### #7  Demo smoothness — sinusoidal interpolation
 Status: **OPEN**
 Target: `DemoState` in pi4/pi_zero.
