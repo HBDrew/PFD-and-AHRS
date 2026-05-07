@@ -6377,18 +6377,20 @@ def render(surf, demo_mode, connected, data_stale=False):
     roll = -roll   # base ENU→NED roll correction
     orientation = ss.get("orientation", "right")
     if orientation == "forward":
-        # AHRS rotated 90° from RIGHT (connector now toward nose) —
-        # 90° CCW yaw rotation: pitch / roll axes swap, roll picks up
-        # a sign flip per right-hand-rule.
-        pitch, roll = roll, -pitch
+        # 90° yaw rotation, connector toward nose.  Empirical: pitch
+        # and roll BOTH need the sign-swapped form so the AI banks /
+        # pitches the correct way.  Composes correctly: forward ×
+        # forward = left (180° → -pitch, -roll), forward × aft =
+        # right (identity).
+        pitch, roll = -roll, pitch
         hdg_offset = 90.0
     elif orientation == "left":
         # 180° yaw rotation: pitch and roll both negate.
         pitch, roll = -pitch, -roll
         hdg_offset = 180.0
     elif orientation == "aft":
-        # 90° CW yaw rotation — mirror of FORWARD.
-        pitch, roll = -roll, pitch
+        # 90° opposite of FORWARD — connector toward tail.
+        pitch, roll = roll, -pitch
         hdg_offset = 270.0
     else:    # "right" — default, no rotation
         hdg_offset = 0.0
