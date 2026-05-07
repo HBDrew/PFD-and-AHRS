@@ -3546,10 +3546,10 @@ def ahrs_setup_hit(x, y, ss):
             if not (ry <= y <= ry+_SS_TRIM_H):
                 continue
             if rx_trim <= x <= rx_trim+_SS_TRIM_SW:
-                return f"trim:{key}:-0.5"
+                return f"trim:{key}:-0.1"
             plus_x = rx_trim + _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G
             if plus_x <= x <= plus_x+_SS_TRIM_SW:
-                return f"trim:{key}:+0.5"
+                return f"trim:{key}:+0.1"
         elif ri == 2:
             pass  # CALIBRATE is greyed out (future feature)
         elif ri == 3:
