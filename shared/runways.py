@@ -127,6 +127,13 @@ def _parse_csv(csv_path: str):
     return records
 
 
+def _sort_by_mid_lat(arr):
+    """Sort structured array by midpoint latitude so query_nearby can
+    binary-search a lat band the same way airports.py does."""
+    mid_lat = (arr["le_lat"] + arr["he_lat"]) * 0.5
+    return arr[np.argsort(mid_lat, kind="stable")]
+
+
 def _build_cache(csv_path: str, cache_path: str):
     records = _parse_csv(csv_path)
     if HAS_NUMPY and records:
@@ -144,6 +151,7 @@ def _build_cache(csv_path: str, cache_path: str):
             ("he_elev_ft","f4"), ("he_hdg", "f4"),
         ])
         arr = np.array(records, dtype=dtype)
+        arr = _sort_by_mid_lat(arr)
         np.save(cache_path, arr)
         return arr
     return records
@@ -151,14 +159,23 @@ def _build_cache(csv_path: str, cache_path: str):
 
 def load(data_dir: str):
     """Load runway DB from data_dir.  Cache preferred; falls back to CSV parse.
-    Returns numpy structured array or None."""
+    Returns numpy structured array or None.
+
+    The array is sorted by midpoint latitude so query_nearby can
+    binary-search the lat band.  Older un-sorted caches are sorted in
+    memory at load (cheap)."""
     csv_path   = os.path.join(data_dir, CSV_FILENAME)
     cache_path = os.path.join(data_dir, CACHE_FILENAME)
     if HAS_NUMPY and os.path.exists(cache_path):
         if (not os.path.exists(csv_path) or
                 os.path.getmtime(cache_path) >= os.path.getmtime(csv_path)):
             try:
-                return np.load(cache_path, allow_pickle=False)
+                arr = np.load(cache_path, allow_pickle=False)
+                if len(arr) > 1:
+                    mid_lat = (arr["le_lat"] + arr["he_lat"]) * 0.5
+                    if not (np.diff(mid_lat) >= 0).all():
+                        arr = _sort_by_mid_lat(arr)
+                return arr
             except Exception:
                 pass
     if not os.path.exists(csv_path):
@@ -169,6 +186,24 @@ def load(data_dir: str):
 # ── Spatial query ─────────────────────────────────────────────────────────────
 
 _NM_PER_DEG_LAT = 60.0
+
+# Per-load cache of the contiguous midpoint lat/lon columns so query_nearby
+# can searchsorted the lat band without rebuilding the derived columns
+# every frame (~45 k records × two adds × float32 = ~360 kB allocations
+# avoided per call).  Mirrors airports.py's _lat_index_cache.
+_index_cache = (None, None, None)
+
+
+def _get_index(arr):
+    """Return (mid_lat, mid_lon) contiguous arrays cached against arr's
+    identity.  Recomputes only when the array object changes (i.e. after
+    a fresh load)."""
+    global _index_cache
+    if _index_cache[0] is not arr:
+        mid_lat = np.ascontiguousarray((arr["le_lat"] + arr["he_lat"]) * 0.5)
+        mid_lon = np.ascontiguousarray((arr["le_lon"] + arr["he_lon"]) * 0.5)
+        _index_cache = (arr, mid_lat, mid_lon)
+    return _index_cache[1], _index_cache[2]
 
 
 def query_nearby(runways, lat: float, lon: float, radius_nm: float = 10.0):
@@ -183,36 +218,46 @@ def query_nearby(runways, lat: float, lon: float, radius_nm: float = 10.0):
     results = []
 
     if HAS_NUMPY and hasattr(runways, "dtype"):
-        # Mid-point latitude/longitude for coarse filter
-        mid_lat = (runways["le_lat"] + runways["he_lat"]) * 0.5
-        mid_lon = (runways["le_lon"] + runways["he_lon"]) * 0.5
-        mask = (
-            (mid_lat >= lat - dlat) & (mid_lat <= lat + dlat) &
-            (mid_lon >= lon - dlon) & (mid_lon <= lon + dlon)
-        )
-        candidates = runways[mask]
-        for row in candidates:
-            cdlat = float((row["le_lat"] + row["he_lat"]) * 0.5) - lat
-            cdlon = float((row["le_lon"] + row["he_lon"]) * 0.5) - lon
-            d_nm = math.hypot(cdlat * _NM_PER_DEG_LAT, cdlon * nm_per_deg_lon)
-            if d_nm <= radius_nm:
-                results.append(RunwayRecord(
-                    airport=str(row["airport"]),
-                    length_ft=float(row["length_ft"]),
-                    width_ft=float(row["width_ft"]),
-                    surface=str(row["surface"]),
-                    lighted=bool(row["lighted"]),
-                    le_ident=str(row["le_ident"]),
-                    he_ident=str(row["he_ident"]),
-                    le_lat=float(row["le_lat"]),
-                    le_lon=float(row["le_lon"]),
-                    le_elev_ft=float(row["le_elev_ft"]),
-                    le_hdg=float(row["le_hdg"]),
-                    he_lat=float(row["he_lat"]),
-                    he_lon=float(row["he_lon"]),
-                    he_elev_ft=float(row["he_elev_ft"]),
-                    he_hdg=float(row["he_hdg"]),
-                ))
+        mid_lat, mid_lon = _get_index(runways)
+        # Binary-search the lat band — array is sorted by mid_lat at load.
+        i_lo = int(np.searchsorted(mid_lat, lat - dlat, side="left"))
+        i_hi = int(np.searchsorted(mid_lat, lat + dlat, side="right"))
+        if i_hi <= i_lo:
+            return results
+        slab_lon = mid_lon[i_lo:i_hi]
+        lon_mask = (slab_lon >= lon - dlon) & (slab_lon <= lon + dlon)
+        if not lon_mask.any():
+            return results
+        slab = runways[i_lo:i_hi][lon_mask]
+        slab_mid_lat = mid_lat[i_lo:i_hi][lon_mask]
+        slab_mid_lon = slab_lon[lon_mask]
+        # Vectorised distance check on the narrow slice.
+        dlat_r = slab_mid_lat - lat
+        dlon_r = slab_mid_lon - lon
+        dist_sq = ((dlat_r * _NM_PER_DEG_LAT) ** 2 +
+                   (dlon_r * nm_per_deg_lon) ** 2)
+        within = dist_sq <= radius_nm * radius_nm
+        if not within.any():
+            return results
+        slab = slab[within]
+        for row in slab:
+            results.append(RunwayRecord(
+                airport=str(row["airport"]),
+                length_ft=float(row["length_ft"]),
+                width_ft=float(row["width_ft"]),
+                surface=str(row["surface"]),
+                lighted=bool(row["lighted"]),
+                le_ident=str(row["le_ident"]),
+                he_ident=str(row["he_ident"]),
+                le_lat=float(row["le_lat"]),
+                le_lon=float(row["le_lon"]),
+                le_elev_ft=float(row["le_elev_ft"]),
+                le_hdg=float(row["le_hdg"]),
+                he_lat=float(row["he_lat"]),
+                he_lon=float(row["he_lon"]),
+                he_elev_ft=float(row["he_elev_ft"]),
+                he_hdg=float(row["he_hdg"]),
+            ))
     return results
 
 

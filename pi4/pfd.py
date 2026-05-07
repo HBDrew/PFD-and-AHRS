@@ -5550,7 +5550,7 @@ _CENTERLINE_GLIDE_DEG      = 3.0    # rise centerline at standard glideslope
 def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
                     elev_ft, hdg_deg, pitch_deg, roll_deg,
                     cx, cy, px_per_deg, max_fov_deg=None,
-                    ground_only=False):
+                    ground_only=False, nm_per_deg_lon=None):
     """Project a lat/lon/elevation point onto the AI screen.
     Returns (sx, sy), or None when culled.
     max_fov_deg: cull points whose bearing is more than this off the nose.
@@ -5560,9 +5560,13 @@ def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
                  more (the previous syr<0 check rejected valid below-
                  horizon targets when pitch was more nose-down than the
                  angle to them, which made runways disappear on steep
-                 descent)."""
+                 descent).
+    nm_per_deg_lon: optional precomputed 60·cos(ref_lat) — pass it from
+                 hot loops (runway/centerline draws) so we don't redo
+                 the cos every call."""
     nm_per_deg_lat = 60.0
-    nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
+    if nm_per_deg_lon is None:
+        nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
     dlat_nm = (lat_deg - ref_lat) * nm_per_deg_lat
     dlon_nm = (lon_deg - ref_lon) * nm_per_deg_lon
     dist_nm = math.hypot(dlat_nm, dlon_nm)
@@ -5629,138 +5633,145 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     def _proj(la, lo, elev):
         return _project_latlon(la, lo, lat, lon, alt_ft,
                                elev, hdg_deg, pitch_deg, roll_deg,
-                               cx, cy, px_per_deg, ground_only=True)
+                               cx, cy, px_per_deg, ground_only=True,
+                               nm_per_deg_lon=nm_per_deg_lon)
 
     def _in_ai(sx, sy):
         return ax <= sx <= ax + aw and ay_r <= sy <= ay_r + ah
 
-    for r in nearby:
-        # Distance to runway centre (for range culling)
-        d_nm = math.hypot((r.centre_lat - lat) * nm_per_deg_lat,
-                          (r.centre_lon - lon) * nm_per_deg_lon)
+    # Set the AI clip rect once around the whole pass — hoisted from the
+    # per-runway loop so we don't burn dozens of pygame.set_clip calls
+    # per frame at busy fields.
+    ai_clip_rect = pygame.Rect(ax, ay_r, aw, ah)
+    old_clip = surf.get_clip()
+    surf.set_clip(ai_clip_rect)
 
-        # ── Runway polygon ────────────────────────────────────────────────
-        if show_rwy and d_nm <= _RUNWAY_MAX_RANGE_NM:
-            # Perpendicular offset in lat/lon to span the runway width.
-            # width_ft → degrees of lat (flat-earth ok for <1nm)
-            half_w_deg_lat = (r.width_ft / 2.0) / 6076.0 / 60.0
-            half_w_deg_lon = half_w_deg_lat / max(1e-6, math.cos(math.radians(lat)))
-            # Runway axis in lat/lon (he - le)
-            ax_lat = r.he_lat - r.le_lat
-            ax_lon = r.he_lon - r.le_lon
-            # Perpendicular = rotate axis by 90°.  In (lat, lon) pairs,
-            # rotating (dlat, dlon) by 90° → (-dlon * cos_lat_ratio, dlat / cos_lat_ratio).
-            # We need a unit perpendicular at runway width, so:
-            axis_len_nm = math.hypot(ax_lat * nm_per_deg_lat,
-                                     ax_lon * nm_per_deg_lon)
-            if axis_len_nm < 0.01:
-                continue
-            # Unit vector along axis in nm: (ax_lat_nm, ax_lon_nm) / len
-            # Perpendicular (in nm): (+ax_lon_nm, -ax_lat_nm) / len  → rotate 90° CW
-            perp_lat_nm =  (ax_lon * nm_per_deg_lon) / axis_len_nm
-            perp_lon_nm = -(ax_lat * nm_per_deg_lat) / axis_len_nm
-            half_w_nm = r.width_ft / 6076.0
-            perp_lat = (perp_lat_nm * half_w_nm) / nm_per_deg_lat
-            perp_lon = (perp_lon_nm * half_w_nm) / nm_per_deg_lon
+    try:
+        for r in nearby:
+            # Distance to runway centre (for range culling)
+            d_nm = math.hypot((r.centre_lat - lat) * nm_per_deg_lat,
+                              (r.centre_lon - lon) * nm_per_deg_lon)
 
-            p1 = _proj(r.le_lat + perp_lat, r.le_lon + perp_lon, r.le_elev_ft)
-            p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, r.he_elev_ft)
-            p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, r.he_elev_ft)
-            p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
-            if None in (p1, p2, p3, p4):
-                continue
-            # Draw whenever the polygon's bounding box intersects the AI
-            # rect — not just when one of the four corners lands inside.
-            # Close-up the runway can be much bigger than the screen and
-            # all four corners sit off the bottom while the polygon still
-            # crosses the AI; the old check made it disappear at short
-            # final.
-            xs_p = [p1[0], p2[0], p3[0], p4[0]]
-            ys_p = [p1[1], p2[1], p3[1], p4[1]]
-            if (max(xs_p) >= ax and min(xs_p) <= ax + aw and
-                    max(ys_p) >= ay_r and min(ys_p) <= ay_r + ah):
-                old_clip = surf.get_clip()
-                surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
-                _filled_polygon(surf, [p1, p2, p3, p4], ASPHALT)
-                pygame.gfxdraw.aapolygon(surf, [p1, p2, p3, p4], STRIPE)
-                # Centreline: dashed segments from LE midpoint to HE midpoint.
-                # Mimics actual runway centerline markings.  Number of dashes
-                # scales with the on-screen runway length so it stays readable
-                # both close-in and at distance.
-                mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
-                mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
-                if mid_le is not None and mid_he is not None:
-                    dx = mid_he[0] - mid_le[0]
-                    dy = mid_he[1] - mid_le[1]
-                    seg_len = math.hypot(dx, dy)
-                    if seg_len > 4:
-                        n_dashes = max(2, int(seg_len / 14))
-                        for k in range(0, n_dashes, 2):
-                            t0 = k / n_dashes
-                            t1 = (k + 1) / n_dashes
-                            x0 = mid_le[0] + dx * t0
-                            y0 = mid_le[1] + dy * t0
-                            x1 = mid_le[0] + dx * t1
-                            y1 = mid_le[1] + dy * t1
-                            pygame.draw.aaline(surf, STRIPE, (x0, y0), (x1, y1))
-                    # Runway numbers: offset 8% in from each threshold so
-                    # they sit on the runway surface, not on the threshold
-                    # bar itself.  Skip when runway is too small on-screen.
-                    if seg_len > 36:
-                        le_id = str(r.le_ident).strip().lstrip("0") or "0"
-                        he_id = str(r.he_ident).strip().lstrip("0") or "0"
-                        le_lbl = (int(mid_le[0] + dx * 0.08),
-                                  int(mid_le[1] + dy * 0.08))
-                        he_lbl = (int(mid_he[0] - dx * 0.08),
-                                  int(mid_he[1] - dy * 0.08))
-                        sz = 11 if seg_len < 120 else 13
-                        _text(surf, le_id, sz, NUM_COL, bold=True,
-                              cx=le_lbl[0], cy=le_lbl[1])
-                        _text(surf, he_id, sz, NUM_COL, bold=True,
-                              cx=he_lbl[0], cy=he_lbl[1])
+            # ── Runway polygon ────────────────────────────────────────────────
+            if show_rwy and d_nm <= _RUNWAY_MAX_RANGE_NM:
+                # Runway axis in lat/lon (he - le)
+                ax_lat = r.he_lat - r.le_lat
+                ax_lon = r.he_lon - r.le_lon
+                axis_len_nm = math.hypot(ax_lat * nm_per_deg_lat,
+                                         ax_lon * nm_per_deg_lon)
+                if axis_len_nm < 0.01:
+                    continue
+                # Unit perpendicular in nm: rotate axis 90° CW
+                perp_lat_nm =  (ax_lon * nm_per_deg_lon) / axis_len_nm
+                perp_lon_nm = -(ax_lat * nm_per_deg_lat) / axis_len_nm
+                half_w_nm = r.width_ft / 6076.0
+                perp_lat = (perp_lat_nm * half_w_nm) / nm_per_deg_lat
+                perp_lon = (perp_lon_nm * half_w_nm) / nm_per_deg_lon
 
-                # Airport environment box: a runway-axis-aligned rectangle
-                # 2.5× the runway's width with a small extension past each
-                # threshold so it reads as a frame around the runway, not a
-                # screen-aligned shape that scales weirdly with attitude.
-                # Computed in lat/lon (same as the runway polygon) so the
-                # box rotates with the runway naturally as you change
-                # heading on the approach.
-                BOX_W_SCALE   = 2.5
-                BOX_LEN_PAD   = 0.10   # 10 % past each threshold
-                # Unit vectors along the axis (in lat/lon degrees per nm)
-                axis_lat_unit = ax_lat / axis_len_nm
-                axis_lon_unit = ax_lon / axis_len_nm
-                pad_nm = axis_len_nm * BOX_LEN_PAD
-                ext_lat = axis_lat_unit * pad_nm
-                ext_lon = axis_lon_unit * pad_nm
-                pl = perp_lat * BOX_W_SCALE
-                po = perp_lon * BOX_W_SCALE
-                b1 = _proj(r.le_lat - ext_lat + pl, r.le_lon - ext_lon + po, r.le_elev_ft)
-                b2 = _proj(r.he_lat + ext_lat + pl, r.he_lon + ext_lon + po, r.he_elev_ft)
-                b3 = _proj(r.he_lat + ext_lat - pl, r.he_lon + ext_lon - po, r.he_elev_ft)
-                b4 = _proj(r.le_lat - ext_lat - pl, r.le_lon - ext_lon - po, r.le_elev_ft)
-                if not any(b is None for b in (b1, b2, b3, b4)):
-                    bxs = [b1[0], b2[0], b3[0], b4[0]]
-                    bys = [b1[1], b2[1], b3[1], b4[1]]
-                    if (max(bxs) >= ax and min(bxs) <= ax + aw and
-                            max(bys) >= ay_r and min(bys) <= ay_r + ah):
-                        pygame.draw.lines(surf, BOX_COL, True,
-                                          [b1, b2, b3, b4], 2)
-                surf.set_clip(old_clip)
+                p1 = _proj(r.le_lat + perp_lat, r.le_lon + perp_lon, r.le_elev_ft)
+                p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, r.he_elev_ft)
+                p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, r.he_elev_ft)
+                p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
+                if not (p1 and p2 and p3 and p4):
+                    pass  # at least one corner culled — skip polygon
+                else:
+                    # Draw whenever the polygon's bounding box intersects the
+                    # AI rect — close-up the runway can be much bigger than
+                    # the screen and all four corners may sit off the bottom
+                    # while the polygon still crosses the AI.
+                    p1x, p1y = p1; p2x, p2y = p2
+                    p3x, p3y = p3; p4x, p4y = p4
+                    xs_min = p1x if p1x < p2x else p2x
+                    if p3x < xs_min: xs_min = p3x
+                    if p4x < xs_min: xs_min = p4x
+                    xs_max = p1x if p1x > p2x else p2x
+                    if p3x > xs_max: xs_max = p3x
+                    if p4x > xs_max: xs_max = p4x
+                    ys_min = p1y if p1y < p2y else p2y
+                    if p3y < ys_min: ys_min = p3y
+                    if p4y < ys_min: ys_min = p4y
+                    ys_max = p1y if p1y > p2y else p2y
+                    if p3y > ys_max: ys_max = p3y
+                    if p4y > ys_max: ys_max = p4y
+                    if (xs_max >= ax and xs_min <= ax + aw and
+                            ys_max >= ay_r and ys_min <= ay_r + ah):
+                        poly = [p1, p2, p3, p4]
+                        _filled_polygon(surf, poly, ASPHALT)
+                        pygame.gfxdraw.aapolygon(surf, poly, STRIPE)
+                        # Centreline: dashed segments from LE midpoint to HE
+                        # midpoint.  Number of dashes scales with on-screen
+                        # length so it reads at any range.
+                        mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
+                        mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
+                        if mid_le is not None and mid_he is not None:
+                            dx = mid_he[0] - mid_le[0]
+                            dy = mid_he[1] - mid_le[1]
+                            seg_len = math.hypot(dx, dy)
+                            if seg_len > 4:
+                                n_dashes = max(2, int(seg_len / 14))
+                                inv_n = 1.0 / n_dashes
+                                for k in range(0, n_dashes, 2):
+                                    t0 = k * inv_n
+                                    t1 = (k + 1) * inv_n
+                                    pygame.draw.aaline(
+                                        surf, STRIPE,
+                                        (mid_le[0] + dx * t0, mid_le[1] + dy * t0),
+                                        (mid_le[0] + dx * t1, mid_le[1] + dy * t1))
+                            # Runway numbers: offset 8% in from each threshold
+                            # so they sit on the runway surface.  Skip when
+                            # the runway is too small on-screen.
+                            if seg_len > 36:
+                                le_id = str(r.le_ident).strip().lstrip("0") or "0"
+                                he_id = str(r.he_ident).strip().lstrip("0") or "0"
+                                sz = 11 if seg_len < 120 else 13
+                                _text(surf, le_id, sz, NUM_COL, bold=True,
+                                      cx=int(mid_le[0] + dx * 0.08),
+                                      cy=int(mid_le[1] + dy * 0.08))
+                                _text(surf, he_id, sz, NUM_COL, bold=True,
+                                      cx=int(mid_he[0] - dx * 0.08),
+                                      cy=int(mid_he[1] - dy * 0.08))
 
-        # ── Extended centerlines from each threshold ──────────────────────
-        # Only show centerlines if within a somewhat larger range — they're
-        # a navigation aid for approach planning.  When a direct-to waypoint
-        # is active, render only the selected airport's centerlines.
-        cline_for_this = (show_cline and d_nm <= _CENTERLINE_RANGE_NM and
-                          (not sel_ident or str(r.airport) == sel_ident))
-        if cline_for_this:
-            _draw_extended_centerline(
-                surf, ai_rect, r, lat, lon, alt_ft,
-                hdg_deg, pitch_deg, roll_deg, cx, cy, px_per_deg,
-                CLINE, nm_per_deg_lat, nm_per_deg_lon,
-            )
+                        # Airport environment box: a runway-axis-aligned
+                        # rectangle 2.5× the runway's width with a small
+                        # extension past each threshold so it reads as a
+                        # frame around the runway.
+                        BOX_W_SCALE   = 2.5
+                        BOX_LEN_PAD   = 0.10
+                        axis_lat_unit = ax_lat / axis_len_nm
+                        axis_lon_unit = ax_lon / axis_len_nm
+                        pad_nm = axis_len_nm * BOX_LEN_PAD
+                        ext_lat = axis_lat_unit * pad_nm
+                        ext_lon = axis_lon_unit * pad_nm
+                        pl = perp_lat * BOX_W_SCALE
+                        po = perp_lon * BOX_W_SCALE
+                        b1 = _proj(r.le_lat - ext_lat + pl, r.le_lon - ext_lon + po, r.le_elev_ft)
+                        b2 = _proj(r.he_lat + ext_lat + pl, r.he_lon + ext_lon + po, r.he_elev_ft)
+                        b3 = _proj(r.he_lat + ext_lat - pl, r.he_lon + ext_lon - po, r.he_elev_ft)
+                        b4 = _proj(r.le_lat - ext_lat - pl, r.le_lon - ext_lon - po, r.le_elev_ft)
+                        if b1 and b2 and b3 and b4:
+                            bxs_min = min(b1[0], b2[0], b3[0], b4[0])
+                            bxs_max = max(b1[0], b2[0], b3[0], b4[0])
+                            bys_min = min(b1[1], b2[1], b3[1], b4[1])
+                            bys_max = max(b1[1], b2[1], b3[1], b4[1])
+                            if (bxs_max >= ax and bxs_min <= ax + aw and
+                                    bys_max >= ay_r and bys_min <= ay_r + ah):
+                                pygame.draw.lines(surf, BOX_COL, True,
+                                                  [b1, b2, b3, b4], 2)
+
+            # ── Extended centerlines from each threshold ──────────────────
+            # Only show centerlines if within a somewhat larger range —
+            # navigation aid for approach planning.  When a direct-to
+            # waypoint is active, render only the selected airport's
+            # centerlines.
+            if (show_cline and d_nm <= _CENTERLINE_RANGE_NM and
+                    (not sel_ident or str(r.airport) == sel_ident)):
+                _draw_extended_centerline(
+                    surf, ai_rect, r, lat, lon, alt_ft,
+                    hdg_deg, pitch_deg, roll_deg, cx, cy, px_per_deg,
+                    CLINE, nm_per_deg_lat, nm_per_deg_lon,
+                )
+    finally:
+        surf.set_clip(old_clip)
 
 
 def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
@@ -5769,9 +5780,11 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
                               nm_per_deg_lat, nm_per_deg_lon):
     """Dashed line extending OUTWARD from each threshold along the reciprocal
     of the runway axis, rising at the standard glideslope so the dashes
-    represent the visual approach path rather than ground projection."""
-    ax, ay_r, aw, ah = ai_rect
+    represent the visual approach path rather than ground projection.
 
+    Caller (draw_runway_symbols) holds the AI clip, so we don't set/restore
+    it here.  nm_per_deg_lon is passed through to _project_latlon so the
+    inner cos() isn't recomputed on every dash endpoint."""
     # Axis unit vector from LE → HE in degrees
     ax_dlat = r.he_lat - r.le_lat
     ax_dlon = r.he_lon - r.le_lon
@@ -5785,13 +5798,11 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
 
     dash_nm = _CENTERLINE_DASH_NM
     gap_nm  = _CENTERLINE_DASH_NM * 0.6
-    n_steps = int(_CENTERLINE_EXTEND_NM / (dash_nm + gap_nm))
+    step_nm = dash_nm + gap_nm
+    n_steps = int(_CENTERLINE_EXTEND_NM / step_nm)
 
     # Vertical rise per nm along the approach path (ft).
     rise_ft_per_nm = math.tan(math.radians(_CENTERLINE_GLIDE_DEG)) * 6076.0
-
-    old_clip = surf.get_clip()
-    surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
 
     # Angular cutoff: skip segments whose endpoint is more than 60° off the
     # nose — past that the flat-earth bearing math wraps and dashes behind
@@ -5804,30 +5815,32 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
         (r.le_lat, r.le_lon, r.le_elev_ft, -1),
         (r.he_lat, r.he_lon, r.he_elev_ft, +1),
     ):
+        s_dlat = sign * u_dlat
+        s_dlon = sign * u_dlon
         for i in range(n_steps):
-            start = (dash_nm + gap_nm) * i
+            start = step_nm * i
             end   = start + dash_nm
-            s_lat = thresh_lat + sign * u_dlat * start
-            s_lon = thresh_lon + sign * u_dlon * start
-            e_lat = thresh_lat + sign * u_dlat * end
-            e_lon = thresh_lon + sign * u_dlon * end
-            s_elev = thresh_elev + start * rise_ft_per_nm
-            e_elev = thresh_elev + end   * rise_ft_per_nm
-            ps = _project_latlon(s_lat, s_lon, lat, lon, alt_ft,
-                                 s_elev, hdg_deg, pitch_deg, roll_deg,
+            ps = _project_latlon(thresh_lat + s_dlat * start,
+                                 thresh_lon + s_dlon * start,
+                                 lat, lon, alt_ft,
+                                 thresh_elev + start * rise_ft_per_nm,
+                                 hdg_deg, pitch_deg, roll_deg,
                                  cx, cy, px_per_deg, max_fov_deg=_FOV,
-                                 ground_only=False)
+                                 ground_only=False,
+                                 nm_per_deg_lon=nm_per_deg_lon)
             if ps is None:
                 continue
-            pe = _project_latlon(e_lat, e_lon, lat, lon, alt_ft,
-                                 e_elev, hdg_deg, pitch_deg, roll_deg,
+            pe = _project_latlon(thresh_lat + s_dlat * end,
+                                 thresh_lon + s_dlon * end,
+                                 lat, lon, alt_ft,
+                                 thresh_elev + end * rise_ft_per_nm,
+                                 hdg_deg, pitch_deg, roll_deg,
                                  cx, cy, px_per_deg, max_fov_deg=_FOV,
-                                 ground_only=False)
+                                 ground_only=False,
+                                 nm_per_deg_lon=nm_per_deg_lon)
             if pe is None:
                 continue
             pygame.draw.line(surf, col, ps, pe, 2)
-
-    surf.set_clip(old_clip)
 
 
 # ── Main render function ──────────────────────────────────────────────────────
