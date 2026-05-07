@@ -3192,8 +3192,13 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
     # plan without typing.  Only on tall enough displays.
     if _kb_nav_extras_visible():
         bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        # Resolve the nearest ident so the pilot sees what they're
+        # about to activate before tapping.  Empty string falls back
+        # to the generic label when there's no fix / no airports.
+        nrst = _nav_lookup_nearest()
+        nrst_lbl = f"DIRECT TO {nrst}" if nrst else "DIRECT TO NEAREST"
         _action_btn(surf, bx_l, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
-                    "DIRECT TO NEAREST", "ok")
+                    nrst_lbl, "ok")
         _action_btn(surf, bx_r, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
                     "CANCEL FLIGHT PLAN", "danger")
 
@@ -4785,10 +4790,12 @@ def draw_airport_data(surf, ad):
     row3_y = row2_y + filt_h + 10
     nav_w = (bw - 20) // 3
     nav_lbl = f"DIRECT  →  {nav_ident}" if nav_ident else "DIRECT  →"
+    nrst_ident = _nav_lookup_nearest()
+    nrst_lbl = f"NEAREST  {nrst_ident}" if nrst_ident else "NEAREST"
     _seg_btn(surf, bx,                       row3_y, nav_w, filt_h,
              nav_lbl,   bool(nav_ident), r=6)
     _seg_btn(surf, bx + nav_w + 10,          row3_y, nav_w, filt_h,
-             "NEAREST", False,            r=6)
+             nrst_lbl,  False,            r=6)
     _seg_btn(surf, bx + 2 * (nav_w + 10),    row3_y, nav_w, filt_h,
              "CLEAR",   False,            r=6)
 
@@ -5475,26 +5482,47 @@ def _nav_set_by_ident(ident: str) -> bool:
     return True
 
 
+# Cached nearest-airport ident.  query_nearby with a 100 nm radius
+# costs ~1 ms — fine on demand, wasteful at 30 Hz when the keyboard or
+# AIRPORTS screen is up.  Refresh when the aircraft has moved >0.6 nm
+# (lat/lon rounded to 0.01°) or 2 s has elapsed.
+_nav_nearest_cache = {"lat": None, "lon": None, "ident": "", "ts": 0.0}
+
+
 def _nav_lookup_nearest():
     """Return the ident of the nearest public airport (S/M/L) within
-    100 nm, or "" if no airports / no fix.  Used by the confirmation
-    flow which displays the ident before activating."""
+    100 nm, or "" if no airports / no fix.  Result is cached for ~0.6 nm
+    of motion or 2 s of wall time so repeated render-frame calls from
+    the keyboard / AIRPORTS screen don't hammer the spatial query."""
     if _airports is None:
         return ""
     lat = disp.get("lat", 0.0)
     lon = disp.get("lon", 0.0)
+    rlat = round(lat, 2)
+    rlon = round(lon, 2)
+    now = time.monotonic()
+    c = _nav_nearest_cache
+    if (rlat == c["lat"] and rlon == c["lon"]
+            and now - c["ts"] < 2.0):
+        return c["ident"]
     nearby = apt_mod.query_nearby(_airports, lat, lon, radius_nm=100.0)
-    if nearby is None or len(nearby) == 0:
-        return ""
-    if hasattr(nearby, "dtype"):
-        for i in range(len(nearby)):
-            if str(nearby["atype"][i]) in ("S", "M", "L"):
-                return str(nearby["ident"][i])
-        return ""
-    for apt in nearby:
-        if apt.atype in ("S", "M", "L"):
-            return apt.ident
-    return ""
+    ident = ""
+    if nearby is not None and len(nearby) > 0:
+        if hasattr(nearby, "dtype"):
+            for i in range(len(nearby)):
+                if str(nearby["atype"][i]) in ("S", "M", "L"):
+                    ident = str(nearby["ident"][i])
+                    break
+        else:
+            for apt in nearby:
+                if apt.atype in ("S", "M", "L"):
+                    ident = apt.ident
+                    break
+    c["lat"] = rlat
+    c["lon"] = rlon
+    c["ts"]  = now
+    c["ident"] = ident
+    return ident
 
 
 def _nav_set_nearest() -> bool:
