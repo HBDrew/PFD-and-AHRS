@@ -2205,25 +2205,42 @@ def sim_controls_hit(x, y):
 # confirmation, requiring a second ENTER (or tap on ACTIVATE) before the
 # active flight plan changes.  Prevents accidental flight-plan edits from
 # a stray screen tap.
-_NAVCNF_W   = 360
+_NAVCNF_W   = 420
 _NAVCNF_H   = 170
 _NAVCNF_BTN_H = 48
+_NAVCNF_BTN_GAP = 8
 
 
 def _navcnf_geom():
+    """Modal + button rects.  Three-button layout when the typed ident
+    has runway data (CANCEL · DIRECT · APPR); two-button when not
+    (CANCEL · DIRECT).  Returns rects for whichever buttons are live —
+    callers gate on what's been returned."""
     bx = (DISPLAY_W - _NAVCNF_W) // 2
     by = (DISPLAY_H - _NAVCNF_H) // 2
     btn_y = by + _NAVCNF_H - _NAVCNF_BTN_H - 14
-    btn_w = (_NAVCNF_W - 14 - 14 - 12) // 2
-    bx_l  = bx + 14
-    bx_r  = bx + _NAVCNF_W - 14 - btn_w
-    return bx, by, btn_y, btn_w, bx_l, bx_r
+    pad = 14
+    inner_w = _NAVCNF_W - 2 * pad
+
+    has_appr = _ident_has_runways(disp.get("nav_confirm_ident", ""))
+    n = 3 if has_appr else 2
+    btn_w = (inner_w - (n - 1) * _NAVCNF_BTN_GAP) // n
+
+    rects = {}
+    rects["cancel"] = pygame.Rect(bx + pad, btn_y, btn_w, _NAVCNF_BTN_H)
+    rects["activate"] = pygame.Rect(
+        bx + pad + (btn_w + _NAVCNF_BTN_GAP), btn_y, btn_w, _NAVCNF_BTN_H)
+    if has_appr:
+        rects["appr"] = pygame.Rect(
+            bx + pad + 2 * (btn_w + _NAVCNF_BTN_GAP),
+            btn_y, btn_w, _NAVCNF_BTN_H)
+    return bx, by, rects
 
 
 def draw_nav_confirm(surf):
     """Centered "Activate Direct to XXXX?" modal."""
     ident = disp.get("nav_confirm_ident", "")
-    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
+    bx, by, rects = _navcnf_geom()
 
     _draw_veil(surf)
     panel = pygame.Surface((_NAVCNF_W, _NAVCNF_H), pygame.SRCALPHA)
@@ -2239,28 +2256,37 @@ def draw_nav_confirm(surf):
     _text(surf, "Activate?", 14, (200, 215, 235),
           cx=bx + _NAVCNF_W // 2, cy=by + 96)
 
-    _action_btn(surf, bx_l, btn_y, btn_w, _NAVCNF_BTN_H, "CANCEL",   "danger")
-    _action_btn(surf, bx_r, btn_y, btn_w, _NAVCNF_BTN_H, "ACTIVATE", "ok")
+    rc = rects["cancel"]
+    _action_btn(surf, rc.x, rc.y, rc.w, rc.h, "CANCEL", "danger")
+    ra = rects["activate"]
+    _action_btn(surf, ra.x, ra.y, ra.w, ra.h, "DIRECT", "ok")
+    if "appr" in rects:
+        rp = rects["appr"]
+        _action_btn(surf, rp.x, rp.y, rp.w, rp.h, "APPR", "normal")
 
 
 def nav_confirm_hit(x, y):
-    """Return 'activate' / 'cancel' / 'noop' / None for a tap on the modal."""
-    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
+    """Return 'activate' / 'cancel' / 'appr' / 'noop' / None for a tap
+    on the modal."""
+    bx, by, rects = _navcnf_geom()
     if not (bx <= x <= bx + _NAVCNF_W and by <= y <= by + _NAVCNF_H):
         return None
-    if btn_y <= y <= btn_y + _NAVCNF_BTN_H:
-        if bx_l <= x <= bx_l + btn_w:
-            return "cancel"
-        if bx_r <= x <= bx_r + btn_w:
-            return "activate"
+    for action, rect in rects.items():
+        if rect.collidepoint(x, y):
+            return action
     return "noop"
 
 
 def _nav_confirm_apply():
-    """Activate the pending direct-to and dismiss the modal."""
+    """Activate the pending direct-to and dismiss the modal.  Any
+    active approach is cleared — pilot is explicitly choosing a new
+    D2, so the existing HITS corridor no longer applies."""
     ident = disp.get("nav_confirm_ident", "")
     if ident:
         _nav_set_by_ident(ident)
+        ap = disp.get("approach")
+        if ap and ap.get("active"):
+            ap["active"] = False
     disp["nav_confirm_ident"] = ""
     disp["mode"] = disp.get("nav_confirm_prev", "pfd")
 
@@ -2761,6 +2787,13 @@ def handle_event(event, demo_mode):
                 _nav_confirm_apply()
             elif action == "cancel":
                 _nav_confirm_cancel()
+            elif action == "appr":
+                # APPR path: apply the direct-to so the airport is the
+                # active waypoint, then transition to the runway picker.
+                # Picking a runway end re-activates the D2 to the
+                # threshold and turns on HITS.
+                _nav_confirm_apply()
+                disp["mode"] = "approach_select"
             # "noop" / None / outside-panel: consume to keep the modal up
             return True
 
@@ -3023,16 +3056,6 @@ def handle_event(event, demo_mode):
             if (_SIM_EXIT_X <= x <= _SIM_EXIT_X + _SIM_EXIT_W and
                     _SIM_EXIT_Y <= y <= _SIM_EXIT_Y + _SIM_EXIT_H):
                 disp["mode"] = "sim_controls"
-                return True
-
-        # Tap on the APPR chip → open the runway picker.  Sits just
-        # right of the CDI strip; visible only when a D2 to an airport
-        # with runway data is active or when an approach is itself
-        # active (so the pilot has a way back in to cancel).
-        if mode == "pfd" and _appr_btn_visible():
-            rect = _appr_btn_rect()
-            if rect.collidepoint(x, y):
-                disp["mode"] = "approach_select"
                 return True
 
         # Tap on the CDI strip → open keyboard for waypoint entry.  Strip
@@ -6044,31 +6067,11 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 _CDI_FULL_SCALE_NM = 1.0    # ±1 nm full-scale cross-track deflection
 _EARTH_R_NM        = 3440.065  # Earth mean radius (km/1.852)
 
-# APPR chip — appears just to the right of the CDI strip when a D2 is
-# active to an airport.  Tapping it opens the approach-runway picker.
-_APPR_BTN_W = 56
-_APPR_BTN_H = 28
 
-
-def _appr_btn_rect() -> pygame.Rect:
-    """Geometry of the APPR chip on the CDI strip.  Returns the rect
-    even if the chip wouldn't currently be drawn — callers gate on
-    visibility separately.  Mirrors the CDI bar's vertical position."""
-    cdi_bar_w = max(140, int(DISPLAY_W * 0.20))
-    cdi_bar_y = HDG_Y - 50
-    cdi_r = CX + cdi_bar_w // 2 + 18
-    return pygame.Rect(cdi_r + 8, cdi_bar_y - 22, _APPR_BTN_W, _APPR_BTN_H)
-
-
-def _appr_btn_visible() -> bool:
-    """The APPR chip shows when there's a D2 to an identifier we have
-    runway records for, OR when an approach is currently active (so
-    the pilot can cancel it)."""
-    nv = disp.get("nav") or {}
-    ap = disp.get("approach") or {}
-    if ap.get("active"):
-        return True
-    ident = nv.get("ident", "")
+def _ident_has_runways(ident: str) -> bool:
+    """True when the airport ``ident`` has runway records loaded — used
+    to decide whether to surface the APPR button on the nav-confirm
+    modal."""
     if not ident or _runways is None:
         return False
     return len(_apr_runway_ends(ident)) > 0
@@ -6545,21 +6548,6 @@ def draw_cdi(surf):
         # the "DIRECT  →" affordance so the pilot knows tapping opens the
         # keyboard.
         _text(surf, "DIRECT  →", 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
-
-    # APPR chip — appears just to the right of the CDI strip when a D2
-    # is set to an airport we have runway data for, OR when an approach
-    # is currently active (so the pilot can cancel it).  Tapping the
-    # chip opens the runway picker.
-    if _appr_btn_visible():
-        rect = _appr_btn_rect()
-        active = bool((disp.get("approach") or {}).get("active"))
-        bg = (0, 55, 65) if active else (0, 18, 38)
-        oc = CYAN       if active else (90, 130, 170)
-        tc = CYAN       if active else (180, 215, 240)
-        pygame.draw.rect(surf, bg, rect, border_radius=5)
-        pygame.draw.rect(surf, oc, rect, width=2, border_radius=5)
-        _text(surf, "APPR", 13, tc, bold=True,
-              cx=rect.centerx, cy=rect.centery)
 
 
 # ── Runway polygons + extended centerlines ───────────────────────────────────
@@ -7232,20 +7220,24 @@ def render(surf, demo_mode, connected, data_stale=False):
         # GL rows HDG_H..DISPLAY_H.
         _shared_gl_ctx.viewport = (0, HDG_H, DISPLAY_W, HDG_Y)
         # Build polyline list for depth-tested rendering on top of terrain.
+        # When an approach is active, the HITS boxes replace the magenta
+        # D2 trace — the boxes already convey the path in 3D and the
+        # extra magenta line clutters the corridor.
         _gl_polylines = []
-        _trace_verts = build_direct_to_trace_vertices()
-        if _trace_verts is not None and len(_trace_verts) >= 2:
-            _gl_polylines.append((
-                _trace_verts,
-                (220 / 255.0, 0.0, 220 / 255.0, 1.0),
-                3.0,
-            ))
+        _ap = disp.get("approach") or {}
+        if not _ap.get("active"):
+            _trace_verts = build_direct_to_trace_vertices()
+            if _trace_verts is not None and len(_trace_verts) >= 2:
+                _gl_polylines.append((
+                    _trace_verts,
+                    (220 / 255.0, 0.0, 220 / 255.0, 1.0),
+                    3.0,
+                ))
         # HITS boxes — cyan rectangles along the extended centreline
         # at 3° glideslope when a synthetic approach is active.  The
         # boxes feed the same depth-tested polyline path as the D2
         # trace, so terrain occludes them naturally where ridges
         # block the corridor.
-        _ap = disp.get("approach") or {}
         if _ap.get("active"):
             _gl_polylines.extend(_hits_mod.build_box_polylines(
                 _ap["thresh_lat"], _ap["thresh_lon"],
@@ -7303,8 +7295,9 @@ def render(surf, demo_mode, connected, data_stale=False):
             # by 1.7°, regardless of where the SVT camera floor sits.
             draw_obstacle_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, _ov_roll)
         # Direct-to course trace — depth-tested 3D in the shared-GL path,
-        # 2D pygame fallback when no GL.
-        if _shared_gl_ctx is None:
+        # 2D pygame fallback when no GL.  Suppressed when an approach is
+        # active (HITS boxes carry the path instead).
+        if _shared_gl_ctx is None and not (disp.get("approach") or {}).get("active"):
             draw_direct_to_trace(surf, _full_ai, lat, lon, alt_render, hdg, pitch, _ov_roll)
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
@@ -7327,7 +7320,13 @@ def render(surf, demo_mode, connected, data_stale=False):
                 _miw, _mih)
         global _last_map_rect
         _last_map_rect = rect
-        d2 = disp.get("nav") or {}
+        d2_src = disp.get("nav") or {}
+        # Tag the dict the inset receives with the current approach
+        # state so moving_map.render can colour the course line cyan
+        # (approach) vs magenta (regular D2) and use the activation
+        # point as the static line origin.
+        d2 = dict(d2_src)
+        d2["approach_active"] = bool((disp.get("approach") or {}).get("active"))
         # GPS track sticks at its last value when groundspeed drops to
         # zero (stationary on the ramp), so passing it straight to the
         # inset would freeze the rotation at whatever heading we last

@@ -62,6 +62,7 @@ _APT_HELI    = (200, 80, 200)
 _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
 _D2_MAGENTA  = (220, 0, 220)
+_HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
 
 
 # ── Hypsometric terrain tint cache ────────────────────────────────────────────
@@ -361,14 +362,29 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     lbl = font.render(str(ids[i]), True, _APT_PUB)
                     surf.blit(lbl, (ix + 5, iy - 7))
 
-    # ── Direct-to course + waypoint diamond ──────────────────────────────────
+    # ── Direct-to / approach course line + waypoint diamond ─────────────────
+    # Course line is drawn STATICALLY from the activation point to the
+    # waypoint — same convention the SVT direct-to trace uses.  This way
+    # the line represents the chosen course, not a constantly-updating
+    # bearing-to-waypoint arrow as the aircraft drifts off course.
+    # Colour follows mode: cyan when an approach is loaded (matches the
+    # HITS palette), magenta when this is a regular direct-to.
     if (settings.get("map_show_directto", True)
             and direct_to is not None and direct_to.get("ident")):
+        approach_active = bool(direct_to.get("approach_active"))
+        course_col = _HITS_CYAN if approach_active else _D2_MAGENTA
+        # Activation point — fall back to the waypoint itself if no
+        # activation lat/lon was captured (rare; happens before the
+        # first frame after a fresh activate).
+        ax_lat = float(direct_to.get("act_lat") or direct_to["lat"])
+        ax_lon = float(direct_to.get("act_lon") or direct_to["lon"])
+        ax_x, ax_y = _project(ax_lat, ax_lon)
         wpx, wpy = _project(direct_to["lat"], direct_to["lon"])
-        pygame.draw.line(surf, _D2_MAGENTA, (int(cx), int(cy)),
+        pygame.draw.line(surf, course_col,
+                         (int(ax_x), int(ax_y)),
                          (int(wpx), int(wpy)), 2)
         d = 5
-        pygame.draw.polygon(surf, _D2_MAGENTA,
+        pygame.draw.polygon(surf, course_col,
                             [(int(wpx),     int(wpy) - d),
                              (int(wpx) + d, int(wpy)),
                              (int(wpx),     int(wpy) + d),
@@ -437,7 +453,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     ete_lbl = "ETE --:--"
             else:
                 ete_lbl = "ETE --:--"
-            ete_surf = font.render(ete_lbl, True, _D2_MAGENTA)
+            ete_col = (_HITS_CYAN
+                       if direct_to.get("approach_active")
+                       else _D2_MAGENTA)
+            ete_surf = font.render(ete_lbl, True, ete_col)
             ete_w = ete_surf.get_width()
             ete_h = ete_surf.get_height()
             # Small dark backplate so the magenta text reads over any
