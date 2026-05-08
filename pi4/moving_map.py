@@ -216,7 +216,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
-           airport_types_visible=None):
+           airport_types_visible=None, gs_kt=0.0):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -411,6 +411,43 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         surf.blit(rng_surf, (x + 4, y + 2))
         surf.blit(orient_surf,
                   (x + w - orient_surf.get_width() - 4, y + 2))
+
+        # ETE — only when a direct-to is active.  Bottom-right corner,
+        # magenta to match the D2 course-line convention.  Uses GPS
+        # ground speed; below 3 kt (taxi threshold) the ETE is unstable
+        # so we render dashes rather than a noise-driven number.
+        if direct_to is not None and direct_to.get("ident"):
+            n_nm = (direct_to["lat"] - lat) * _NM_PER_DEG_LAT
+            e_nm = ((direct_to["lon"] - lon)
+                    * _NM_PER_DEG_LAT * cos_lat)
+            d_nm = math.hypot(n_nm, e_nm)
+            if gs_kt >= 3.0 and d_nm > 0.0:
+                hours = d_nm / gs_kt
+                if hours < 1.0:
+                    mm_, ss_ = divmod(int(round(hours * 3600)), 60)
+                    ete_lbl = f"ETE {mm_}:{ss_:02d}"
+                elif hours < 10.0:
+                    h_  = int(hours)
+                    mm_ = int(round((hours - h_) * 60))
+                    if mm_ == 60:
+                        h_ += 1
+                        mm_ = 0
+                    ete_lbl = f"ETE {h_}:{mm_:02d}"
+                else:
+                    ete_lbl = "ETE --:--"
+            else:
+                ete_lbl = "ETE --:--"
+            ete_surf = font.render(ete_lbl, True, _D2_MAGENTA)
+            ete_w = ete_surf.get_width()
+            ete_h = ete_surf.get_height()
+            # Small dark backplate so the magenta text reads over any
+            # tint colour underneath.
+            plate = pygame.Surface((ete_w + 6, ete_h + 2), pygame.SRCALPHA)
+            plate.fill((0, 0, 0, 160))
+            surf.blit(plate,
+                      (x + w - ete_w - 7, y + h - ete_h - 4))
+            surf.blit(ete_surf,
+                      (x + w - ete_w - 4, y + h - ete_h - 3))
 
 
 def hit_test(rect, x, y) -> bool:

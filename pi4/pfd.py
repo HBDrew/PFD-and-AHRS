@@ -7074,6 +7074,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             direct_to=d2 if d2.get("ident") else None,
             font=_get_font(11, bold=True),
             airport_types_visible=_types_vis,
+            gs_kt=speed,
         )
 
     # 2. Pitch ladder (with roll rotation)
