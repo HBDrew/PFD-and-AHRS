@@ -252,12 +252,15 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                              (int(x1), int(y1)), (int(x2), int(y2)), w_px)
 
     # ── Obstacles ────────────────────────────────────────────────────────────
+    # Match the SVT display convention: only show obstacles within
+    # 1000 ft below the aircraft (collision-risk window); obstacles
+    # above are always shown (they're a hazard).  The defaults in
+    # obstacles.query_nearby already encode that, so just pass alt_ft.
     if (settings.get("map_show_obstacles", True)
             and obstacles_arr is not None):
         nearby = _obs_mod.query_nearby(obstacles_arr, lat, lon,
                                        radius_nm=range_nm * 1.4,
-                                       alt_ft=alt_ft, below_ft=20000.0,
-                                       above_ft=20000.0)
+                                       alt_ft=alt_ft)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
             for la, lo in zip(nearby["lat"], nearby["lon"]):
                 ox, oy = _project(float(la), float(lo))
