@@ -84,6 +84,7 @@ import water as water_mod
 import settings as _settings
 import moving_map as _map_mod
 import sun as _sun_mod
+import hits as _hits_mod
 
 DEG = math.pi / 180
 
@@ -256,6 +257,23 @@ disp["nav"] = {                     # rudimentary direct-to-airport navigation
     "elev_ft": 0.0,
     "act_lat": 0.0,     # aircraft lat at activation (CDI course reference)
     "act_lon": 0.0,
+}
+
+# Synthetic approach (HITS).  Active when the pilot has selected a
+# specific runway end via the APPR picker.  When set, the renderer
+# draws cyan HITS boxes along the extended centreline at a 3°
+# glideslope, and the direct-to is auto-pointed at the threshold so
+# the CDI / ETE line up with the runway instead of the airport
+# centroid.  Cleared on PFD restart (not persisted) — fresh approach
+# each flight.
+disp["approach"] = {
+    "active":          False,
+    "airport":         "",         # parent airport ident (e.g. "KSEZ")
+    "runway":          "",         # runway-end ident (e.g. "03")
+    "thresh_lat":      0.0,
+    "thresh_lon":      0.0,
+    "thresh_elev_ft":  0.0,
+    "course_deg":      0.0,        # true course TO the threshold
 }
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
@@ -2597,6 +2615,24 @@ def handle_event(event, demo_mode):
                 _settings.mark_dirty()
             return True
 
+        # ── Approach selection taps ───────────────────────────────────────
+        if mode == "approach_select":
+            action = approach_select_hit(x, y)
+            if action == "back":
+                disp["mode"] = "pfd"
+            elif action == "cancel":
+                _approach_cancel()
+                disp["mode"] = "pfd"
+            elif action and action.startswith("select:"):
+                idx = int(action.split(":", 1)[1])
+                ident = (disp.get("nav") or {}).get("ident", "") or \
+                        (disp.get("approach") or {}).get("airport", "")
+                ends = _apr_runway_ends(ident)
+                if 0 <= idx < len(ends):
+                    _approach_activate(ends[idx])
+                    disp["mode"] = "pfd"
+            return True
+
         # ── AHRS / Sensors taps ───────────────────────────────────────────
         if mode == "ahrs_setup":
             action = ahrs_setup_hit(x, y, disp["ss"])
@@ -2987,6 +3023,16 @@ def handle_event(event, demo_mode):
             if (_SIM_EXIT_X <= x <= _SIM_EXIT_X + _SIM_EXIT_W and
                     _SIM_EXIT_Y <= y <= _SIM_EXIT_Y + _SIM_EXIT_H):
                 disp["mode"] = "sim_controls"
+                return True
+
+        # Tap on the APPR chip → open the runway picker.  Sits just
+        # right of the CDI strip; visible only when a D2 to an airport
+        # with runway data is active or when an approach is itself
+        # active (so the pilot has a way back in to cancel).
+        if mode == "pfd" and _appr_btn_visible():
+            rect = _appr_btn_rect()
+            if rect.collidepoint(x, y):
+                disp["mode"] = "approach_select"
                 return True
 
         # Tap on the CDI strip → open keyboard for waypoint entry.  Strip
@@ -3779,6 +3825,187 @@ def _trim_stepper(surf, bx, by, bw, bh, val, key):
           cx=vx+_SS_TRIM_VW//2, cy=ry+_SS_TRIM_H//2)
     _step_btn(surf, vx+_SS_TRIM_VW+_SS_TRIM_G, ry, _SS_TRIM_SW, _SS_TRIM_H, "+")
     return rx   # leftmost x of stepper (for hit detection)
+
+
+# ── Approach selection screen (HITS / synthetic approaches) ──────────────────
+#
+# Pilot taps APPR on the CDI strip → opens this screen.  Lists runway
+# ends for the airport currently held in disp["nav"]["ident"]; a tap on
+# any end activates HITS to that threshold and retargets the direct-to.
+
+_APR_HEADER_Y = 64       # below the title bar
+_APR_GRID_TOP = 110
+_APR_TILE_W   = 280
+_APR_TILE_H   = 84
+_APR_TILE_GX  = 18
+_APR_TILE_GY  = 12
+_APR_COLS     = 2
+_APR_CANCEL_H = 44
+
+
+def _apr_runway_ends(ident: str) -> list:
+    """Return [(rwy_id, lat, lon, elev_ft, hdg_deg, length_ft), ...] for the
+    airport ``ident``, one entry per runway end (so a single physical
+    runway yields two entries, e.g. RWY 03 and RWY 21)."""
+    if _runways is None or not ident:
+        return []
+    if hasattr(_runways, "dtype"):
+        mask = _runways["airport"] == ident
+        rows = _runways[mask]
+        ends = []
+        for r in rows:
+            ends.append((str(r["le_ident"]), float(r["le_lat"]),
+                         float(r["le_lon"]), float(r["le_elev_ft"]),
+                         float(r["le_hdg"]), float(r["length_ft"])))
+            ends.append((str(r["he_ident"]), float(r["he_lat"]),
+                         float(r["he_lon"]), float(r["he_elev_ft"]),
+                         float(r["he_hdg"]), float(r["length_ft"])))
+        return ends
+    # Pure-Python fallback (legacy path).
+    return [
+        (e[0], e[1], e[2], e[3], e[4], r.length_ft)
+        for r in _runways if r.airport == ident
+        for e in (
+            (r.le_ident, r.le_lat, r.le_lon, r.le_elev_ft, r.le_hdg),
+            (r.he_ident, r.he_lat, r.he_lon, r.he_elev_ft, r.he_hdg),
+        )
+    ]
+
+
+def _apr_grid_origin():
+    """Top-left of the runway tile grid (centred horizontally)."""
+    grid_w = _APR_COLS * _APR_TILE_W + (_APR_COLS - 1) * _APR_TILE_GX
+    return (DISPLAY_W - grid_w) // 2, _APR_GRID_TOP
+
+
+def _apr_tile_rect(i: int) -> pygame.Rect:
+    """Rect for the i-th runway tile (row-major, _APR_COLS columns)."""
+    gx, gy = _apr_grid_origin()
+    col = i % _APR_COLS
+    row = i // _APR_COLS
+    x = gx + col * (_APR_TILE_W + _APR_TILE_GX)
+    y = gy + row * (_APR_TILE_H + _APR_TILE_GY)
+    return pygame.Rect(x, y, _APR_TILE_W, _APR_TILE_H)
+
+
+def draw_approach_select(surf):
+    """Approach-runway picker screen.  Draws runway tiles for the parent
+    airport (read from disp["nav"]["ident"]), plus a CANCEL APPROACH
+    button when an approach is currently active."""
+    _screen_header(surf, "APPROACH")
+
+    nv  = disp.get("nav") or {}
+    ap  = disp.get("approach") or {}
+    ident = nv.get("ident", "") or ap.get("airport", "")
+
+    # Header line — the airport this picker is for.
+    if ident:
+        _text(surf, ident, 22, WHITE, bold=True,
+              cx=DISPLAY_W // 2, cy=_APR_HEADER_Y)
+    else:
+        _text(surf, "Set a Direct-To airport first",
+              16, (200, 180, 80),
+              cx=DISPLAY_W // 2, cy=_APR_HEADER_Y)
+        return
+
+    ends = _apr_runway_ends(ident)
+    if not ends:
+        _text(surf, f"No runway data loaded for {ident}",
+              16, (200, 180, 80),
+              cx=DISPLAY_W // 2, cy=_APR_HEADER_Y + 36)
+        return
+
+    cur_runway = ap.get("runway", "") if ap.get("active") else ""
+    for i, (rid, _la, _lo, elev, hdg, length) in enumerate(ends):
+        rect = _apr_tile_rect(i)
+        if rect.bottom > DISPLAY_H - _APR_CANCEL_H - 10:
+            break    # ran out of room; pagination would go here
+        active = (rid == cur_runway)
+        bg = (0, 55, 65) if active else (0, 18, 38)
+        oc = CYAN      if active else (60, 80, 110)
+        pygame.draw.rect(surf, bg, rect, border_radius=8)
+        pygame.draw.rect(surf, oc, rect, width=2, border_radius=8)
+        _text(surf, f"RWY {rid}", 22, WHITE, bold=True,
+              cx=rect.centerx, cy=rect.y + 24)
+        _text(surf, f"{int(round(length)):,} ft   {int(round(hdg))}°",
+              14, (180, 195, 220),
+              cx=rect.centerx, cy=rect.y + 56)
+
+    # CANCEL APPROACH button — only when an approach is active.
+    if ap.get("active"):
+        bx = DISPLAY_W // 2 - 130
+        by = DISPLAY_H - _APR_CANCEL_H - 12
+        _action_btn(surf, bx, by, 260, _APR_CANCEL_H,
+                    "CANCEL APPROACH", style="warn")
+
+
+def approach_select_hit(x, y):
+    """Return action string for a tap on the approach-select screen, or
+    None if nothing was hit."""
+    if _back_hit(x, y):
+        return "back"
+
+    nv  = disp.get("nav") or {}
+    ap  = disp.get("approach") or {}
+    ident = nv.get("ident", "") or ap.get("airport", "")
+    if not ident:
+        return None
+
+    ends = _apr_runway_ends(ident)
+    for i in range(len(ends)):
+        rect = _apr_tile_rect(i)
+        if rect.bottom > DISPLAY_H - _APR_CANCEL_H - 10:
+            break
+        if rect.collidepoint(x, y):
+            return f"select:{i}"
+
+    if ap.get("active"):
+        bx = DISPLAY_W // 2 - 130
+        by = DISPLAY_H - _APR_CANCEL_H - 12
+        if bx <= x <= bx + 260 and by <= y <= by + _APR_CANCEL_H:
+            return "cancel"
+    return None
+
+
+def _approach_activate(rwy_end):
+    """Activate HITS to the given runway end and retarget the
+    direct-to so the CDI / ETE / inset all line up with the threshold
+    instead of the airport centroid."""
+    rid, la, lo, elev, hdg, _length = rwy_end
+    ident = disp.get("nav", {}).get("ident", "") or \
+            disp.get("approach", {}).get("airport", "")
+    disp["approach"] = {
+        "active":          True,
+        "airport":         ident,
+        "runway":          rid,
+        "thresh_lat":      float(la),
+        "thresh_lon":      float(lo),
+        "thresh_elev_ft":  float(elev),
+        "course_deg":      float(hdg),
+    }
+    # Retarget D2 to the threshold so CDI deviation, ETE and the map
+    # inset's magenta line all land on the runway end the pilot is
+    # flying to.  Capture the current aircraft position as the
+    # activation point so the CDI's course reference is sensible.
+    # Keep nv["ident"] as the plain airport ident (no slash-form) so
+    # downstream airport-database lookups still resolve; draw_cdi
+    # appends the runway suffix to its readout when an approach is
+    # active.
+    disp["nav"] = {
+        "ident":   ident,
+        "lat":     float(la),
+        "lon":     float(lo),
+        "elev_ft": float(elev),
+        "act_lat": float(disp.get("lat", la)),
+        "act_lon": float(disp.get("lon", lo)),
+    }
+
+
+def _approach_cancel():
+    """Clear the active approach.  Leaves the direct-to pointing at
+    the threshold (pilot can re-issue a D2 to the airport centroid
+    if they want)."""
+    disp["approach"]["active"] = False
 
 
 def draw_ahrs_setup(surf, ss):
@@ -5817,6 +6044,35 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 _CDI_FULL_SCALE_NM = 1.0    # ±1 nm full-scale cross-track deflection
 _EARTH_R_NM        = 3440.065  # Earth mean radius (km/1.852)
 
+# APPR chip — appears just to the right of the CDI strip when a D2 is
+# active to an airport.  Tapping it opens the approach-runway picker.
+_APPR_BTN_W = 56
+_APPR_BTN_H = 28
+
+
+def _appr_btn_rect() -> pygame.Rect:
+    """Geometry of the APPR chip on the CDI strip.  Returns the rect
+    even if the chip wouldn't currently be drawn — callers gate on
+    visibility separately.  Mirrors the CDI bar's vertical position."""
+    cdi_bar_w = max(140, int(DISPLAY_W * 0.20))
+    cdi_bar_y = HDG_Y - 50
+    cdi_r = CX + cdi_bar_w // 2 + 18
+    return pygame.Rect(cdi_r + 8, cdi_bar_y - 22, _APPR_BTN_W, _APPR_BTN_H)
+
+
+def _appr_btn_visible() -> bool:
+    """The APPR chip shows when there's a D2 to an identifier we have
+    runway records for, OR when an approach is currently active (so
+    the pilot can cancel it)."""
+    nv = disp.get("nav") or {}
+    ap = disp.get("approach") or {}
+    if ap.get("active"):
+        return True
+    ident = nv.get("ident", "")
+    if not ident or _runways is None:
+        return False
+    return len(_apr_runway_ends(ident)) > 0
+
 
 def _nav_geo_dist_brg(la1, lo1, la2, lo2):
     """Great-circle distance (nm) and initial bearing (deg) from 1 to 2.
@@ -6276,14 +6532,34 @@ def draw_cdi(surf):
 
         # Readout: ident · BRG · DIST — centred above the bar.  Font 50% larger
         # than original (11→16); positioned so the text bottom sits 3 px higher
-        # than the original layout would have placed it.
-        readout = f"{ident}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
+        # than the original layout would have placed it.  When an approach is
+        # active, append the runway suffix to the airport ident.
+        ap = disp.get("approach") or {}
+        ident_lbl = (f"{ident}/{ap['runway']}"
+                     if ap.get("active") and ap.get("airport") == ident
+                     else ident)
+        readout = f"{ident_lbl}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
         _text(surf, readout, 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
     else:
         # No active waypoint — leave the bar empty (no diamond) and show
         # the "DIRECT  →" affordance so the pilot knows tapping opens the
         # keyboard.
         _text(surf, "DIRECT  →", 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
+
+    # APPR chip — appears just to the right of the CDI strip when a D2
+    # is set to an airport we have runway data for, OR when an approach
+    # is currently active (so the pilot can cancel it).  Tapping the
+    # chip opens the runway picker.
+    if _appr_btn_visible():
+        rect = _appr_btn_rect()
+        active = bool((disp.get("approach") or {}).get("active"))
+        bg = (0, 55, 65) if active else (0, 18, 38)
+        oc = CYAN       if active else (90, 130, 170)
+        tc = CYAN       if active else (180, 215, 240)
+        pygame.draw.rect(surf, bg, rect, border_radius=5)
+        pygame.draw.rect(surf, oc, rect, width=2, border_radius=5)
+        _text(surf, "APPR", 13, tc, bold=True,
+              cx=rect.centerx, cy=rect.centery)
 
 
 # ── Runway polygons + extended centerlines ───────────────────────────────────
@@ -6713,6 +6989,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_flight_profile(surf, disp["fp"]); return
     if mode == "display_setup":
         draw_display_setup(surf, disp["ds"]); return
+    if mode == "approach_select":
+        draw_approach_select(surf); return
     if mode == "ahrs_setup":
         draw_ahrs_setup(surf, disp["ss"]); return
     if mode == "connectivity_setup":
@@ -6961,6 +7239,17 @@ def render(surf, demo_mode, connected, data_stale=False):
                 _trace_verts,
                 (220 / 255.0, 0.0, 220 / 255.0, 1.0),
                 3.0,
+            ))
+        # HITS boxes — cyan rectangles along the extended centreline
+        # at 3° glideslope when a synthetic approach is active.  The
+        # boxes feed the same depth-tested polyline path as the D2
+        # trace, so terrain occludes them naturally where ridges
+        # block the corridor.
+        _ap = disp.get("approach") or {}
+        if _ap.get("active"):
+            _gl_polylines.extend(_hits_mod.build_box_polylines(
+                _ap["thresh_lat"], _ap["thresh_lon"],
+                _ap["thresh_elev_ft"], _ap["course_deg"],
             ))
         render_svt_into_current_fb(
             _shared_gl_ctx, SRTM_DIR,
