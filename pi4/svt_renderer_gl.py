@@ -315,14 +315,19 @@ void main() {
     float s = sin(u_roll_rad);
     float y_unrolled = -x_sq * s + y_sq * c;
 
-    // Sky everywhere: above the horizon a normal horizon→zenith gradient,
-    // below the horizon a flat sky-horizon color.  The below-horizon region
-    // exists only to fill any gap between the outer terrain mesh edge and
-    // the true geometric horizon (100+ nm away) — using the same sky-blue
-    // makes it visually invisible against the surrounding sky.
+    // Above the rolled horizon: sky gradient (horizon-blue → zenith-blue).
+    // Below the rolled horizon: a neutral brown ground color, NOT sky-blue.
+    // Wherever the terrain mesh renders it overdraws this via depth test, so
+    // this only shows in mesh gaps — which is exactly where we used to see
+    // sky leak through (inner-mesh near-plane clip at low alt + steep bank,
+    // and the seam between the inner high-res mesh and the outer low-res
+    // mesh at the far horizon).  Painting those gaps as ground instead of
+    // sky makes them blend into the surrounding terrain instead of reading
+    // as a wedge of blue under the wing or above a ridge line.
     vec3 horizon_col = vec3(0.23, 0.51, 0.78);
+    vec3 ground_col  = vec3(0.35, 0.27, 0.15);
     if (y_unrolled < u_horizon_y) {
-        frag_color = vec4(horizon_col, 1.0);
+        frag_color = vec4(ground_col, 1.0);
     } else {
         float t = (y_unrolled - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
         vec3 zenith_col  = vec3(0.04, 0.16, 0.31);

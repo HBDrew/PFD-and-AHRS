@@ -6195,7 +6195,10 @@ def draw_agl_readout(surf, alt_ft, ground_elev_ft, gps_ok):
     pygame.draw.rect(surf, (140, 150, 170), (bx, by, _AGL_W, _AGL_H),
                      width=1, border_radius=4)
 
-    agl_ft = int(round(alt_ft - ground_elev_ft))
+    # Round to the nearest 10 ft.  Both the GPS altitude and the SRTM
+    # terrain sample have ~10–30 ft of real precision, so a 1-ft display
+    # only shows GPS/DEM jitter in the last digit.
+    agl_ft = int(round((alt_ft - ground_elev_ft) / 10.0)) * 10
     # Below the ground in the SRTM sample is sensor / DEM disagreement
     # (baro miss-set, runway elev vs SRTM, missing tile), not useful
     # info — show dashes rather than a misleading negative value.
