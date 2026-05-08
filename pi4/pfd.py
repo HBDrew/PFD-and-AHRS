@@ -1916,26 +1916,37 @@ class SimFlyState:
                             tgt_alt = state["alt"]
 
             # ── Heading / bank ─────────────────────────────────────────────────
-            # Reference for the heading-hold error: yaw in MAG mode, track in
-            # TRK mode.  state["track"] gets refreshed below from the wind
-            # solution; first frame falls back to yaw to avoid a transient.
+            # Coordinated-turn model: BANK is the only commanded
+            # quantity; yaw rate falls out of the bank via
+            # ω = g·tan(φ)/V.  The previous version commanded yaw
+            # directly and let bank be a separate cosmetic display,
+            # which produced "flat yaw" — the AI airplane swung in
+            # heading with wings level — particularly during the last
+            # few degrees of a CDI capture where bank was nearly zero
+            # but yaw was still being driven.
+            #
+            # Reference for the heading-hold error: yaw in MAG mode,
+            # track in TRK mode.  state["track"] gets refreshed below
+            # from the wind solution; first frame falls back to yaw to
+            # avoid a transient.
             if _bk == "trk_bug":
                 ref_hdg = state.get("track", state["yaw"]) or state["yaw"]
             else:
                 ref_hdg = state["yaw"]
-            hdg     = state["yaw"]
             hdg_err = ((tgt_hdg - ref_hdg + 180) % 360) - 180
-            turn_rate = 3.0  # standard rate deg/s
-            d_hdg = max(-turn_rate * dt, min(turn_rate * dt, hdg_err * 0.4))
-            state["yaw"]  = (hdg + d_hdg) % 360
-            # Bank command — proportional to heading error.  Earlier 1.8
-            # was too gentle (and capped only at huge errors), so the
-            # AI looked like it was yawing flat through small intercept
-            # commands.  3.5 saturates the ±25° cap at ~7° error, which
-            # matches what a real AP / hand-flying pilot would do.
-            bank          = max(-25.0, min(25.0, hdg_err * 3.5))
+
+            # Bank command — proportional, ±25° saturation at ~5°
+            # error.  Below saturation, bank rolls out smoothly with
+            # heading error so we settle on track without overshoot.
+            bank = max(-25.0, min(25.0, hdg_err * 5.0))
             state["roll"] = bank if not ahrs_fail else 0.0
-            state["ay"]   = -bank / 600.0  # slip ball
+            state["ay"]   = -bank / 600.0   # slip ball
+
+            # Yaw follows from actual bank — coordinated turn.
+            v_fps = max(20.0, state["speed"] * 1.6878)
+            yaw_rate_dps = math.degrees(
+                32.174 * math.tan(math.radians(bank)) / v_fps)
+            state["yaw"] = (state["yaw"] + yaw_rate_dps * dt) % 360
 
             # ── Altitude / VS / pitch ──────────────────────────────────────────
             # On approach, the GS itself is descending at ~530 fpm at
