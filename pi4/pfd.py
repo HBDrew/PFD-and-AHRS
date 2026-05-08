@@ -1857,11 +1857,13 @@ class SimFlyState:
             tgt_spd = disp.get("spd_bug") or 90.0
 
             # FOLLOW FLIGHT-PLAN mode — overrides bug-based targets.
-            # When a direct-to is active, fly the bearing to the waypoint
-            # (or threshold).  When a synthetic approach is loaded and
-            # the aircraft has reached the glideslope, slide down the
-            # 3° glideslope to the threshold.  Above the glideslope
-            # (still en route on level cruise) the alt_bug holds.
+            # The autopilot flies a 45° intercept to the course (D2 line
+            # for plain direct-to, final approach course when an
+            # approach is loaded), ramping down to a gentle cross-track
+            # correction once within ~0.3 nm of track.  Standard
+            # behaviour for any modern avionics — far cleaner than
+            # "always turn toward the destination" which over-shoots
+            # parallel courses and never settles on track.
             if sim.get("follow_mode") == "fp":
                 nv = disp.get("nav") or {}
                 if nv.get("ident"):
@@ -1871,18 +1873,34 @@ class SimFlyState:
                     wp_lon  = float(nv["lon"])
                     dist_nm, brg = _nav_geo_dist_brg(
                         cur_lat, cur_lon, wp_lat, wp_lon)
-                    tgt_hdg = brg
+
                     ap = disp.get("approach") or {}
                     if ap.get("active"):
-                        # Glideslope altitude: 3° above the threshold,
-                        # measured along the line to the threshold.
+                        # Approach: course is the published runway heading
+                        # (true).  XTK is measured from the extended
+                        # centreline.
+                        course_deg = float(ap["course_deg"])
+                    else:
+                        # D2: course is the great-circle from activation
+                        # point to waypoint.
+                        ax_lat = float(nv.get("act_lat", cur_lat))
+                        ax_lon = float(nv.get("act_lon", cur_lon))
+                        _d, course_deg = _nav_geo_dist_brg(
+                            ax_lat, ax_lon, wp_lat, wp_lon)
+
+                    tgt_hdg = _sim_intercept_heading(
+                        course_deg, wp_lat, wp_lon, cur_lat, cur_lon)
+
+                    if ap.get("active"):
+                        # Glideslope altitude: 3° above threshold along
+                        # the line to the threshold.  Hold alt_bug until
+                        # the aircraft has dropped onto the glideslope
+                        # (within 50 ft), then descend with it.
                         thresh_elev = float(ap["thresh_elev_ft"])
                         gs_deg      = 3.0
                         gs_alt = thresh_elev + (
                             dist_nm * 6076.12
                             * math.tan(math.radians(gs_deg)))
-                        # Hold alt_bug until intercept (within 50 ft of
-                        # the glideslope), then descend along it.
                         if state["alt"] > gs_alt + 50:
                             tgt_alt = disp.get("alt_bug", state["alt"])
                         else:
@@ -2290,42 +2308,25 @@ def sim_controls_hit(x, y):
 # confirmation, requiring a second ENTER (or tap on ACTIVATE) before the
 # active flight plan changes.  Prevents accidental flight-plan edits from
 # a stray screen tap.
-_NAVCNF_W   = 420
+_NAVCNF_W   = 360
 _NAVCNF_H   = 170
 _NAVCNF_BTN_H = 48
-_NAVCNF_BTN_GAP = 8
 
 
 def _navcnf_geom():
-    """Modal + button rects.  Three-button layout when the typed ident
-    has runway data (CANCEL · DIRECT · APPR); two-button when not
-    (CANCEL · DIRECT).  Returns rects for whichever buttons are live —
-    callers gate on what's been returned."""
     bx = (DISPLAY_W - _NAVCNF_W) // 2
     by = (DISPLAY_H - _NAVCNF_H) // 2
     btn_y = by + _NAVCNF_H - _NAVCNF_BTN_H - 14
-    pad = 14
-    inner_w = _NAVCNF_W - 2 * pad
-
-    has_appr = _ident_has_runways(disp.get("nav_confirm_ident", ""))
-    n = 3 if has_appr else 2
-    btn_w = (inner_w - (n - 1) * _NAVCNF_BTN_GAP) // n
-
-    rects = {}
-    rects["cancel"] = pygame.Rect(bx + pad, btn_y, btn_w, _NAVCNF_BTN_H)
-    rects["activate"] = pygame.Rect(
-        bx + pad + (btn_w + _NAVCNF_BTN_GAP), btn_y, btn_w, _NAVCNF_BTN_H)
-    if has_appr:
-        rects["appr"] = pygame.Rect(
-            bx + pad + 2 * (btn_w + _NAVCNF_BTN_GAP),
-            btn_y, btn_w, _NAVCNF_BTN_H)
-    return bx, by, rects
+    btn_w = (_NAVCNF_W - 14 - 14 - 12) // 2
+    bx_l  = bx + 14
+    bx_r  = bx + _NAVCNF_W - 14 - btn_w
+    return bx, by, btn_y, btn_w, bx_l, bx_r
 
 
 def draw_nav_confirm(surf):
     """Centered "Activate Direct to XXXX?" modal."""
     ident = disp.get("nav_confirm_ident", "")
-    bx, by, rects = _navcnf_geom()
+    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
 
     _draw_veil(surf)
     panel = pygame.Surface((_NAVCNF_W, _NAVCNF_H), pygame.SRCALPHA)
@@ -2341,24 +2342,20 @@ def draw_nav_confirm(surf):
     _text(surf, "Activate?", 14, (200, 215, 235),
           cx=bx + _NAVCNF_W // 2, cy=by + 96)
 
-    rc = rects["cancel"]
-    _action_btn(surf, rc.x, rc.y, rc.w, rc.h, "CANCEL", "danger")
-    ra = rects["activate"]
-    _action_btn(surf, ra.x, ra.y, ra.w, ra.h, "DIRECT", "ok")
-    if "appr" in rects:
-        rp = rects["appr"]
-        _action_btn(surf, rp.x, rp.y, rp.w, rp.h, "APPR", "normal")
+    _action_btn(surf, bx_l, btn_y, btn_w, _NAVCNF_BTN_H, "CANCEL",   "danger")
+    _action_btn(surf, bx_r, btn_y, btn_w, _NAVCNF_BTN_H, "ACTIVATE", "ok")
 
 
 def nav_confirm_hit(x, y):
-    """Return 'activate' / 'cancel' / 'appr' / 'noop' / None for a tap
-    on the modal."""
-    bx, by, rects = _navcnf_geom()
+    """Return 'activate' / 'cancel' / 'noop' / None for a tap on the modal."""
+    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
     if not (bx <= x <= bx + _NAVCNF_W and by <= y <= by + _NAVCNF_H):
         return None
-    for action, rect in rects.items():
-        if rect.collidepoint(x, y):
-            return action
+    if btn_y <= y <= btn_y + _NAVCNF_BTN_H:
+        if bx_l <= x <= bx_l + btn_w:
+            return "cancel"
+        if bx_r <= x <= bx_r + btn_w:
+            return "activate"
     return "noop"
 
 
@@ -2878,13 +2875,6 @@ def handle_event(event, demo_mode):
                 _nav_confirm_apply()
             elif action == "cancel":
                 _nav_confirm_cancel()
-            elif action == "appr":
-                # APPR path: apply the direct-to so the airport is the
-                # active waypoint, then transition to the runway picker.
-                # Picking a runway end re-activates the D2 to the
-                # threshold and turns on HITS.
-                _nav_confirm_apply()
-                disp["mode"] = "approach_select"
             # "noop" / None / outside-panel: consume to keep the modal up
             return True
 
@@ -3023,6 +3013,29 @@ def handle_event(event, demo_mode):
                     disp["kbd_buf"] = ""
                     disp["kbd_error"] = ""
                     disp["mode"] = disp["kbd_prev"]
+                elif sty == 'appr':           # APPR — open runway picker
+                    # Resolve the airport ident: typed buf wins over the
+                    # currently-active D2 ident.  Validate against the
+                    # airport DB (matches ENTER's path), and either
+                    # surface "UNKNOWN WAYPOINT" or jump to the picker.
+                    buf = disp["kbd_buf"].strip().upper()
+                    cur_ident = disp.get("nav", {}).get("ident", "")
+                    target_ident = buf or cur_ident
+                    if not target_ident:
+                        disp["kbd_error"] = "ENTER AIRPORT FIRST"
+                    elif buf and not _nav_lookup_ident(buf):
+                        disp["kbd_error"] = f"UNKNOWN WAYPOINT  {buf}"
+                    elif not _ident_has_runways(target_ident):
+                        disp["kbd_error"] = f"NO RUNWAYS  {target_ident}"
+                    else:
+                        # If the typed buf is a fresh airport, activate
+                        # the D2 first so the picker sees it as the
+                        # current airport.  Then jump to the picker.
+                        if buf and buf != cur_ident:
+                            _nav_set_by_ident(buf)
+                        disp["kbd_buf"] = ""
+                        disp["kbd_error"] = ""
+                        disp["mode"] = "approach_select"
                 elif sty == 'ok':             # ENTER
                     buf = disp["kbd_buf"].strip()
                     if target == "nav_ident":
@@ -3560,9 +3573,15 @@ def _kb_nav_extras_visible():
 
 
 def _kb_nav_extras_geometry():
-    """(bx_left, bx_right, btn_w) for the two nav-ident extras buttons."""
-    btn_w = (DISPLAY_W - 2 * 12 - 8) // 2
-    return 12, 12 + btn_w + 8, btn_w
+    """(x positions, btn_w) for the three nav-ident extras buttons:
+    DIRECT TO NEAREST · CANCEL FLIGHT PLAN · APPR."""
+    pad = 12
+    gap = 8
+    btn_w = (DISPLAY_W - 2 * pad - 2 * gap) // 3
+    bx_l = pad
+    bx_m = pad + btn_w + gap
+    bx_r = pad + 2 * (btn_w + gap)
+    return bx_l, bx_m, bx_r, btn_w
 
 
 def _kb_row_x0(row):
@@ -3623,10 +3642,11 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
             x += kw+_KB_GAP_X
         y += _KB_ROW_H+_KB_GAP_Y
 
-    # Nav-ident extras: jump straight to NEAREST or wipe the active flight
-    # plan without typing.  Only on tall enough displays.
+    # Nav-ident extras: jump straight to NEAREST, wipe the active flight
+    # plan, or open the approach runway picker — all without typing.
+    # Only on tall enough displays.
     if _kb_nav_extras_visible():
-        bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        bx_l, bx_m, bx_r, btn_w = _kb_nav_extras_geometry()
         # Resolve the nearest ident so the pilot sees what they're
         # about to activate before tapping.  Empty string falls back
         # to the generic label when there's no fix / no airports.
@@ -3634,8 +3654,10 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
         nrst_lbl = f"DIRECT TO {nrst}" if nrst else "DIRECT TO NEAREST"
         _action_btn(surf, bx_l, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
                     nrst_lbl, "ok")
-        _action_btn(surf, bx_r, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
+        _action_btn(surf, bx_m, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
                     "CANCEL FLIGHT PLAN", "danger")
+        _action_btn(surf, bx_r, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
+                    "APPR", "normal")
 
 
 def keyboard_hit(x, y):
@@ -3647,11 +3669,13 @@ def keyboard_hit(x, y):
     clearing the active waypoint, then closing the keyboard."""
     if (_kb_nav_extras_visible()
             and _KB_NAV_BTN_Y <= y <= _KB_NAV_BTN_Y + _KB_NAV_BTN_H):
-        bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        bx_l, bx_m, bx_r, btn_w = _kb_nav_extras_geometry()
         if bx_l <= x <= bx_l + btn_w:
             return ("NRST", "nrst")
-        if bx_r <= x <= bx_r + btn_w:
+        if bx_m <= x <= bx_m + btn_w:
             return ("CLRFP", "clrfp")
+        if bx_r <= x <= bx_r + btn_w:
+            return ("APPR", "appr")
     ky = _KB_Y0
     for row in _KB_ROWS:
         if ky <= y <= ky+_KB_ROW_H:
@@ -6199,6 +6223,45 @@ def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
     )
 
 
+def _sim_intercept_heading(course_deg, anchor_lat, anchor_lon,
+                           cur_lat, cur_lon, max_intercept=45.0):
+    """Standard avionics intercept logic for the sim's FOLLOW FLT-PLAN
+    autopilot.  Returns a target heading (true degrees) that brings the
+    aircraft onto the course at a 45° intercept angle when far from
+    track, ramping down to a gentle XTK correction once within 0.3 nm.
+
+    ``course_deg`` is the direction the course flows (TOWARD the
+    destination).  ``anchor_lat/anchor_lon`` is any point on the course
+    — XTK is invariant to anchor choice along a flat-earth course at
+    typical leg lengths, so the destination or threshold is fine.
+
+    Convention: positive XTK = aircraft is right of course → returned
+    heading is to the LEFT of ``course_deg``."""
+    cos_lat = max(1e-6, math.cos(math.radians(anchor_lat)))
+    de_nm = (cur_lon - anchor_lon) * 60.0 * cos_lat
+    dn_nm = (cur_lat - anchor_lat) * 60.0
+    course_rad = math.radians(course_deg)
+    sin_c = math.sin(course_rad)
+    cos_c = math.cos(course_rad)
+    # Project onto course-perpendicular axis (right of course = +).
+    xtk_nm = de_nm * cos_c - dn_nm * sin_c
+
+    xtk_abs = abs(xtk_nm)
+    if xtk_abs < 0.3:
+        # Close — gentle correction (~30°/nm gain, capped at ±20°).
+        correction = max(-20.0, min(20.0, -xtk_nm * 30.0))
+    elif xtk_abs >= 1.5:
+        # Far — full intercept toward the course.
+        correction = -max_intercept if xtk_nm > 0 else max_intercept
+    else:
+        # Linear ramp 0.3 → 1.5 nm between gentle and full intercept.
+        t = (xtk_abs - 0.3) / 1.2
+        sign = -1.0 if xtk_nm > 0 else 1.0
+        gentle = -xtk_nm * 30.0
+        correction = gentle * (1.0 - t) + max_intercept * sign * t
+    return (course_deg + correction) % 360
+
+
 def _nav_gc_interp(la1, lo1, la2, lo2, f):
     """Lat/lon at fraction f ∈ [0, 1] along the great circle from 1 to 2.
     Standard slerp on the unit sphere; degenerates gracefully when the
@@ -7414,10 +7477,17 @@ def render(surf, demo_mode, connected, data_stale=False):
         d2_src = disp.get("nav") or {}
         # Tag the dict the inset receives with the current approach
         # state so moving_map.render can colour the course line cyan
-        # (approach) vs magenta (regular D2) and use the activation
-        # point as the static line origin.
+        # (approach) vs magenta (regular D2).  When approach is active,
+        # carry the final-approach course so the inset can draw the
+        # cyan line FROM the threshold OUT along the corridor (matches
+        # what the pilot sees as HITS boxes on the SVT) instead of as
+        # a generic D2 line from activation point to threshold.
         d2 = dict(d2_src)
-        d2["approach_active"] = bool((disp.get("approach") or {}).get("active"))
+        _ap = disp.get("approach") or {}
+        d2["approach_active"] = bool(_ap.get("active"))
+        if _ap.get("active"):
+            d2["approach_course_deg"] = float(_ap.get("course_deg", 0.0))
+            d2["approach_final_nm"]   = _hits_mod.DEFAULT_FINAL_NM
         # GPS track sticks at its last value when groundspeed drops to
         # zero (stationary on the ramp), so passing it straight to the
         # inset would freeze the rotation at whatever heading we last

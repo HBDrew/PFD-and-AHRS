@@ -363,26 +363,52 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     surf.blit(lbl, (ix + 5, iy - 7))
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
-    # Course line is drawn STATICALLY from the activation point to the
-    # waypoint — same convention the SVT direct-to trace uses.  This way
-    # the line represents the chosen course, not a constantly-updating
-    # bearing-to-waypoint arrow as the aircraft drifts off course.
-    # Colour follows mode: cyan when an approach is loaded (matches the
-    # HITS palette), magenta when this is a regular direct-to.
+    # Two distinct line shapes:
+    #
+    #   D2 (magenta):   from the activation point to the waypoint —
+    #                   represents the chosen course, not a moving
+    #                   bearing-to-waypoint arrow.  Same convention the
+    #                   SVT direct-to trace uses.
+    #
+    #   APPROACH (cyan): from the runway threshold OUT along the final
+    #                   approach course (reciprocal of the runway
+    #                   heading) for the same final length as the HITS
+    #                   boxes.  Mirrors the corridor the pilot sees in
+    #                   3D so the inset and the SVT match.
+    #
+    # The diamond marker stays at the waypoint / threshold either way.
     if (settings.get("map_show_directto", True)
             and direct_to is not None and direct_to.get("ident")):
         approach_active = bool(direct_to.get("approach_active"))
         course_col = _HITS_CYAN if approach_active else _D2_MAGENTA
-        # Activation point — fall back to the waypoint itself if no
-        # activation lat/lon was captured (rare; happens before the
-        # first frame after a fresh activate).
-        ax_lat = float(direct_to.get("act_lat") or direct_to["lat"])
-        ax_lon = float(direct_to.get("act_lon") or direct_to["lon"])
-        ax_x, ax_y = _project(ax_lat, ax_lon)
         wpx, wpy = _project(direct_to["lat"], direct_to["lon"])
-        pygame.draw.line(surf, course_col,
-                         (int(ax_x), int(ax_y)),
-                         (int(wpx), int(wpy)), 2)
+
+        if approach_active:
+            # Walk back from the threshold along the reciprocal of the
+            # final approach course for `approach_final_nm` (default 5).
+            course_deg = float(direct_to.get("approach_course_deg", 0.0))
+            final_nm   = float(direct_to.get("approach_final_nm", 5.0))
+            away_rad   = math.radians((course_deg + 180.0) % 360.0)
+            t_lat = float(direct_to["lat"])
+            t_lon = float(direct_to["lon"])
+            cos_t = max(0.05, math.cos(math.radians(t_lat)))
+            far_lat = t_lat + final_nm * math.cos(away_rad) / _NM_PER_DEG_LAT
+            far_lon = t_lon + (final_nm * math.sin(away_rad)
+                               / (_NM_PER_DEG_LAT * cos_t))
+            fx, fy = _project(far_lat, far_lon)
+            pygame.draw.line(surf, course_col,
+                             (int(wpx), int(wpy)),
+                             (int(fx),  int(fy)), 2)
+        else:
+            # Plain D2: line from activation point to waypoint.  Fall
+            # back to the waypoint itself if no act_lat/lon was set.
+            ax_lat = float(direct_to.get("act_lat") or direct_to["lat"])
+            ax_lon = float(direct_to.get("act_lon") or direct_to["lon"])
+            ax_x, ax_y = _project(ax_lat, ax_lon)
+            pygame.draw.line(surf, course_col,
+                             (int(ax_x), int(ax_y)),
+                             (int(wpx),  int(wpy)), 2)
+
         d = 5
         pygame.draw.polygon(surf, course_col,
                             [(int(wpx),     int(wpy) - d),
