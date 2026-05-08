@@ -197,8 +197,15 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     cos_lat = max(0.05, math.cos(math.radians(lat)))
 
     # World → inset projection, with optional track-up rotation.
+    # Sign matches `pygame.transform.rotate(tint, rot_deg)` below: that
+    # call rotates the cached terrain surface CCW by rot_deg so that
+    # current track ends up at the top of the inset.  Projecting world
+    # points the same direction (CCW by rot_deg in the math frame where
+    # +n is up) keeps runways, airports, obstacles and the direct-to
+    # course line visually aligned with the rotated tint instead of
+    # mirrored across the centre.
     if rot_deg != 0.0:
-        rr = math.radians(-rot_deg)
+        rr = math.radians(rot_deg)
         sin_r, cos_r = math.sin(rr), math.cos(rr)
     else:
         sin_r, cos_r = 0.0, 1.0
