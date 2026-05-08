@@ -6931,15 +6931,22 @@ def render(surf, demo_mode, connected, data_stale=False):
         except Exception:
             _sun_az = _sun_el = _sun_int = None
 
-    # Below-horizon mesh-gap colour tracks the TAWS alert level so that
-    # any sliver of "missing terrain" matches the surrounding palette
-    # rather than contradicting the alert (e.g. a brown gap reading as
-    # "safe ground" right next to red WARNING terrain).
-    _below_col = (0.35, 0.27, 0.15)            # neutral brown — clear
-    if _terrain_alert_level >= 2:
-        _below_col = (0.86, 0.12, 0.12)        # red — WARNING
-    elif _terrain_alert_level == 1:
-        _below_col = (0.78, 0.51, 0.0)         # amber — CAUTION
+    # Below-horizon mesh-gap colour: same 6-band palette the GLSL
+    # clearance_color() uses on the terrain mesh, driven by the SRTM
+    # clearance under the aircraft (the same value the AGL readout
+    # reflects).  This makes any gap blend continuously with the band
+    # the surrounding mesh is painting — red where mesh is red, deep
+    # orange in the 200–300 ft band, amber 300–700, brown 700–1200,
+    # dark brown 1200–2200, very dark > 2200.  Bands match
+    # FRAGMENT_SHADER clearance_color() exactly so the gap and the
+    # nearest mesh fragment never differ by more than the band edge.
+    _clr = alt - _ground_elev_ft if gps_ok else 9999.0
+    if   _clr < 200:  _below_col = (0.86, 0.12, 0.12)
+    elif _clr < 300:  _below_col = (0.86, 0.31, 0.0)
+    elif _clr < 700:  _below_col = (0.78, 0.51, 0.0)
+    elif _clr < 1200: _below_col = (0.55, 0.39, 0.16)
+    elif _clr < 2200: _below_col = (0.39, 0.29, 0.14)
+    else:             _below_col = (0.27, 0.22, 0.11)
 
     if _shared_gl_ctx is not None and gps_ok:
         # Render terrain into the AI region of the default framebuffer.
