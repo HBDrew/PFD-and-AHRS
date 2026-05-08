@@ -232,6 +232,50 @@ Work items:
     bands.  Stall-warn enunciator is the only addition.
 Pairs with AHRS-GPS-AID (TAS is the correct centripetal input).
 
+### AOA-PROBE  Add a second differential-pressure transducer for AOA
+Status: **OPEN — board-revision change for the next layout spin**
+Target: hardware (next board rev), `firmware/sdp31.py` (or sibling
+driver if a different pressure range is used), additions to the
+`$AHRS` packet, AOA indicator on `pi4/pfd.py` and the iPhone
+display.
+Context: with one differential-pressure transducer doing pitot/static
+(SDP31-AIRDATA), a second sensor connected to a flush-port AOA probe
+gives a real AOA signal essentially free.  Standard experimental
+implementation is a two-hole probe on the wing or a side-mount on
+the fuselage where the upper / lower ports sit at different angles
+to the local airflow — the ΔP across them is monotonic with AOA over
+the normal envelope.  AOA buys things IAS-only can't:
+  - **AOA-based stall warn** — fires at the actual stall margin
+    regardless of weight, bank, or load factor.  IAS-based stall
+    cues only work at 1 g and gross weight (the published Vs1 is
+    a lie at any other condition).
+  - **Optimal-AOA cues for approach and climb** — fly the
+    indexer / donut, not the airspeed.
+  - **Energy management on approach** — particularly relevant
+    behind a Rotax that responds slowly to throttle.
+Sensor selection: the AOA probe usually generates ΔP in the 0–2000 Pa
+range over the normal envelope.  Likely candidates: SDP3x-2000Pa
+(higher range than the airspeed unit) or Sensirion's specifically-
+ranged variants.  Pick the part once the probe geometry is fixed.
+Work items (next board rev):
+  - Pick the AOA probe (build a flush-port pair, or buy a probe
+    head — AlphaSystems and Dynon both sell heads that work with
+    a generic differential-pressure sensor).
+  - Add the second ΔP sensor to the board (I²C bus already up;
+    address-select on the SDP3x line lets us run two on one bus).
+  - Driver mirrors `firmware/sdp31.py`; AOA math = calibration curve
+    (linear over the cruising range, departs near the stall — fit
+    on first-flight data, persist coefficients to flash).
+  - AOA field added to `$AHRS` JSON.
+  - Display: AOA indexer on the right side of the AI when not on
+    approach (mutually exclusive with the VDI from the recent work
+    — VDI takes priority during approach, AOA at all other times).
+    Standard cue: green/yellow/red segments with a fast-erecting
+    diamond, donut at on-speed.
+Pairs with SDP31-AIRDATA (same I²C bus + driver pattern) and with
+AHRS-GPS-AID (AOA-based stall warn is the safety-of-flight payoff
+once attitude is honest).
+
 ### AHRS-GPS-AID  GPS-aided AHRS for clean attitude in coordinated turns
 Status: **OPEN — on-Pico is the recommended path; Pico 2 W makes it cheap**
 Target: new `firmware/ahrs_filter.py`, raw-mode IMU output from
@@ -272,9 +316,15 @@ Work items:
     option if drift compensation needs to be tighter, but Madgwick
     with GPS aiding is plenty for this airframe.
   - Subtract centripetal accel `V × ω_gyro` from raw accel BEFORE
-    the level-finding step.  V from TAS (preferred, see SDP31-AIRDATA
-    below) or `gps.speed_kt` as a fallback when the air-data path
-    isn't live yet; ω from the gyro.
+    the level-finding step.  Source the velocity through a fallback
+    ladder: **TAS first** (physically correct — see SDP31-AIRDATA),
+    **GS second** (GPS speed_kt — close in zero wind, off by the
+    wind component otherwise), **basic attitude last** (no
+    centripetal correction at all — accel+gyro+mag fusion as today,
+    accept the leans in coordinated turns).  ω is always from the
+    gyro.  Plumb the active source into the `$AHRS` packet as
+    `att_aid` (`tas` / `gs` / `basic`) so displays can surface it
+    when the higher-quality source drops out.
   - Replace `main.py`'s yaw/pitch/roll output with the fused result;
     iPhone / Pi 4 displays consume it as today.
   - Validate at a known coordinated bank: 25° at 100 kt should read
