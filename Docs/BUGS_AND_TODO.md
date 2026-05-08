@@ -232,6 +232,60 @@ Work items:
     bands.  Stall-warn enunciator is the only addition.
 Pairs with AHRS-GPS-AID (TAS is the correct centripetal input).
 
+### AOA-CALC  Computed AOA from air-data + load factor (pre-probe)
+Status: **OPEN — software-only, lands once SDP31-AIRDATA is live**
+Target: new `firmware/aoa_calc.py` (or extend `firmware/airdata.py`),
+`$AHRS` packet, AOA indexer in `pi4/pfd.py` and the iPhone display.
+Context: in the linear region of the lift curve, AOA can be inferred
+from quantities we'll already have once SDP31-AIRDATA lands — no
+extra sensor required.  Useful as an on-speed cue and as a bridge
+until AOA-PROBE ships, but not a substitute for measured AOA at the
+margins.
+Math: from the lift equation `L = n·W = ½·ρ·V²·S·Cl`, solve for Cl
+and divide by the airframe's lift-curve slope:
+  `α ≈ α₀ + Cl / Cl_α`
+  `Cl  = (n·W) / (½·ρ·V²·S)`
+where `n` is load factor (from the WT901 accel Z, in g), `V` is
+TAS (SDP31 + BME280), `ρ` is air density (BME280 static + OAT), and
+`W` / `S` / `Cl_α` / `α₀` are airframe constants for the Rans S21.
+Inputs:
+  - **TAS** from SDP31-AIRDATA.
+  - **Load factor** from WT901 (use the same gravity-vector estimate
+    the AHRS produces; rotate the body-frame accel into the
+    wing-perpendicular axis).
+  - **Density** ρ from BME280 static + OAT.
+  - **Weight** as a pilot-entered field on the V-speeds / Flight
+    Profile screen — accepts dry-weight + fuel and decrements by
+    the fuel-flow estimate over the flight (or just a single GW
+    entry to start; refine later).
+  - **Cl_α, α₀, S** stored in the airframe profile alongside the
+    V-speeds (already a JSON profile file).
+Caveats — explicit so the indexer doesn't lie:
+  - Linear-region only.  Departs from real AOA near the stall, in
+    deep flap, and during accelerated stalls.  Calibrate the
+    indicator's "yellow" band conservatively and treat the "red"
+    band as advisory until AOA-PROBE replaces it.
+  - Configuration-blind.  Flap deployment changes Cl_α and α₀; if
+    we read flap position later, branch the constants.  Until
+    then, calibrate against clean configuration only.
+  - Weight-dependent.  Bad fuel-state estimate biases the whole
+    output.  Surface the assumed weight on the profile screen.
+Work items:
+  - Add airframe constants (Cl_α, α₀, S, max-gross W, flap-clean
+    flag) to the V-speeds profile.  Default to Rans S21 numbers;
+    pilot tunes against measured stall on first-flight cards.
+  - `aoa_calc.py` runs each AHRS frame, emits `aoa_deg` and a
+    `aoa_src` = `"calc"` field on the `$AHRS` packet.  When
+    AOA-PROBE goes live the same field flips to `"probe"` and
+    the same display consumes both.
+  - Display: AOA indexer on the right side of AI when no approach
+    is active (same slot AOA-PROBE will use).  Show a small `c`
+    subscript on the indexer while `aoa_src == "calc"` so the
+    pilot knows it's the inferred value.
+Pairs with SDP31-AIRDATA (the inputs come from there) and with
+AOA-PROBE (this entry retires when the probe lands, or stays as
+a redundant cross-check).
+
 ### AOA-PROBE  Add a second differential-pressure transducer for AOA
 Status: **OPEN — board-revision change for the next layout spin**
 Target: hardware (next board rev), `firmware/sdp31.py` (or sibling
