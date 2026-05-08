@@ -273,7 +273,16 @@ def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
     if hdg_src_pref == "trk":
         if track_ok:
             return True, "G", MAGENTA
-        return True, "G?", AMBER
+        # Track unavailable (no GPS fix or below the speed threshold).
+        # Fall back to MAG rather than keep returning use_track=True —
+        # otherwise the GPS-slaved complementary filter has nothing to
+        # slave against and the displayed heading drifts toward stale
+        # GPS track (typically 0° on a stationary aircraft).  Amber
+        # "G?" label still surfaces that the pilot's chosen source
+        # isn't currently usable.
+        if mag_ok:
+            return False, "G?", AMBER
+        return False, "?", AMBER
     # auto: prefer TRK when GPS is moving, fall back to MAG
     if track_ok:
         return True, "G", MAGENTA
