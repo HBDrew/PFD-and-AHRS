@@ -7018,8 +7018,16 @@ def render(surf, demo_mode, connected, data_stale=False):
         global _last_map_rect
         _last_map_rect = rect
         d2 = disp.get("nav") or {}
+        # GPS track sticks at its last value when groundspeed drops to
+        # zero (stationary on the ramp), so passing it straight to the
+        # inset would freeze the rotation at whatever heading we last
+        # taxied in.  Below taxi-speed (3 kt — same threshold the AUTO
+        # heading source uses) suppress track and let the inset fall
+        # back to mag heading so yawing the nose visibly rotates the
+        # map in TRK↑ mode.
+        _map_track = track if speed >= 3.0 else None
         _map_mod.render(
-            surf, rect, lat, lon, alt, hdg, track,
+            surf, rect, lat, lon, alt, hdg, _map_track,
             ds.get("map_orient", "trk"),
             int(ds.get("map_zoom_nm", 5)),
             ds,
