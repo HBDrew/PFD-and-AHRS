@@ -88,44 +88,6 @@ the hardware swap.
 Recovery applied today: reverted `config.txt` to HDMI-only, restored
 ROADOM 7" as the active display.
 
-### SVT-FPS-TURNS  Fragment-shader cost spikes during steep banked turns
-Status: **OPEN — low priority**
-Target: `pi4/svt_renderer_gl.py` `FRAGMENT_SHADER`.
-Context: with the shared-GL renderer landed (#1 closed), normal
-flight holds 30 FPS but FPS dips to 15-20 during steep banked turns.
-Root cause is fragment-shader cost — at high bank, the visible terrain
-extends to lower pitch angles and far horizons, so more fragments are
-shaded per frame. The fragment shader does per-pixel: clearance-colour
-palette lookup (5 branches), `dFdx`/`dFdy`-based normal computation,
-Lambertian lighting, two `grid_line` evaluations (each with `fract` +
-`fwidth` + `smoothstep`), and distance-fade `smoothstep`. Likely cheap
-wins:
-  - Replace the if-chain in `clearance_color()` with a stepped LUT
-    or `mix()` ramp.
-  - Drop the per-fragment normal recomputation in favour of a coarser
-    flat-shaded ambient term (or compute it less often).
-  - Early-out grid evaluation when `fade < 0.01` is already in place;
-    consider also skipping the major-line pass when only minor would
-    contribute.
-  - Reduce `MESH_GRID_N` from 300 → 200 — fewer triangles, cheaper
-    rasterisation, almost-invisible quality loss at typical FOV.
-
-### RUNWAY-VECTORIZE  Runway symbol overlay is the last per-frame Python loop
-Status: **OPEN — low priority**
-Target: `pi4/pfd.py` `draw_runway_symbols`.
-Context: obstacles (commit c0fbdd7+) and airports (commit ba644cb)
-were vectorised — query_nearby returns a numpy structured array, the
-projection runs in numpy, and only the visible-on-screen subset
-falls into the pygame draw loop.  Runways still iterate per-feature
-in Python (trig + pygame.draw.polygon for each runway end + extended
-centerline dashes).  At KPHX (4 runways) it's a small contributor,
-but at busy metro fields (KORD, KATL, etc.) it could be ~5-10 ms/
-frame.  Same recipe: sort runways by lat at load, searchsorted in
-query_nearby, vectorise the lat→pixel projection in
-draw_runway_symbols, then loop only over visible indices for the
-pygame polygon draws.  Picks up another ~5-10 ms off the steady
-baseline once render times start to matter again.
-
 ### #7  Demo smoothness — sinusoidal interpolation
 Status: **OPEN**
 Target: `DemoState` in pi4/pi_zero.
@@ -266,6 +228,32 @@ Work items:
 ---
 
 ## Completed
+
+### RUNWAY-VECTORIZE  Runway symbol overlay vectorised — **FIXED**
+Target: `pi4/pfd.py` `draw_runway_symbols`, `shared/runways.py`.
+Fix: commit `878fe28` mirrors the airports.py optimisation — sort
+the structured array by midpoint latitude at load, cache contiguous
+lat/lon columns at module level, then bound candidates with
+`np.searchsorted` before any per-row work. Dense-area test (~50
+candidate rows in slab) drops 0.97 ms → 0.54 ms (1.8×); sparse
+queries drop 13.6×. In `pi4/pfd.py`: `surf.set_clip` hoisted out of
+the per-runway loop (was set/restored per runway, now once per frame
+around the whole pass); duplicate set_clip dropped from
+`_draw_extended_centerline`; `nm_per_deg_lon` threaded into
+`_project_latlon` so `cos(radians(lat))` is computed once per draw
+instead of on every projection (10+ per runway, 24+ per centerline);
+list+min/max corner-bbox tests replaced with scalar comparisons.
+On-disk cache format unchanged — older un-sorted .npy files re-sort
+in memory at load.
+
+### SVT-FPS-TURNS  Steep-bank FPS dip — **RESOLVED IN PRACTICE**
+Target: `pi4/svt_renderer_gl.py` `FRAGMENT_SHADER`.
+Context: previously flagged as 15–20 FPS dip during steep banked
+turns vs. 30 FPS baseline. Field testing reports turns hold up
+fine now — no longer a pressing issue. Specific shader-cost knobs
+(LUT for `clearance_color()`, coarser per-fragment normal,
+`MESH_GRID_N` 300→200) are still available if a future regression
+brings this back, but no work is queued.
 
 ### #1  GL SVT — pygame.OPENGL shared-context composite — **FIXED**
 Target: `pi4/svt_composite_gl.py` (new), `pi4/test_svt_composite.py` (new),
