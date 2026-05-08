@@ -38,9 +38,7 @@ import airports as _apt_mod    # noqa: E402
 import runways as _rwy_mod     # noqa: E402
 import obstacles as _obs_mod   # noqa: E402
 import water as _water_mod     # noqa: E402
-from terrain import (          # noqa: E402
-    load_tile, interp_colour, PALETTE_ABSOLUTE,
-)
+from terrain import load_tile  # noqa: E402
 
 
 # Water tint — slightly darker than the SVT mid-distance water_color so
@@ -86,75 +84,107 @@ def _quantise_centre(lat, lon, range_nm):
             round(lon / (step_deg / cos_lat)) * (step_deg / cos_lat))
 
 
+# Vectorised palette breakpoints, used by np.interp inside _build_tint.
+# Mirrors PALETTE_ABSOLUTE in shared/terrain.py — keep in sync.
+if HAS_NUMPY:
+    _PAL_X = np.array([0, 2000, 4000, 6000, 8000, 10000, 13000],
+                      dtype=np.float32)
+    _PAL_R = np.array([30,  80, 130, 160, 190, 210, 240], dtype=np.float32)
+    _PAL_G = np.array([100, 110,  95,  65,  80, 195, 240], dtype=np.float32)
+    _PAL_B = np.array([30,  40,  45,  25,  35, 185, 245], dtype=np.float32)
+
+
 def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     """Render a north-up hypsometric tint surface centred on (c_lat, c_lon).
 
-    `range_nm` is the radius shown at the inset's shorter axis, so the full
-    inset diameter is 2·range_nm.  `oversize` (≥ 1.0) inflates the rendered
-    area so a track-up rotation doesn't reveal the corners.  Water cells
-    (sampled from ``water_dir``) override the elevation palette so the
-    inset reads "ocean" rather than "low green land" off-coast."""
+    Fully vectorised over the (n × n) sample grid: sample points are
+    grouped by their integer SRTM/water tile, the tile is loaded once,
+    and bulk fancy-indexing fills the elevation and water arrays.  Then
+    np.interp does the elevation → RGB palette lookup for all pixels in
+    three calls (one per channel).  No per-cell Python loops in the hot
+    path, so cache misses rebuild in a few ms even with water sampling
+    enabled.
+
+    `range_nm` is the radius shown at the inset's shorter axis, so the
+    full inset diameter is 2·range_nm.  `oversize` (≥ 1.0) inflates the
+    rendered area so a track-up rotation doesn't reveal the corners."""
     n = _TINT_N
     span_nm = 2.0 * range_nm * oversize
     span_lat = span_nm / _NM_PER_DEG_LAT
     cos_lat = max(0.05, math.cos(math.radians(c_lat)))
     span_lon = span_lat / cos_lat
 
-    tile = pygame.Surface((n, n))
-
-    if HAS_NUMPY:
-        # Vectorised: for each integer SRTM tile that the patch overlaps,
-        # bulk-sample its grid into our (n × n) image.  Avoids 4096 Python
-        # bilinear lookups for cache misses.
-        lat_top = c_lat + span_lat * 0.5
-        lat_bot = c_lat - span_lat * 0.5
-        lon_lf  = c_lon - span_lon * 0.5
-        lon_rt  = c_lon + span_lon * 0.5
-
-        rows_lat = np.linspace(lat_top, lat_bot, n, dtype=np.float64)
-        cols_lon = np.linspace(lon_lf,  lon_rt,  n, dtype=np.float64)
-        elevs = np.zeros((n, n), dtype=np.float32)
-        water = np.zeros((n, n), dtype=bool)
-
-        # Group columns by their integer-lon tile to amortise tile loads.
-        for la_idx, la in enumerate(rows_lat):
-            lat_int = int(math.floor(la))
-            for lo_idx, lo in enumerate(cols_lon):
-                lon_int = int(math.floor(lo))
-                tile_data = load_tile(srtm_dir, lat_int, lon_int)
-                if tile_data is not None:
-                    arr, ns = tile_data
-                    step = 1.0 / (ns - 1)
-                    row = (lat_int + 1 - la) / step
-                    col = (lo - lon_int) / step
-                    row = max(0, min(ns - 1, row))
-                    col = max(0, min(ns - 1, col))
-                    r0, c0 = int(row), int(col)
-                    elevs[la_idx, lo_idx] = float(arr[r0, c0])
-                if water_dir:
-                    try:
-                        water[la_idx, lo_idx] = _water_mod.is_water(
-                            water_dir, float(la), float(lo))
-                    except Exception:
-                        pass
-
-        # Map to RGB via the absolute palette, then build a Surface.
-        rgb = np.zeros((n, n, 3), dtype=np.uint8)
-        for r in range(n):
-            for c in range(n):
-                if water[r, c]:
-                    rgb[r, c] = _WATER_TINT_RGB
-                else:
-                    rgb[r, c] = interp_colour(
-                        PALETTE_ABSOLUTE, float(elevs[r, c]))
-        # Pygame surface is (w, h) but make_surface wants (w, h, 3) → use
-        # the array transposed to (n, n, 3) -> (cols, rows, 3).
-        tile = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
-    else:
-        # Pure-Python fallback — slower but correct
-        tile.fill(_BG)
-
     target_px = max(8, int(size_px * oversize))
+
+    if not HAS_NUMPY:
+        tile = pygame.Surface((n, n))
+        tile.fill(_BG)
+        return pygame.transform.smoothscale(tile, (target_px, target_px))
+
+    lat_top = c_lat + span_lat * 0.5
+    lat_bot = c_lat - span_lat * 0.5
+    lon_lf  = c_lon - span_lon * 0.5
+    lon_rt  = c_lon + span_lon * 0.5
+
+    # Sample lat/lon as (n × n) grids (broadcast — no copy).
+    rows_lat = np.linspace(lat_top, lat_bot, n, dtype=np.float64)
+    cols_lon = np.linspace(lon_lf,  lon_rt,  n, dtype=np.float64)
+    sample_lat = np.broadcast_to(rows_lat[:, None], (n, n))
+    sample_lon = np.broadcast_to(cols_lon[None, :], (n, n))
+
+    elevs = np.zeros((n, n), dtype=np.float32)
+    water = np.zeros((n, n), dtype=bool)
+
+    lat_int = np.floor(sample_lat).astype(np.int32)
+    lon_int = np.floor(sample_lon).astype(np.int32)
+    # Pack (lat, lon) into a single integer key so np.unique groups by tile.
+    enc = ((lat_int.astype(np.int64) + 90) * 1000 +
+           (lon_int.astype(np.int64) + 360))
+
+    for tile_key in np.unique(enc):
+        tla = int(tile_key) // 1000 - 90
+        tlo = int(tile_key) %  1000 - 360
+        mask = (lat_int == tla) & (lon_int == tlo)
+        if not mask.any():
+            continue
+
+        # SRTM bulk-sample
+        sres = load_tile(srtm_dir, tla, tlo)
+        if sres is not None:
+            sarr, sn = sres
+            sstep = 1.0 / (sn - 1)
+            srow = np.clip(
+                np.round((tla + 1 - sample_lat) / sstep).astype(np.int32),
+                0, sn - 1)
+            scol = np.clip(
+                np.round((sample_lon - tlo) / sstep).astype(np.int32),
+                0, sn - 1)
+            elevs[mask] = sarr[srow[mask], scol[mask]]
+
+        # Water bulk-sample (only when a tile exists for this 1° square).
+        if water_dir:
+            wres = _water_mod.load_tile(water_dir, tla, tlo)
+            if wres is not None:
+                wmask, wn = wres
+                wstep = 1.0 / (wn - 1)
+                wrow = np.clip(
+                    np.round((tla + 1 - sample_lat) / wstep).astype(np.int32),
+                    0, wn - 1)
+                wcol = np.clip(
+                    np.round((sample_lon - tlo) / wstep).astype(np.int32),
+                    0, wn - 1)
+                water[mask] = wmask[wrow[mask], wcol[mask]] > 0
+
+    # Vectorised palette lookup: one np.interp per channel, then stack.
+    rgb_r = np.interp(elevs, _PAL_X, _PAL_R).astype(np.uint8)
+    rgb_g = np.interp(elevs, _PAL_X, _PAL_G).astype(np.uint8)
+    rgb_b = np.interp(elevs, _PAL_X, _PAL_B).astype(np.uint8)
+    rgb = np.stack([rgb_r, rgb_g, rgb_b], axis=-1)
+    if water.any():
+        rgb[water] = _WATER_TINT_RGB
+
+    # pygame.surfarray expects (w, h, 3); our rgb is (rows, cols, 3) so swap.
+    tile = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
     return pygame.transform.smoothscale(tile, (target_px, target_px))
 
 
