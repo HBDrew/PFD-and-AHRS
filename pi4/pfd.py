@@ -6931,6 +6931,16 @@ def render(surf, demo_mode, connected, data_stale=False):
         except Exception:
             _sun_az = _sun_el = _sun_int = None
 
+    # Below-horizon mesh-gap colour tracks the TAWS alert level so that
+    # any sliver of "missing terrain" matches the surrounding palette
+    # rather than contradicting the alert (e.g. a brown gap reading as
+    # "safe ground" right next to red WARNING terrain).
+    _below_col = (0.35, 0.27, 0.15)            # neutral brown — clear
+    if _terrain_alert_level >= 2:
+        _below_col = (0.86, 0.12, 0.12)        # red — WARNING
+    elif _terrain_alert_level == 1:
+        _below_col = (0.78, 0.51, 0.0)         # amber — CAUTION
+
     if _shared_gl_ctx is not None and gps_ok:
         # Render terrain into the AI region of the default framebuffer.
         # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
@@ -6956,6 +6966,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             sun_az_deg=_sun_az,
             sun_el_deg=_sun_el,
             sun_intensity=_sun_int,
+            below_horizon_color=_below_col,
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain and gps_ok:

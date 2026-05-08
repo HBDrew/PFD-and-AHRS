@@ -304,6 +304,11 @@ out vec4 frag_color;
 uniform float u_horizon_y;   // NDC Y of horizon line at x=0 (-1..1)
 uniform float u_roll_rad;    // camera roll in radians
 uniform float u_aspect;      // aspect ratio (w/h) for rotation correction
+uniform vec3  u_below_horizon_color;  // colour for below-horizon mesh gaps —
+                                      // CPU sets this from the current TAWS
+                                      // alert level so the gap matches the
+                                      // surrounding terrain palette (red when
+                                      // foreground terrain is red, etc.)
 
 void main() {
     // Un-roll the NDC point so horizon becomes a horizontal line again.
@@ -316,18 +321,16 @@ void main() {
     float y_unrolled = -x_sq * s + y_sq * c;
 
     // Above the rolled horizon: sky gradient (horizon-blue → zenith-blue).
-    // Below the rolled horizon: a neutral brown ground color, NOT sky-blue.
-    // Wherever the terrain mesh renders it overdraws this via depth test, so
-    // this only shows in mesh gaps — which is exactly where we used to see
-    // sky leak through (inner-mesh near-plane clip at low alt + steep bank,
-    // and the seam between the inner high-res mesh and the outer low-res
-    // mesh at the far horizon).  Painting those gaps as ground instead of
-    // sky makes them blend into the surrounding terrain instead of reading
-    // as a wedge of blue under the wing or above a ridge line.
+    // Below the rolled horizon: u_below_horizon_color (CPU drives this from
+    // the TAWS alert level so the gap colour tracks foreground terrain —
+    // brown when clear, amber on caution, red on warning).  Wherever the
+    // terrain mesh renders it overdraws this via depth test, so this only
+    // shows in mesh gaps (inner-mesh near-plane clip at low alt + steep
+    // bank, and the seam between the inner high-res mesh and the outer
+    // low-res mesh at the far horizon).
     vec3 horizon_col = vec3(0.23, 0.51, 0.78);
-    vec3 ground_col  = vec3(0.35, 0.27, 0.15);
     if (y_unrolled < u_horizon_y) {
-        frag_color = vec4(ground_col, 1.0);
+        frag_color = vec4(u_below_horizon_color, 1.0);
     } else {
         float t = (y_unrolled - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
         vec3 zenith_col  = vec3(0.04, 0.16, 0.31);
@@ -632,6 +635,7 @@ def render_svt_gl(
     sun_az_deg: float | None = None,
     sun_el_deg: float | None = None,
     sun_intensity: float | None = None,
+    below_horizon_color: tuple = (0.35, 0.27, 0.15),
 ):
     """Render the SVT terrain background using OpenGL.
     Returns a pygame.Surface (ai_w × ai_h, RGBA) or None if GL failed.
@@ -660,6 +664,7 @@ def render_svt_gl(
     _sky_prog['u_horizon_y'].value = horizon_y
     _sky_prog['u_roll_rad'].value  = math.radians(roll_deg)
     _sky_prog['u_aspect'].value    = ai_w / ai_h
+    _sky_prog['u_below_horizon_color'].value = below_horizon_color
     _ctx.disable(moderngl.DEPTH_TEST)
     _sky_vao.render()
     _ctx.enable(moderngl.DEPTH_TEST)
@@ -1216,6 +1221,7 @@ def render_svt_into_current_fb(
     sun_az_deg: float | None = None,
     sun_el_deg: float | None = None,
     sun_intensity: float | None = None,
+    below_horizon_color: tuple = (0.35, 0.27, 0.15),
 ) -> bool:
     """Render the SVT terrain+sky directly into the currently-bound
     framebuffer using the caller-provided moderngl context.
@@ -1265,6 +1271,7 @@ def render_svt_into_current_fb(
     st.sky_prog['u_horizon_y'].value = horizon_y
     st.sky_prog['u_roll_rad'].value  = math.radians(roll_deg)
     st.sky_prog['u_aspect'].value    = ai_w / ai_h
+    st.sky_prog['u_below_horizon_color'].value = below_horizon_color
     ctx.disable(moderngl.DEPTH_TEST)
     st.sky_vao.render()
     ctx.enable(moderngl.DEPTH_TEST)
