@@ -1889,7 +1889,8 @@ class SimFlyState:
                             ax_lat, ax_lon, wp_lat, wp_lon)
 
                     tgt_hdg = _sim_intercept_heading(
-                        course_deg, wp_lat, wp_lon, cur_lat, cur_lon)
+                        course_deg, wp_lat, wp_lon, cur_lat, cur_lon,
+                        approach=bool(ap.get("active")))
 
                     if ap.get("active"):
                         # Standard glideslope capture: only ever
@@ -6233,16 +6234,24 @@ def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
 
 
 def _sim_intercept_heading(course_deg, anchor_lat, anchor_lon,
-                           cur_lat, cur_lon, max_intercept=45.0):
+                           cur_lat, cur_lon, max_intercept=45.0,
+                           approach=False):
     """Standard avionics intercept logic for the sim's FOLLOW FLT-PLAN
     autopilot.  Returns a target heading (true degrees) that brings the
     aircraft onto the course at a 45° intercept angle when far from
-    track, ramping down to a gentle XTK correction once within 0.3 nm.
+    track, ramping down to a gentle XTK correction once within the
+    inner band.
 
     ``course_deg`` is the direction the course flows (TOWARD the
     destination).  ``anchor_lat/anchor_lon`` is any point on the course
     — XTK is invariant to anchor choice along a flat-earth course at
     typical leg lengths, so the destination or threshold is fine.
+
+    ``approach=True`` switches to tighter approach scaling that
+    matches the ±0.3 nm CDI: gentle band shrinks from 0.3 → 0.1 nm,
+    full intercept reached at 0.5 nm instead of 1.5 nm, and the gentle
+    gain triples so the AP actually settles on centreline rather than
+    wallowing at half-scale deflection.
 
     Convention: positive XTK = aircraft is right of course → returned
     heading is to the LEFT of ``course_deg``."""
@@ -6255,18 +6264,26 @@ def _sim_intercept_heading(course_deg, anchor_lat, anchor_lon,
     # Project onto course-perpendicular axis (right of course = +).
     xtk_nm = de_nm * cos_c - dn_nm * sin_c
 
+    if approach:
+        gentle_nm   = 0.1
+        full_nm     = 0.5
+        gentle_gain = 100.0   # deg per nm
+        gentle_cap  = 25.0
+    else:
+        gentle_nm   = 0.3
+        full_nm     = 1.5
+        gentle_gain = 30.0
+        gentle_cap  = 20.0
+
     xtk_abs = abs(xtk_nm)
-    if xtk_abs < 0.3:
-        # Close — gentle correction (~30°/nm gain, capped at ±20°).
-        correction = max(-20.0, min(20.0, -xtk_nm * 30.0))
-    elif xtk_abs >= 1.5:
-        # Far — full intercept toward the course.
+    if xtk_abs < gentle_nm:
+        correction = max(-gentle_cap, min(gentle_cap, -xtk_nm * gentle_gain))
+    elif xtk_abs >= full_nm:
         correction = -max_intercept if xtk_nm > 0 else max_intercept
     else:
-        # Linear ramp 0.3 → 1.5 nm between gentle and full intercept.
-        t = (xtk_abs - 0.3) / 1.2
+        t = (xtk_abs - gentle_nm) / (full_nm - gentle_nm)
         sign = -1.0 if xtk_nm > 0 else 1.0
-        gentle = -xtk_nm * 30.0
+        gentle = -xtk_nm * gentle_gain
         correction = gentle * (1.0 - t) + max_intercept * sign * t
     return (course_deg + correction) % 360
 
@@ -6729,6 +6746,78 @@ def draw_cdi(surf):
         # the "DIRECT  →" affordance so the pilot knows tapping opens the
         # keyboard.
         _text(surf, "DIRECT  →", 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
+
+
+# ── Vertical Deviation Indicator (glideslope) ────────────────────────────────
+
+_VDI_FULL_SCALE_DEG = 0.7   # ±0.7° full-scale (LPV / ILS-equivalent)
+
+
+def draw_vdi(surf):
+    """Vertical deviation indicator — only painted when an approach is
+    active.  Sits just inside the right edge of the AI (left of the
+    altitude tape) so the pilot's eye can sweep CDI → AI → VDI without
+    leaving the primary scan.
+
+    Convention matches every modern PFD: the diamond shows where the
+    glideslope is relative to the aircraft.  Above GS → diamond moves
+    DOWN (fly down to the diamond); below GS → diamond moves UP."""
+    ap = disp.get("approach") or {}
+    if not ap.get("active"):
+        return
+
+    lat = float(disp.get("lat", 0.0))
+    lon = float(disp.get("lon", 0.0))
+    alt = float(disp.get("alt", 0.0))   # baro altitude, ft
+    th_lat  = float(ap["thresh_lat"])
+    th_lon  = float(ap["thresh_lon"])
+    th_elev = float(ap["thresh_elev_ft"])
+
+    dist_nm, _ = _nav_geo_dist_brg(lat, lon, th_lat, th_lon)
+    dist_ft = dist_nm * 6076.12
+    if dist_ft < 100.0:
+        return  # over the threshold — VDI no longer meaningful
+
+    elev_angle_deg = math.degrees(math.atan2(alt - th_elev, dist_ft))
+    dev_deg = elev_angle_deg - 3.0   # + above GS, - below GS
+
+    # Bar geometry — vertical strip just inside the alt tape.
+    bar_w = 6
+    bar_h = max(160, int(AI_H * 0.55))
+    bar_x = ALT_X - 24 - bar_w // 2
+    bar_y = AI_Y + (AI_H - bar_h) // 2
+
+    plate_w = 36
+    plate = pygame.Surface((plate_w, bar_h + 40), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 180))
+    surf.blit(plate, (bar_x - (plate_w - bar_w) // 2, bar_y - 20))
+
+    pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
+                     border_radius=2)
+
+    # Tick marks (centre + ±50% + full-scale).  Centre line crosses the
+    # bar; outer dots mark the 0.35° / 0.7° boundaries.
+    cx_bar = bar_x + bar_w // 2
+    for frac in (-1.0, -0.5, 0.0, 0.5, 1.0):
+        ty = bar_y + int((frac + 1.0) * 0.5 * bar_h)
+        if frac == 0.0:
+            pygame.draw.line(surf, WHITE,
+                             (bar_x - 4, ty), (bar_x + bar_w + 4, ty), 2)
+        else:
+            pygame.draw.circle(surf, (180, 200, 220), (cx_bar, ty), 2)
+
+    # Diamond — clamped to ±full-scale.  Above GS → diamond moves DOWN.
+    dev_clamped = max(-1.0, min(1.0, dev_deg / _VDI_FULL_SCALE_DEG))
+    dy_diamond = int(dev_clamped * (bar_h / 2))
+    dcx = cx_bar
+    dcy = bar_y + bar_h // 2 + dy_diamond
+    dpts = [(dcx, dcy - 8), (dcx + 9, dcy), (dcx, dcy + 8), (dcx - 9, dcy)]
+    _filled_polygon(surf, dpts, MAGENTA)
+
+    _text(surf, "G", 12, (180, 200, 220), bold=True,
+          cx=cx_bar, cy=bar_y - 10)
+    _text(surf, "S", 12, (180, 200, 220), bold=True,
+          cx=cx_bar, cy=bar_y + bar_h + 10)
 
 
 # ── Runway polygons + extended centerlines ───────────────────────────────────
@@ -7584,6 +7673,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # No-op when no waypoint is active.
     if gps_ok:
         draw_cdi(surf)
+        draw_vdi(surf)   # vertical glideslope, only paints when approach active
 
     # 6. Roll arc
     draw_roll_arc(surf, roll)
