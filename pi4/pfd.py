@@ -1928,16 +1928,35 @@ class SimFlyState:
             turn_rate = 3.0  # standard rate deg/s
             d_hdg = max(-turn_rate * dt, min(turn_rate * dt, hdg_err * 0.4))
             state["yaw"]  = (hdg + d_hdg) % 360
-            bank          = max(-25.0, min(25.0, hdg_err * 1.8))
+            # Bank command — proportional to heading error.  Earlier 1.8
+            # was too gentle (and capped only at huge errors), so the
+            # AI looked like it was yawing flat through small intercept
+            # commands.  3.5 saturates the ±25° cap at ~7° error, which
+            # matches what a real AP / hand-flying pilot would do.
+            bank          = max(-25.0, min(25.0, hdg_err * 3.5))
             state["roll"] = bank if not ahrs_fail else 0.0
             state["ay"]   = -bank / 600.0  # slip ball
 
             # ── Altitude / VS / pitch ──────────────────────────────────────────
+            # On approach, the GS itself is descending at ~530 fpm at
+            # 100 kt, so a pure proportional alt-error controller can
+            # only catch it asymptotically — sim flies persistently
+            # above the GS.  Add the GS descent rate as feedforward and
+            # bump the closed-loop gain so the diamond actually centres.
+            _ap_now = disp.get("approach") or {}
+            _on_appr_descent = (_ap_now.get("active")
+                                and tgt_alt < state["alt"] - 5.0)
             alt     = state["alt"]
             alt_err = tgt_alt - alt
             if abs(alt_err) < 5.0:
                 state["alt"] = tgt_alt
                 vs_fpm = 0.0
+            elif _on_appr_descent:
+                gs_descent_fpm = -(state["speed"] * 6076.12
+                                    * math.tan(math.radians(3.0)) / 60.0)
+                vs_fpm = max(-1500.0, min(1500.0,
+                                          alt_err * 6.0 + gs_descent_fpm))
+                state["alt"] = alt + vs_fpm / 60.0 * dt
             else:
                 vs_fpm  = max(-1500.0, min(1500.0, alt_err * 2.0))
                 state["alt"] = alt + vs_fpm / 60.0 * dt
