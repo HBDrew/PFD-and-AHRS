@@ -189,9 +189,9 @@ mag cal also lands, the iPhone compass and the AHRS compass will both
 converge on the GPS track and stay aligned.
 
 ### AHRS-GPS-AID  GPS-aided AHRS for clean attitude in coordinated turns
-Status: **OPEN**
-Target: new `firmware/ahrs_filter.py` (or Pi-side equivalent), reading
-raw accel + gyro from the WT901, fusing with GPS velocity from the Pi.
+Status: **OPEN — on-Pico is the recommended path; Pico 2 W makes it cheap**
+Target: new `firmware/ahrs_filter.py`, raw-mode IMU output from
+`firmware/wt901.py`, plumbing in `firmware/main.py`.
 Context: the WT901's internal Kalman filter doesn't accept external
 velocity, so feeding it groundspeed directly does nothing — it can
 only see accel + gyro + mag.  The accelerometer measures
@@ -203,31 +203,31 @@ signal is ~0.9 m/s² while the gravity-on-Y bank signal is only
 ~0.085 m/s² — the IMU sees ~10× more "fake tilt" than real tilt.
 This is why the leans-during-coordinated-turn artefact survives
 even a perfect mag cal.
+Architecture is straightforward because **both inputs already live
+on the Pico**: WT901 raw accel/gyro on UART, GPS speed/track from
+`firmware/gps.py`.  No cross-device transport needed — the Pi 4
+just consumes the fused result over USB CDC the same way it does
+today.  Pico 2 W (RP2350) makes this path comfortable: hardware
+FPU collapses Madgwick/Mahony to free, 520 KB SRAM gives plenty of
+headroom, and the second M33 core can carry the per-sample fusion
+loop without competing with the AP / web-server / SSE work.  On the
+original Pico W (RP2040, soft float, 264 KB) the filter is doable
+but tight; defer until the 2 W swap.
 Work items:
-  - Pull raw accel + gyro from the WT901 at its native rate (it
-    supports raw IMU output mode — switch the firmware out of
-    fused-Euler mode for this path, or run a dual-stream config).
-  - Implement a Madgwick or Mahony filter (~50 lines of Python),
-    or a simple EKF if drift compensation needs to be tighter.
-    Both are well-documented; reference impls available.
-  - Subtract centripetal accel `V × ω_gyro` from the raw accel
-    BEFORE feeding it to the level-finding step.  V comes from
-    the GPS module (already on the Pi 4); ω from the gyro.
-  - Decide where the filter runs.  Two options:
-    - **A. On the Pico W**: closer to the IMU, no USB latency,
-      but the Pico's heap is already tight (see IPHONE-PICO-HOSTING)
-      and the GPS feed lives on the Pi.  Would need to forward
-      GPS velocity over USB to the Pico — adds a transport.
-    - **B. On the Pi 4**: switch the WT901 to raw mode, ship raw
-      samples over USB CDC to the Pi, fuse there with the local
-      GPS feed.  More CPU available, simpler plumbing.  This is
-      the recommended path.
-  - Replace the firmware's existing yaw/pitch/roll output with
-    the fused result; iPhone/Pi 4 displays consume it as today.
-  - Validate against a turn at a known coordinated bank: 25°
-    bank at 100 kt should read steadily 25°, with no settling
-    drift after the roll-in is complete.  Pre-fix it sags toward
-    level by a few degrees within the first 5–10 s.
+  - Switch the WT901 driver in `firmware/wt901.py` to raw IMU output
+    mode (or run a dual-stream config so both raw + fused are
+    available during validation).
+  - Implement Madgwick or Mahony in `firmware/ahrs_filter.py` (~50
+    lines of MicroPython); reference impls available.  EKF is an
+    option if drift compensation needs to be tighter, but Madgwick
+    with GPS aiding is plenty for this airframe.
+  - Subtract centripetal accel `V × ω_gyro` from raw accel BEFORE
+    the level-finding step.  V from `gps.speed_kt`, ω from the gyro.
+  - Replace `main.py`'s yaw/pitch/roll output with the fused result;
+    iPhone / Pi 4 displays consume it as today.
+  - Validate at a known coordinated bank: 25° at 100 kt should read
+    steadily 25°, no sag toward level after roll-in completes.
+    Pre-fix it sags by a few degrees within the first 5–10 s.
 Pairs with AHRS-MAGCAL (mag cal eliminates yaw bias; GPS aiding
 eliminates bank/pitch bias).  Both together give a real AHRS.
 
