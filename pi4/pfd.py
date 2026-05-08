@@ -82,6 +82,8 @@ import airports as apt_mod
 import runways as rwy_mod
 import water as water_mod
 import settings as _settings
+import moving_map as _map_mod
+import sun as _sun_mod
 
 DEG = math.pi / 180
 
@@ -194,6 +196,18 @@ disp["ad"] = {                      # airport download/parse state
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
+    # Lower-left moving-map inset
+    "map_enabled":       False,
+    "map_orient":        "trk",     # "trk" | "nrth"
+    "map_zoom_nm":       5,         # one of 1, 2, 5, 10, 20, 40
+    "map_show_terrain":  True,
+    "map_show_water":    True,      # reserved — water tile overlay
+    "map_show_airports": True,
+    "map_show_runways":  True,
+    "map_show_obstacles": True,
+    "map_show_directto": True,
+    # Real-time SVT sun position (off → SE / mid-morning fixed lighting)
+    "sun_realtime":      True,
 }
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
@@ -2443,6 +2457,13 @@ _bug_dragging  = None    # "hdg" | "alt"
 _active_fingers = {}     # finger_id → touch-down time (ms)
 _multitouch_t0  = None   # time when 2nd finger touched down
 
+# Moving-map inset state.  _last_map_rect is updated each frame by the
+# render loop so the touch handler can hit-test against it; _map_pinch
+# tracks finger positions for two-finger pinch-zoom on the inset.
+_last_map_rect = None
+_map_pinch     = {}      # finger_id → (x_px, y_px) at first sample
+_PINCH_RATIO   = 1.35    # ratio that triggers one zoom-step
+
 
 def _current_str_for_kbd(target, prev_mode):
     """String form of current keyboard-editable value for pre-population."""
@@ -2524,11 +2545,45 @@ def handle_event(event, demo_mode):
         _active_fingers[event.finger_id] = pygame.time.get_ticks()
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
             _multitouch_t0 = pygame.time.get_ticks()
+        # Map-inset pinch tracking: remember fingers that started inside
+        # the inset so we can compute a ratio in FINGERMOTION even when
+        # one finger drifts off the inset mid-gesture.
+        if _last_map_rect is not None and disp.get("mode", "pfd") == "pfd":
+            fx = int(event.x * DISPLAY_W)
+            fy = int(event.y * DISPLAY_H)
+            mrx, mry, mrw, mrh = _last_map_rect
+            if mrx <= fx <= mrx + mrw and mry <= fy <= mry + mrh:
+                _map_pinch[event.finger_id] = (fx, fy)
 
     if event.type == pygame.FINGERUP:
         _active_fingers.pop(event.finger_id, None)
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
+        _map_pinch.pop(event.finger_id, None)
+
+    # ── Map-inset pinch-zoom (two fingers tracked on the inset) ──────────────
+    if event.type == pygame.FINGERMOTION and len(_map_pinch) >= 2:
+        fx = int(event.x * DISPLAY_W)
+        fy = int(event.y * DISPLAY_H)
+        if event.finger_id in _map_pinch:
+            _map_pinch[event.finger_id] = (fx, fy)
+            ids = list(_map_pinch.keys())[:2]
+            (x0, y0), (x1, y1) = _map_pinch[ids[0]], _map_pinch[ids[1]]
+            cur_d = math.hypot(x1 - x0, y1 - y0)
+            base = _map_pinch.get("__base_d", 0.0)
+            if base <= 0.0:
+                _map_pinch["__base_d"] = cur_d
+            elif cur_d > base * _PINCH_RATIO:
+                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(
+                    int(disp["ds"].get("map_zoom_nm", 5)))
+                _settings.mark_dirty()
+                _map_pinch["__base_d"] = cur_d
+            elif cur_d < base / _PINCH_RATIO:
+                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(
+                    int(disp["ds"].get("map_zoom_nm", 5)))
+                _settings.mark_dirty()
+                _map_pinch["__base_d"] = cur_d
+        return True
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
@@ -2560,7 +2615,16 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "setup"
             elif action and action.startswith("set:"):
                 _, key, val_str = action.split(":", 2)
-                disp["ds"][key] = (val_str == "True") if key == "night_mode" else val_str
+                # Coerce by token: True/False → bool, digits → int, else str.
+                # Lets one action protocol carry the mix of types now in
+                # disp["ds"] (units strings, map enable/layer bools, zoom int).
+                if val_str in ("True", "False"):
+                    val = (val_str == "True")
+                elif val_str.lstrip("-").isdigit():
+                    val = int(val_str)
+                else:
+                    val = val_str
+                disp["ds"][key] = val
                 _settings.mark_dirty()
             elif action and action.startswith("inc:brightness:"):
                 delta = int(action.split(":")[-1])
@@ -2981,6 +3045,22 @@ def handle_event(event, demo_mode):
                 disp["kbd_buf"]    = ""
                 disp["kbd_error"]  = ""
                 disp["mode"]       = "keyboard"
+                return True
+
+        # Tap on the moving-map inset → cycle range one step.  Right
+        # half of the inset zooms IN (smaller range), left half zooms OUT.
+        # Fallback affordance for installs whose touch driver doesn't
+        # deliver FINGERMOTION events for pinch-zoom.
+        if (mode == "pfd" and _last_map_rect is not None
+                and disp["ds"].get("map_enabled", False)):
+            mrx, mry, mrw, mrh = _last_map_rect
+            if mrx <= x <= mrx + mrw and mry <= y <= mry + mrh:
+                cur = int(disp["ds"].get("map_zoom_nm", 5))
+                if x >= mrx + mrw / 2:
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
+                else:
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur)
+                _settings.mark_dirty()
                 return True
 
         # Tap on alt bug button (top of alt tape) — hit region extends to HDG_H
@@ -3566,9 +3646,36 @@ _DSP_ROWS = [
      ["inhg","hpa"],     ["inHg","hPa"],     100),
     ("brightness", "BRIGHTNESS",   "Screen brightness 1\u201310",
      None, None, None),
-    ("night_mode", "NIGHT MODE",   "Dim red cockpit lighting",
-     [False, True],      ["OFF","ON"],        100),
+    # MAP INSET row carries TWO segmented controls: enable + orientation.
+    # Custom drawing/hit-test below handles the second pair.  Listed here
+    # as a single key so it occupies one row in the standard loop.
+    ("map_enabled", "MAP INSET",    "Lower-left 2D moving map \u00b7 orient",
+     [False, True],      ["OFF", "ON"],       80),
+    ("map_zoom_nm", "MAP RANGE",    "Default radius (nm)",
+     [1, 2, 5, 10, 20, 40], ["1","2","5","10","20","40"], 50),
+    ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
+     [False, True],      ["FIXED", "REAL"],   80),
 ]
+# Trailing controls for the MAP INSET row (orientation), drawn to the
+# left of the standard segmented control by hand.
+_DSP_MAP_ORIENT_OPTS  = ["trk", "nrth"]
+_DSP_MAP_ORIENT_LBLS  = ["TRK\u2191", "N\u2191"]
+_DSP_MAP_ORIENT_BW    = 80
+_DSP_MAP_ORIENT_GAP   = 24    # gap between orient pair and on/off pair
+
+# Multi-toggle MAP LAYERS row \u2014 packed five toggles (terrain / water /
+# airports / runways / obstacles) into one row.  Drawn separately from
+# _DSP_ROWS because the standard row schema is one control per row.
+_DSP_MAP_LAYERS = [
+    ("map_show_terrain",   "TER"),
+    ("map_show_water",     "WTR"),
+    ("map_show_airports",  "APT"),
+    ("map_show_runways",   "RWY"),
+    ("map_show_obstacles", "OBS"),
+]
+_DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
+_DSP_LAYERS_BTN_W     = 70
+_DSP_LAYERS_BTN_G     = 6
 
 
 def _dsp_rx(row, bx, bw):
@@ -3581,19 +3688,18 @@ def _dsp_rx(row, bx, bw):
     return bx + bw - total - 14
 
 
+def _dsp_layers_geom(bx, bw):
+    """Right-aligned geometry for the MAP LAYERS multi-toggle row."""
+    n = len(_DSP_MAP_LAYERS)
+    total = n * _DSP_LAYERS_BTN_W + (n - 1) * _DSP_LAYERS_BTN_G
+    return bx + bw - total - 14
+
+
 def draw_display_setup(surf, ds):
     _screen_header(surf, "DISPLAY")
     for ri, row in enumerate(_DSP_ROWS):
         key, label, sub, opts_v, opts_l, bw_each = row
-        is_night = (key == "night_mode")
         bx, by, bw, bh = _setting_row(surf, ri, label, sub)
-        if is_night:
-            # Overlay dim veil to show greyed-out state
-            veil = pygame.Surface((bw, bh), pygame.SRCALPHA)
-            veil.fill((0, 0, 0, 160))
-            surf.blit(veil, (bx, by))
-            _text(surf, "future", 10, (90,90,100), x=bx+bw-60, y=by+bh-18)
-            continue
         ry = by + (bh - _DSP_BTN_H) // 2
         rx = _dsp_rx(row, bx, bw)
         if opts_v is None:                              # brightness stepper
@@ -3608,6 +3714,30 @@ def draw_display_setup(surf, ds):
             cur = ds.get(key, opts_v[0])
             for i, (v, lbl) in enumerate(zip(opts_v, opts_l)):
                 _seg_btn(surf, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
+            # MAP INSET row also carries the orient pair to its left
+            if key == "map_enabled":
+                cur_or = ds.get("map_orient", "trk")
+                ox = rx - (_DSP_MAP_ORIENT_GAP
+                           + 2 * _DSP_MAP_ORIENT_BW + _DSP_BTN_G)
+                for i, (v, lbl) in enumerate(zip(_DSP_MAP_ORIENT_OPTS,
+                                                 _DSP_MAP_ORIENT_LBLS)):
+                    _seg_btn(surf,
+                             ox + i * (_DSP_MAP_ORIENT_BW + _DSP_BTN_G),
+                             ry, _DSP_MAP_ORIENT_BW, _DSP_BTN_H,
+                             lbl, v == cur_or)
+
+    # MAP LAYERS — five-toggle packed row.  Drawn after the homogeneous
+    # rows because the standard schema is one control per row.
+    bx, by, bw, bh = _setting_row(surf, _DSP_LAYERS_ROW_INDEX,
+                                  "MAP LAYERS",
+                                  "Per-layer visibility on the map inset")
+    ry = by + (bh - _DSP_BTN_H) // 2
+    rx = _dsp_layers_geom(bx, bw)
+    for i, (key, lbl) in enumerate(_DSP_MAP_LAYERS):
+        active = bool(ds.get(key, True))
+        _seg_btn(surf,
+                 rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
+                 ry, _DSP_LAYERS_BTN_W, _DSP_BTN_H, lbl, active)
 
 
 def display_setup_hit(x, y, ds):
@@ -3616,8 +3746,6 @@ def display_setup_hit(x, y, ds):
         return "back"
     for ri, row in enumerate(_DSP_ROWS):
         key, *_, opts_v, opts_l, bw_each = row
-        if key == "night_mode":
-            continue   # greyed out — no interaction
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
@@ -3637,6 +3765,27 @@ def display_setup_hit(x, y, ds):
                 bx_b = rx + i*(bw_each+_DSP_BTN_G)
                 if bx_b <= x <= bx_b+bw_each:
                     return f"set:{key}:{v}"
+            # MAP INSET row carries the orient pair to its left
+            if key == "map_enabled":
+                ox = rx - (_DSP_MAP_ORIENT_GAP
+                           + 2 * _DSP_MAP_ORIENT_BW + _DSP_BTN_G)
+                for i, v in enumerate(_DSP_MAP_ORIENT_OPTS):
+                    bx_b = ox + i * (_DSP_MAP_ORIENT_BW + _DSP_BTN_G)
+                    if bx_b <= x <= bx_b + _DSP_MAP_ORIENT_BW:
+                        return f"set:map_orient:{v}"
+
+    # MAP LAYERS multi-toggle row
+    by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
+    if by <= y <= by + _SS_RH:
+        bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+        ry = by + (_SS_RH - _DSP_BTN_H) // 2
+        if ry <= y <= ry + _DSP_BTN_H:
+            rx = _dsp_layers_geom(bx, bw)
+            for i, (key, _lbl) in enumerate(_DSP_MAP_LAYERS):
+                bx_b = rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
+                if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
+                    new_val = not bool(ds.get(key, True))
+                    return f"set:{key}:{new_val}"
     return None
 
 
@@ -6806,6 +6955,17 @@ def render(surf, demo_mode, connected, data_stale=False):
     # rendering would be lying about the world.  Fall back to plain
     # blue-over-brown so attitude (pitch/roll from AHRS) is still
     # readable but the synthetic terrain is suppressed.
+    # Real-time sun position drives terrain shading when enabled and a
+    # GPS fix is live.  Off / no-fix → renderer falls back to its
+    # built-in SE / mid-morning constants (bright daylight that always
+    # reads).
+    _sun_az = _sun_el = _sun_int = None
+    if ds.get("sun_realtime", True) and gps_ok:
+        try:
+            _sun_az, _sun_el, _sun_int = _sun_mod.solar_position(lat, lon)
+        except Exception:
+            _sun_az = _sun_el = _sun_int = None
+
     if _shared_gl_ctx is not None and gps_ok:
         # Render terrain into the AI region of the default framebuffer.
         # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
@@ -6828,6 +6988,9 @@ def render(surf, demo_mode, connected, data_stale=False):
             water_dir=WATER_DIR,
             water_enable=disp["ad"].get("show_water", True),
             airports_arr=_airports,
+            sun_az_deg=_sun_az,
+            sun_el_deg=_sun_el,
+            sun_intensity=_sun_int,
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain and gps_ok:
@@ -6879,6 +7042,32 @@ def render(surf, demo_mode, connected, data_stale=False):
                       or _shared_gl_ctx is not None)
     if _svt_3d_active:
         draw_zero_pitch_line(surf, ai_rect, pitch, roll)
+
+    # 1d. Lower-left moving-map inset (pure-pygame; reuses the airport,
+    # runway, obstacle and SRTM caches the SVT already keeps loaded).
+    # Drawn after symbols so the inset frame sits on top, before the
+    # pitch ladder so the ladder reads through unobstructed.
+    if ds.get("map_enabled", False) and gps_ok:
+        _miw = max(140, int(AI_W * 0.30))
+        _mih = max(120, int(AI_H * 0.40))
+        rect = (AI_X + 6,
+                AI_Y + AI_H - _mih - 6,
+                _miw, _mih)
+        global _last_map_rect
+        _last_map_rect = rect
+        d2 = disp.get("nav") or {}
+        _map_mod.render(
+            surf, rect, lat, lon, alt, hdg, track,
+            ds.get("map_orient", "trk"),
+            int(ds.get("map_zoom_nm", 5)),
+            ds,
+            airports_arr=_airports,
+            runways_arr=_runways,
+            obstacles_arr=_obstacles,
+            srtm_dir=SRTM_DIR,
+            direct_to=d2 if d2.get("ident") else None,
+            font=_get_font(11, bold=True),
+        )
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)

@@ -624,6 +624,9 @@ def render_svt_gl(
     lat: float,
     lon: float,
     v_fov_deg: float = V_FOV_DEG,
+    sun_az_deg: float | None = None,
+    sun_el_deg: float | None = None,
+    sun_intensity: float | None = None,
 ):
     """Render the SVT terrain background using OpenGL.
     Returns a pygame.Surface (ai_w × ai_h, RGBA) or None if GL failed.
@@ -670,14 +673,19 @@ def render_svt_gl(
         _terrain_prog['u_grid_max_dist_m'].value  = _mesh_radius_m
         _terrain_prog['u_discard_inside_m'].value = 0.0
         _terrain_prog['u_water_enable'].value     = 0.0   # standalone has no water data
-        # Sun direction vector (world frame: X=East, Y=North, Z=Up)
-        az_rad = math.radians(SUN_AZIMUTH_DEG)
-        el_rad = math.radians(SUN_ELEVATION_DEG)
-        sun_x = math.cos(el_rad) * math.sin(az_rad)   # east component
-        sun_y = math.cos(el_rad) * math.cos(az_rad)   # north component
-        sun_z = math.sin(el_rad)                      # up component
+        # Sun direction vector (world frame: X=East, Y=North, Z=Up).
+        # Caller-supplied az/el override the module defaults so a real-time
+        # solar-position feed can drive the lighting from UTC + GPS.
+        _az = SUN_AZIMUTH_DEG   if sun_az_deg   is None else sun_az_deg
+        _el = SUN_ELEVATION_DEG if sun_el_deg   is None else sun_el_deg
+        _si = SUN_INTENSITY     if sun_intensity is None else sun_intensity
+        az_rad = math.radians(_az)
+        el_rad = math.radians(_el)
+        sun_x = math.cos(el_rad) * math.sin(az_rad)
+        sun_y = math.cos(el_rad) * math.cos(az_rad)
+        sun_z = math.sin(el_rad)
         _terrain_prog['u_sun_dir'].value       = (sun_x, sun_y, sun_z)
-        _terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
+        _terrain_prog['u_sun_intensity'].value = _si
         _terrain_prog['u_ambient'].value       = SUN_AMBIENT
         _terrain_vao.render()
 
@@ -1200,6 +1208,9 @@ def render_svt_into_current_fb(
     water_dir: str = "",
     water_enable: bool = True,
     airports_arr=None,
+    sun_az_deg: float | None = None,
+    sun_el_deg: float | None = None,
+    sun_intensity: float | None = None,
 ) -> bool:
     """Render the SVT terrain+sky directly into the currently-bound
     framebuffer using the caller-provided moderngl context.
@@ -1253,8 +1264,13 @@ def render_svt_into_current_fb(
     st.sky_vao.render()
     ctx.enable(moderngl.DEPTH_TEST)
 
-    az_rad = math.radians(SUN_AZIMUTH_DEG)
-    el_rad = math.radians(SUN_ELEVATION_DEG)
+    # Caller-supplied az/el override the module defaults so a real-time
+    # solar-position feed can drive lighting from UTC + GPS.
+    _az = SUN_AZIMUTH_DEG   if sun_az_deg    is None else sun_az_deg
+    _el = SUN_ELEVATION_DEG if sun_el_deg    is None else sun_el_deg
+    _si = SUN_INTENSITY     if sun_intensity is None else sun_intensity
+    az_rad = math.radians(_az)
+    el_rad = math.radians(_el)
     sun_dir = (
         math.cos(el_rad) * math.sin(az_rad),  # east
         math.cos(el_rad) * math.cos(az_rad),  # north
@@ -1294,7 +1310,7 @@ def render_svt_into_current_fb(
         st.terrain_prog['u_discard_inside_m'].value = float(discard_inside_m)
         st.terrain_prog['u_water_enable'].value     = 1.0 if water_enable else 0.0
         st.terrain_prog['u_sun_dir'].value       = sun_dir
-        st.terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
+        st.terrain_prog['u_sun_intensity'].value = _si
         st.terrain_prog['u_ambient'].value       = SUN_AMBIENT
         vao.render()
         return local_mvp
