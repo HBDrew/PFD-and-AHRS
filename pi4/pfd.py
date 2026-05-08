@@ -6187,8 +6187,9 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 # waypoint; the CDI shows perpendicular cross-track from the great-circle
 # course originating at the activation point.
 
-_CDI_FULL_SCALE_NM = 1.0    # ±1 nm full-scale cross-track deflection
-_EARTH_R_NM        = 3440.065  # Earth mean radius (km/1.852)
+_CDI_FULL_SCALE_NM      = 1.0    # ±1 nm full-scale en-route / D2
+_CDI_APPR_FULL_SCALE_NM = 0.3    # ±0.3 nm full-scale on approach (RNAV/LPV)
+_EARTH_R_NM             = 3440.065  # Earth mean radius (km/1.852)
 
 
 def _ident_has_runways(ident: str) -> bool:
@@ -6684,7 +6685,8 @@ def draw_cdi(surf):
         dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
 
         ap = disp.get("approach") or {}
-        if ap.get("active") and ap.get("airport") == ident:
+        appr_active = ap.get("active") and ap.get("airport") == ident
+        if appr_active:
             # Approach: CDI reference is the extended runway centreline
             # (threshold + published course) — NOT the line from the
             # pilot's activation point to the threshold, which only
@@ -6699,14 +6701,16 @@ def draw_cdi(surf):
             course_rad = math.radians(course_deg)
             xtk = (de_nm * math.cos(course_rad)
                    - dn_nm * math.sin(course_rad))
+            full_scale = _CDI_APPR_FULL_SCALE_NM
         else:
             act_lat = float(nv.get("act_lat", lat))
             act_lon = float(nv.get("act_lon", lon))
             xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+            full_scale = _CDI_FULL_SCALE_NM
 
         # Diamond shows where the course line is relative to the aircraft.
         # Right-of-course (positive xtk) → diamond LEFT (course is to your left).
-        xtk_clamped = max(-1.0, min(1.0, xtk / _CDI_FULL_SCALE_NM))
+        xtk_clamped = max(-1.0, min(1.0, xtk / full_scale))
         dx_diamond = -int(xtk_clamped * (bar_w / 2))
         dcx = CX + dx_diamond
         dcy = bar_y + bar_h // 2
@@ -6717,9 +6721,7 @@ def draw_cdi(surf):
         # than original (11→16); positioned so the text bottom sits 3 px higher
         # than the original layout would have placed it.  When an approach is
         # active, append the runway suffix to the airport ident.
-        ident_lbl = (f"{ident}/{ap['runway']}"
-                     if ap.get("active") and ap.get("airport") == ident
-                     else ident)
+        ident_lbl = f"{ident}/{ap['runway']}" if appr_active else ident
         readout = f"{ident_lbl}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
         _text(surf, readout, 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
     else:
