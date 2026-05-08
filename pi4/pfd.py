@@ -6680,11 +6680,29 @@ def draw_cdi(surf):
         lon = disp.get("lon", 0.0)
         wpt_lat = float(nv["lat"])
         wpt_lon = float(nv["lon"])
-        act_lat = float(nv.get("act_lat", lat))
-        act_lon = float(nv.get("act_lon", lon))
 
         dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
-        xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+
+        ap = disp.get("approach") or {}
+        if ap.get("active") and ap.get("airport") == ident:
+            # Approach: CDI reference is the extended runway centreline
+            # (threshold + published course) — NOT the line from the
+            # pilot's activation point to the threshold, which only
+            # coincides with the centreline if they tapped DIRECT while
+            # already perfectly lined up.
+            cl_lat = float(ap["thresh_lat"])
+            cl_lon = float(ap["thresh_lon"])
+            course_deg = float(ap["course_deg"])
+            cos_lat = max(1e-6, math.cos(math.radians(cl_lat)))
+            de_nm = (lon - cl_lon) * 60.0 * cos_lat
+            dn_nm = (lat - cl_lat) * 60.0
+            course_rad = math.radians(course_deg)
+            xtk = (de_nm * math.cos(course_rad)
+                   - dn_nm * math.sin(course_rad))
+        else:
+            act_lat = float(nv.get("act_lat", lat))
+            act_lon = float(nv.get("act_lon", lon))
+            xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
 
         # Diamond shows where the course line is relative to the aircraft.
         # Right-of-course (positive xtk) → diamond LEFT (course is to your left).
@@ -6699,7 +6717,6 @@ def draw_cdi(surf):
         # than original (11→16); positioned so the text bottom sits 3 px higher
         # than the original layout would have placed it.  When an approach is
         # active, append the runway suffix to the airport ident.
-        ap = disp.get("approach") or {}
         ident_lbl = (f"{ident}/{ap['runway']}"
                      if ap.get("active") and ap.get("airport") == ident
                      else ident)
