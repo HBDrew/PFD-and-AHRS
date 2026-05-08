@@ -178,9 +178,16 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
     pygame.draw.rect(surf, _BG, rect)
 
-    # Map rotation: track-up rotates so current track points up
+    # Map rotation: track-up rotates so current track points up.
+    # Fall back to magnetic heading when GPS track is None or 0 — that's
+    # the typical "stationary, GPS hasn't computed a track yet" state.
+    # Using hdg in that case keeps the inset rotating with the nose so
+    # the toggle is visibly different from north-up even before takeoff.
     if orient == "trk":
-        rot_deg = float(track_deg if track_deg is not None else hdg_deg or 0.0)
+        if track_deg is None or track_deg == 0.0:
+            rot_deg = float(hdg_deg or 0.0)
+        else:
+            rot_deg = float(track_deg)
     else:
         rot_deg = 0.0
 
@@ -298,10 +305,15 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
     # ── Own-ship chevron ─────────────────────────────────────────────────────
     # Track-up: chevron always points up.  North-up: chevron rotates to
-    # current track so the pilot still sees direction of motion.
-    own_rot = 0.0 if orient == "trk" else float(track_deg
-                                                if track_deg is not None
-                                                else hdg_deg or 0.0)
+    # current track so the pilot still sees direction of motion (falling
+    # back to hdg when GPS track isn't reliable, same rule as above).
+    if orient == "trk":
+        own_rot = 0.0
+    else:
+        if track_deg is None or track_deg == 0.0:
+            own_rot = float(hdg_deg or 0.0)
+        else:
+            own_rot = float(track_deg)
     s = 7
     base_pts = [(0, -s), (s, s), (0, s * 0.4), (-s, s)]
     cr = math.cos(math.radians(own_rot))

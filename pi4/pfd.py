@@ -2458,11 +2458,9 @@ _active_fingers = {}     # finger_id → touch-down time (ms)
 _multitouch_t0  = None   # time when 2nd finger touched down
 
 # Moving-map inset state.  _last_map_rect is updated each frame by the
-# render loop so the touch handler can hit-test against it; _map_pinch
-# tracks finger positions for two-finger pinch-zoom on the inset.
+# render loop so the touch handler can hit-test against it for the
+# left/right tap-zoom affordance.
 _last_map_rect = None
-_map_pinch     = {}      # finger_id → (x_px, y_px) at first sample
-_PINCH_RATIO   = 1.35    # ratio that triggers one zoom-step
 
 
 def _current_str_for_kbd(target, prev_mode):
@@ -2545,45 +2543,11 @@ def handle_event(event, demo_mode):
         _active_fingers[event.finger_id] = pygame.time.get_ticks()
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
             _multitouch_t0 = pygame.time.get_ticks()
-        # Map-inset pinch tracking: remember fingers that started inside
-        # the inset so we can compute a ratio in FINGERMOTION even when
-        # one finger drifts off the inset mid-gesture.
-        if _last_map_rect is not None and disp.get("mode", "pfd") == "pfd":
-            fx = int(event.x * DISPLAY_W)
-            fy = int(event.y * DISPLAY_H)
-            mrx, mry, mrw, mrh = _last_map_rect
-            if mrx <= fx <= mrx + mrw and mry <= fy <= mry + mrh:
-                _map_pinch[event.finger_id] = (fx, fy)
 
     if event.type == pygame.FINGERUP:
         _active_fingers.pop(event.finger_id, None)
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
-        _map_pinch.pop(event.finger_id, None)
-
-    # ── Map-inset pinch-zoom (two fingers tracked on the inset) ──────────────
-    if event.type == pygame.FINGERMOTION and len(_map_pinch) >= 2:
-        fx = int(event.x * DISPLAY_W)
-        fy = int(event.y * DISPLAY_H)
-        if event.finger_id in _map_pinch:
-            _map_pinch[event.finger_id] = (fx, fy)
-            ids = list(_map_pinch.keys())[:2]
-            (x0, y0), (x1, y1) = _map_pinch[ids[0]], _map_pinch[ids[1]]
-            cur_d = math.hypot(x1 - x0, y1 - y0)
-            base = _map_pinch.get("__base_d", 0.0)
-            if base <= 0.0:
-                _map_pinch["__base_d"] = cur_d
-            elif cur_d > base * _PINCH_RATIO:
-                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(
-                    int(disp["ds"].get("map_zoom_nm", 5)))
-                _settings.mark_dirty()
-                _map_pinch["__base_d"] = cur_d
-            elif cur_d < base / _PINCH_RATIO:
-                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(
-                    int(disp["ds"].get("map_zoom_nm", 5)))
-                _settings.mark_dirty()
-                _map_pinch["__base_d"] = cur_d
-        return True
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
@@ -3048,9 +3012,7 @@ def handle_event(event, demo_mode):
                 return True
 
         # Tap on the moving-map inset → cycle range one step.  Right
-        # half of the inset zooms IN (smaller range), left half zooms OUT.
-        # Fallback affordance for installs whose touch driver doesn't
-        # deliver FINGERMOTION events for pinch-zoom.
+        # half zooms IN (smaller range), left half zooms OUT.
         if (mode == "pfd" and _last_map_rect is not None
                 and disp["ds"].get("map_enabled", False)):
             mrx, mry, mrw, mrh = _last_map_rect
