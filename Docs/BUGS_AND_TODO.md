@@ -88,6 +88,89 @@ the hardware swap.
 Recovery applied today: reverted `config.txt` to HDMI-only, restored
 ROADOM 7" as the active display.
 
+### SUN-POSITION  Real-time sun position drives terrain shading
+Status: **OPEN**
+Target: `pi4/svt_renderer_gl.py` (sun-direction uniforms, currently
+constants at lines 103–106), `pi4/pfd.py` (feed UTC time + GPS lat/lon
+into the renderer each frame).
+Context: today the sun is hard-coded at `SUN_AZIMUTH_DEG = 135.0`
+(SE) / `SUN_ELEVATION_DEG = 45.0` (mid-morning). The Lambertian
+lighting term in `FRAGMENT_SHADER` already consumes `u_sun_dir` +
+`u_sun_intensity`, so this is a uniforms-only change inside the
+shader — the work is in computing the right vector each frame.
+Work items:
+  - Add a small solar-position helper (e.g. NOAA SPA, simplified
+    form is fine for shading — accuracy to ±0.5° is more than enough
+    visually). Inputs: UTC datetime + GPS lat/lon. Outputs: azimuth,
+    elevation.
+  - Update `u_sun_dir` once a frame (cheap; sun moves ~0.25°/min so
+    this could be throttled to once a second if needed).
+  - Night handling: when `elevation < -6°` (civil twilight), ramp
+    `u_sun_intensity` to 0 and let `u_ambient` drive the scene.
+    Smooth ramp through the twilight band so dawn/dusk transitions
+    aren't a step.
+  - Make sure the sim/demo time source feeds the same path so
+    previews render with a consistent sun. Optional: expose a
+    "demo time of day" override on the Display setup screen for
+    captures.
+  - Verify: morning approach into KSEZ should show east-facing
+    slopes lit and west-facing slopes shadowed; opposite in
+    afternoon. Compare a sunrise + sunset preview side-by-side.
+
+### MAP-INSET  2D moving-map inset in the lower-left corner
+Status: **OPEN**
+Target: new `pi4/moving_map.py`; render hook in `pi4/pfd.py` main
+loop; new toggles in Display setup; persistence in `pi4/data/settings.json`.
+Context: with airports + runways + obstacles + SRTM + direct-to nav
+all already loaded for the SVT, a 2D top-down chart in the lower-left
+corner is mostly a re-projection problem rather than new data. Pi 4
+has the GPU headroom; the ROADOM 7" supports multi-touch (pinch).
+Work items:
+  - **Module**: `pi4/moving_map.py` exposing `render(surf, rect,
+    lat, lon, hdg, track, alt_ft, orient, range_nm, settings)`. Keep
+    the render path independent of the SVT GL composite — a plain
+    pygame surface drawn into the AI's lower-left corner is simpler
+    and avoids contending for the shared GL context.
+  - **Layers, painter's-order**:
+      1. Terrain hypsometric tint (sample existing SRTM cache;
+         altitude-coloured palette like the SVT clearance ramp but
+         tinted for top-down readability).
+      2. Water tiles (reuse `fetch_water_tiles.sh` output).
+      3. Runways (use the same `_runways` cache that
+         `draw_runway_symbols` consumes — top-down means just the
+         polygon, no perspective math).
+      4. Airports (signposts) + obstacles.
+      5. Direct-to magenta course line + waypoint diamond.
+      6. Own-ship symbol at the centre (track-up) or current
+         lat/lon (north-up).
+      7. Range ring(s) at outer edge with `N nm` label.
+  - **Orientation toggle**: track-up (default — own-ship fixed at
+    centre, map rotates so track is up) vs north-up (north fixed at
+    top, own-ship symbol moves toward the edge of the inset).
+    Persist as `disp["ds"]["map_orient"]` ∈ `{"trk", "nrth"}`.
+  - **Zoom**: pinch-to-zoom on the inset itself. Snap to a discrete
+    set (1/2/5/10/20/40 nm range) so the range-ring label is always
+    a clean integer; show the new range briefly when it changes.
+    Persist as `disp["ds"]["map_zoom_nm"]`. Need to check whether
+    `_handle_event` already sees pygame `MULTIGESTURE` events from
+    the ROADOM USB touch — if not, add the handler.
+  - **Setup**: add a `MAP` row to the Display setup screen with:
+    on/off toggle, `TRK ↑` / `NRTH ↑` orientation buttons, default
+    range selector (1/2/5/10/20/40 nm). Inset corner placement
+    (lower-left only for now — keep it simple) is fixed.
+  - **Layout**: lower-left corner of the AI, sized to clear the
+    speed tape. Probably ~25% of AI width × 35% of AI height as a
+    starting point; scale with `DISPLAY_PROFILE` like everything
+    else. Subtle border so it reads as a chart inset, not a
+    dimmed-PFD overlay.
+  - **Performance budget**: budget 5 ms/frame. SRTM hypsometric
+    tint is the only expensive layer — pre-render it to a cached
+    surface keyed on (centre_lat, centre_lon, range_nm, orient)
+    and only rebuild when the centre or range changes by more
+    than half a tile. Everything else is sparse vector work.
+  - **Preview**: add a `preview_map_inset` capture to
+    `render_pfd_offline.py` so docs/manuals stay current.
+
 ### #7  Demo smoothness — sinusoidal interpolation
 Status: **OPEN**
 Target: `DemoState` in pi4/pi_zero.
