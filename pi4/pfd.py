@@ -1892,19 +1892,27 @@ class SimFlyState:
                         course_deg, wp_lat, wp_lon, cur_lat, cur_lon)
 
                     if ap.get("active"):
-                        # Glideslope altitude: 3° above threshold along
-                        # the line to the threshold.  Hold alt_bug until
-                        # the aircraft has dropped onto the glideslope
-                        # (within 50 ft), then descend with it.
+                        # Standard glideslope capture: only ever
+                        # intercept the GS FROM ABOVE.  Never command
+                        # a climb to chase the GS — that's wrong
+                        # avionics behaviour (and would be wrong for
+                        # the real AP when we wire this in later).
+                        # Above the GS: track it (sim's existing
+                        # ±1500 fpm VS clamp caps the descent rate).
+                        # Below the GS: hold current altitude — the
+                        # GS will descend toward the aircraft as it
+                        # closes on the threshold and naturally
+                        # capture from above.  Small +20 ft hysteresis
+                        # avoids per-frame jitter at the boundary.
                         thresh_elev = float(ap["thresh_elev_ft"])
                         gs_deg      = 3.0
                         gs_alt = thresh_elev + (
                             dist_nm * 6076.12
                             * math.tan(math.radians(gs_deg)))
-                        if state["alt"] > gs_alt + 50:
-                            tgt_alt = disp.get("alt_bug", state["alt"])
-                        else:
+                        if state["alt"] >= gs_alt - 20:
                             tgt_alt = max(gs_alt, thresh_elev + 5)
+                        else:
+                            tgt_alt = state["alt"]
 
             # ── Heading / bank ─────────────────────────────────────────────────
             # Reference for the heading-hold error: yaw in MAG mode, track in
