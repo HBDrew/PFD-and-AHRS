@@ -188,6 +188,50 @@ Pairs with firmware item AHRS-MAGCAL below — when the firmware-side
 mag cal also lands, the iPhone compass and the AHRS compass will both
 converge on the GPS track and stay aligned.
 
+### SDP31-AIRDATA  SDP31-500Pa airspeed driver + air-data computer
+Status: **OPEN — board lays out the SDP31 alongside WT901, BME280, GPS**
+Target: new `firmware/sdp31.py`, additions to `firmware/main.py`,
+new fields in the `$AHRS,{json}` packet consumed by `pi4/serial_link`
+and the iPhone SSE client.
+Context: the new sensor board carries a Sensirion SDP31-500Pa
+differential-pressure sensor — pitot pressure on one port, static on
+the other.  With the existing BME280 (static pressure + OAT) we get
+a complete pitot-static air-data set:
+  - **IAS** (knots) = `sqrt(2·dp / ρ₀)` — what the speed tape should
+    show.  Currently the tape is fed by GPS groundspeed, which lies
+    in any wind.
+  - **TAS** (knots) = `IAS · sqrt(ρ₀ / ρ)` where ρ comes from BME280
+    static + OAT.  Needed for centripetal accel in AHRS-GPS-AID and
+    for the wind-triangle solution.
+  - **Pressure altitude** is already computed by BME280 + QNH from
+    the firmware's existing baro path; this entry doesn't change it.
+  - **Wind solution**: with TAS + heading (from AHRS) + GS + track
+    (from GPS), wind = ground_vec − air_vec.  Drop it into the
+    `$AHRS` packet as `wind_dir` / `wind_kt` so the displays can
+    show a wind ribbon.  Side benefit: validates AHRS-MAGCAL by
+    cross-checking the wind solution against forecast / pilot
+    observation.
+  - **Stall-warning hook**: with IAS available we can light a
+    `LOW SPD` enunciator below configured Vs1 in the V-speeds
+    profile.  Already a pi4 colour band on the speed tape; this
+    just makes the audible/visual alert authoritative.
+Work items:
+  - I²C driver for the SDP31 — Sensirion's reference protocol is
+    short (start continuous mode, read 9-byte frames with CRC,
+    handle the auto-zero offsets).  About 80 lines of MicroPython.
+  - Air-data math in `firmware/main.py` (or a small `airdata.py`):
+    IAS, TAS, density-altitude.  Cross-check IAS against GS at
+    cruise to verify driver math before depending on it.
+  - `$AHRS` JSON gains `ias_kt`, `tas_kt`, `wind_dir`, `wind_kt`.
+  - Pi 4 + iPhone speed tapes: switch the primary source to IAS
+    when the air-data path is live (fall back to GS with a small
+    "GS" subscript when SDP31 reports unhealthy, mirroring the
+    existing GPS-fallback pattern on the heading tape).
+  - V-speeds page: nothing changes structurally — the existing
+    Vs0 / Vs1 / Vfe / Vno / Vne entries already drive the colour
+    bands.  Stall-warn enunciator is the only addition.
+Pairs with AHRS-GPS-AID (TAS is the correct centripetal input).
+
 ### AHRS-GPS-AID  GPS-aided AHRS for clean attitude in coordinated turns
 Status: **OPEN — on-Pico is the recommended path; Pico 2 W makes it cheap**
 Target: new `firmware/ahrs_filter.py`, raw-mode IMU output from
@@ -203,16 +247,22 @@ signal is ~0.9 m/s² while the gravity-on-Y bank signal is only
 ~0.085 m/s² — the IMU sees ~10× more "fake tilt" than real tilt.
 This is why the leans-during-coordinated-turn artefact survives
 even a perfect mag cal.
-Architecture is straightforward because **both inputs already live
+Architecture is straightforward because **all inputs already live
 on the Pico**: WT901 raw accel/gyro on UART, GPS speed/track from
-`firmware/gps.py`.  No cross-device transport needed — the Pi 4
-just consumes the fused result over USB CDC the same way it does
-today.  Pico 2 W (RP2350) makes this path comfortable: hardware
-FPU collapses Madgwick/Mahony to free, 520 KB SRAM gives plenty of
-headroom, and the second M33 core can carry the per-sample fusion
-loop without competing with the AP / web-server / SSE work.  On the
-original Pico W (RP2040, soft float, 264 KB) the filter is doable
-but tight; defer until the 2 W swap.
+`firmware/gps.py`, and (on the laid-out hardware) an SDP31-500Pa
+differential-pressure sensor for IAS/TAS plus a BME280 for static
+pressure + OAT.  No cross-device transport needed — the Pi 4 just
+consumes the fused result over USB CDC the same way it does today.
+**Use TAS, not GS, for centripetal correction**: the IMU's centripetal
+accel is `V_air × ω`, not `V_ground × ω`.  In any wind, GS-aiding
+introduces an error proportional to the wind component — the SDP31
+makes the correction physically right instead of just close.  Pico
+2 W (RP2350) makes the path comfortable: hardware FPU collapses
+Madgwick/Mahony to free, 520 KB SRAM gives plenty of headroom, and
+the second M33 core can carry the per-sample fusion loop without
+competing with the AP / web-server / SSE work.  On the original
+Pico W (RP2040, soft float, 264 KB) the filter is doable but tight;
+defer until the 2 W swap.
 Work items:
   - Switch the WT901 driver in `firmware/wt901.py` to raw IMU output
     mode (or run a dual-stream config so both raw + fused are
@@ -222,7 +272,9 @@ Work items:
     option if drift compensation needs to be tighter, but Madgwick
     with GPS aiding is plenty for this airframe.
   - Subtract centripetal accel `V × ω_gyro` from raw accel BEFORE
-    the level-finding step.  V from `gps.speed_kt`, ω from the gyro.
+    the level-finding step.  V from TAS (preferred, see SDP31-AIRDATA
+    below) or `gps.speed_kt` as a fallback when the air-data path
+    isn't live yet; ω from the gyro.
   - Replace `main.py`'s yaw/pitch/roll output with the fused result;
     iPhone / Pi 4 displays consume it as today.
   - Validate at a known coordinated bank: 25° at 100 kt should read
