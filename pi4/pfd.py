@@ -801,7 +801,8 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 
     cx  = ax + aw // 2
     cy  = ay + ah // 2
-    pitch_py = int(pitch * px_per_deg)
+    # Pitch up (positive) = nose up = horizon BELOW screen centre.
+    pitch_py = int(-pitch * px_per_deg)
 
     # Horizon passes through (hcx, hcy) tilted by roll
     hcx = cx
@@ -809,14 +810,24 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
 
-    # Extend horizon line well beyond the rect so clipping takes care of edges
+    # Extend horizon line well beyond the rect so clipping takes care of edges.
+    # Line direction in pygame Y-down is (cos_r, -sin_r); for positive roll
+    # (right bank) that's "right and up" → LEFT-DOWN, RIGHT-UP, matching the
+    # pitch-ladder white horizon and the SVT GL terrain horizon.
     R  = aw + ah
     h1 = (hcx - R * cos_r, hcy + R * sin_r)
     h2 = (hcx + R * cos_r, hcy - R * sin_r)
 
-    # Classify each corner: sky side = dot product with "up" normal > 0
+    # Classify each corner relative to the (h1, h2) line.  The implicit
+    # equation of that line is sin_r*(px-hcx) + cos_r*(py-hcy) = 0; sky is
+    # the side where py is "above" (smaller y in pygame), giving
+    #     sky_side(p) = (hcy - py)*cos_r + (hcx - px)*sin_r > 0.
+    # NB: the older form used (px - hcx) which flipped the sin term and
+    # silently classified points against a different line — visible only at
+    # non-zero roll, where the polygon edge and the drawn h1-h2 white line
+    # disagreed.
     def _sky_side(px, py):
-        return (hcy - py) * cos_r + (px - hcx) * sin_r > 0
+        return (hcy - py) * cos_r + (hcx - px) * sin_r > 0
 
     corners = [(ax, ay), (ax + aw, ay), (ax + aw, ay + ah), (ax, ay + ah)]
 
@@ -831,9 +842,9 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
             sky_poly.append(c)
         if c_sky != nc_sky:
             dx, dy = nc[0] - c[0], nc[1] - c[1]
-            denom  = -dy * cos_r + dx * sin_r
+            denom  = dy * cos_r + dx * sin_r
             if abs(denom) > 1e-6:
-                t  = (-(hcy - c[1]) * cos_r - (c[0] - hcx) * sin_r) / denom
+                t  = ((hcy - c[1]) * cos_r + (hcx - c[0]) * sin_r) / denom
                 sky_poly.append((c[0] + t * dx, c[1] + t * dy))
 
     # Fill ground first (covers whole rect), then paint sky polygon on top
