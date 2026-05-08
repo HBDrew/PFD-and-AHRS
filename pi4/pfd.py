@@ -249,6 +249,14 @@ disp["sim"] = {                     # flight simulator state
     "gps_fail":   False,
     "baro_fail":  False,
     "ahrs_fail":  False,
+    # Autopilot source for the sim:
+    #   "bugs" — follow hdg_bug + alt_bug (default — what the sim has
+    #             always done).
+    #   "fp"   — follow the active direct-to (bearing to waypoint) +
+    #             alt_bug; if a synthetic approach is active, slide
+    #             down the 3° glideslope to the threshold once the
+    #             aircraft has intercepted it.
+    "follow_mode": "bugs",
 }
 disp["nav"] = {                     # rudimentary direct-to-airport navigation
     "ident":   "",      # ICAO/local ID of active waypoint, "" = none
@@ -1848,6 +1856,38 @@ class SimFlyState:
             tgt_alt = disp["alt_bug"] if disp.get("alt_bug") is not None else state["alt"]
             tgt_spd = disp.get("spd_bug") or 90.0
 
+            # FOLLOW FLIGHT-PLAN mode — overrides bug-based targets.
+            # When a direct-to is active, fly the bearing to the waypoint
+            # (or threshold).  When a synthetic approach is loaded and
+            # the aircraft has reached the glideslope, slide down the
+            # 3° glideslope to the threshold.  Above the glideslope
+            # (still en route on level cruise) the alt_bug holds.
+            if sim.get("follow_mode") == "fp":
+                nv = disp.get("nav") or {}
+                if nv.get("ident"):
+                    cur_lat = state["lat"]
+                    cur_lon = state["lon"]
+                    wp_lat  = float(nv["lat"])
+                    wp_lon  = float(nv["lon"])
+                    dist_nm, brg = _nav_geo_dist_brg(
+                        cur_lat, cur_lon, wp_lat, wp_lon)
+                    tgt_hdg = brg
+                    ap = disp.get("approach") or {}
+                    if ap.get("active"):
+                        # Glideslope altitude: 3° above the threshold,
+                        # measured along the line to the threshold.
+                        thresh_elev = float(ap["thresh_elev_ft"])
+                        gs_deg      = 3.0
+                        gs_alt = thresh_elev + (
+                            dist_nm * 6076.12
+                            * math.tan(math.radians(gs_deg)))
+                        # Hold alt_bug until intercept (within 50 ft of
+                        # the glideslope), then descend along it.
+                        if state["alt"] > gs_alt + 50:
+                            tgt_alt = disp.get("alt_bug", state["alt"])
+                        else:
+                            tgt_alt = max(gs_alt, thresh_elev + 5)
+
             # ── Heading / bank ─────────────────────────────────────────────────
             # Reference for the heading-hold error: yaw in MAG mode, track in
             # TRK mode.  state["track"] gets refreshed below from the wind
@@ -2105,15 +2145,29 @@ _SIM_EXIT_Y = CY - 36 - _SIM_EXIT_H
 
 # ── Sim controls overlay ─────────────────────────────────────────────────────
 
-_SIMCTRL_W = 280
-_SIMCTRL_H = 200
+_SIMCTRL_W = 320
+_SIMCTRL_H = 320
 _SIMCTRL_X = (DISPLAY_W - _SIMCTRL_W) // 2
 _SIMCTRL_Y = (DISPLAY_H - _SIMCTRL_H) // 2 - 10
 
 _SIMCTRL_ROW_Y0  = _SIMCTRL_Y + 36   # first sensor row top
-_SIMCTRL_ROW_H   = 34
+_SIMCTRL_ROW_H   = 32
 _SIMCTRL_ROW_GAP = 4
 _SIMCTRL_BW      = 70     # ON / FAIL button width
+
+_SIMCTRL_FOLLOW_BW   = 110    # FOLLOW BUGS / FLT PLAN button width
+
+
+def _simctrl_follow_y() -> int:
+    return _SIMCTRL_ROW_Y0 + 3 * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 8
+
+
+def _simctrl_exit_setup_y() -> int:
+    return _simctrl_follow_y() + _SIMCTRL_ROW_H + 14
+
+
+def _simctrl_exit_sim_y() -> int:
+    return _simctrl_exit_setup_y() + 44 + 8
 
 
 def draw_sim_controls(surf):
@@ -2137,11 +2191,9 @@ def draw_sim_controls(surf):
         row_y = _SIMCTRL_ROW_Y0 + ri * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP)
         failed = sim.get(key, False)
 
-        # Row label
         _text(surf, label, 12, (160, 175, 200), bold=True,
               x=_SIMCTRL_X + 14, cy=row_y + _SIMCTRL_ROW_H // 2)
 
-        # ON button
         on_active = not failed
         on_bg = (0, 50, 20) if on_active else (0, 8, 16)
         on_oc = (40, 190, 60) if on_active else (35, 60, 45)
@@ -2152,7 +2204,6 @@ def draw_sim_controls(surf):
         _text(surf, "ON", 12, on_tc, bold=on_active,
               cx=ox + _SIMCTRL_BW // 2, cy=row_y + _SIMCTRL_ROW_H // 2)
 
-        # FAIL button
         fx = ox + _SIMCTRL_BW + 6
         fail_active = failed
         fail_bg = (50, 5, 5) if fail_active else (12, 0, 0)
@@ -2163,12 +2214,32 @@ def draw_sim_controls(surf):
         _text(surf, "FAIL", 11, fail_tc, bold=fail_active,
               cx=fx + _SIMCTRL_BW // 2, cy=row_y + _SIMCTRL_ROW_H // 2)
 
-    # EXIT SIM button
-    exit_y = _SIMCTRL_ROW_Y0 + len(sensors) * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 6
-    _action_btn(surf,
-                _SIMCTRL_X + 14, exit_y,
-                _SIMCTRL_W - 28, _SIMCTRL_H - (exit_y - _SIMCTRL_Y) - 10,
-                "EXIT SIM", "danger")
+    # FOLLOW row — segmented control selecting the autopilot source.
+    fy = _simctrl_follow_y()
+    _text(surf, "FOLLOW", 12, (160, 175, 200), bold=True,
+          x=_SIMCTRL_X + 14, cy=fy + _SIMCTRL_ROW_H // 2)
+    follow = sim.get("follow_mode", "bugs")
+    fx_b = _SIMCTRL_X + _SIMCTRL_W - 2 * _SIMCTRL_FOLLOW_BW - 8 - 6
+    for i, (val, lbl) in enumerate((("bugs", "BUGS"), ("fp", "FLT PLAN"))):
+        bx = fx_b + i * (_SIMCTRL_FOLLOW_BW + 6)
+        active = (follow == val)
+        bg = (0, 55, 65) if active else (0, 10, 25)
+        oc = CYAN       if active else (50, 68, 92)
+        tc = CYAN       if active else (130, 148, 168)
+        pygame.draw.rect(surf, bg, (bx, fy, _SIMCTRL_FOLLOW_BW, _SIMCTRL_ROW_H), border_radius=4)
+        pygame.draw.rect(surf, oc, (bx, fy, _SIMCTRL_FOLLOW_BW, _SIMCTRL_ROW_H), width=2, border_radius=4)
+        _text(surf, lbl, 12, tc, bold=active,
+              cx=bx + _SIMCTRL_FOLLOW_BW // 2, cy=fy + _SIMCTRL_ROW_H // 2)
+
+    # EXIT SETUP — closes the overlay, sim continues running.
+    es_y = _simctrl_exit_setup_y()
+    _action_btn(surf, _SIMCTRL_X + 14, es_y,
+                _SIMCTRL_W - 28, 44, "EXIT SETUP", "normal")
+
+    # EXIT SIM — kills the sim and returns to live AHRS.
+    xs_y = _simctrl_exit_sim_y()
+    _action_btn(surf, _SIMCTRL_X + 14, xs_y,
+                _SIMCTRL_W - 28, 44, "EXIT SIM", "danger")
 
 
 def sim_controls_hit(x, y):
@@ -2190,10 +2261,24 @@ def sim_controls_hit(x, y):
         if fx <= x <= fx + _SIMCTRL_BW:
             return f"sensor_fail:{key_short}"
 
-    # EXIT SIM button area
-    exit_y = _SIMCTRL_ROW_Y0 + len(sensors) * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 6
-    exit_h = _SIMCTRL_H - (exit_y - _SIMCTRL_Y) - 10
-    if (exit_y <= y <= exit_y + exit_h and
+    # FOLLOW row
+    fy = _simctrl_follow_y()
+    if fy <= y <= fy + _SIMCTRL_ROW_H:
+        fx_b = _SIMCTRL_X + _SIMCTRL_W - 2 * _SIMCTRL_FOLLOW_BW - 8 - 6
+        for i, val in enumerate(("bugs", "fp")):
+            bx = fx_b + i * (_SIMCTRL_FOLLOW_BW + 6)
+            if bx <= x <= bx + _SIMCTRL_FOLLOW_BW:
+                return f"follow:{val}"
+
+    # EXIT SETUP
+    es_y = _simctrl_exit_setup_y()
+    if (es_y <= y <= es_y + 44 and
+            _SIMCTRL_X + 14 <= x <= _SIMCTRL_X + _SIMCTRL_W - 14):
+        return "exit_setup"
+
+    # EXIT SIM
+    xs_y = _simctrl_exit_sim_y()
+    if (xs_y <= y <= xs_y + 44 and
             _SIMCTRL_X + 14 <= x <= _SIMCTRL_X + _SIMCTRL_W - 14):
         return "exit_sim"
 
@@ -2771,12 +2856,18 @@ def handle_event(event, demo_mode):
                 if _sse_client is not None:
                     _sse_client.paused = False
                 disp["mode"] = "pfd"
+            elif action == "exit_setup":
+                # Close the overlay; the sim keeps running.  No state
+                # touched — pilot just wants to fly the sim now.
+                disp["mode"] = "pfd"
             elif action and action.startswith("sensor_on:"):
                 sensor = action.split(":")[1]
                 disp["sim"][sensor + "_fail"] = False
             elif action and action.startswith("sensor_fail:"):
                 sensor = action.split(":")[1]
                 disp["sim"][sensor + "_fail"] = True
+            elif action and action.startswith("follow:"):
+                disp["sim"]["follow_mode"] = action.split(":", 1)[1]
             # "noop" or None: consume the event either way
             return True
 
