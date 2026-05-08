@@ -162,7 +162,8 @@ def _tint_get(srtm_dir, c_lat, c_lon, range_nm, size_px, oversize):
 def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
-           srtm_dir="", direct_to=None, font=None):
+           srtm_dir="", direct_to=None, font=None,
+           airport_types_visible=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -271,6 +272,9 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 pygame.draw.circle(surf, _OBS_COL, (int(ox), int(oy)), 2)
 
     # ── Airports ─────────────────────────────────────────────────────────────
+    # Per-type filtering matches the main PFD: caller passes a set of
+    # visible atype letters (S/M/L = public, H = helo, W = water, B = other).
+    # Default ``None`` = show every type the master toggle covers.
     if settings.get("map_show_airports", True) and airports_arr is not None:
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
@@ -281,6 +285,9 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             lons  = nearby["lon"]
             for i in range(len(nearby)):
                 atype = str(types[i])
+                if (airport_types_visible is not None
+                        and atype not in airport_types_visible):
+                    continue
                 ax2, ay2 = _project(float(lats[i]), float(lons[i]))
                 ix, iy = int(ax2), int(ay2)
                 if atype == "H":

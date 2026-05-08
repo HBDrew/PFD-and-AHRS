@@ -7047,6 +7047,20 @@ def render(surf, demo_mode, connected, data_stale=False):
         # back to mag heading so yawing the nose visibly rotates the
         # map in TRK↑ mode.
         _map_track = track if speed >= 3.0 else None
+        # Translate the main-PFD airport-type filters (managed on the
+        # AIRPORT DATA screen) into the set of atype letters the inset
+        # should draw.  Sharing the flags with the main PFD means the
+        # pilot sets type filters once and both displays honour them.
+        _ad = disp.get("ad", {})
+        _types_vis = set()
+        if _ad.get("show_public", True):
+            _types_vis.update({"S", "M", "L"})
+        if _ad.get("show_heli", True):
+            _types_vis.add("H")
+        if _ad.get("show_seaplane", False):
+            _types_vis.add("W")
+        if _ad.get("show_other", False):
+            _types_vis.add("B")
         _map_mod.render(
             surf, rect, lat, lon, alt, hdg, _map_track,
             ds.get("map_orient", "trk"),
@@ -7058,6 +7072,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             srtm_dir=SRTM_DIR,
             direct_to=d2 if d2.get("ident") else None,
             font=_get_font(11, bold=True),
+            airport_types_visible=_types_vis,
         )
 
     # 2. Pitch ladder (with roll rotation)

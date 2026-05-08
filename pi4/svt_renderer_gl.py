@@ -289,7 +289,17 @@ in vec2 in_pos;          // fullscreen quad in NDC
 out vec2 v_ndc;
 
 void main() {
-    gl_Position = vec4(in_pos, 0.999, 1.0);   // far plane — drawn behind terrain
+    // z = 0.99999 (just inside the far plane).  The original 0.999 was too
+    // shallow: with NEAR_PLANE_M=50 / FAR_PLANE_M≈208 km, the perspective
+    // projection puts terrain at ~37 nm at z_ndc≈0.999, so the sky's depth
+    // and any terrain beyond ~37 nm tied or lost to the sky in the depth
+    // test.  Result was that the outer mesh's middle distance (37–75 nm
+    // band) got overpainted with sky-blue, reading as a gap between the
+    // visible high-res inner mesh (< 20 nm) and the silhouette of the
+    // outer mesh's far edge (~75 nm at the horizon).  Pushing sky to
+    // 0.99999 means terrain anywhere inside the far plane wins the depth
+    // test, so the outer mesh becomes continuously visible.
+    gl_Position = vec4(in_pos, 0.99999, 1.0);
     v_ndc = in_pos;                            // pass through raw NDC (-1..1)
 }
 """
