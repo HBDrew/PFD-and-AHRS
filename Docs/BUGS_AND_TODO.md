@@ -188,6 +188,49 @@ Pairs with firmware item AHRS-MAGCAL below — when the firmware-side
 mag cal also lands, the iPhone compass and the AHRS compass will both
 converge on the GPS track and stay aligned.
 
+### AHRS-GPS-AID  GPS-aided AHRS for clean attitude in coordinated turns
+Status: **OPEN**
+Target: new `firmware/ahrs_filter.py` (or Pi-side equivalent), reading
+raw accel + gyro from the WT901, fusing with GPS velocity from the Pi.
+Context: the WT901's internal Kalman filter doesn't accept external
+velocity, so feeding it groundspeed directly does nothing — it can
+only see accel + gyro + mag.  The accelerometer measures
+`gravity + linear_accel`, and in a coordinated turn the centripetal
+component `a_c = V·ω` tilts the apparent gravity vector and biases
+the bank solution.  At LOW bank the problem is worse, not better:
+at 100 kt and 0.5°/s yaw rate (≈0.5° true bank) the centripetal
+signal is ~0.9 m/s² while the gravity-on-Y bank signal is only
+~0.085 m/s² — the IMU sees ~10× more "fake tilt" than real tilt.
+This is why the leans-during-coordinated-turn artefact survives
+even a perfect mag cal.
+Work items:
+  - Pull raw accel + gyro from the WT901 at its native rate (it
+    supports raw IMU output mode — switch the firmware out of
+    fused-Euler mode for this path, or run a dual-stream config).
+  - Implement a Madgwick or Mahony filter (~50 lines of Python),
+    or a simple EKF if drift compensation needs to be tighter.
+    Both are well-documented; reference impls available.
+  - Subtract centripetal accel `V × ω_gyro` from the raw accel
+    BEFORE feeding it to the level-finding step.  V comes from
+    the GPS module (already on the Pi 4); ω from the gyro.
+  - Decide where the filter runs.  Two options:
+    - **A. On the Pico W**: closer to the IMU, no USB latency,
+      but the Pico's heap is already tight (see IPHONE-PICO-HOSTING)
+      and the GPS feed lives on the Pi.  Would need to forward
+      GPS velocity over USB to the Pico — adds a transport.
+    - **B. On the Pi 4**: switch the WT901 to raw mode, ship raw
+      samples over USB CDC to the Pi, fuse there with the local
+      GPS feed.  More CPU available, simpler plumbing.  This is
+      the recommended path.
+  - Replace the firmware's existing yaw/pitch/roll output with
+    the fused result; iPhone/Pi 4 displays consume it as today.
+  - Validate against a turn at a known coordinated bank: 25°
+    bank at 100 kt should read steadily 25°, with no settling
+    drift after the roll-in is complete.  Pre-fix it sags toward
+    level by a few degrees within the first 5–10 s.
+Pairs with AHRS-MAGCAL (mag cal eliminates yaw bias; GPS aiding
+eliminates bank/pitch bias).  Both together give a real AHRS.
+
 ### AHRS-MAGCAL  WT901 magnetometer calibration procedure
 Status: **OPEN**
 Target: `firmware/wt901.py`, `firmware/main.py`, `firmware/web_server.py`.
