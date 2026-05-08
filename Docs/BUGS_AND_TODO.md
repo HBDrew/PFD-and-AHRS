@@ -232,15 +232,15 @@ Work items:
     bands.  Stall-warn enunciator is the only addition.
 Pairs with AHRS-GPS-AID (TAS is the correct centripetal input).
 
-### AOA-CALC  Computed AOA from air-data + load factor (pre-probe)
-Status: **OPEN — software-only, lands once SDP31-AIRDATA is live**
+### AOA-CALC  Computed AOA from speed + load factor + ρ (pre-probe)
+Status: **OPEN — software-only, can land TODAY with current sensors**
 Target: new `firmware/aoa_calc.py` (or extend `firmware/airdata.py`),
 `$AHRS` packet, AOA indexer in `pi4/pfd.py` and the iPhone display.
 Context: in the linear region of the lift curve, AOA can be inferred
-from quantities we'll already have once SDP31-AIRDATA lands — no
-extra sensor required.  Useful as an on-speed cue and as a bridge
-until AOA-PROBE ships, but not a substitute for measured AOA at the
-margins.
+from sensors we already have on the bench: WT901 (load factor),
+BME280 (static + OAT for ρ), and GPS (groundspeed).  No new hardware
+required to start.  Useful as an on-speed cue and as a bridge until
+AOA-PROBE ships; not a substitute for measured AOA at the margins.
 Math: from the lift equation `L = n·W = ½·ρ·V²·S·Cl`, solve for Cl
 and divide by the airframe's lift-curve slope:
   `α ≈ α₀ + Cl / Cl_α`
@@ -248,8 +248,12 @@ and divide by the airframe's lift-curve slope:
 where `n` is load factor (from the WT901 accel Z, in g), `V` is
 TAS (SDP31 + BME280), `ρ` is air density (BME280 static + OAT), and
 `W` / `S` / `Cl_α` / `α₀` are airframe constants for the Rans S21.
-Inputs:
-  - **TAS** from SDP31-AIRDATA.
+Inputs (with the same fallback ladder AHRS-GPS-AID uses):
+  - **Velocity** — TAS from SDP31-AIRDATA when it lands; GS from
+    `gps.speed_kt` until then.  In zero wind GS == TAS; in wind the
+    error scales with the wind component.  Surface the active
+    source in the indexer (small `gs` / `tas` subscript) so the
+    pilot doesn't trust an upwind on-speed cue.
   - **Load factor** from WT901 (use the same gravity-vector estimate
     the AHRS produces; rotate the body-frame accel into the
     wing-perpendicular axis).
@@ -270,6 +274,8 @@ Caveats — explicit so the indexer doesn't lie:
     then, calibrate against clean configuration only.
   - Weight-dependent.  Bad fuel-state estimate biases the whole
     output.  Surface the assumed weight on the profile screen.
+  - Until SDP31-AIRDATA lands, "velocity" means GS — see source
+    subscript above.
 Work items:
   - Add airframe constants (Cl_α, α₀, S, max-gross W, flap-clean
     flag) to the V-speeds profile.  Default to Rans S21 numbers;
@@ -285,6 +291,54 @@ Work items:
 Pairs with SDP31-AIRDATA (the inputs come from there) and with
 AOA-PROBE (this entry retires when the probe lands, or stays as
 a redundant cross-check).
+
+### FPV  Velocity vector / flight-path marker on the AI
+Status: **OPEN — software-only, can land TODAY**
+Target: `pi4/pfd.py` (new draw routine inside the AI block), iPhone
+display equivalent.
+Context: a velocity-vector / flight-path-vector marker shows the
+pilot where the airplane is actually going through space, not where
+the nose is pointing.  Standard on every modern PFD (G3X, Dynon,
+Garrecht, mil HUDs).  Indispensable on approach — pilot flies the
+FPV onto the runway numbers and lands there, whatever the crab
+angle and AOA are doing.  Inputs we already have:
+  - **GPS track** (`gps.track_deg`) — azimuthal direction the
+    airplane is moving over the ground.
+  - **GPS GS + VS** — flight-path angle = `atan2(VS_fps, GS_fps)`.
+    GS from `gps.speed_kt`, VS from `gps.vspeed_fpm` (already
+    smoothed in the firmware).
+  - **AHRS attitude** (yaw/pitch/roll from WT901) — needed to
+    project the FPV onto the AI viewport, since the AI is
+    drawn in body-frame.
+Math: the FPV's screen position is the projection of the velocity
+vector into the camera frame the AI is rendered with.  The same
+projection chain `draw_airport_symbols` already uses (yaw / pitch
+/ roll, focal length, screen centre) takes a unit vector in the
+NED frame and returns AI pixel coordinates.  Build a NED unit
+vector from track + flight-path-angle, run it through the existing
+projection, draw a small open circle with two horizontal "wings"
+and a short vertical stub (the conventional FPV symbol).
+Work items:
+  - Compute FPV NED unit vector from GPS track + GS + VS each
+    frame.  Skip when GS < 5 kt (parked / taxi noise) — hide the
+    symbol below that gate.
+  - Reuse the airport projection helper to land it on the AI.
+    Clamp to the AI rectangle so it never escapes the viewport
+    in extreme attitudes; show a "ghost" arrow at the edge in
+    that case (G3X convention).
+  - Symbol: 12 px circle, 6 px wings either side, 6 px vertical
+    stub.  Cyan, no fill.  Same colour as the heading-bug bug
+    set (pilot-relevant, not alert).
+  - Display setup gains an FPV ON/OFF toggle (default ON when
+    GPS is healthy).  Persist with the rest of the display
+    settings.
+  - Sanity check: on the ground rolling forward, the FPV should
+    sit in front of the nose (track ≈ heading, FPA ≈ 0).  In a
+    coordinated climb-out, the FPV sits below the nose by the
+    AOA (a free cross-check against AOA-CALC once it lands).
+Pairs with AOA-CALC (the vertical offset between aircraft symbol
+and FPV is exactly AOA when the wind is along the flight path —
+a free in-flight calibration target for the airframe constants).
 
 ### AOA-PROBE  Add a second differential-pressure transducer for AOA
 Status: **OPEN — board-revision change for the next layout spin**
