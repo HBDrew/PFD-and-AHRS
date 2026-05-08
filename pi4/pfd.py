@@ -786,15 +786,9 @@ def draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon):
 
 def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     """
-    Fallback SVT background (no SRTM tiles loaded, or no GPS fix).
-    Draws sky/ground split directly into ai_rect using polygon fill +
-    clipping.  No large surface rotation — runs in < 1 ms on Pi Zero 2W.
-
-    Pitch and roll arrive in NED (positive pitch = nose up, positive
-    roll = right wing down).  Pygame Y is screen-down, so we negate
-    both so the horizon descends for nose-up and tilts right-side-down
-    for right-wing-down.  The overlay code does the same flip via
-    _ov_roll = -roll; SVT GL handles its own Y-flip internally.
+    Fallback SVT background (no SRTM tiles loaded).
+    Draws sky/ground split directly into ai_rect using polygon fill + clipping.
+    No large surface rotation — runs in < 1 ms on Pi Zero 2W.
     """
     ax, ay, aw, ah = ai_rect
     GND_NEAR = ( 80, 110,  40)
@@ -807,16 +801,12 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 
     cx  = ax + aw // 2
     cy  = ay + ah // 2
-    # Negate pitch: positive NED pitch = nose up = horizon descends on
-    # the pygame Y-down screen.
-    pitch_py = int(-pitch * px_per_deg)
+    pitch_py = int(pitch * px_per_deg)
 
     # Horizon passes through (hcx, hcy) tilted by roll
     hcx = cx
     hcy = cy - pitch_py
-    # Negate roll: positive NED roll = right wing down → horizon tilts
-    # so the right side goes DOWN on the pygame screen.
-    roll_rad = math.radians(-roll)
+    roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
 
     # Extend horizon line well beyond the rect so clipping takes care of edges
