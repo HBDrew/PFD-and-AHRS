@@ -917,10 +917,7 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     # Precompute rotation basis (pygame CCW rotation in Y-down screen coords):
     #   rotated_x = x * cos_r + y * sin_r
     #   rotated_y = -x * sin_r + y * cos_r
-    # Negate roll so positive NED roll (right wing down) tilts the
-    # ladder lines so the right end of each bar drops on screen —
-    # matches the simple AI horizon and SVT GL convention.
-    roll_rad = math.radians(-roll)
+    roll_rad = math.radians(roll)
     cos_r    = math.cos(roll_rad)
     sin_r    = math.sin(roll_rad)
 
