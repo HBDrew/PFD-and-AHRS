@@ -42,16 +42,30 @@ except pygame.error:
 import pfd
 
 # pfd.py hard-codes _SVT_GL_AVAILABLE = False to avoid disrupting KMS/DRM
-# on live Pi 4 hardware.  In this offline tool we're using SDL_VIDEODRIVER=dummy
-# so there's no KMS/DRM to conflict with — manually probe + enable GL SVT so
-# preview PNGs render with the 3D terrain mesh instead of falling back to the
-# flat 2D scanline path.
+# on live Pi 4 hardware.  Live pfd.py uses SVT_RENDERER="opengl_shared",
+# which composites GL terrain through pygame.OPENGL + a shared moderngl
+# Context — that path needs an actual display surface, which we don't have
+# under SDL_VIDEODRIVER=dummy.
+#
+# For the offline tool we switch to the standalone GL renderer
+# (SVT_RENDERER="opengl"), which creates its own offscreen EGL context and
+# returns a pygame.Surface, then enable it.  Without this override the
+# offline path silently falls through to the pygame 2D scanline raster and
+# the captured PNGs lose the 3D mesh look.  Probe failures are surfaced
+# loudly so we don't ship raster-mode previews by accident.
+_offline_gl_ok = False
 try:
     from svt_renderer_gl import is_available as _gl_probe
     if _gl_probe():
         pfd._SVT_GL_AVAILABLE = True
-except Exception:
-    pass
+        pfd.SVT_RENDERER       = "opengl"
+        _offline_gl_ok = True
+    else:
+        print("[render_pfd_offline] GL probe returned False — captures will "
+              "use the 2D raster fallback, not the 3D mesh.", file=sys.stderr)
+except Exception as exc:
+    print(f"[render_pfd_offline] GL probe raised: {exc!r} — captures will "
+          "use the 2D raster fallback.", file=sys.stderr)
 
 from config import (DISPLAY_W, DISPLAY_H, BARO_DEFAULT_HPA,
                     DEMO_LAT, DEMO_LON)
@@ -207,6 +221,10 @@ def main():
     print(f"Rendering full-PFD previews with OpenGL SVT to {args.outdir}")
     print(f"Resolution: {DISPLAY_W}×{DISPLAY_H}")
     print(f"SVT_RENDERER: {pfd.SVT_RENDERER}  GL_AVAILABLE: {pfd._SVT_GL_AVAILABLE}")
+    if not _offline_gl_ok:
+        print("WARNING: GL not available — flight scenes will be rendered "
+              "with the 2D raster fallback (pixelated terrain) instead of "
+              "the 3D OpenGL mesh.", file=sys.stderr)
     print()
 
     for scene in SCENES:
