@@ -331,16 +331,20 @@ void main() {
     float y_unrolled = -x_sq * s + y_sq * c;
 
     // Above the rolled horizon: sky gradient (horizon-blue → zenith-blue).
-    // Below the rolled horizon: u_below_horizon_color (CPU drives this from
-    // the TAWS alert level so the gap colour tracks foreground terrain —
-    // brown when clear, amber on caution, red on warning).  Wherever the
-    // terrain mesh renders it overdraws this via depth test, so this only
-    // shows in mesh gaps (inner-mesh near-plane clip at low alt + steep
-    // bank, and the seam between the inner high-res mesh and the outer
-    // low-res mesh at the far horizon).
+    // Below the rolled horizon: blend horizon-blue (at the horizon line)
+    // into u_below_horizon_color (the TAWS-aware ground colour) over the
+    // first ~0.30 NDC of vertical distance.  At the horizon line this
+    // reads as "more sky" and matches the above-horizon gradient — so
+    // over water we don't get a spurious brown band where the mesh ends
+    // — while gaps deeper below the horizon (under-wing at steep bank
+    // and low altitude) still pick up the terrain-evocative ground
+    // colour.  Wherever the terrain mesh renders, depth-test wins so
+    // this only shows in genuine mesh gaps.
     vec3 horizon_col = vec3(0.23, 0.51, 0.78);
     if (y_unrolled < u_horizon_y) {
-        frag_color = vec4(u_below_horizon_color, 1.0);
+        float t_below = clamp((u_horizon_y - y_unrolled) / 0.30, 0.0, 1.0);
+        vec3 below = mix(horizon_col, u_below_horizon_color, t_below);
+        frag_color = vec4(below, 1.0);
     } else {
         float t = (y_unrolled - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
         vec3 zenith_col  = vec3(0.04, 0.16, 0.31);

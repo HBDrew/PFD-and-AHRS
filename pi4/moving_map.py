@@ -37,9 +37,16 @@ _sys.path.insert(0, os.path.join(_HERE, "..", "shared"))
 import airports as _apt_mod    # noqa: E402
 import runways as _rwy_mod     # noqa: E402
 import obstacles as _obs_mod   # noqa: E402
+import water as _water_mod     # noqa: E402
 from terrain import (          # noqa: E402
     load_tile, interp_colour, PALETTE_ABSOLUTE,
 )
+
+
+# Water tint — slightly darker than the SVT mid-distance water_color so
+# the inset reads as "ocean" rather than "sky reflection" against the
+# panel background.
+_WATER_TINT_RGB = (45, 80, 120)
 
 
 _NM_PER_DEG_LAT = 60.0
@@ -79,12 +86,14 @@ def _quantise_centre(lat, lon, range_nm):
             round(lon / (step_deg / cos_lat)) * (step_deg / cos_lat))
 
 
-def _build_tint(srtm_dir, c_lat, c_lon, range_nm, size_px, oversize):
+def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     """Render a north-up hypsometric tint surface centred on (c_lat, c_lon).
 
     `range_nm` is the radius shown at the inset's shorter axis, so the full
     inset diameter is 2·range_nm.  `oversize` (≥ 1.0) inflates the rendered
-    area so a track-up rotation doesn't reveal the corners."""
+    area so a track-up rotation doesn't reveal the corners.  Water cells
+    (sampled from ``water_dir``) override the elevation palette so the
+    inset reads "ocean" rather than "low green land" off-coast."""
     n = _TINT_N
     span_nm = 2.0 * range_nm * oversize
     span_lat = span_nm / _NM_PER_DEG_LAT
@@ -105,6 +114,7 @@ def _build_tint(srtm_dir, c_lat, c_lon, range_nm, size_px, oversize):
         rows_lat = np.linspace(lat_top, lat_bot, n, dtype=np.float64)
         cols_lon = np.linspace(lon_lf,  lon_rt,  n, dtype=np.float64)
         elevs = np.zeros((n, n), dtype=np.float32)
+        water = np.zeros((n, n), dtype=bool)
 
         # Group columns by their integer-lon tile to amortise tile loads.
         for la_idx, la in enumerate(rows_lat):
@@ -112,22 +122,31 @@ def _build_tint(srtm_dir, c_lat, c_lon, range_nm, size_px, oversize):
             for lo_idx, lo in enumerate(cols_lon):
                 lon_int = int(math.floor(lo))
                 tile_data = load_tile(srtm_dir, lat_int, lon_int)
-                if tile_data is None:
-                    continue
-                arr, ns = tile_data
-                step = 1.0 / (ns - 1)
-                row = (lat_int + 1 - la) / step
-                col = (lo - lon_int) / step
-                row = max(0, min(ns - 1, row))
-                col = max(0, min(ns - 1, col))
-                r0, c0 = int(row), int(col)
-                elevs[la_idx, lo_idx] = float(arr[r0, c0])
+                if tile_data is not None:
+                    arr, ns = tile_data
+                    step = 1.0 / (ns - 1)
+                    row = (lat_int + 1 - la) / step
+                    col = (lo - lon_int) / step
+                    row = max(0, min(ns - 1, row))
+                    col = max(0, min(ns - 1, col))
+                    r0, c0 = int(row), int(col)
+                    elevs[la_idx, lo_idx] = float(arr[r0, c0])
+                if water_dir:
+                    try:
+                        water[la_idx, lo_idx] = _water_mod.is_water(
+                            water_dir, float(la), float(lo))
+                    except Exception:
+                        pass
 
         # Map to RGB via the absolute palette, then build a Surface.
         rgb = np.zeros((n, n, 3), dtype=np.uint8)
         for r in range(n):
             for c in range(n):
-                rgb[r, c] = interp_colour(PALETTE_ABSOLUTE, float(elevs[r, c]))
+                if water[r, c]:
+                    rgb[r, c] = _WATER_TINT_RGB
+                else:
+                    rgb[r, c] = interp_colour(
+                        PALETTE_ABSOLUTE, float(elevs[r, c]))
         # Pygame surface is (w, h) but make_surface wants (w, h, 3) → use
         # the array transposed to (n, n, 3) -> (cols, rows, 3).
         tile = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
@@ -139,18 +158,22 @@ def _build_tint(srtm_dir, c_lat, c_lon, range_nm, size_px, oversize):
     return pygame.transform.smoothscale(tile, (target_px, target_px))
 
 
-def _tint_get(srtm_dir, c_lat, c_lon, range_nm, size_px, oversize):
+def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     if not srtm_dir:
         return None
     q_lat, q_lon = _quantise_centre(c_lat, c_lon, range_nm)
+    # water_dir is part of the cache key so toggling water tiles on/off
+    # invalidates stale tints.  Empty string == no water sampling.
     key = (round(q_lat, 4), round(q_lon, 4),
-           float(range_nm), int(size_px), round(oversize, 2))
+           float(range_nm), int(size_px), round(oversize, 2),
+           bool(water_dir))
     if key in _tint_cache:
         # Move to end to mark MRU
         s = _tint_cache.pop(key)
         _tint_cache[key] = s
         return s
-    surf = _build_tint(srtm_dir, q_lat, q_lon, range_nm, size_px, oversize)
+    surf = _build_tint(srtm_dir, water_dir, q_lat, q_lon,
+                       range_nm, size_px, oversize)
     _tint_cache[key] = surf
     while len(_tint_cache) > _TINT_CACHE_MAX:
         _tint_cache.pop(next(iter(_tint_cache)))
@@ -162,7 +185,7 @@ def _tint_get(srtm_dir, c_lat, c_lon, range_nm, size_px, oversize):
 def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
-           srtm_dir="", direct_to=None, font=None,
+           srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
@@ -224,9 +247,14 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     surf.set_clip(rect)
 
     # ── Hypsometric terrain tint ─────────────────────────────────────────────
+    # Water sampling is gated on the same map_show_water toggle the user
+    # already has on the Display setup screen — off → cells render as
+    # whatever PALETTE_ABSOLUTE puts at sea level (dark green), on →
+    # ocean cells override with a water-blue tint.
     if settings.get("map_show_terrain", True) and srtm_dir:
         oversize = 1.0 if orient == "nrth" else 1.45
-        tint = _tint_get(srtm_dir, lat, lon, range_nm,
+        _wd = water_dir if settings.get("map_show_water", True) else ""
+        tint = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
                          max(w, h), oversize)
         if tint is not None:
             if orient == "trk" and rot_deg != 0.0:

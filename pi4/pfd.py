@@ -7070,6 +7070,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             runways_arr=_runways,
             obstacles_arr=_obstacles,
             srtm_dir=SRTM_DIR,
+            water_dir=WATER_DIR,
             direct_to=d2 if d2.get("ident") else None,
             font=_get_font(11, bold=True),
             airport_types_visible=_types_vis,
