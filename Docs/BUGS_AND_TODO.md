@@ -88,43 +88,69 @@ the hardware swap.
 Recovery applied today: reverted `config.txt` to HDMI-only, restored
 ROADOM 7" as the active display.
 
-### SVT-FPS-TURNS  Fragment-shader cost spikes during steep banked turns
-Status: **OPEN — low priority**
-Target: `pi4/svt_renderer_gl.py` `FRAGMENT_SHADER`.
-Context: with the shared-GL renderer landed (#1 closed), normal
-flight holds 30 FPS but FPS dips to 15-20 during steep banked turns.
-Root cause is fragment-shader cost — at high bank, the visible terrain
-extends to lower pitch angles and far horizons, so more fragments are
-shaded per frame. The fragment shader does per-pixel: clearance-colour
-palette lookup (5 branches), `dFdx`/`dFdy`-based normal computation,
-Lambertian lighting, two `grid_line` evaluations (each with `fract` +
-`fwidth` + `smoothstep`), and distance-fade `smoothstep`. Likely cheap
-wins:
-  - Replace the if-chain in `clearance_color()` with a stepped LUT
-    or `mix()` ramp.
-  - Drop the per-fragment normal recomputation in favour of a coarser
-    flat-shaded ambient term (or compute it less often).
-  - Early-out grid evaluation when `fade < 0.01` is already in place;
-    consider also skipping the major-line pass when only minor would
-    contribute.
-  - Reduce `MESH_GRID_N` from 300 → 200 — fewer triangles, cheaper
-    rasterisation, almost-invisible quality loss at typical FOV.
+### SVT-GROUND-SKIRT  Ground hidden by sky at low altitude + steep bank
+Status: **OPEN**
+Target: `pi4/svt_renderer_gl.py` (inner mesh near-zone, sky shader,
+possibly a new fixed-elevation ground polygon).
+Context: at low altitude with steep bank, the camera looks nearly
+straight down through the AI window. The terrain mesh has finite
+extent and the inner mesh's near zone has a small hole / discard
+band near the camera. In that combination, fragments along the
+"down-the-wing" sightline fall outside the mesh's footprint at the
+camera's near plane, so the sky shader fills in — pilot sees a
+strip of blue under the wing where ground should be.
+Work items:
+  - Identify whether the gap is from the inner mesh's near-zone
+    discard, the camera near plane clipping mesh triangles, or the
+    outer-mesh discard square not extending below the inner mesh
+    when banked. A frame capture at low alt + 60° bank should make
+    the geometry obvious.
+  - Add a low-cost "ground skirt": a flat polygon at terrain
+    elevation that extends well below and around the camera so any
+    near-camera gap fills with terrain colour rather than sky.
+    Cheap (single quad) and depth-tested so legitimate terrain
+    overdraws it.
+  - Verify under the ROADOM 7" sim: low-pass at 100 ft AGL at
+    Sedona with 45–60° bank should show ground edge-to-edge
+    through the AI, not a wedge of blue along the lower wing.
 
-### RUNWAY-VECTORIZE  Runway symbol overlay is the last per-frame Python loop
-Status: **OPEN — low priority**
-Target: `pi4/pfd.py` `draw_runway_symbols`.
-Context: obstacles (commit c0fbdd7+) and airports (commit ba644cb)
-were vectorised — query_nearby returns a numpy structured array, the
-projection runs in numpy, and only the visible-on-screen subset
-falls into the pygame draw loop.  Runways still iterate per-feature
-in Python (trig + pygame.draw.polygon for each runway end + extended
-centerline dashes).  At KPHX (4 runways) it's a small contributor,
-but at busy metro fields (KORD, KATL, etc.) it could be ~5-10 ms/
-frame.  Same recipe: sort runways by lat at load, searchsorted in
-query_nearby, vectorise the lat→pixel projection in
-draw_runway_symbols, then loop only over visible indices for the
-pygame polygon draws.  Picks up another ~5-10 ms off the steady
-baseline once render times start to matter again.
+### SVT-MESH-OVERLAP  Visible blue gap between high-res and low-res mesh
+Status: **OPEN**
+Target: `pi4/svt_renderer_gl.py` — outer mesh's `grid_max_dist_m` /
+mesh extents, plus the inner mesh's far edge.
+Context: the SVT renders an inner high-res mesh (sharp foreground)
+and an outer coarse mesh (distant ridges). They overlap by ~20 %
+(`discard_inside_m = mesh_radius_m * 0.80`) so the inner owns the
+foreground. In a few situations a thin wedge of sky shows through
+the seam between the two meshes — typically along the horizon at
+moderate banks, where the inner mesh's far edge sits just above
+the outer mesh's near edge as drawn through the perspective
+projection.
+Work items:
+  - Increase the overlap band — drop `discard_inside_m` to
+    something like 0.65 of the inner radius, or extend the inner
+    mesh outward by a tier so the seam lives further out where
+    perspective compresses it below pixel resolution.
+  - Alternative: pull the outer mesh slightly down toward the
+    horizon by biasing its vertices' Z by a small constant when
+    rendered, so any sliver always reads as terrain rather than
+    sky. Cheap if the bias is small enough not to affect the
+    silhouette.
+  - Confirm the fix doesn't reintroduce the "morphing recentre"
+    artefacts from the original mesh-snap work (commit chain on
+    the GL bring-up). A regression-style preview that captures
+    pre/post for the same scene at the same camera state would
+    catch this.
+
+### AGL-PRECISION  AGL readout shouldn't show 1-foot precision
+Status: **OPEN**
+Target: `pi4/pfd.py` `draw_agl_readout`.
+Context: the AGL readout currently shows 1 ft precision, which
+flickers in the last digit because both the GPS altitude and the
+SRTM-derived terrain elevation only have 10–30 ft of real
+precision. Round the displayed value to the nearest 10 ft so the
+readout sits steady. Same minimum-resolved-value treatment that
+the altitude tape already gets via the rolling-drum.
 
 ### #7  Demo smoothness — sinusoidal interpolation
 Status: **OPEN**
@@ -161,6 +187,259 @@ offset.
 Pairs with firmware item AHRS-MAGCAL below — when the firmware-side
 mag cal also lands, the iPhone compass and the AHRS compass will both
 converge on the GPS track and stay aligned.
+
+### SDP31-AIRDATA  SDP31-500Pa airspeed driver + air-data computer
+Status: **OPEN — board lays out the SDP31 alongside WT901, BME280, GPS**
+Target: new `firmware/sdp31.py`, additions to `firmware/main.py`,
+new fields in the `$AHRS,{json}` packet consumed by `pi4/serial_link`
+and the iPhone SSE client.
+Context: the new sensor board carries a Sensirion SDP31-500Pa
+differential-pressure sensor — pitot pressure on one port, static on
+the other.  With the existing BME280 (static pressure + OAT) we get
+a complete pitot-static air-data set:
+  - **IAS** (knots) = `sqrt(2·dp / ρ₀)` — what the speed tape should
+    show.  Currently the tape is fed by GPS groundspeed, which lies
+    in any wind.
+  - **TAS** (knots) = `IAS · sqrt(ρ₀ / ρ)` where ρ comes from BME280
+    static + OAT.  Needed for centripetal accel in AHRS-GPS-AID and
+    for the wind-triangle solution.
+  - **Pressure altitude** is already computed by BME280 + QNH from
+    the firmware's existing baro path; this entry doesn't change it.
+  - **Wind solution**: with TAS + heading (from AHRS) + GS + track
+    (from GPS), wind = ground_vec − air_vec.  Drop it into the
+    `$AHRS` packet as `wind_dir` / `wind_kt` so the displays can
+    show a wind ribbon.  Side benefit: validates AHRS-MAGCAL by
+    cross-checking the wind solution against forecast / pilot
+    observation.
+  - **Stall-warning hook**: with IAS available we can light a
+    `LOW SPD` enunciator below configured Vs1 in the V-speeds
+    profile.  Already a pi4 colour band on the speed tape; this
+    just makes the audible/visual alert authoritative.
+Work items:
+  - I²C driver for the SDP31 — Sensirion's reference protocol is
+    short (start continuous mode, read 9-byte frames with CRC,
+    handle the auto-zero offsets).  About 80 lines of MicroPython.
+  - Air-data math in `firmware/main.py` (or a small `airdata.py`):
+    IAS, TAS, density-altitude.  Cross-check IAS against GS at
+    cruise to verify driver math before depending on it.
+  - `$AHRS` JSON gains `ias_kt`, `tas_kt`, `wind_dir`, `wind_kt`.
+  - Pi 4 + iPhone speed tapes: switch the primary source to IAS
+    when the air-data path is live (fall back to GS with a small
+    "GS" subscript when SDP31 reports unhealthy, mirroring the
+    existing GPS-fallback pattern on the heading tape).
+  - V-speeds page: nothing changes structurally — the existing
+    Vs0 / Vs1 / Vfe / Vno / Vne entries already drive the colour
+    bands.  Stall-warn enunciator is the only addition.
+Pairs with AHRS-GPS-AID (TAS is the correct centripetal input).
+
+### AOA-CALC  Computed AOA from speed + load factor + ρ (pre-probe)
+Status: **OPEN — software-only, can land TODAY with current sensors**
+Target: new `firmware/aoa_calc.py` (or extend `firmware/airdata.py`),
+`$AHRS` packet, AOA indexer in `pi4/pfd.py` and the iPhone display.
+Context: in the linear region of the lift curve, AOA can be inferred
+from sensors we already have on the bench: WT901 (load factor),
+BME280 (static + OAT for ρ), and GPS (groundspeed).  No new hardware
+required to start.  Useful as an on-speed cue and as a bridge until
+AOA-PROBE ships; not a substitute for measured AOA at the margins.
+Math: from the lift equation `L = n·W = ½·ρ·V²·S·Cl`, solve for Cl
+and divide by the airframe's lift-curve slope:
+  `α ≈ α₀ + Cl / Cl_α`
+  `Cl  = (n·W) / (½·ρ·V²·S)`
+where `n` is load factor (from the WT901 accel Z, in g), `V` is
+TAS (SDP31 + BME280), `ρ` is air density (BME280 static + OAT), and
+`W` / `S` / `Cl_α` / `α₀` are airframe constants for the Rans S21.
+Inputs (with the same fallback ladder AHRS-GPS-AID uses):
+  - **Velocity** — TAS from SDP31-AIRDATA when it lands; GS from
+    `gps.speed_kt` until then.  In zero wind GS == TAS; in wind the
+    error scales with the wind component.  Surface the active
+    source in the indexer (small `gs` / `tas` subscript) so the
+    pilot doesn't trust an upwind on-speed cue.
+  - **Load factor** from WT901 (use the same gravity-vector estimate
+    the AHRS produces; rotate the body-frame accel into the
+    wing-perpendicular axis).
+  - **Density** ρ from BME280 static + OAT.
+  - **Weight** as a pilot-entered field on the V-speeds / Flight
+    Profile screen — accepts dry-weight + fuel and decrements by
+    the fuel-flow estimate over the flight (or just a single GW
+    entry to start; refine later).
+  - **Cl_α, α₀, S** stored in the airframe profile alongside the
+    V-speeds (already a JSON profile file).
+Caveats — explicit so the indexer doesn't lie:
+  - Linear-region only.  Departs from real AOA near the stall, in
+    deep flap, and during accelerated stalls.  Calibrate the
+    indicator's "yellow" band conservatively and treat the "red"
+    band as advisory until AOA-PROBE replaces it.
+  - Configuration-blind.  Flap deployment changes Cl_α and α₀; if
+    we read flap position later, branch the constants.  Until
+    then, calibrate against clean configuration only.
+  - Weight-dependent.  Bad fuel-state estimate biases the whole
+    output.  Surface the assumed weight on the profile screen.
+  - Until SDP31-AIRDATA lands, "velocity" means GS — see source
+    subscript above.
+Work items:
+  - Add airframe constants (Cl_α, α₀, S, max-gross W, flap-clean
+    flag) to the V-speeds profile.  Default to Rans S21 numbers;
+    pilot tunes against measured stall on first-flight cards.
+  - `aoa_calc.py` runs each AHRS frame, emits `aoa_deg` and a
+    `aoa_src` = `"calc"` field on the `$AHRS` packet.  When
+    AOA-PROBE goes live the same field flips to `"probe"` and
+    the same display consumes both.
+  - Display: AOA indexer on the right side of AI when no approach
+    is active (same slot AOA-PROBE will use).  Show a small `c`
+    subscript on the indexer while `aoa_src == "calc"` so the
+    pilot knows it's the inferred value.
+Pairs with SDP31-AIRDATA (the inputs come from there) and with
+AOA-PROBE (this entry retires when the probe lands, or stays as
+a redundant cross-check).
+
+### FPV  Velocity vector / flight-path marker on the AI
+Status: **OPEN — software-only, can land TODAY**
+Target: `pi4/pfd.py` (new draw routine inside the AI block), iPhone
+display equivalent.
+Context: a velocity-vector / flight-path-vector marker shows the
+pilot where the airplane is actually going through space, not where
+the nose is pointing.  Standard on every modern PFD (G3X, Dynon,
+Garrecht, mil HUDs).  Indispensable on approach — pilot flies the
+FPV onto the runway numbers and lands there, whatever the crab
+angle and AOA are doing.  Inputs we already have:
+  - **GPS track** (`gps.track_deg`) — azimuthal direction the
+    airplane is moving over the ground.
+  - **GPS GS + VS** — flight-path angle = `atan2(VS_fps, GS_fps)`.
+    GS from `gps.speed_kt`, VS from `gps.vspeed_fpm` (already
+    smoothed in the firmware).
+  - **AHRS attitude** (yaw/pitch/roll from WT901) — needed to
+    project the FPV onto the AI viewport, since the AI is
+    drawn in body-frame.
+Math: the FPV's screen position is the projection of the velocity
+vector into the camera frame the AI is rendered with.  The same
+projection chain `draw_airport_symbols` already uses (yaw / pitch
+/ roll, focal length, screen centre) takes a unit vector in the
+NED frame and returns AI pixel coordinates.  Build a NED unit
+vector from track + flight-path-angle, run it through the existing
+projection, draw a small open circle with two horizontal "wings"
+and a short vertical stub (the conventional FPV symbol).
+Work items:
+  - Compute FPV NED unit vector from GPS track + GS + VS each
+    frame.  Skip when GS < 5 kt (parked / taxi noise) — hide the
+    symbol below that gate.
+  - Reuse the airport projection helper to land it on the AI.
+    Clamp to the AI rectangle so it never escapes the viewport
+    in extreme attitudes; show a "ghost" arrow at the edge in
+    that case (G3X convention).
+  - Symbol: 12 px circle, 6 px wings either side, 6 px vertical
+    stub.  Cyan, no fill.  Same colour as the heading-bug bug
+    set (pilot-relevant, not alert).
+  - Display setup gains an FPV ON/OFF toggle (default ON when
+    GPS is healthy).  Persist with the rest of the display
+    settings.
+  - Sanity check: on the ground rolling forward, the FPV should
+    sit in front of the nose (track ≈ heading, FPA ≈ 0).  In a
+    coordinated climb-out, the FPV sits below the nose by the
+    AOA (a free cross-check against AOA-CALC once it lands).
+Pairs with AOA-CALC (the vertical offset between aircraft symbol
+and FPV is exactly AOA when the wind is along the flight path —
+a free in-flight calibration target for the airframe constants).
+
+### AOA-PROBE  Add a second differential-pressure transducer for AOA
+Status: **OPEN — board-revision change for the next layout spin**
+Target: hardware (next board rev), `firmware/sdp31.py` (or sibling
+driver if a different pressure range is used), additions to the
+`$AHRS` packet, AOA indicator on `pi4/pfd.py` and the iPhone
+display.
+Context: with one differential-pressure transducer doing pitot/static
+(SDP31-AIRDATA), a second sensor connected to a flush-port AOA probe
+gives a real AOA signal essentially free.  Standard experimental
+implementation is a two-hole probe on the wing or a side-mount on
+the fuselage where the upper / lower ports sit at different angles
+to the local airflow — the ΔP across them is monotonic with AOA over
+the normal envelope.  AOA buys things IAS-only can't:
+  - **AOA-based stall warn** — fires at the actual stall margin
+    regardless of weight, bank, or load factor.  IAS-based stall
+    cues only work at 1 g and gross weight (the published Vs1 is
+    a lie at any other condition).
+  - **Optimal-AOA cues for approach and climb** — fly the
+    indexer / donut, not the airspeed.
+  - **Energy management on approach** — particularly relevant
+    behind a Rotax that responds slowly to throttle.
+Sensor selection: the AOA probe usually generates ΔP in the 0–2000 Pa
+range over the normal envelope.  Likely candidates: SDP3x-2000Pa
+(higher range than the airspeed unit) or Sensirion's specifically-
+ranged variants.  Pick the part once the probe geometry is fixed.
+Work items (next board rev):
+  - Pick the AOA probe (build a flush-port pair, or buy a probe
+    head — AlphaSystems and Dynon both sell heads that work with
+    a generic differential-pressure sensor).
+  - Add the second ΔP sensor to the board (I²C bus already up;
+    address-select on the SDP3x line lets us run two on one bus).
+  - Driver mirrors `firmware/sdp31.py`; AOA math = calibration curve
+    (linear over the cruising range, departs near the stall — fit
+    on first-flight data, persist coefficients to flash).
+  - AOA field added to `$AHRS` JSON.
+  - Display: AOA indexer on the right side of the AI when not on
+    approach (mutually exclusive with the VDI from the recent work
+    — VDI takes priority during approach, AOA at all other times).
+    Standard cue: green/yellow/red segments with a fast-erecting
+    diamond, donut at on-speed.
+Pairs with SDP31-AIRDATA (same I²C bus + driver pattern) and with
+AHRS-GPS-AID (AOA-based stall warn is the safety-of-flight payoff
+once attitude is honest).
+
+### AHRS-GPS-AID  GPS-aided AHRS for clean attitude in coordinated turns
+Status: **OPEN — on-Pico is the recommended path; Pico 2 W makes it cheap**
+Target: new `firmware/ahrs_filter.py`, raw-mode IMU output from
+`firmware/wt901.py`, plumbing in `firmware/main.py`.
+Context: the WT901's internal Kalman filter doesn't accept external
+velocity, so feeding it groundspeed directly does nothing — it can
+only see accel + gyro + mag.  The accelerometer measures
+`gravity + linear_accel`, and in a coordinated turn the centripetal
+component `a_c = V·ω` tilts the apparent gravity vector and biases
+the bank solution.  At LOW bank the problem is worse, not better:
+at 100 kt and 0.5°/s yaw rate (≈0.5° true bank) the centripetal
+signal is ~0.9 m/s² while the gravity-on-Y bank signal is only
+~0.085 m/s² — the IMU sees ~10× more "fake tilt" than real tilt.
+This is why the leans-during-coordinated-turn artefact survives
+even a perfect mag cal.
+Architecture is straightforward because **all inputs already live
+on the Pico**: WT901 raw accel/gyro on UART, GPS speed/track from
+`firmware/gps.py`, and (on the laid-out hardware) an SDP31-500Pa
+differential-pressure sensor for IAS/TAS plus a BME280 for static
+pressure + OAT.  No cross-device transport needed — the Pi 4 just
+consumes the fused result over USB CDC the same way it does today.
+**Use TAS, not GS, for centripetal correction**: the IMU's centripetal
+accel is `V_air × ω`, not `V_ground × ω`.  In any wind, GS-aiding
+introduces an error proportional to the wind component — the SDP31
+makes the correction physically right instead of just close.  Pico
+2 W (RP2350) makes the path comfortable: hardware FPU collapses
+Madgwick/Mahony to free, 520 KB SRAM gives plenty of headroom, and
+the second M33 core can carry the per-sample fusion loop without
+competing with the AP / web-server / SSE work.  On the original
+Pico W (RP2040, soft float, 264 KB) the filter is doable but tight;
+defer until the 2 W swap.
+Work items:
+  - Switch the WT901 driver in `firmware/wt901.py` to raw IMU output
+    mode (or run a dual-stream config so both raw + fused are
+    available during validation).
+  - Implement Madgwick or Mahony in `firmware/ahrs_filter.py` (~50
+    lines of MicroPython); reference impls available.  EKF is an
+    option if drift compensation needs to be tighter, but Madgwick
+    with GPS aiding is plenty for this airframe.
+  - Subtract centripetal accel `V × ω_gyro` from raw accel BEFORE
+    the level-finding step.  Source the velocity through a fallback
+    ladder: **TAS first** (physically correct — see SDP31-AIRDATA),
+    **GS second** (GPS speed_kt — close in zero wind, off by the
+    wind component otherwise), **basic attitude last** (no
+    centripetal correction at all — accel+gyro+mag fusion as today,
+    accept the leans in coordinated turns).  ω is always from the
+    gyro.  Plumb the active source into the `$AHRS` packet as
+    `att_aid` (`tas` / `gs` / `basic`) so displays can surface it
+    when the higher-quality source drops out.
+  - Replace `main.py`'s yaw/pitch/roll output with the fused result;
+    iPhone / Pi 4 displays consume it as today.
+  - Validate at a known coordinated bank: 25° at 100 kt should read
+    steadily 25°, no sag toward level after roll-in completes.
+    Pre-fix it sags by a few degrees within the first 5–10 s.
+Pairs with AHRS-MAGCAL (mag cal eliminates yaw bias; GPS aiding
+eliminates bank/pitch bias).  Both together give a real AHRS.
 
 ### AHRS-MAGCAL  WT901 magnetometer calibration procedure
 Status: **OPEN**
@@ -266,6 +545,65 @@ Work items:
 ---
 
 ## Completed
+
+### MAP-INSET  2D moving-map inset in the lower-left corner — **FIXED**
+Target: new `pi4/moving_map.py`; render hook in `pi4/pfd.py`; new
+toggles in Display setup; persistence in `pi4/data/settings.json`.
+Fix: commit `8745e03`. Pure-pygame inset (no GL context contention)
+that reuses the airport, runway, obstacle and SRTM caches the SVT
+already keeps loaded. Layers: hypsometric terrain tint (cached
+surface keyed on quantised centre + range + orient, rebuilt only on
+pan/zoom), runways, obstacles, airports, direct-to course +
+waypoint diamond, own-ship chevron, range ring, frame + corner
+labels. Track-up rotates the cached tint by current track; north-up
+keeps north up and the chevron rotates to track. Six discrete zoom
+levels (1/2/5/10/20/40 nm). Pinch-to-zoom (two-finger FINGERMOTION,
+1.35× ratio per step) plus a single-tap fallback (left half = zoom
+out, right half = zoom in) so the inset is usable even when the
+touch driver doesn't surface FINGERMOTION events. Display setup
+gains MAP INSET (OFF/ON + TRK↑/N↑ packed), MAP RANGE, SUN POSITION
+and MAP LAYERS (TER/WTR/APT/RWY/OBS multi-toggle); the unused
+NIGHT MODE placeholder retired to make room.
+
+### SUN-POSITION  Real-time sun position drives terrain shading — **FIXED**
+Target: new `pi4/sun.py`; `pi4/svt_renderer_gl.py`
+(`render_svt_gl`, `render_svt_into_current_fb`); render hook in
+`pi4/pfd.py`. Fix: commit `8745e03`. NOAA solar-position formulas
+take UTC + GPS lat/lon, return azimuth, elevation, and a civil-
+twilight intensity ramp (-6° → 0, +6° → 1) so dawn / dusk fades
+smoothly into ambient instead of stepping. The two GL render
+entrypoints accept optional `sun_az_deg` / `sun_el_deg` /
+`sun_intensity` kwargs; passing `None` falls back to the current
+SE / mid-morning module constants, which preserves the previous
+behaviour exactly when SUN POSITION is set to FIXED on the Display
+setup. Per-frame compute is cheap (sun moves ~0.25°/min, but
+re-evaluating per frame is ~5 µs).
+
+### RUNWAY-VECTORIZE  Runway symbol overlay vectorised — **FIXED**
+Target: `pi4/pfd.py` `draw_runway_symbols`, `shared/runways.py`.
+Fix: commit `878fe28` mirrors the airports.py optimisation — sort
+the structured array by midpoint latitude at load, cache contiguous
+lat/lon columns at module level, then bound candidates with
+`np.searchsorted` before any per-row work. Dense-area test (~50
+candidate rows in slab) drops 0.97 ms → 0.54 ms (1.8×); sparse
+queries drop 13.6×. In `pi4/pfd.py`: `surf.set_clip` hoisted out of
+the per-runway loop (was set/restored per runway, now once per frame
+around the whole pass); duplicate set_clip dropped from
+`_draw_extended_centerline`; `nm_per_deg_lon` threaded into
+`_project_latlon` so `cos(radians(lat))` is computed once per draw
+instead of on every projection (10+ per runway, 24+ per centerline);
+list+min/max corner-bbox tests replaced with scalar comparisons.
+On-disk cache format unchanged — older un-sorted .npy files re-sort
+in memory at load.
+
+### SVT-FPS-TURNS  Steep-bank FPS dip — **RESOLVED IN PRACTICE**
+Target: `pi4/svt_renderer_gl.py` `FRAGMENT_SHADER`.
+Context: previously flagged as 15–20 FPS dip during steep banked
+turns vs. 30 FPS baseline. Field testing reports turns hold up
+fine now — no longer a pressing issue. Specific shader-cost knobs
+(LUT for `clearance_color()`, coarser per-fragment normal,
+`MESH_GRID_N` 300→200) are still available if a future regression
+brings this back, but no work is queued.
 
 ### #1  GL SVT — pygame.OPENGL shared-context composite — **FIXED**
 Target: `pi4/svt_composite_gl.py` (new), `pi4/test_svt_composite.py` (new),

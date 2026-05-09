@@ -5,8 +5,8 @@
 | Document No. | TP-PI4-001 |
 | Title | Initial Hardware Bring-Up — Pi 4 Display + AHRS Unit |
 | Project | Pico-AHRS / PFD |
-| Date | 2026-04-15 |
-| Version | 0.2 |
+| Date | 2026-05-09 |
+| Version | 0.3 |
 | Performed by | _____________ |
 | Date performed | _____________ |
 
@@ -432,6 +432,47 @@ Requires GPS fix and OurAirports data loaded. Use a known nearby airport ident.
 
 ---
 
+## Phase 6.7.5 — Synthetic Approach (HITS + VDI + APPR runway picker)
+
+Requires GPS fix, OurAirports + runway data loaded, and SRTM tiles for the area. Best run in the simulator at KSEZ (or any field with two distinct runway ends).
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.7.5.1 | In flight or sim, tap CDI strip → type a known airport ident with runway data (e.g. `KSEZ`) | Keyboard shows the ident; bottom row of nav-extras includes an **APPR** button (only visible when runway data is loaded for the typed ident) | | |
+| 6.7.5.2 | Tap **APPR** | Runway picker opens with one tile per runway end, each showing ident, course, and length | | |
+| 6.7.5.3 | Tap a runway tile (e.g. RWY 03 at KSEZ) | Approach activates; CDI ident readout becomes `KSEZ/03`; magenta D2 trace disappears from AI | | |
+| 6.7.5.4 | Observe AI for HITS boxes | Cyan rectangular boxes (300×200 ft) draw along the extended centreline at 1000 ft spacing, starting ~1000 ft outside the threshold and continuing to 5 NM final | | |
+| 6.7.5.5 | Observe HITS occlusion | Boxes are correctly occluded by intervening ridges / obstacles (depth-tested against SVT mesh) | | |
+| 6.7.5.6 | Observe VDI on right side of AI | Vertical bar with a magenta diamond appears just inside the alt tape; only paints with approach active; `G` and `S` markers visible above and below the bar | | |
+| 6.7.5.7 | Climb above the 3° GS | VDI diamond moves DOWN — fly down to the diamond | | |
+| 6.7.5.8 | Descend below the GS | Diamond moves UP — fly up to the diamond | | |
+| 6.7.5.9 | Observe CDI scaling | Full-scale deflection visibly tighter than en-route mode (now ±0.3 NM, was ±1.0 NM); ident readout still shows `KSEZ/03` | | |
+| 6.7.5.10 | Verify CDI reference is the extended centreline | Move the simulator laterally across the centreline; diamond crosses centre at the extended runway centreline, NOT at the line from the original activation point to the threshold | | |
+| 6.7.5.11 | Observe lower-left moving-map inset | Course trace is **cyan** (matches HITS / VDI), drawn from the threshold along the reciprocal of the published course; ETE label in the corner is also cyan | | |
+| 6.7.5.12 | Open Setup → AIRPORTS → DIRECT TO → APPR (or re-tap CDI → APPR) | Runway picker opens with **CANCEL APPROACH** button at the bottom | | |
+| 6.7.5.13 | Tap **CANCEL APPROACH** | HITS boxes disappear; VDI hides; CDI rescales to ±1 NM; ident readout drops the runway suffix; inset trace returns to magenta | | |
+
+---
+
+## Phase 6.7.6 — Sim AP Follow Modes (FOLLOW BUGS / FLT PLAN)
+
+Requires the simulator running with a direct-to or synthetic approach active.
+
+| Step | Action | Expected Result | Result | Notes |
+|------|--------|----------------|--------|-------|
+| 6.7.6.1 | Sim at KSEZ, set HDG bug 270°, FOLLOW = BUGS (default) | AP turns to and holds 270° regardless of any active D2 / approach | | |
+| 6.7.6.2 | Tap SIM watermark → SIM CONTROLS → FOLLOW row → **FLT PLAN** | Button highlights; HDG bug commanded value is now overridden by intercept logic | | |
+| 6.7.6.3 | With a D2 to a waypoint 30 NM out, position aircraft 2 NM right of course | AP commands a heading roughly 45° left of course (full intercept) | | |
+| 6.7.6.4 | Continue tracking; cross-track decreases through 1.5 NM, then 0.3 NM | Intercept angle linearly reduces; inside 0.3 NM the AP rolls out wings-level on track | | |
+| 6.7.6.5 | Activate a synthetic approach (Phase 6.7.5) | Intercept tuning tightens: full-intercept threshold becomes 0.5 NM, gentle band 0.1 NM, inner-band gain triples — AP visibly settles on centreline at the new ±0.3 NM CDI scale | | |
+| 6.7.6.6 | Coordinated-turn check: observe AI during any intercept | Bank command precedes any heading change. Wings level → no yaw motion. The AI airplane never flat-yaws (no heading scroll without a visible bank). | | |
+| 6.7.6.7 | At ~25° bank command, verify yaw rate ≈ `g·tan(25°)/V` ≈ 5°/s at 100 kt | Sim turns roughly one full circle in ~70 s at full bank | | |
+| 6.7.6.8 | GS-capture-from-above check: with approach active, climb the sim above the GS, then descend toward it | AP captures the diamond on first crossing; descent rate tracks `V × tan(3°)` ≈ 530 fpm at 100 kt without persistent lag below the diamond | | |
+| 6.7.6.9 | Below-GS check: position sim below the GS by 200 ft and let it run | AP holds altitude (does NOT command a climb to the GS); diamond drifts down toward the aircraft as distance closes; capture from above resumes when the diamond reaches the aircraft | | |
+| 6.7.6.10 | Tap SIM CONTROLS → **EXIT SETUP** | SIM CONTROLS overlay closes; sim continues running (this verifies the EXIT SETUP button is wired — pre-fix the overlay had no exit affordance) | | |
+
+---
+
 ## Phase 6.8 — AGL Readout
 
 | Step | Action | Expected Result | Result | Notes |
@@ -503,10 +544,12 @@ Use this table to record any unexpected behaviour for later investigation.
 | Phase 6.5 — AHRS orientation | Y / N | | |
 | Phase 6.6 — Compass cal wizard | Y / N | | |
 | Phase 6.7 — Direct-to navigation | Y / N | | |
+| Phase 6.7.5 — Synthetic approach (HITS + VDI) | Y / N | | |
+| Phase 6.7.6 — Sim AP follow modes / intercept / GS capture | Y / N | | |
 | Phase 6.8 — AGL readout | Y / N | | |
 | Phase 6.9 — Autostart on boot | Y / N | | |
 | Phase 7 — Settings persistence | Y / N | | |
 
 ---
 
-*TP-PI4-001 v0.2 — covers software branch `claude/split-display-versions-YJ9h8`. For the Pi Zero 2W variant see TP-ZERO-001.*
+*TP-PI4-001 v0.3 — covers main with synthetic-approach feature set landed. For the Pi Zero 2W variant see TP-ZERO-001.*

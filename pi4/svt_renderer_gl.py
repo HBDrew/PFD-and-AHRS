@@ -289,7 +289,17 @@ in vec2 in_pos;          // fullscreen quad in NDC
 out vec2 v_ndc;
 
 void main() {
-    gl_Position = vec4(in_pos, 0.999, 1.0);   // far plane — drawn behind terrain
+    // z = 0.99999 (just inside the far plane).  The original 0.999 was too
+    // shallow: with NEAR_PLANE_M=50 / FAR_PLANE_M≈208 km, the perspective
+    // projection puts terrain at ~37 nm at z_ndc≈0.999, so the sky's depth
+    // and any terrain beyond ~37 nm tied or lost to the sky in the depth
+    // test.  Result was that the outer mesh's middle distance (37–75 nm
+    // band) got overpainted with sky-blue, reading as a gap between the
+    // visible high-res inner mesh (< 20 nm) and the silhouette of the
+    // outer mesh's far edge (~75 nm at the horizon).  Pushing sky to
+    // 0.99999 means terrain anywhere inside the far plane wins the depth
+    // test, so the outer mesh becomes continuously visible.
+    gl_Position = vec4(in_pos, 0.99999, 1.0);
     v_ndc = in_pos;                            // pass through raw NDC (-1..1)
 }
 """
@@ -304,6 +314,11 @@ out vec4 frag_color;
 uniform float u_horizon_y;   // NDC Y of horizon line at x=0 (-1..1)
 uniform float u_roll_rad;    // camera roll in radians
 uniform float u_aspect;      // aspect ratio (w/h) for rotation correction
+uniform vec3  u_below_horizon_color;  // colour for below-horizon mesh gaps —
+                                      // CPU sets this from the current TAWS
+                                      // alert level so the gap matches the
+                                      // surrounding terrain palette (red when
+                                      // foreground terrain is red, etc.)
 
 void main() {
     // Un-roll the NDC point so horizon becomes a horizontal line again.
@@ -315,14 +330,21 @@ void main() {
     float s = sin(u_roll_rad);
     float y_unrolled = -x_sq * s + y_sq * c;
 
-    // Sky everywhere: above the horizon a normal horizon→zenith gradient,
-    // below the horizon a flat sky-horizon color.  The below-horizon region
-    // exists only to fill any gap between the outer terrain mesh edge and
-    // the true geometric horizon (100+ nm away) — using the same sky-blue
-    // makes it visually invisible against the surrounding sky.
+    // Above the rolled horizon: sky gradient (horizon-blue → zenith-blue).
+    // Below the rolled horizon: blend horizon-blue (at the horizon line)
+    // into u_below_horizon_color (the TAWS-aware ground colour) over the
+    // first ~0.30 NDC of vertical distance.  At the horizon line this
+    // reads as "more sky" and matches the above-horizon gradient — so
+    // over water we don't get a spurious brown band where the mesh ends
+    // — while gaps deeper below the horizon (under-wing at steep bank
+    // and low altitude) still pick up the terrain-evocative ground
+    // colour.  Wherever the terrain mesh renders, depth-test wins so
+    // this only shows in genuine mesh gaps.
     vec3 horizon_col = vec3(0.23, 0.51, 0.78);
     if (y_unrolled < u_horizon_y) {
-        frag_color = vec4(horizon_col, 1.0);
+        float t_below = clamp((u_horizon_y - y_unrolled) / 0.30, 0.0, 1.0);
+        vec3 below = mix(horizon_col, u_below_horizon_color, t_below);
+        frag_color = vec4(below, 1.0);
     } else {
         float t = (y_unrolled - u_horizon_y) / max(0.001, 1.0 - u_horizon_y);
         vec3 zenith_col  = vec3(0.04, 0.16, 0.31);
@@ -624,6 +646,10 @@ def render_svt_gl(
     lat: float,
     lon: float,
     v_fov_deg: float = V_FOV_DEG,
+    sun_az_deg: float | None = None,
+    sun_el_deg: float | None = None,
+    sun_intensity: float | None = None,
+    below_horizon_color: tuple = (0.35, 0.27, 0.15),
 ):
     """Render the SVT terrain background using OpenGL.
     Returns a pygame.Surface (ai_w × ai_h, RGBA) or None if GL failed.
@@ -652,6 +678,7 @@ def render_svt_gl(
     _sky_prog['u_horizon_y'].value = horizon_y
     _sky_prog['u_roll_rad'].value  = math.radians(roll_deg)
     _sky_prog['u_aspect'].value    = ai_w / ai_h
+    _sky_prog['u_below_horizon_color'].value = below_horizon_color
     _ctx.disable(moderngl.DEPTH_TEST)
     _sky_vao.render()
     _ctx.enable(moderngl.DEPTH_TEST)
@@ -670,14 +697,19 @@ def render_svt_gl(
         _terrain_prog['u_grid_max_dist_m'].value  = _mesh_radius_m
         _terrain_prog['u_discard_inside_m'].value = 0.0
         _terrain_prog['u_water_enable'].value     = 0.0   # standalone has no water data
-        # Sun direction vector (world frame: X=East, Y=North, Z=Up)
-        az_rad = math.radians(SUN_AZIMUTH_DEG)
-        el_rad = math.radians(SUN_ELEVATION_DEG)
-        sun_x = math.cos(el_rad) * math.sin(az_rad)   # east component
-        sun_y = math.cos(el_rad) * math.cos(az_rad)   # north component
-        sun_z = math.sin(el_rad)                      # up component
+        # Sun direction vector (world frame: X=East, Y=North, Z=Up).
+        # Caller-supplied az/el override the module defaults so a real-time
+        # solar-position feed can drive the lighting from UTC + GPS.
+        _az = SUN_AZIMUTH_DEG   if sun_az_deg   is None else sun_az_deg
+        _el = SUN_ELEVATION_DEG if sun_el_deg   is None else sun_el_deg
+        _si = SUN_INTENSITY     if sun_intensity is None else sun_intensity
+        az_rad = math.radians(_az)
+        el_rad = math.radians(_el)
+        sun_x = math.cos(el_rad) * math.sin(az_rad)
+        sun_y = math.cos(el_rad) * math.cos(az_rad)
+        sun_z = math.sin(el_rad)
         _terrain_prog['u_sun_dir'].value       = (sun_x, sun_y, sun_z)
-        _terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
+        _terrain_prog['u_sun_intensity'].value = _si
         _terrain_prog['u_ambient'].value       = SUN_AMBIENT
         _terrain_vao.render()
 
@@ -1200,6 +1232,10 @@ def render_svt_into_current_fb(
     water_dir: str = "",
     water_enable: bool = True,
     airports_arr=None,
+    sun_az_deg: float | None = None,
+    sun_el_deg: float | None = None,
+    sun_intensity: float | None = None,
+    below_horizon_color: tuple = (0.35, 0.27, 0.15),
 ) -> bool:
     """Render the SVT terrain+sky directly into the currently-bound
     framebuffer using the caller-provided moderngl context.
@@ -1249,12 +1285,18 @@ def render_svt_into_current_fb(
     st.sky_prog['u_horizon_y'].value = horizon_y
     st.sky_prog['u_roll_rad'].value  = math.radians(roll_deg)
     st.sky_prog['u_aspect'].value    = ai_w / ai_h
+    st.sky_prog['u_below_horizon_color'].value = below_horizon_color
     ctx.disable(moderngl.DEPTH_TEST)
     st.sky_vao.render()
     ctx.enable(moderngl.DEPTH_TEST)
 
-    az_rad = math.radians(SUN_AZIMUTH_DEG)
-    el_rad = math.radians(SUN_ELEVATION_DEG)
+    # Caller-supplied az/el override the module defaults so a real-time
+    # solar-position feed can drive lighting from UTC + GPS.
+    _az = SUN_AZIMUTH_DEG   if sun_az_deg    is None else sun_az_deg
+    _el = SUN_ELEVATION_DEG if sun_el_deg    is None else sun_el_deg
+    _si = SUN_INTENSITY     if sun_intensity is None else sun_intensity
+    az_rad = math.radians(_az)
+    el_rad = math.radians(_el)
     sun_dir = (
         math.cos(el_rad) * math.sin(az_rad),  # east
         math.cos(el_rad) * math.cos(az_rad),  # north
@@ -1294,7 +1336,7 @@ def render_svt_into_current_fb(
         st.terrain_prog['u_discard_inside_m'].value = float(discard_inside_m)
         st.terrain_prog['u_water_enable'].value     = 1.0 if water_enable else 0.0
         st.terrain_prog['u_sun_dir'].value       = sun_dir
-        st.terrain_prog['u_sun_intensity'].value = SUN_INTENSITY
+        st.terrain_prog['u_sun_intensity'].value = _si
         st.terrain_prog['u_ambient'].value       = SUN_AMBIENT
         vao.render()
         return local_mvp

@@ -82,6 +82,9 @@ import airports as apt_mod
 import runways as rwy_mod
 import water as water_mod
 import settings as _settings
+import moving_map as _map_mod
+import sun as _sun_mod
+import hits as _hits_mod
 
 DEG = math.pi / 180
 
@@ -194,6 +197,18 @@ disp["ad"] = {                      # airport download/parse state
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
+    # Lower-left moving-map inset
+    "map_enabled":       False,
+    "map_orient":        "trk",     # "trk" | "nrth"
+    "map_zoom_nm":       5,         # one of 1, 2, 5, 10, 20, 40
+    "map_show_terrain":  True,
+    "map_show_water":    True,      # reserved — water tile overlay
+    "map_show_airports": True,
+    "map_show_runways":  True,
+    "map_show_obstacles": True,
+    "map_show_directto": True,
+    # Real-time SVT sun position (off → SE / mid-morning fixed lighting)
+    "sun_realtime":      True,
 }
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
@@ -234,6 +249,14 @@ disp["sim"] = {                     # flight simulator state
     "gps_fail":   False,
     "baro_fail":  False,
     "ahrs_fail":  False,
+    # Autopilot source for the sim:
+    #   "bugs" — follow hdg_bug + alt_bug (default — what the sim has
+    #             always done).
+    #   "fp"   — follow the active direct-to (bearing to waypoint) +
+    #             alt_bug; if a synthetic approach is active, slide
+    #             down the 3° glideslope to the threshold once the
+    #             aircraft has intercepted it.
+    "follow_mode": "bugs",
 }
 disp["nav"] = {                     # rudimentary direct-to-airport navigation
     "ident":   "",      # ICAO/local ID of active waypoint, "" = none
@@ -242,6 +265,23 @@ disp["nav"] = {                     # rudimentary direct-to-airport navigation
     "elev_ft": 0.0,
     "act_lat": 0.0,     # aircraft lat at activation (CDI course reference)
     "act_lon": 0.0,
+}
+
+# Synthetic approach (HITS).  Active when the pilot has selected a
+# specific runway end via the APPR picker.  When set, the renderer
+# draws cyan HITS boxes along the extended centreline at a 3°
+# glideslope, and the direct-to is auto-pointed at the threshold so
+# the CDI / ETE line up with the runway instead of the airport
+# centroid.  Cleared on PFD restart (not persisted) — fresh approach
+# each flight.
+disp["approach"] = {
+    "active":          False,
+    "airport":         "",         # parent airport ident (e.g. "KSEZ")
+    "runway":          "",         # runway-end ident (e.g. "03")
+    "thresh_lat":      0.0,
+    "thresh_lon":      0.0,
+    "thresh_elev_ft":  0.0,
+    "course_deg":      0.0,        # true course TO the threshold
 }
 
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
@@ -1816,29 +1856,118 @@ class SimFlyState:
             tgt_alt = disp["alt_bug"] if disp.get("alt_bug") is not None else state["alt"]
             tgt_spd = disp.get("spd_bug") or 90.0
 
+            # FOLLOW FLIGHT-PLAN mode — overrides bug-based targets.
+            # The autopilot flies a 45° intercept to the course (D2 line
+            # for plain direct-to, final approach course when an
+            # approach is loaded), ramping down to a gentle cross-track
+            # correction once within ~0.3 nm of track.  Standard
+            # behaviour for any modern avionics — far cleaner than
+            # "always turn toward the destination" which over-shoots
+            # parallel courses and never settles on track.
+            if sim.get("follow_mode") == "fp":
+                nv = disp.get("nav") or {}
+                if nv.get("ident"):
+                    cur_lat = state["lat"]
+                    cur_lon = state["lon"]
+                    wp_lat  = float(nv["lat"])
+                    wp_lon  = float(nv["lon"])
+                    dist_nm, brg = _nav_geo_dist_brg(
+                        cur_lat, cur_lon, wp_lat, wp_lon)
+
+                    ap = disp.get("approach") or {}
+                    if ap.get("active"):
+                        # Approach: course is the published runway heading
+                        # (true).  XTK is measured from the extended
+                        # centreline.
+                        course_deg = float(ap["course_deg"])
+                    else:
+                        # D2: course is the great-circle from activation
+                        # point to waypoint.
+                        ax_lat = float(nv.get("act_lat", cur_lat))
+                        ax_lon = float(nv.get("act_lon", cur_lon))
+                        _d, course_deg = _nav_geo_dist_brg(
+                            ax_lat, ax_lon, wp_lat, wp_lon)
+
+                    tgt_hdg = _sim_intercept_heading(
+                        course_deg, wp_lat, wp_lon, cur_lat, cur_lon,
+                        approach=bool(ap.get("active")))
+
+                    if ap.get("active"):
+                        # Standard glideslope capture: only ever
+                        # intercept the GS FROM ABOVE.  Never command
+                        # a climb to chase the GS — that's wrong
+                        # avionics behaviour (and would be wrong for
+                        # the real AP when we wire this in later).
+                        # Above the GS: track it (sim's existing
+                        # ±1500 fpm VS clamp caps the descent rate).
+                        # Below the GS: hold current altitude — the
+                        # GS will descend toward the aircraft as it
+                        # closes on the threshold and naturally
+                        # capture from above.  Small +20 ft hysteresis
+                        # avoids per-frame jitter at the boundary.
+                        thresh_elev = float(ap["thresh_elev_ft"])
+                        gs_deg      = 3.0
+                        gs_alt = thresh_elev + (
+                            dist_nm * 6076.12
+                            * math.tan(math.radians(gs_deg)))
+                        if state["alt"] >= gs_alt - 20:
+                            tgt_alt = max(gs_alt, thresh_elev + 5)
+                        else:
+                            tgt_alt = state["alt"]
+
             # ── Heading / bank ─────────────────────────────────────────────────
-            # Reference for the heading-hold error: yaw in MAG mode, track in
-            # TRK mode.  state["track"] gets refreshed below from the wind
-            # solution; first frame falls back to yaw to avoid a transient.
+            # Coordinated-turn model: BANK is the only commanded
+            # quantity; yaw rate falls out of the bank via
+            # ω = g·tan(φ)/V.  The previous version commanded yaw
+            # directly and let bank be a separate cosmetic display,
+            # which produced "flat yaw" — the AI airplane swung in
+            # heading with wings level — particularly during the last
+            # few degrees of a CDI capture where bank was nearly zero
+            # but yaw was still being driven.
+            #
+            # Reference for the heading-hold error: yaw in MAG mode,
+            # track in TRK mode.  state["track"] gets refreshed below
+            # from the wind solution; first frame falls back to yaw to
+            # avoid a transient.
             if _bk == "trk_bug":
                 ref_hdg = state.get("track", state["yaw"]) or state["yaw"]
             else:
                 ref_hdg = state["yaw"]
-            hdg     = state["yaw"]
             hdg_err = ((tgt_hdg - ref_hdg + 180) % 360) - 180
-            turn_rate = 3.0  # standard rate deg/s
-            d_hdg = max(-turn_rate * dt, min(turn_rate * dt, hdg_err * 0.4))
-            state["yaw"]  = (hdg + d_hdg) % 360
-            bank          = max(-25.0, min(25.0, hdg_err * 1.8))
+
+            # Bank command — proportional, ±25° saturation at ~5°
+            # error.  Below saturation, bank rolls out smoothly with
+            # heading error so we settle on track without overshoot.
+            bank = max(-25.0, min(25.0, hdg_err * 5.0))
             state["roll"] = bank if not ahrs_fail else 0.0
-            state["ay"]   = -bank / 600.0  # slip ball
+            state["ay"]   = -bank / 600.0   # slip ball
+
+            # Yaw follows from actual bank — coordinated turn.
+            v_fps = max(20.0, state["speed"] * 1.6878)
+            yaw_rate_dps = math.degrees(
+                32.174 * math.tan(math.radians(bank)) / v_fps)
+            state["yaw"] = (state["yaw"] + yaw_rate_dps * dt) % 360
 
             # ── Altitude / VS / pitch ──────────────────────────────────────────
+            # On approach, the GS itself is descending at ~530 fpm at
+            # 100 kt, so a pure proportional alt-error controller can
+            # only catch it asymptotically — sim flies persistently
+            # above the GS.  Add the GS descent rate as feedforward and
+            # bump the closed-loop gain so the diamond actually centres.
+            _ap_now = disp.get("approach") or {}
+            _on_appr_descent = (_ap_now.get("active")
+                                and tgt_alt < state["alt"] - 5.0)
             alt     = state["alt"]
             alt_err = tgt_alt - alt
             if abs(alt_err) < 5.0:
                 state["alt"] = tgt_alt
                 vs_fpm = 0.0
+            elif _on_appr_descent:
+                gs_descent_fpm = -(state["speed"] * 6076.12
+                                    * math.tan(math.radians(3.0)) / 60.0)
+                vs_fpm = max(-1500.0, min(1500.0,
+                                          alt_err * 6.0 + gs_descent_fpm))
+                state["alt"] = alt + vs_fpm / 60.0 * dt
             else:
                 vs_fpm  = max(-1500.0, min(1500.0, alt_err * 2.0))
                 state["alt"] = alt + vs_fpm / 60.0 * dt
@@ -2073,15 +2202,29 @@ _SIM_EXIT_Y = CY - 36 - _SIM_EXIT_H
 
 # ── Sim controls overlay ─────────────────────────────────────────────────────
 
-_SIMCTRL_W = 280
-_SIMCTRL_H = 200
+_SIMCTRL_W = 320
+_SIMCTRL_H = 320
 _SIMCTRL_X = (DISPLAY_W - _SIMCTRL_W) // 2
 _SIMCTRL_Y = (DISPLAY_H - _SIMCTRL_H) // 2 - 10
 
 _SIMCTRL_ROW_Y0  = _SIMCTRL_Y + 36   # first sensor row top
-_SIMCTRL_ROW_H   = 34
+_SIMCTRL_ROW_H   = 32
 _SIMCTRL_ROW_GAP = 4
 _SIMCTRL_BW      = 70     # ON / FAIL button width
+
+_SIMCTRL_FOLLOW_BW   = 110    # FOLLOW BUGS / FLT PLAN button width
+
+
+def _simctrl_follow_y() -> int:
+    return _SIMCTRL_ROW_Y0 + 3 * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 8
+
+
+def _simctrl_exit_setup_y() -> int:
+    return _simctrl_follow_y() + _SIMCTRL_ROW_H + 14
+
+
+def _simctrl_exit_sim_y() -> int:
+    return _simctrl_exit_setup_y() + 44 + 8
 
 
 def draw_sim_controls(surf):
@@ -2105,11 +2248,9 @@ def draw_sim_controls(surf):
         row_y = _SIMCTRL_ROW_Y0 + ri * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP)
         failed = sim.get(key, False)
 
-        # Row label
         _text(surf, label, 12, (160, 175, 200), bold=True,
               x=_SIMCTRL_X + 14, cy=row_y + _SIMCTRL_ROW_H // 2)
 
-        # ON button
         on_active = not failed
         on_bg = (0, 50, 20) if on_active else (0, 8, 16)
         on_oc = (40, 190, 60) if on_active else (35, 60, 45)
@@ -2120,7 +2261,6 @@ def draw_sim_controls(surf):
         _text(surf, "ON", 12, on_tc, bold=on_active,
               cx=ox + _SIMCTRL_BW // 2, cy=row_y + _SIMCTRL_ROW_H // 2)
 
-        # FAIL button
         fx = ox + _SIMCTRL_BW + 6
         fail_active = failed
         fail_bg = (50, 5, 5) if fail_active else (12, 0, 0)
@@ -2131,12 +2271,32 @@ def draw_sim_controls(surf):
         _text(surf, "FAIL", 11, fail_tc, bold=fail_active,
               cx=fx + _SIMCTRL_BW // 2, cy=row_y + _SIMCTRL_ROW_H // 2)
 
-    # EXIT SIM button
-    exit_y = _SIMCTRL_ROW_Y0 + len(sensors) * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 6
-    _action_btn(surf,
-                _SIMCTRL_X + 14, exit_y,
-                _SIMCTRL_W - 28, _SIMCTRL_H - (exit_y - _SIMCTRL_Y) - 10,
-                "EXIT SIM", "danger")
+    # FOLLOW row — segmented control selecting the autopilot source.
+    fy = _simctrl_follow_y()
+    _text(surf, "FOLLOW", 12, (160, 175, 200), bold=True,
+          x=_SIMCTRL_X + 14, cy=fy + _SIMCTRL_ROW_H // 2)
+    follow = sim.get("follow_mode", "bugs")
+    fx_b = _SIMCTRL_X + _SIMCTRL_W - 2 * _SIMCTRL_FOLLOW_BW - 8 - 6
+    for i, (val, lbl) in enumerate((("bugs", "BUGS"), ("fp", "FLT PLAN"))):
+        bx = fx_b + i * (_SIMCTRL_FOLLOW_BW + 6)
+        active = (follow == val)
+        bg = (0, 55, 65) if active else (0, 10, 25)
+        oc = CYAN       if active else (50, 68, 92)
+        tc = CYAN       if active else (130, 148, 168)
+        pygame.draw.rect(surf, bg, (bx, fy, _SIMCTRL_FOLLOW_BW, _SIMCTRL_ROW_H), border_radius=4)
+        pygame.draw.rect(surf, oc, (bx, fy, _SIMCTRL_FOLLOW_BW, _SIMCTRL_ROW_H), width=2, border_radius=4)
+        _text(surf, lbl, 12, tc, bold=active,
+              cx=bx + _SIMCTRL_FOLLOW_BW // 2, cy=fy + _SIMCTRL_ROW_H // 2)
+
+    # EXIT SETUP — closes the overlay, sim continues running.
+    es_y = _simctrl_exit_setup_y()
+    _action_btn(surf, _SIMCTRL_X + 14, es_y,
+                _SIMCTRL_W - 28, 44, "EXIT SETUP", "normal")
+
+    # EXIT SIM — kills the sim and returns to live AHRS.
+    xs_y = _simctrl_exit_sim_y()
+    _action_btn(surf, _SIMCTRL_X + 14, xs_y,
+                _SIMCTRL_W - 28, 44, "EXIT SIM", "danger")
 
 
 def sim_controls_hit(x, y):
@@ -2158,10 +2318,24 @@ def sim_controls_hit(x, y):
         if fx <= x <= fx + _SIMCTRL_BW:
             return f"sensor_fail:{key_short}"
 
-    # EXIT SIM button area
-    exit_y = _SIMCTRL_ROW_Y0 + len(sensors) * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 6
-    exit_h = _SIMCTRL_H - (exit_y - _SIMCTRL_Y) - 10
-    if (exit_y <= y <= exit_y + exit_h and
+    # FOLLOW row
+    fy = _simctrl_follow_y()
+    if fy <= y <= fy + _SIMCTRL_ROW_H:
+        fx_b = _SIMCTRL_X + _SIMCTRL_W - 2 * _SIMCTRL_FOLLOW_BW - 8 - 6
+        for i, val in enumerate(("bugs", "fp")):
+            bx = fx_b + i * (_SIMCTRL_FOLLOW_BW + 6)
+            if bx <= x <= bx + _SIMCTRL_FOLLOW_BW:
+                return f"follow:{val}"
+
+    # EXIT SETUP
+    es_y = _simctrl_exit_setup_y()
+    if (es_y <= y <= es_y + 44 and
+            _SIMCTRL_X + 14 <= x <= _SIMCTRL_X + _SIMCTRL_W - 14):
+        return "exit_setup"
+
+    # EXIT SIM
+    xs_y = _simctrl_exit_sim_y()
+    if (xs_y <= y <= xs_y + 44 and
             _SIMCTRL_X + 14 <= x <= _SIMCTRL_X + _SIMCTRL_W - 14):
         return "exit_sim"
 
@@ -2225,10 +2399,15 @@ def nav_confirm_hit(x, y):
 
 
 def _nav_confirm_apply():
-    """Activate the pending direct-to and dismiss the modal."""
+    """Activate the pending direct-to and dismiss the modal.  Any
+    active approach is cleared — pilot is explicitly choosing a new
+    D2, so the existing HITS corridor no longer applies."""
     ident = disp.get("nav_confirm_ident", "")
     if ident:
         _nav_set_by_ident(ident)
+        ap = disp.get("approach")
+        if ap and ap.get("active"):
+            ap["active"] = False
     disp["nav_confirm_ident"] = ""
     disp["mode"] = disp.get("nav_confirm_prev", "pfd")
 
@@ -2443,6 +2622,11 @@ _bug_dragging  = None    # "hdg" | "alt"
 _active_fingers = {}     # finger_id → touch-down time (ms)
 _multitouch_t0  = None   # time when 2nd finger touched down
 
+# Moving-map inset state.  _last_map_rect is updated each frame by the
+# render loop so the touch handler can hit-test against it for the
+# left/right tap-zoom affordance.
+_last_map_rect = None
+
 
 def _current_str_for_kbd(target, prev_mode):
     """String form of current keyboard-editable value for pre-population."""
@@ -2560,13 +2744,40 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "setup"
             elif action and action.startswith("set:"):
                 _, key, val_str = action.split(":", 2)
-                disp["ds"][key] = (val_str == "True") if key == "night_mode" else val_str
+                # Coerce by token: True/False → bool, digits → int, else str.
+                # Lets one action protocol carry the mix of types now in
+                # disp["ds"] (units strings, map enable/layer bools, zoom int).
+                if val_str in ("True", "False"):
+                    val = (val_str == "True")
+                elif val_str.lstrip("-").isdigit():
+                    val = int(val_str)
+                else:
+                    val = val_str
+                disp["ds"][key] = val
                 _settings.mark_dirty()
             elif action and action.startswith("inc:brightness:"):
                 delta = int(action.split(":")[-1])
                 disp["ds"]["brightness"] = max(1, min(10, disp["ds"]["brightness"] + delta))
                 _set_backlight(disp["ds"]["brightness"])
                 _settings.mark_dirty()
+            return True
+
+        # ── Approach selection taps ───────────────────────────────────────
+        if mode == "approach_select":
+            action = approach_select_hit(x, y)
+            if action == "back":
+                disp["mode"] = "pfd"
+            elif action == "cancel":
+                _approach_cancel()
+                disp["mode"] = "pfd"
+            elif action and action.startswith("select:"):
+                idx = int(action.split(":", 1)[1])
+                ident = (disp.get("nav") or {}).get("ident", "") or \
+                        (disp.get("approach") or {}).get("airport", "")
+                ends = _apr_runway_ends(ident)
+                if 0 <= idx < len(ends):
+                    _approach_activate(ends[idx])
+                    disp["mode"] = "pfd"
             return True
 
         # ── AHRS / Sensors taps ───────────────────────────────────────────
@@ -2681,12 +2892,18 @@ def handle_event(event, demo_mode):
                 if _sse_client is not None:
                     _sse_client.paused = False
                 disp["mode"] = "pfd"
+            elif action == "exit_setup":
+                # Close the overlay; the sim keeps running.  No state
+                # touched — pilot just wants to fly the sim now.
+                disp["mode"] = "pfd"
             elif action and action.startswith("sensor_on:"):
                 sensor = action.split(":")[1]
                 disp["sim"][sensor + "_fail"] = False
             elif action and action.startswith("sensor_fail:"):
                 sensor = action.split(":")[1]
                 disp["sim"][sensor + "_fail"] = True
+            elif action and action.startswith("follow:"):
+                disp["sim"]["follow_mode"] = action.split(":", 1)[1]
             # "noop" or None: consume the event either way
             return True
 
@@ -2835,6 +3052,29 @@ def handle_event(event, demo_mode):
                     disp["kbd_buf"] = ""
                     disp["kbd_error"] = ""
                     disp["mode"] = disp["kbd_prev"]
+                elif sty == 'appr':           # APPR — open runway picker
+                    # Resolve the airport ident: typed buf wins over the
+                    # currently-active D2 ident.  Validate against the
+                    # airport DB (matches ENTER's path), and either
+                    # surface "UNKNOWN WAYPOINT" or jump to the picker.
+                    buf = disp["kbd_buf"].strip().upper()
+                    cur_ident = disp.get("nav", {}).get("ident", "")
+                    target_ident = buf or cur_ident
+                    if not target_ident:
+                        disp["kbd_error"] = "ENTER AIRPORT FIRST"
+                    elif buf and not _nav_lookup_ident(buf):
+                        disp["kbd_error"] = f"UNKNOWN WAYPOINT  {buf}"
+                    elif not _ident_has_runways(target_ident):
+                        disp["kbd_error"] = f"NO RUNWAYS  {target_ident}"
+                    else:
+                        # If the typed buf is a fresh airport, activate
+                        # the D2 first so the picker sees it as the
+                        # current airport.  Then jump to the picker.
+                        if buf and buf != cur_ident:
+                            _nav_set_by_ident(buf)
+                        disp["kbd_buf"] = ""
+                        disp["kbd_error"] = ""
+                        disp["mode"] = "approach_select"
                 elif sty == 'ok':             # ENTER
                     buf = disp["kbd_buf"].strip()
                     if target == "nav_ident":
@@ -2981,6 +3221,20 @@ def handle_event(event, demo_mode):
                 disp["kbd_buf"]    = ""
                 disp["kbd_error"]  = ""
                 disp["mode"]       = "keyboard"
+                return True
+
+        # Tap on the moving-map inset → cycle range one step.  Right
+        # half zooms IN (smaller range), left half zooms OUT.
+        if (mode == "pfd" and _last_map_rect is not None
+                and disp["ds"].get("map_enabled", False)):
+            mrx, mry, mrw, mrh = _last_map_rect
+            if mrx <= x <= mrx + mrw and mry <= y <= mry + mrh:
+                cur = int(disp["ds"].get("map_zoom_nm", 5))
+                if x >= mrx + mrw / 2:
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
+                else:
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur)
+                _settings.mark_dirty()
                 return True
 
         # Tap on alt bug button (top of alt tape) — hit region extends to HDG_H
@@ -3358,9 +3612,15 @@ def _kb_nav_extras_visible():
 
 
 def _kb_nav_extras_geometry():
-    """(bx_left, bx_right, btn_w) for the two nav-ident extras buttons."""
-    btn_w = (DISPLAY_W - 2 * 12 - 8) // 2
-    return 12, 12 + btn_w + 8, btn_w
+    """(x positions, btn_w) for the three nav-ident extras buttons:
+    DIRECT TO NEAREST · CANCEL FLIGHT PLAN · APPR."""
+    pad = 12
+    gap = 8
+    btn_w = (DISPLAY_W - 2 * pad - 2 * gap) // 3
+    bx_l = pad
+    bx_m = pad + btn_w + gap
+    bx_r = pad + 2 * (btn_w + gap)
+    return bx_l, bx_m, bx_r, btn_w
 
 
 def _kb_row_x0(row):
@@ -3421,10 +3681,11 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
             x += kw+_KB_GAP_X
         y += _KB_ROW_H+_KB_GAP_Y
 
-    # Nav-ident extras: jump straight to NEAREST or wipe the active flight
-    # plan without typing.  Only on tall enough displays.
+    # Nav-ident extras: jump straight to NEAREST, wipe the active flight
+    # plan, or open the approach runway picker — all without typing.
+    # Only on tall enough displays.
     if _kb_nav_extras_visible():
-        bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        bx_l, bx_m, bx_r, btn_w = _kb_nav_extras_geometry()
         # Resolve the nearest ident so the pilot sees what they're
         # about to activate before tapping.  Empty string falls back
         # to the generic label when there's no fix / no airports.
@@ -3432,8 +3693,10 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
         nrst_lbl = f"DIRECT TO {nrst}" if nrst else "DIRECT TO NEAREST"
         _action_btn(surf, bx_l, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
                     nrst_lbl, "ok")
-        _action_btn(surf, bx_r, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
+        _action_btn(surf, bx_m, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
                     "CANCEL FLIGHT PLAN", "danger")
+        _action_btn(surf, bx_r, _KB_NAV_BTN_Y, btn_w, _KB_NAV_BTN_H,
+                    "APPR", "normal")
 
 
 def keyboard_hit(x, y):
@@ -3445,11 +3708,13 @@ def keyboard_hit(x, y):
     clearing the active waypoint, then closing the keyboard."""
     if (_kb_nav_extras_visible()
             and _KB_NAV_BTN_Y <= y <= _KB_NAV_BTN_Y + _KB_NAV_BTN_H):
-        bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        bx_l, bx_m, bx_r, btn_w = _kb_nav_extras_geometry()
         if bx_l <= x <= bx_l + btn_w:
             return ("NRST", "nrst")
-        if bx_r <= x <= bx_r + btn_w:
+        if bx_m <= x <= bx_m + btn_w:
             return ("CLRFP", "clrfp")
+        if bx_r <= x <= bx_r + btn_w:
+            return ("APPR", "appr")
     ky = _KB_Y0
     for row in _KB_ROWS:
         if ky <= y <= ky+_KB_ROW_H:
@@ -3566,9 +3831,36 @@ _DSP_ROWS = [
      ["inhg","hpa"],     ["inHg","hPa"],     100),
     ("brightness", "BRIGHTNESS",   "Screen brightness 1\u201310",
      None, None, None),
-    ("night_mode", "NIGHT MODE",   "Dim red cockpit lighting",
-     [False, True],      ["OFF","ON"],        100),
+    # MAP INSET row carries TWO segmented controls: enable + orientation.
+    # Custom drawing/hit-test below handles the second pair.  Listed here
+    # as a single key so it occupies one row in the standard loop.
+    ("map_enabled", "MAP INSET",    "Lower-left 2D moving map \u00b7 orient",
+     [False, True],      ["OFF", "ON"],       80),
+    ("map_zoom_nm", "MAP RANGE",    "Default radius (nm)",
+     [1, 2, 5, 10, 20, 40], ["1","2","5","10","20","40"], 50),
+    ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
+     [False, True],      ["FIXED", "REAL"],   80),
 ]
+# Trailing controls for the MAP INSET row (orientation), drawn to the
+# left of the standard segmented control by hand.
+_DSP_MAP_ORIENT_OPTS  = ["trk", "nrth"]
+_DSP_MAP_ORIENT_LBLS  = ["TRK\u2191", "N\u2191"]
+_DSP_MAP_ORIENT_BW    = 80
+_DSP_MAP_ORIENT_GAP   = 24    # gap between orient pair and on/off pair
+
+# Multi-toggle MAP LAYERS row \u2014 packed five toggles (terrain / water /
+# airports / runways / obstacles) into one row.  Drawn separately from
+# _DSP_ROWS because the standard row schema is one control per row.
+_DSP_MAP_LAYERS = [
+    ("map_show_terrain",   "TER"),
+    ("map_show_water",     "WTR"),
+    ("map_show_airports",  "APT"),
+    ("map_show_runways",   "RWY"),
+    ("map_show_obstacles", "OBS"),
+]
+_DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
+_DSP_LAYERS_BTN_W     = 70
+_DSP_LAYERS_BTN_G     = 6
 
 
 def _dsp_rx(row, bx, bw):
@@ -3581,19 +3873,18 @@ def _dsp_rx(row, bx, bw):
     return bx + bw - total - 14
 
 
+def _dsp_layers_geom(bx, bw):
+    """Right-aligned geometry for the MAP LAYERS multi-toggle row."""
+    n = len(_DSP_MAP_LAYERS)
+    total = n * _DSP_LAYERS_BTN_W + (n - 1) * _DSP_LAYERS_BTN_G
+    return bx + bw - total - 14
+
+
 def draw_display_setup(surf, ds):
     _screen_header(surf, "DISPLAY")
     for ri, row in enumerate(_DSP_ROWS):
         key, label, sub, opts_v, opts_l, bw_each = row
-        is_night = (key == "night_mode")
         bx, by, bw, bh = _setting_row(surf, ri, label, sub)
-        if is_night:
-            # Overlay dim veil to show greyed-out state
-            veil = pygame.Surface((bw, bh), pygame.SRCALPHA)
-            veil.fill((0, 0, 0, 160))
-            surf.blit(veil, (bx, by))
-            _text(surf, "future", 10, (90,90,100), x=bx+bw-60, y=by+bh-18)
-            continue
         ry = by + (bh - _DSP_BTN_H) // 2
         rx = _dsp_rx(row, bx, bw)
         if opts_v is None:                              # brightness stepper
@@ -3608,6 +3899,30 @@ def draw_display_setup(surf, ds):
             cur = ds.get(key, opts_v[0])
             for i, (v, lbl) in enumerate(zip(opts_v, opts_l)):
                 _seg_btn(surf, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
+            # MAP INSET row also carries the orient pair to its left
+            if key == "map_enabled":
+                cur_or = ds.get("map_orient", "trk")
+                ox = rx - (_DSP_MAP_ORIENT_GAP
+                           + 2 * _DSP_MAP_ORIENT_BW + _DSP_BTN_G)
+                for i, (v, lbl) in enumerate(zip(_DSP_MAP_ORIENT_OPTS,
+                                                 _DSP_MAP_ORIENT_LBLS)):
+                    _seg_btn(surf,
+                             ox + i * (_DSP_MAP_ORIENT_BW + _DSP_BTN_G),
+                             ry, _DSP_MAP_ORIENT_BW, _DSP_BTN_H,
+                             lbl, v == cur_or)
+
+    # MAP LAYERS — five-toggle packed row.  Drawn after the homogeneous
+    # rows because the standard schema is one control per row.
+    bx, by, bw, bh = _setting_row(surf, _DSP_LAYERS_ROW_INDEX,
+                                  "MAP LAYERS",
+                                  "Per-layer visibility on the map inset")
+    ry = by + (bh - _DSP_BTN_H) // 2
+    rx = _dsp_layers_geom(bx, bw)
+    for i, (key, lbl) in enumerate(_DSP_MAP_LAYERS):
+        active = bool(ds.get(key, True))
+        _seg_btn(surf,
+                 rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
+                 ry, _DSP_LAYERS_BTN_W, _DSP_BTN_H, lbl, active)
 
 
 def display_setup_hit(x, y, ds):
@@ -3616,8 +3931,6 @@ def display_setup_hit(x, y, ds):
         return "back"
     for ri, row in enumerate(_DSP_ROWS):
         key, *_, opts_v, opts_l, bw_each = row
-        if key == "night_mode":
-            continue   # greyed out — no interaction
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
@@ -3637,6 +3950,27 @@ def display_setup_hit(x, y, ds):
                 bx_b = rx + i*(bw_each+_DSP_BTN_G)
                 if bx_b <= x <= bx_b+bw_each:
                     return f"set:{key}:{v}"
+            # MAP INSET row carries the orient pair to its left
+            if key == "map_enabled":
+                ox = rx - (_DSP_MAP_ORIENT_GAP
+                           + 2 * _DSP_MAP_ORIENT_BW + _DSP_BTN_G)
+                for i, v in enumerate(_DSP_MAP_ORIENT_OPTS):
+                    bx_b = ox + i * (_DSP_MAP_ORIENT_BW + _DSP_BTN_G)
+                    if bx_b <= x <= bx_b + _DSP_MAP_ORIENT_BW:
+                        return f"set:map_orient:{v}"
+
+    # MAP LAYERS multi-toggle row
+    by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
+    if by <= y <= by + _SS_RH:
+        bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+        ry = by + (_SS_RH - _DSP_BTN_H) // 2
+        if ry <= y <= ry + _DSP_BTN_H:
+            rx = _dsp_layers_geom(bx, bw)
+            for i, (key, _lbl) in enumerate(_DSP_MAP_LAYERS):
+                bx_b = rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
+                if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
+                    new_val = not bool(ds.get(key, True))
+                    return f"set:{key}:{new_val}"
     return None
 
 
@@ -3668,6 +4002,187 @@ def _trim_stepper(surf, bx, by, bw, bh, val, key):
           cx=vx+_SS_TRIM_VW//2, cy=ry+_SS_TRIM_H//2)
     _step_btn(surf, vx+_SS_TRIM_VW+_SS_TRIM_G, ry, _SS_TRIM_SW, _SS_TRIM_H, "+")
     return rx   # leftmost x of stepper (for hit detection)
+
+
+# ── Approach selection screen (HITS / synthetic approaches) ──────────────────
+#
+# Pilot taps APPR on the CDI strip → opens this screen.  Lists runway
+# ends for the airport currently held in disp["nav"]["ident"]; a tap on
+# any end activates HITS to that threshold and retargets the direct-to.
+
+_APR_HEADER_Y = 64       # below the title bar
+_APR_GRID_TOP = 110
+_APR_TILE_W   = 280
+_APR_TILE_H   = 84
+_APR_TILE_GX  = 18
+_APR_TILE_GY  = 12
+_APR_COLS     = 2
+_APR_CANCEL_H = 44
+
+
+def _apr_runway_ends(ident: str) -> list:
+    """Return [(rwy_id, lat, lon, elev_ft, hdg_deg, length_ft), ...] for the
+    airport ``ident``, one entry per runway end (so a single physical
+    runway yields two entries, e.g. RWY 03 and RWY 21)."""
+    if _runways is None or not ident:
+        return []
+    if hasattr(_runways, "dtype"):
+        mask = _runways["airport"] == ident
+        rows = _runways[mask]
+        ends = []
+        for r in rows:
+            ends.append((str(r["le_ident"]), float(r["le_lat"]),
+                         float(r["le_lon"]), float(r["le_elev_ft"]),
+                         float(r["le_hdg"]), float(r["length_ft"])))
+            ends.append((str(r["he_ident"]), float(r["he_lat"]),
+                         float(r["he_lon"]), float(r["he_elev_ft"]),
+                         float(r["he_hdg"]), float(r["length_ft"])))
+        return ends
+    # Pure-Python fallback (legacy path).
+    return [
+        (e[0], e[1], e[2], e[3], e[4], r.length_ft)
+        for r in _runways if r.airport == ident
+        for e in (
+            (r.le_ident, r.le_lat, r.le_lon, r.le_elev_ft, r.le_hdg),
+            (r.he_ident, r.he_lat, r.he_lon, r.he_elev_ft, r.he_hdg),
+        )
+    ]
+
+
+def _apr_grid_origin():
+    """Top-left of the runway tile grid (centred horizontally)."""
+    grid_w = _APR_COLS * _APR_TILE_W + (_APR_COLS - 1) * _APR_TILE_GX
+    return (DISPLAY_W - grid_w) // 2, _APR_GRID_TOP
+
+
+def _apr_tile_rect(i: int) -> pygame.Rect:
+    """Rect for the i-th runway tile (row-major, _APR_COLS columns)."""
+    gx, gy = _apr_grid_origin()
+    col = i % _APR_COLS
+    row = i // _APR_COLS
+    x = gx + col * (_APR_TILE_W + _APR_TILE_GX)
+    y = gy + row * (_APR_TILE_H + _APR_TILE_GY)
+    return pygame.Rect(x, y, _APR_TILE_W, _APR_TILE_H)
+
+
+def draw_approach_select(surf):
+    """Approach-runway picker screen.  Draws runway tiles for the parent
+    airport (read from disp["nav"]["ident"]), plus a CANCEL APPROACH
+    button when an approach is currently active."""
+    _screen_header(surf, "APPROACH")
+
+    nv  = disp.get("nav") or {}
+    ap  = disp.get("approach") or {}
+    ident = nv.get("ident", "") or ap.get("airport", "")
+
+    # Header line — the airport this picker is for.
+    if ident:
+        _text(surf, ident, 22, WHITE, bold=True,
+              cx=DISPLAY_W // 2, cy=_APR_HEADER_Y)
+    else:
+        _text(surf, "Set a Direct-To airport first",
+              16, (200, 180, 80),
+              cx=DISPLAY_W // 2, cy=_APR_HEADER_Y)
+        return
+
+    ends = _apr_runway_ends(ident)
+    if not ends:
+        _text(surf, f"No runway data loaded for {ident}",
+              16, (200, 180, 80),
+              cx=DISPLAY_W // 2, cy=_APR_HEADER_Y + 36)
+        return
+
+    cur_runway = ap.get("runway", "") if ap.get("active") else ""
+    for i, (rid, _la, _lo, elev, hdg, length) in enumerate(ends):
+        rect = _apr_tile_rect(i)
+        if rect.bottom > DISPLAY_H - _APR_CANCEL_H - 10:
+            break    # ran out of room; pagination would go here
+        active = (rid == cur_runway)
+        bg = (0, 55, 65) if active else (0, 18, 38)
+        oc = CYAN      if active else (60, 80, 110)
+        pygame.draw.rect(surf, bg, rect, border_radius=8)
+        pygame.draw.rect(surf, oc, rect, width=2, border_radius=8)
+        _text(surf, f"RWY {rid}", 22, WHITE, bold=True,
+              cx=rect.centerx, cy=rect.y + 24)
+        _text(surf, f"{int(round(length)):,} ft   {int(round(hdg))}°",
+              14, (180, 195, 220),
+              cx=rect.centerx, cy=rect.y + 56)
+
+    # CANCEL APPROACH button — only when an approach is active.
+    if ap.get("active"):
+        bx = DISPLAY_W // 2 - 130
+        by = DISPLAY_H - _APR_CANCEL_H - 12
+        _action_btn(surf, bx, by, 260, _APR_CANCEL_H,
+                    "CANCEL APPROACH", style="warn")
+
+
+def approach_select_hit(x, y):
+    """Return action string for a tap on the approach-select screen, or
+    None if nothing was hit."""
+    if _back_hit(x, y):
+        return "back"
+
+    nv  = disp.get("nav") or {}
+    ap  = disp.get("approach") or {}
+    ident = nv.get("ident", "") or ap.get("airport", "")
+    if not ident:
+        return None
+
+    ends = _apr_runway_ends(ident)
+    for i in range(len(ends)):
+        rect = _apr_tile_rect(i)
+        if rect.bottom > DISPLAY_H - _APR_CANCEL_H - 10:
+            break
+        if rect.collidepoint(x, y):
+            return f"select:{i}"
+
+    if ap.get("active"):
+        bx = DISPLAY_W // 2 - 130
+        by = DISPLAY_H - _APR_CANCEL_H - 12
+        if bx <= x <= bx + 260 and by <= y <= by + _APR_CANCEL_H:
+            return "cancel"
+    return None
+
+
+def _approach_activate(rwy_end):
+    """Activate HITS to the given runway end and retarget the
+    direct-to so the CDI / ETE / inset all line up with the threshold
+    instead of the airport centroid."""
+    rid, la, lo, elev, hdg, _length = rwy_end
+    ident = disp.get("nav", {}).get("ident", "") or \
+            disp.get("approach", {}).get("airport", "")
+    disp["approach"] = {
+        "active":          True,
+        "airport":         ident,
+        "runway":          rid,
+        "thresh_lat":      float(la),
+        "thresh_lon":      float(lo),
+        "thresh_elev_ft":  float(elev),
+        "course_deg":      float(hdg),
+    }
+    # Retarget D2 to the threshold so CDI deviation, ETE and the map
+    # inset's magenta line all land on the runway end the pilot is
+    # flying to.  Capture the current aircraft position as the
+    # activation point so the CDI's course reference is sensible.
+    # Keep nv["ident"] as the plain airport ident (no slash-form) so
+    # downstream airport-database lookups still resolve; draw_cdi
+    # appends the runway suffix to its readout when an approach is
+    # active.
+    disp["nav"] = {
+        "ident":   ident,
+        "lat":     float(la),
+        "lon":     float(lo),
+        "elev_ft": float(elev),
+        "act_lat": float(disp.get("lat", la)),
+        "act_lon": float(disp.get("lon", lo)),
+    }
+
+
+def _approach_cancel():
+    """Clear the active approach.  Leaves the direct-to pointing at
+    the threshold (pilot can re-issue a D2 to the airport centroid
+    if they want)."""
+    disp["approach"]["active"] = False
 
 
 def draw_ahrs_setup(surf, ss):
@@ -5703,8 +6218,18 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 # waypoint; the CDI shows perpendicular cross-track from the great-circle
 # course originating at the activation point.
 
-_CDI_FULL_SCALE_NM = 1.0    # ±1 nm full-scale cross-track deflection
-_EARTH_R_NM        = 3440.065  # Earth mean radius (km/1.852)
+_CDI_FULL_SCALE_NM      = 1.0    # ±1 nm full-scale en-route / D2
+_CDI_APPR_FULL_SCALE_NM = 0.3    # ±0.3 nm full-scale on approach (RNAV/LPV)
+_EARTH_R_NM             = 3440.065  # Earth mean radius (km/1.852)
+
+
+def _ident_has_runways(ident: str) -> bool:
+    """True when the airport ``ident`` has runway records loaded — used
+    to decide whether to surface the APPR button on the nav-confirm
+    modal."""
+    if not ident or _runways is None:
+        return False
+    return len(_apr_runway_ends(ident)) > 0
 
 
 def _nav_geo_dist_brg(la1, lo1, la2, lo2):
@@ -5736,6 +6261,61 @@ def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
         math.sin(d13 / _EARTH_R_NM)
         * math.sin(math.radians(brg13 - brg12))
     )
+
+
+def _sim_intercept_heading(course_deg, anchor_lat, anchor_lon,
+                           cur_lat, cur_lon, max_intercept=45.0,
+                           approach=False):
+    """Standard avionics intercept logic for the sim's FOLLOW FLT-PLAN
+    autopilot.  Returns a target heading (true degrees) that brings the
+    aircraft onto the course at a 45° intercept angle when far from
+    track, ramping down to a gentle XTK correction once within the
+    inner band.
+
+    ``course_deg`` is the direction the course flows (TOWARD the
+    destination).  ``anchor_lat/anchor_lon`` is any point on the course
+    — XTK is invariant to anchor choice along a flat-earth course at
+    typical leg lengths, so the destination or threshold is fine.
+
+    ``approach=True`` switches to tighter approach scaling that
+    matches the ±0.3 nm CDI: gentle band shrinks from 0.3 → 0.1 nm,
+    full intercept reached at 0.5 nm instead of 1.5 nm, and the gentle
+    gain triples so the AP actually settles on centreline rather than
+    wallowing at half-scale deflection.
+
+    Convention: positive XTK = aircraft is right of course → returned
+    heading is to the LEFT of ``course_deg``."""
+    cos_lat = max(1e-6, math.cos(math.radians(anchor_lat)))
+    de_nm = (cur_lon - anchor_lon) * 60.0 * cos_lat
+    dn_nm = (cur_lat - anchor_lat) * 60.0
+    course_rad = math.radians(course_deg)
+    sin_c = math.sin(course_rad)
+    cos_c = math.cos(course_rad)
+    # Project onto course-perpendicular axis (right of course = +).
+    xtk_nm = de_nm * cos_c - dn_nm * sin_c
+
+    if approach:
+        gentle_nm   = 0.1
+        full_nm     = 0.5
+        gentle_gain = 100.0   # deg per nm
+        gentle_cap  = 25.0
+    else:
+        gentle_nm   = 0.3
+        full_nm     = 1.5
+        gentle_gain = 30.0
+        gentle_cap  = 20.0
+
+    xtk_abs = abs(xtk_nm)
+    if xtk_abs < gentle_nm:
+        correction = max(-gentle_cap, min(gentle_cap, -xtk_nm * gentle_gain))
+    elif xtk_abs >= full_nm:
+        correction = -max_intercept if xtk_nm > 0 else max_intercept
+    else:
+        t = (xtk_abs - gentle_nm) / (full_nm - gentle_nm)
+        sign = -1.0 if xtk_nm > 0 else 1.0
+        gentle = -xtk_nm * gentle_gain
+        correction = gentle * (1.0 - t) + max_intercept * sign * t
+    return (course_deg + correction) % 360
 
 
 def _nav_gc_interp(la1, lo1, la2, lo2, f):
@@ -6084,7 +6664,10 @@ def draw_agl_readout(surf, alt_ft, ground_elev_ft, gps_ok):
     pygame.draw.rect(surf, (140, 150, 170), (bx, by, _AGL_W, _AGL_H),
                      width=1, border_radius=4)
 
-    agl_ft = int(round(alt_ft - ground_elev_ft))
+    # Round to the nearest 10 ft.  Both the GPS altitude and the SRTM
+    # terrain sample have ~10–30 ft of real precision, so a 1-ft display
+    # only shows GPS/DEM jitter in the last digit.
+    agl_ft = int(round((alt_ft - ground_elev_ft) / 10.0)) * 10
     # Below the ground in the SRTM sample is sensor / DEM disagreement
     # (baro miss-set, runway elev vs SRTM, missing tile), not useful
     # info — show dashes rather than a misleading negative value.
@@ -6145,15 +6728,36 @@ def draw_cdi(surf):
         lon = disp.get("lon", 0.0)
         wpt_lat = float(nv["lat"])
         wpt_lon = float(nv["lon"])
-        act_lat = float(nv.get("act_lat", lat))
-        act_lon = float(nv.get("act_lon", lon))
 
         dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
-        xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+
+        ap = disp.get("approach") or {}
+        appr_active = ap.get("active") and ap.get("airport") == ident
+        if appr_active:
+            # Approach: CDI reference is the extended runway centreline
+            # (threshold + published course) — NOT the line from the
+            # pilot's activation point to the threshold, which only
+            # coincides with the centreline if they tapped DIRECT while
+            # already perfectly lined up.
+            cl_lat = float(ap["thresh_lat"])
+            cl_lon = float(ap["thresh_lon"])
+            course_deg = float(ap["course_deg"])
+            cos_lat = max(1e-6, math.cos(math.radians(cl_lat)))
+            de_nm = (lon - cl_lon) * 60.0 * cos_lat
+            dn_nm = (lat - cl_lat) * 60.0
+            course_rad = math.radians(course_deg)
+            xtk = (de_nm * math.cos(course_rad)
+                   - dn_nm * math.sin(course_rad))
+            full_scale = _CDI_APPR_FULL_SCALE_NM
+        else:
+            act_lat = float(nv.get("act_lat", lat))
+            act_lon = float(nv.get("act_lon", lon))
+            xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+            full_scale = _CDI_FULL_SCALE_NM
 
         # Diamond shows where the course line is relative to the aircraft.
         # Right-of-course (positive xtk) → diamond LEFT (course is to your left).
-        xtk_clamped = max(-1.0, min(1.0, xtk / _CDI_FULL_SCALE_NM))
+        xtk_clamped = max(-1.0, min(1.0, xtk / full_scale))
         dx_diamond = -int(xtk_clamped * (bar_w / 2))
         dcx = CX + dx_diamond
         dcy = bar_y + bar_h // 2
@@ -6162,14 +6766,88 @@ def draw_cdi(surf):
 
         # Readout: ident · BRG · DIST — centred above the bar.  Font 50% larger
         # than original (11→16); positioned so the text bottom sits 3 px higher
-        # than the original layout would have placed it.
-        readout = f"{ident}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
+        # than the original layout would have placed it.  When an approach is
+        # active, append the runway suffix to the airport ident.
+        ident_lbl = f"{ident}/{ap['runway']}" if appr_active else ident
+        readout = f"{ident_lbl}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
         _text(surf, readout, 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
     else:
         # No active waypoint — leave the bar empty (no diamond) and show
         # the "DIRECT  →" affordance so the pilot knows tapping opens the
         # keyboard.
         _text(surf, "DIRECT  →", 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
+
+
+# ── Vertical Deviation Indicator (glideslope) ────────────────────────────────
+
+_VDI_FULL_SCALE_DEG = 0.7   # ±0.7° full-scale (LPV / ILS-equivalent)
+
+
+def draw_vdi(surf):
+    """Vertical deviation indicator — only painted when an approach is
+    active.  Sits just inside the right edge of the AI (left of the
+    altitude tape) so the pilot's eye can sweep CDI → AI → VDI without
+    leaving the primary scan.
+
+    Convention matches every modern PFD: the diamond shows where the
+    glideslope is relative to the aircraft.  Above GS → diamond moves
+    DOWN (fly down to the diamond); below GS → diamond moves UP."""
+    ap = disp.get("approach") or {}
+    if not ap.get("active"):
+        return
+
+    lat = float(disp.get("lat", 0.0))
+    lon = float(disp.get("lon", 0.0))
+    alt = float(disp.get("alt", 0.0))   # baro altitude, ft
+    th_lat  = float(ap["thresh_lat"])
+    th_lon  = float(ap["thresh_lon"])
+    th_elev = float(ap["thresh_elev_ft"])
+
+    dist_nm, _ = _nav_geo_dist_brg(lat, lon, th_lat, th_lon)
+    dist_ft = dist_nm * 6076.12
+    if dist_ft < 100.0:
+        return  # over the threshold — VDI no longer meaningful
+
+    elev_angle_deg = math.degrees(math.atan2(alt - th_elev, dist_ft))
+    dev_deg = elev_angle_deg - 3.0   # + above GS, - below GS
+
+    # Bar geometry — vertical strip just inside the alt tape.
+    bar_w = 6
+    bar_h = max(160, int(AI_H * 0.55))
+    bar_x = ALT_X - 24 - bar_w // 2
+    bar_y = AI_Y + (AI_H - bar_h) // 2
+
+    plate_w = 36
+    plate = pygame.Surface((plate_w, bar_h + 40), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 180))
+    surf.blit(plate, (bar_x - (plate_w - bar_w) // 2, bar_y - 20))
+
+    pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
+                     border_radius=2)
+
+    # Tick marks (centre + ±50% + full-scale).  Centre line crosses the
+    # bar; outer dots mark the 0.35° / 0.7° boundaries.
+    cx_bar = bar_x + bar_w // 2
+    for frac in (-1.0, -0.5, 0.0, 0.5, 1.0):
+        ty = bar_y + int((frac + 1.0) * 0.5 * bar_h)
+        if frac == 0.0:
+            pygame.draw.line(surf, WHITE,
+                             (bar_x - 4, ty), (bar_x + bar_w + 4, ty), 2)
+        else:
+            pygame.draw.circle(surf, (180, 200, 220), (cx_bar, ty), 2)
+
+    # Diamond — clamped to ±full-scale.  Above GS → diamond moves DOWN.
+    dev_clamped = max(-1.0, min(1.0, dev_deg / _VDI_FULL_SCALE_DEG))
+    dy_diamond = int(dev_clamped * (bar_h / 2))
+    dcx = cx_bar
+    dcy = bar_y + bar_h // 2 + dy_diamond
+    dpts = [(dcx, dcy - 8), (dcx + 9, dcy), (dcx, dcy + 8), (dcx - 9, dcy)]
+    _filled_polygon(surf, dpts, MAGENTA)
+
+    _text(surf, "G", 12, (180, 200, 220), bold=True,
+          cx=cx_bar, cy=bar_y - 10)
+    _text(surf, "S", 12, (180, 200, 220), bold=True,
+          cx=cx_bar, cy=bar_y + bar_h + 10)
 
 
 # ── Runway polygons + extended centerlines ───────────────────────────────────
@@ -6599,6 +7277,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_flight_profile(surf, disp["fp"]); return
     if mode == "display_setup":
         draw_display_setup(surf, disp["ds"]); return
+    if mode == "approach_select":
+        draw_approach_select(surf); return
     if mode == "ahrs_setup":
         draw_ahrs_setup(surf, disp["ss"]); return
     if mode == "connectivity_setup":
@@ -6806,19 +7486,62 @@ def render(surf, demo_mode, connected, data_stale=False):
     # rendering would be lying about the world.  Fall back to plain
     # blue-over-brown so attitude (pitch/roll from AHRS) is still
     # readable but the synthetic terrain is suppressed.
+    # Real-time sun position drives terrain shading when enabled and a
+    # GPS fix is live.  Off / no-fix → renderer falls back to its
+    # built-in SE / mid-morning constants (bright daylight that always
+    # reads).
+    _sun_az = _sun_el = _sun_int = None
+    if ds.get("sun_realtime", True) and gps_ok:
+        try:
+            _sun_az, _sun_el, _sun_int = _sun_mod.solar_position(lat, lon)
+        except Exception:
+            _sun_az = _sun_el = _sun_int = None
+
+    # Below-horizon mesh-gap colour: same 6-band palette the GLSL
+    # clearance_color() uses on the terrain mesh, driven by the SRTM
+    # clearance under the aircraft (the same value the AGL readout
+    # reflects).  This makes any gap blend continuously with the band
+    # the surrounding mesh is painting — red where mesh is red, deep
+    # orange in the 200–300 ft band, amber 300–700, brown 700–1200,
+    # dark brown 1200–2200, very dark > 2200.  Bands match
+    # FRAGMENT_SHADER clearance_color() exactly so the gap and the
+    # nearest mesh fragment never differ by more than the band edge.
+    _clr = alt - _ground_elev_ft if gps_ok else 9999.0
+    if   _clr < 200:  _below_col = (0.86, 0.12, 0.12)
+    elif _clr < 300:  _below_col = (0.86, 0.31, 0.0)
+    elif _clr < 700:  _below_col = (0.78, 0.51, 0.0)
+    elif _clr < 1200: _below_col = (0.55, 0.39, 0.16)
+    elif _clr < 2200: _below_col = (0.39, 0.29, 0.14)
+    else:             _below_col = (0.27, 0.22, 0.11)
+
     if _shared_gl_ctx is not None and gps_ok:
         # Render terrain into the AI region of the default framebuffer.
         # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
         # GL rows HDG_H..DISPLAY_H.
         _shared_gl_ctx.viewport = (0, HDG_H, DISPLAY_W, HDG_Y)
         # Build polyline list for depth-tested rendering on top of terrain.
+        # When an approach is active, the HITS boxes replace the magenta
+        # D2 trace — the boxes already convey the path in 3D and the
+        # extra magenta line clutters the corridor.
         _gl_polylines = []
-        _trace_verts = build_direct_to_trace_vertices()
-        if _trace_verts is not None and len(_trace_verts) >= 2:
-            _gl_polylines.append((
-                _trace_verts,
-                (220 / 255.0, 0.0, 220 / 255.0, 1.0),
-                3.0,
+        _ap = disp.get("approach") or {}
+        if not _ap.get("active"):
+            _trace_verts = build_direct_to_trace_vertices()
+            if _trace_verts is not None and len(_trace_verts) >= 2:
+                _gl_polylines.append((
+                    _trace_verts,
+                    (220 / 255.0, 0.0, 220 / 255.0, 1.0),
+                    3.0,
+                ))
+        # HITS boxes — cyan rectangles along the extended centreline
+        # at 3° glideslope when a synthetic approach is active.  The
+        # boxes feed the same depth-tested polyline path as the D2
+        # trace, so terrain occludes them naturally where ridges
+        # block the corridor.
+        if _ap.get("active"):
+            _gl_polylines.extend(_hits_mod.build_box_polylines(
+                _ap["thresh_lat"], _ap["thresh_lon"],
+                _ap["thresh_elev_ft"], _ap["course_deg"],
             ))
         render_svt_into_current_fb(
             _shared_gl_ctx, SRTM_DIR,
@@ -6828,6 +7551,10 @@ def render(surf, demo_mode, connected, data_stale=False):
             water_dir=WATER_DIR,
             water_enable=disp["ad"].get("show_water", True),
             airports_arr=_airports,
+            sun_az_deg=_sun_az,
+            sun_el_deg=_sun_el,
+            sun_intensity=_sun_int,
+            below_horizon_color=_below_col,
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain and gps_ok:
@@ -6868,8 +7595,9 @@ def render(surf, demo_mode, connected, data_stale=False):
             # by 1.7°, regardless of where the SVT camera floor sits.
             draw_obstacle_symbols(surf, _full_ai, lat, lon, alt, hdg, pitch, _ov_roll)
         # Direct-to course trace — depth-tested 3D in the shared-GL path,
-        # 2D pygame fallback when no GL.
-        if _shared_gl_ctx is None:
+        # 2D pygame fallback when no GL.  Suppressed when an approach is
+        # active (HITS boxes carry the path instead).
+        if _shared_gl_ctx is None and not (disp.get("approach") or {}).get("active"):
             draw_direct_to_trace(surf, _full_ai, lat, lon, alt_render, hdg, pitch, _ov_roll)
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
@@ -6879,6 +7607,70 @@ def render(surf, demo_mode, connected, data_stale=False):
                       or _shared_gl_ctx is not None)
     if _svt_3d_active:
         draw_zero_pitch_line(surf, ai_rect, pitch, roll)
+
+    # 1d. Lower-left moving-map inset (pure-pygame; reuses the airport,
+    # runway, obstacle and SRTM caches the SVT already keeps loaded).
+    # Drawn after symbols so the inset frame sits on top, before the
+    # pitch ladder so the ladder reads through unobstructed.
+    if ds.get("map_enabled", False) and gps_ok:
+        _miw = max(140, int(AI_W * 0.30))
+        _mih = max(120, int(AI_H * 0.40))
+        rect = (AI_X + 6,
+                AI_Y + AI_H - _mih - 6,
+                _miw, _mih)
+        global _last_map_rect
+        _last_map_rect = rect
+        d2_src = disp.get("nav") or {}
+        # Tag the dict the inset receives with the current approach
+        # state so moving_map.render can colour the course line cyan
+        # (approach) vs magenta (regular D2).  When approach is active,
+        # carry the final-approach course so the inset can draw the
+        # cyan line FROM the threshold OUT along the corridor (matches
+        # what the pilot sees as HITS boxes on the SVT) instead of as
+        # a generic D2 line from activation point to threshold.
+        d2 = dict(d2_src)
+        _ap = disp.get("approach") or {}
+        d2["approach_active"] = bool(_ap.get("active"))
+        if _ap.get("active"):
+            d2["approach_course_deg"] = float(_ap.get("course_deg", 0.0))
+            d2["approach_final_nm"]   = _hits_mod.DEFAULT_FINAL_NM
+        # GPS track sticks at its last value when groundspeed drops to
+        # zero (stationary on the ramp), so passing it straight to the
+        # inset would freeze the rotation at whatever heading we last
+        # taxied in.  Below taxi-speed (3 kt — same threshold the AUTO
+        # heading source uses) suppress track and let the inset fall
+        # back to mag heading so yawing the nose visibly rotates the
+        # map in TRK↑ mode.
+        _map_track = track if speed >= 3.0 else None
+        # Translate the main-PFD airport-type filters (managed on the
+        # AIRPORT DATA screen) into the set of atype letters the inset
+        # should draw.  Sharing the flags with the main PFD means the
+        # pilot sets type filters once and both displays honour them.
+        _ad = disp.get("ad", {})
+        _types_vis = set()
+        if _ad.get("show_public", True):
+            _types_vis.update({"S", "M", "L"})
+        if _ad.get("show_heli", True):
+            _types_vis.add("H")
+        if _ad.get("show_seaplane", False):
+            _types_vis.add("W")
+        if _ad.get("show_other", False):
+            _types_vis.add("B")
+        _map_mod.render(
+            surf, rect, lat, lon, alt, hdg, _map_track,
+            ds.get("map_orient", "trk"),
+            int(ds.get("map_zoom_nm", 5)),
+            ds,
+            airports_arr=_airports,
+            runways_arr=_runways,
+            obstacles_arr=_obstacles,
+            srtm_dir=SRTM_DIR,
+            water_dir=WATER_DIR,
+            direct_to=d2 if d2.get("ident") else None,
+            font=_get_font(11, bold=True),
+            airport_types_visible=_types_vis,
+            gs_kt=speed,
+        )
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
@@ -6911,6 +7703,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # No-op when no waypoint is active.
     if gps_ok:
         draw_cdi(surf)
+        draw_vdi(surf)   # vertical glideslope, only paints when approach active
 
     # 6. Roll arc
     draw_roll_arc(surf, roll)

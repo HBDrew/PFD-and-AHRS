@@ -1,6 +1,6 @@
 # AHRS PFD — Pi 4 Pilot's User Manual
 
-**Software version 0.2 · Hardware: Raspberry Pi Pico W + Pi 4 (2 GB) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
+**Software version 0.3 · Hardware: Raspberry Pi Pico W + Pi 4 (2 GB) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
 
 *Full SVT version — OpenGL vector graphics with 3D terrain rendering*
 
@@ -28,6 +28,7 @@
 16. [Airport Data Download](#16-airport-data-download)
 16A. [Direct-to Navigation](#16a-direct-to-navigation)
 16B. [AGL Readout](#16b-agl-readout)
+16C. [Synthetic Approach (HITS + VDI)](#16c-synthetic-approach-hits--vdi)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
 
@@ -624,9 +625,18 @@ The trace is built **asynchronously** in a background thread and **published pro
 
 ### CDI strip
 
-Above the heading box: a horizontal bar with cross-track-error scale. ±1 NM full-scale. The magenta diamond shows where the activation→waypoint great-circle is **relative to your aircraft** — diamond-LEFT means the course line is to your left, so steer left to intercept. Right of course → diamond LEFT (fly left). Standard "fly to the needle" CDI.
+Above the heading box: a horizontal bar with cross-track-error scale. The magenta diamond shows where the reference course is **relative to your aircraft** — diamond-LEFT means the course is to your left, so steer left to intercept. Right of course → diamond LEFT (fly left). Standard "fly to the needle" CDI.
 
-The line on the bar shows tick marks at ±50 % and ±full-scale. The line itself is dim grey; the diamond magenta. Above the bar a readout shows **ident · BRG · DIST** in magenta (e.g. `KSEZ  155°  3.2 NM`).
+**Full-scale deflection is mode-dependent**, matching standard avionics:
+
+| Mode | Full-scale | Reference line |
+|------|-----------|----------------|
+| En-route / Direct-to | ±1.0 NM | Activation point → waypoint great circle |
+| Synthetic approach (§16C active) | ±0.3 NM | Extended runway centreline (threshold + published course) |
+
+The tighter approach scale matches RNAV / LPV convention so a half-scale needle on final actually means something. When the ident on the readout includes a runway suffix (e.g. `KSEZ/03`), the approach-mode scaling is in effect.
+
+The line on the bar shows tick marks at ±50 % and ±full-scale. The line itself is dim grey; the diamond magenta. Above the bar a readout shows **ident · BRG · DIST** in magenta (e.g. `KSEZ  155°  3.2 NM`); on approach the runway suffix is appended (`KSEZ/03`).
 
 When no waypoint is active the strip is still drawn but reads **"DIRECT  →"** as a tap target.
 
@@ -661,6 +671,57 @@ Layout: a translucent dark backplate with a 1-px light-grey border, sized 78 × 
 ### Cost
 
 Reuses the same SRTM lookup the SVT renderer does for the camera-floor clamp, so it costs zero additional disk I/O per frame.
+
+---
+
+## 16C. Synthetic Approach (HITS + VDI)
+
+The PFD can load a synthetic 3° approach to any runway in the airport database. While an approach is active you get three coordinated cues:
+
+- **HITS boxes** (cyan, 3D) along the extended centreline — fly through them.
+- **VDI** (vertical glideslope diamond) on the right side of the AI — fly to the diamond.
+- **CDI** scaled to ±0.3 NM full-scale (see §16A) — fly to the diamond.
+
+The trace on the moving-map inset turns cyan to match while approach is active; the magenta direct-to line and HITS boxes are mutually exclusive — when you load an approach the magenta D2 trace is hidden.
+
+### Loading an approach
+
+1. Tap the **CDI strip** to open the waypoint keyboard.
+2. Type the airport ident (e.g. `KSEZ`) and hit ENTER. The "Activate Direct to *XXXX*?" modal appears as usual.
+3. **Before tapping ACTIVATE**, look at the bottom row of the keyboard for the **APPR** button. APPR appears when the entered airport has runway data loaded.
+4. Tap **APPR**. The runway picker opens — a tile per runway end with the ident, course, and length.
+5. Tap a runway tile. The approach activates: HITS boxes draw, the VDI appears, the CDI rescales to ±0.3 NM, the inset trace turns cyan, and the airport ident readout becomes `IDENT/RWY` (e.g. `KSEZ/03`).
+6. Tap **CANCEL APPROACH** at the bottom of the runway picker (only present when an approach is active) to clear the approach and revert to plain D2 to the airport.
+
+### HITS boxes
+
+Cyan rectangles drawn along the published 3° glideslope at the runway centreline. Defaults: 300 ft wide × 200 ft tall, spaced 1000 ft apart, starting at 1000 ft out and continuing to 5 NM final. Boxes are depth-tested against the SVT terrain so they're occluded correctly by intervening ridges.
+
+The box centreline is the pilot's eye-line — fly the centre of the box, not the bottom. Each box is one closed-loop polyline (TL → TR → BR → BL → TL), so the geometry is light enough to add zero measurable cost to the SVT render.
+
+### VDI
+
+Vertical bar with a magenta diamond on the right side of the AI, just inside the altitude tape. **Only paints when an approach is active.**
+
+| Diamond | Meaning |
+|---------|---------|
+| Centre line | On glideslope |
+| Above centre | Glideslope is above you — fly up to the diamond |
+| Below centre | Glideslope is below you — fly down to the diamond |
+| Top dot | ½-scale below GS |
+| Top edge | Full-scale (≥ 0.7°) below GS |
+| Bottom dot | ½-scale above GS |
+| Bottom edge | Full-scale (≥ 0.7°) above GS |
+
+Full-scale deflection is **±0.7°** of glideslope error (LPV / ILS convention), referenced to a 3° GS to the threshold. `G`/`S` markers above and below the bar identify the indicator.
+
+### Cyan inset trace
+
+The lower-left moving-map inset already shows a course trace; while an approach is active the trace is drawn from the **threshold along the reciprocal of the published course** (i.e. the actual extended centreline) and rendered in cyan to match the HITS / VDI / CDI colour cluster. The ETE label in the inset corner also turns cyan in this mode.
+
+### Sim glideslope behaviour
+
+When the simulator is in **FOLLOW FLT PLAN** with an approach active (see §18), the AP captures the GS **only from above**. Below the GS it holds altitude until the GS descends to meet the aircraft, then captures from above — the standard real-world AP convention. This avoids the unphysical "climb to chase the diamond" behaviour and matches what most autopilots will (or won't) do when wired into the real system later.
 
 ---
 
@@ -701,9 +762,36 @@ KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA — chose
 ### While the simulator is running
 
 - A small `SIM` watermark appears at the centre of the AI.
-- Tap the watermark to open **SIM CONTROLS** (overlay on top of the live PFD) — from here you can toggle GPS/BARO/AHRS failures mid-flight and exit back to the setup screen.
+- Tap the watermark to open **SIM CONTROLS** (overlay on top of the live PFD) — from here you can toggle GPS/BARO/AHRS failures mid-flight, switch the AP follow mode (see below), exit setup, or end the simulator.
 - All three bug controls (ALT / HDG / SPD) remain active — set a new bug and the autopilot will fly to it. This is how you explore heading changes, climbs, descents, and arrivals at other airports.
 - Baro setting, display units, filters, and every other adjustment all take effect in real time just as they would in the aircraft.
+
+### AP follow mode — FOLLOW BUGS vs FOLLOW FLT PLAN
+
+The SIM CONTROLS overlay has a **FOLLOW** row with two buttons:
+
+| Mode | Behaviour |
+|------|-----------|
+| **FOLLOW BUGS** (default) | Pure bug-tracker. The AP holds the heading bug, alt bug, and speed bug. Set a new bug, the AP flies to it. |
+| **FOLLOW FLT PLAN** | Couples the AP to the active direct-to or synthetic approach. Heading bug is overridden by a **45° intercept** to the course; altitude is overridden by glideslope tracking when an approach is active. Speed bug still applies. |
+
+#### 45° intercept logic
+
+When a direct-to or approach is active in FOLLOW FLT PLAN, the AP commands a heading that closes on the course at up to a 45° intercept angle. Standard avionics tuning:
+
+- **Cross-track ≥ 1.5 NM** (D2) / **0.5 NM** (approach): full 45° intercept toward the course.
+- **Within 0.3 NM** (D2) / **0.1 NM** (approach): gentle proportional correction; rolls out wings-level on track.
+- Linear blend between the two zones.
+
+The approach-mode tuning is tighter (gentle band 0.3 → 0.1 NM, full-intercept threshold 1.5 → 0.5 NM, inner-band gain tripled) so the AP actually settles on centreline at ±0.3 NM CDI scaling instead of wallowing at half-scale deflection.
+
+#### Coordinated turn model
+
+The simulated airplane is a coordinated-turn model: bank is the only commanded quantity, and yaw rate is derived from bank via the standard `ω = g·tan(φ)/V` relation. **No bank, no yaw — ever.** The AI airplane never flat-yaws through a turn; you'll always see a bank command preceding any heading change. Bank saturates at ±25° at ~5° heading error and rolls out smoothly as the heading approaches target.
+
+#### Glideslope capture (approach only)
+
+In FOLLOW FLT PLAN with an approach active: the AP captures the GS **only from above**. Below the GS it holds altitude — never commands a climb to chase the GS. This matches real-world AP convention (most APs won't couple to a GS from below) and gives a realistic intercept profile in the simulator.
 
 ### Failure injection
 
@@ -740,6 +828,10 @@ SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is co
 | **Direct-to: refresh course line from current pos** | Tap CDI strip → ENTER (no typing) → ACTIVATE |
 | **Direct-to: nearest** | Setup → AIRPORTS → DIRECT TO → keyboard NEAREST button → ACTIVATE |
 | **Cancel direct-to** | Tap CDI strip → keyboard CANCEL FLIGHT PLAN |
+| **Load synthetic approach** | Tap CDI strip → type ident → keyboard **APPR** → tap runway tile |
+| **Cancel synthetic approach** | Setup → AIRPORTS → DIRECT TO → APPR → CANCEL APPROACH |
+| **Sim AP follow flight plan** | SIM CONTROLS → FOLLOW row → **FLT PLAN** |
+| **Sim AP follow bugs** | SIM CONTROLS → FOLLOW row → **BUGS** |
 | **Run compass cal** | Setup → AHRS / SENSORS → CALIBRATE → walk through N / E / S / W |
 | **Reset compass cal** | Setup → AHRS / SENSORS → CALIBRATE → RESET |
 | **Set AHRS mounting orientation** | Setup → AHRS / SENSORS → ORIENTATION row (FWD/LEFT/RIGHT/AFT) |
