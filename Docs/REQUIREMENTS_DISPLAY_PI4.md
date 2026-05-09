@@ -5,8 +5,8 @@
 | Document No.   | HLR-DISP-PI4-001                              |
 | Title          | Display Unit (Pi 4) — High-Level Requirements |
 | Project        | Pico-AHRS / PFD                               |
-| Date           | 2026-04-13                                    |
-| Version        | 0.2                                           |
+| Date           | 2026-05-09                                    |
+| Version        | 0.3                                           |
 
 ---
 
@@ -246,7 +246,41 @@ The display unit shall show nearby airports on the attitude indicator to provide
 
 > **REQ-DISP-PI4-NAV-008** The course trace shall be built asynchronously in a background daemon thread and published progressively as samples are computed, so the UI remains responsive during long cross-country activations. If the user changes the active waypoint mid-build, the in-flight worker shall discard its result on detecting the key mismatch.
 
-> **REQ-DISP-PI4-NAV-009** A CDI (Course Deviation Indicator) strip above the heading box shall display ident · bearing · distance and a magenta diamond at full-scale ±1 NM cross-track error. The diamond shall display on the side OPPOSITE the course relative to the aircraft (right-of-course → diamond LEFT, indicating "fly left to intercept"). When no waypoint is active the strip shall display a "DIRECT →" prompt as a tap target.
+> **REQ-DISP-PI4-NAV-009** A CDI (Course Deviation Indicator) strip above the heading box shall display ident · bearing · distance and a magenta diamond at full-scale cross-track error. The diamond shall display on the side OPPOSITE the course relative to the aircraft (right-of-course → diamond LEFT, indicating "fly left to intercept"). When no waypoint is active the strip shall display a "DIRECT →" prompt as a tap target.
+
+> **REQ-DISP-PI4-NAV-010** CDI full-scale deflection shall be mode-dependent: ±1.0 NM in en-route / direct-to mode, and ±0.3 NM (RNAV / LPV convention) when a synthetic approach (REQ-DISP-PI4-APPR-001 et seq.) is active.
+
+> **REQ-DISP-PI4-NAV-011** When a synthetic approach is active, the CDI cross-track reference shall be the extended runway centreline (a line through the threshold along the published runway course), NOT the line from the activation point to the threshold. The activation point shall continue to define the cross-track reference in en-route / direct-to mode.
+
+> **REQ-DISP-PI4-NAV-012** When a synthetic approach is active, the CDI ident readout shall append the runway suffix to the airport ident in `IDENT/RWY` form (e.g. `KSEZ/03`).
+
+---
+
+## 9D. Synthetic Approach (HITS + VDI)
+
+The display unit shall provide a synthetic approach capability that loads a 3° glideslope to a selected runway and surfaces three coordinated cues — Highway-In-The-Sky (HITS) tunnel boxes, a vertical glideslope diamond (VDI), and tightened CDI scaling.
+
+> **REQ-DISP-PI4-APPR-001** A synthetic approach shall be activatable from the waypoint keyboard via an **APPR** button. The APPR button shall be visible only when the entered ident matches an airport with one or more runway records loaded.
+
+> **REQ-DISP-PI4-APPR-002** Tapping APPR shall open a runway-end picker listing each end (ident, course, length). Tapping a runway tile shall activate the approach: HITS boxes draw, the VDI paints, the CDI rescales per REQ-DISP-PI4-NAV-010, the magenta direct-to course trace is suppressed, and the airport ident readout transitions to `IDENT/RWY` form.
+
+> **REQ-DISP-PI4-APPR-003** A **CANCEL APPROACH** button shall be present at the bottom of the runway picker when an approach is currently active. Tapping shall clear the approach and revert to plain direct-to to the airport, restoring CDI scaling and the magenta course trace.
+
+> **REQ-DISP-PI4-APPR-004** HITS boxes shall be cyan rectangular polylines drawn along the published 3° glideslope, with the box centre on the glideslope (pilot eye-line through box centre). Default geometry: 300 ft wide × 200 ft tall, spaced 1000 ft apart, starting one spacing-step outside the threshold and continuing to 5 NM final. All values configurable in `pi4/hits.py`.
+
+> **REQ-DISP-PI4-APPR-005** HITS boxes shall be rendered through the same depth-tested polyline pipeline used for the magenta direct-to course trace, so terrain and obstacles correctly occlude boxes that would otherwise paint through intervening ridges.
+
+> **REQ-DISP-PI4-APPR-006** While a synthetic approach is active, the magenta direct-to course trace on the AI shall be hidden. HITS boxes are mutually exclusive with the magenta trace.
+
+> **REQ-DISP-PI4-APPR-007** A Vertical Deviation Indicator (VDI) shall be rendered as a vertical bar with a magenta diamond on the right side of the AI, just inside the altitude tape. The VDI shall paint only when a synthetic approach is active.
+
+> **REQ-DISP-PI4-APPR-008** VDI deviation shall be the elevation-angle error from a 3° glideslope to the threshold:
+> `dev_deg = atan2(alt − thresh_elev, dist_ft) − 3°`.
+> Full-scale deflection shall be ±0.7° (LPV / ILS convention). The diamond shall move DOWN when the aircraft is above the GS (glideslope below — fly down to the diamond) and UP when below the GS.
+
+> **REQ-DISP-PI4-APPR-009** The moving-map inset's course trace shall switch colour: cyan while a synthetic approach is active (matching HITS / VDI / CDI), magenta otherwise. While approach is active the trace shall be drawn from the threshold along the reciprocal of the published course (the actual extended centreline), NOT from the activation point.
+
+> **REQ-DISP-PI4-APPR-010** The moving-map inset's ETE label shall be coloured cyan in approach mode and magenta in direct-to mode, matching the active trace colour.
 
 ---
 
@@ -334,6 +368,16 @@ The display unit shall show nearby airports on the attitude indicator to provide
 
 > **REQ-DISP-PI4-SIM-005** The autopilot model shall respond to heading, altitude, and speed bug changes in real time.
 
+> **REQ-DISP-PI4-SIM-006** The simulator shall offer two AP follow modes selectable from SIM CONTROLS: **FOLLOW BUGS** (default — pure heading / altitude / speed bug tracker) and **FOLLOW FLT PLAN** (couples the AP to the active direct-to or synthetic approach, overriding the heading bug for course intercept and the altitude bug for glideslope tracking).
+
+> **REQ-DISP-PI4-SIM-007** In FOLLOW FLT PLAN mode the AP shall fly a 45°-max-intercept course-capture profile to the active D2 line (en-route) or the extended runway centreline (approach). Tuning shall switch on approach-active state: gentle band 0.3 → 0.1 NM, full-intercept threshold 1.5 → 0.5 NM, and inner-band gain raised so the AP settles on centreline at the ±0.3 NM CDI scale.
+
+> **REQ-DISP-PI4-SIM-008** In FOLLOW FLT PLAN mode with a synthetic approach active, the AP shall capture the glideslope only from above. While below the GS, the AP shall hold current altitude (it shall NOT command a climb to chase the GS). Approach-mode altitude tracking shall include a feedforward of the GS descent rate (`V × tan(3°)`) and a higher closed-loop gain than en-route altitude hold so the diamond centres without persistent lag.
+
+> **REQ-DISP-PI4-SIM-009** The simulated airplane shall be a coordinated-turn model: bank shall be the only AP-commanded quantity, and yaw rate shall be derived from bank via `ω = g·tan(φ)/V`. Yaw shall not be commanded independently of bank under any condition; zero bank shall produce zero yaw.
+
+> **REQ-DISP-PI4-SIM-010** SIM CONTROLS shall include an EXIT SETUP button so the pilot can leave the SIM CONTROLS overlay without ending the simulator.
+
 ---
 
 ## 14. Demo Mode
@@ -349,10 +393,12 @@ The display unit shall show nearby airports on the attitude indicator to provide
 The following features are planned for future versions of the Pi 4 display and are not required for the initial release:
 
 - **Texture-mapped terrain** with satellite imagery, USGS terrain textures, or elevation-shaded relief maps
-- **Flight path vector** — velocity vector symbol on the AI showing where the aircraft is actually going (vs. where it's pointed)
-- **Highway-in-the-sky (HITS)** — waypoint tunnel rendering for RNAV/GPS approach guidance
-- **Time-of-day sun position** — compute sun azimuth/elevation from current lat/lon/time so shading matches actual sun position rather than a fixed configured direction
-- **Moving map / MFD** — planned for a separate dedicated hardware unit (not integrated with the PFD)
+- **Velocity vector / flight-path marker** on the AI — see TODO `FPV` (software-only with current sensors)
+- **Computed AOA indexer** on the right side of the AI when no approach is active — see TODOs `AOA-CALC` and `AOA-PROBE`
+- **Air-data integration** (IAS / TAS / wind triangle / stall warn) once the SDP31-500Pa ships on the new sensor board — see TODO `SDP31-AIRDATA`
+- **GPS-aided AHRS** for centripetal-corrected attitude in coordinated turns (Pico 2 W) — see TODO `AHRS-GPS-AID`
+
+Landed since v0.2 (now in §7, §9D, §13 above): time-of-day sun position, moving-map inset, Highway-In-The-Sky (HITS) rendering with runway picker, vertical glideslope diamond (VDI), approach-mode CDI scaling, sim FOLLOW FLT PLAN with 45° intercept, glideslope capture from above, coordinated-turn AP model.
 
 ---
 
