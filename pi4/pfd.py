@@ -1876,20 +1876,45 @@ class SimFlyState:
 
                     ap = disp.get("approach") or {}
                     if ap.get("active"):
-                        # Approach: course is the published runway heading
-                        # (true).  XTK is measured from the extended
-                        # centreline.
+                        # Approach: course is the published runway
+                        # heading (true).  Final is short enough (5–10
+                        # nm) that flat-earth XTK at the threshold is
+                        # equivalent to the spherical version, and is
+                        # what the CDI itself uses on the approach path.
                         course_deg = float(ap["course_deg"])
+                        cl_lat = float(ap["thresh_lat"])
+                        cl_lon = float(ap["thresh_lon"])
+                        cos_lat = max(1e-6, math.cos(math.radians(cl_lat)))
+                        de_nm = (cur_lon - cl_lon) * 60.0 * cos_lat
+                        dn_nm = (cur_lat - cl_lat) * 60.0
+                        course_rad = math.radians(course_deg)
+                        xtk = (de_nm * math.cos(course_rad)
+                               - dn_nm * math.sin(course_rad))
                     else:
-                        # D2: course is the great-circle from activation
-                        # point to waypoint.
+                        # D2: fly the great-circle to the waypoint.
+                        # ``brg`` (computed above) is the local GC
+                        # tangent at the current position — that's the
+                        # desired track once we're back on course, and
+                        # it tracks the GC bend naturally as we cross
+                        # the leg.  Cross-track is the spherical
+                        # perpendicular distance from the act→wpt great
+                        # circle, matching the CDI's reference and the
+                        # SVT trace.  Holding the *initial* bearing from
+                        # the activation point (the previous behaviour)
+                        # plus a flat-earth XTK at the waypoint produced
+                        # phantom XTKs of tens to hundreds of nm on long
+                        # legs — pure equirectangular distortion — and
+                        # the AP saturated at 45° intercept aimed at the
+                        # wrong heading.
+                        course_deg = brg
                         ax_lat = float(nv.get("act_lat", cur_lat))
                         ax_lon = float(nv.get("act_lon", cur_lon))
-                        _d, course_deg = _nav_geo_dist_brg(
-                            ax_lat, ax_lon, wp_lat, wp_lon)
+                        xtk = _nav_xtk_nm(ax_lat, ax_lon,
+                                          wp_lat, wp_lon,
+                                          cur_lat, cur_lon)
 
                     tgt_hdg = _sim_intercept_heading(
-                        course_deg, wp_lat, wp_lon, cur_lat, cur_lon,
+                        course_deg, xtk,
                         approach=bool(ap.get("active")))
 
                     if ap.get("active"):
@@ -6263,8 +6288,7 @@ def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
     )
 
 
-def _sim_intercept_heading(course_deg, anchor_lat, anchor_lon,
-                           cur_lat, cur_lon, max_intercept=45.0,
+def _sim_intercept_heading(course_deg, xtk_nm, max_intercept=45.0,
                            approach=False):
     """Standard avionics intercept logic for the sim's FOLLOW FLT-PLAN
     autopilot.  Returns a target heading (true degrees) that brings the
@@ -6273,9 +6297,12 @@ def _sim_intercept_heading(course_deg, anchor_lat, anchor_lon,
     inner band.
 
     ``course_deg`` is the direction the course flows (TOWARD the
-    destination).  ``anchor_lat/anchor_lon`` is any point on the course
-    — XTK is invariant to anchor choice along a flat-earth course at
-    typical leg lengths, so the destination or threshold is fine.
+    destination), in true degrees.  ``xtk_nm`` is signed cross-track
+    distance, positive = aircraft right of course.  The caller picks
+    the right geometry for its leg length: spherical XTK
+    (``_nav_xtk_nm``) for D2 legs that can run thousands of nm, or a
+    cheap flat-earth projection at the threshold for short approach
+    finals where the two are equivalent.
 
     ``approach=True`` switches to tighter approach scaling that
     matches the ±0.3 nm CDI: gentle band shrinks from 0.3 → 0.1 nm,
@@ -6285,15 +6312,6 @@ def _sim_intercept_heading(course_deg, anchor_lat, anchor_lon,
 
     Convention: positive XTK = aircraft is right of course → returned
     heading is to the LEFT of ``course_deg``."""
-    cos_lat = max(1e-6, math.cos(math.radians(anchor_lat)))
-    de_nm = (cur_lon - anchor_lon) * 60.0 * cos_lat
-    dn_nm = (cur_lat - anchor_lat) * 60.0
-    course_rad = math.radians(course_deg)
-    sin_c = math.sin(course_rad)
-    cos_c = math.cos(course_rad)
-    # Project onto course-perpendicular axis (right of course = +).
-    xtk_nm = de_nm * cos_c - dn_nm * sin_c
-
     if approach:
         gentle_nm   = 0.1
         full_nm     = 0.5
