@@ -1,6 +1,6 @@
 # AHRS PFD — Pi 4 Pilot's User Manual
 
-**Software version 0.3 · Hardware: Raspberry Pi Pico W + Pi 4 (2 GB) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
+**Software version 0.4 · Hardware: Raspberry Pi Pico W + Pi 4 (2 GB) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
 
 *Full SVT version — OpenGL vector graphics with 3D terrain rendering*
 
@@ -29,6 +29,7 @@
 16A. [Direct-to Navigation](#16a-direct-to-navigation)
 16B. [AGL Readout](#16b-agl-readout)
 16C. [Synthetic Approach (HITS + VDI)](#16c-synthetic-approach-hits--vdi)
+16D. [Moving-Map Inset](#16d-moving-map-inset)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
 
@@ -690,7 +691,13 @@ The trace on the moving-map inset turns cyan to match while approach is active; 
 2. Type the airport ident (e.g. `KSEZ`) and hit ENTER. The "Activate Direct to *XXXX*?" modal appears as usual.
 3. **Before tapping ACTIVATE**, look at the bottom row of the keyboard for the **APPR** button. APPR appears when the entered airport has runway data loaded.
 4. Tap **APPR**. The runway picker opens — a tile per runway end with the ident, course, and length.
+
+![Approach runway picker — KSEZ RWY 03 / RWY 21](../pi4/previews/preview_approach_picker.png)
+
 5. Tap a runway tile. The approach activates: HITS boxes draw, the VDI appears, the CDI rescales to ±0.3 NM, the inset trace turns cyan, and the airport ident readout becomes `IDENT/RWY` (e.g. `KSEZ/03`).
+
+![Synthetic approach to KSEZ RWY 03 — VDI on the right, cyan inset trace, KSEZ/03 readout, ±0.3 NM CDI scale (HITS boxes render on the GL pipeline)](../pi4/previews/pfd_gl/preview_synthetic_approach.png)
+
 6. Tap **CANCEL APPROACH** at the bottom of the runway picker (only present when an approach is active) to clear the approach and revert to plain D2 to the airport.
 
 ### HITS boxes
@@ -722,6 +729,26 @@ The lower-left moving-map inset already shows a course trace; while an approach 
 ### Sim glideslope behaviour
 
 When the simulator is in **FOLLOW FLT PLAN** with an approach active (see §18), the AP captures the GS **only from above**. Below the GS it holds altitude until the GS descends to meet the aircraft, then captures from above — the standard real-world AP convention. This avoids the unphysical "climb to chase the diamond" behaviour and matches what most autopilots will (or won't) do when wired into the real system later.
+
+---
+
+## 16D. Moving-Map Inset
+
+A 2D top-down moving map sits at the lower-left of the AI. Off by default — turn it on in DISPLAY setup (`MAP INSET`). When enabled it draws hypsometric terrain, water, runways, airports, obstacles, and the active direct-to course line over a black backplate, with own-ship pinned to the centre and the map rotating in either **TRK↑** or **N↑**.
+
+![Moving-map inset on a long direct-to leg — magenta great-circle line passes through ownship; range ring + chevron + range/orient labels around the chrome](../pi4/previews/preview_inset_long_d2.png)
+
+### Course line — great-circle, not rhumb
+
+The magenta direct-to line is drawn as a polyline along the **great circle** from your activation point to the waypoint. On short legs (< 50 NM) the GC and a flat-earth straight line are visually identical, but on transcontinental legs (e.g. AZ → KOSH ≈ 1200 NM) the GC bends meaningfully — the line you see on the inset is the same curve the CDI references and the SVT direct-to trace draws in 3D, so all three views agree on which side of course you're on.
+
+### When an approach is active
+
+The magenta D2 line is replaced by a cyan line drawn from the **threshold along the reciprocal of the published course** (the actual extended centreline) for the same 5 NM final length the HITS boxes cover. The ETE label in the corner also turns cyan to match the HITS / VDI / cyan-CDI colour cluster (§16C).
+
+### Tap-to-zoom
+
+Tap anywhere on the inset to step the range ring through 1 / 2 / 5 / 10 / 20 / 40 NM. The default range is set in DISPLAY setup (`MAP RANGE`). Per-layer visibility (terrain / water / airports / runways / obstacles / direct-to) is also toggleable from the same setup screen.
 
 ---
 
