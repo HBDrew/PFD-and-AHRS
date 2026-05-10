@@ -94,6 +94,13 @@ SCENES = [
     # centerlines (filtered to the selected waypoint), and the CDI strip.
     ("preview_direct_to_ksez",     2,  -2,  30, 6500, 110, -300, 0.02,
                                    34.7600, -111.8630),
+    # Synthetic approach to KSEZ RWY 03 — short final, ~3 NM out, slightly
+    # above the 3° glideslope so the VDI diamond deflects DOWN (fly down
+    # to it).  Same flight params as preview_runway_approach but with
+    # disp["approach"] activated so the documentation captures HITS,
+    # VDI, ±0.3 nm cyan CDI, and the cyan inset trace.
+    ("preview_synthetic_approach", 0,  -3,  33, 5500,  85, -500,   0,
+                                   34.809, -111.823),
 ]
 
 
@@ -112,11 +119,94 @@ def _setup_direct_to_ksez():
         "act_lat": 34.7100,
         "act_lon": -111.9200,
     }
+    # Show the moving-map inset on this scene so the documentation
+    # captures the magenta GC course line in context.  Inset is normally
+    # opt-in via the DISPLAY setup screen.
+    pfd.disp["ds"]["map_enabled"] = True
+    pfd.disp["ds"]["map_zoom_nm"] = 10
+
+
+def _setup_synthetic_approach():
+    """KSEZ RWY 03 short final — sets disp["approach"] so HITS, VDI,
+    ±0.3 nm CDI and the cyan inset trace all render.  Uses the
+    threshold + course of the LE end of RWY 03/21 from the synthetic
+    runway record injected by _inject_synthetic_runways."""
+    pfd.disp["nav"] = {
+        "ident":   "KSEZ",
+        "lat":     34.8634,    # RWY 03 threshold (LE)
+        "lon":     -111.7934,
+        "elev_ft": 4827.0,
+        "act_lat": 34.8090,
+        "act_lon": -111.8230,
+    }
+    pfd.disp["approach"] = {
+        "active":         True,
+        "airport":        "KSEZ",
+        "runway":         "03",
+        "thresh_lat":     34.8634,
+        "thresh_lon":     -111.7934,
+        "thresh_elev_ft": 4827.0,
+        "course_deg":     33.0,
+    }
+    pfd.disp["ds"]["map_enabled"] = True
+    pfd.disp["ds"]["map_zoom_nm"] = 5
+
+
+def _setup_approach_picker():
+    """Approach runway-picker modal for KSEZ.  Reads runway tiles from
+    the (synthetic) runway array we already inject for the in-flight
+    approach scene."""
+    pfd.disp["nav"] = {
+        "ident":   "KSEZ",
+        "lat":     34.8485,
+        "lon":     -111.7882,
+        "elev_ft": 4827.0,
+        "act_lat": 34.8485,
+        "act_lon": -111.7882,
+    }
+    pfd.disp["approach"] = {"active": False}
+    pfd.disp["mode"] = "approach_select"
 
 
 SCENE_EXTRA_SETUP = {
-    "preview_direct_to_ksez": _setup_direct_to_ksez,
+    "preview_direct_to_ksez":     _setup_direct_to_ksez,
+    "preview_synthetic_approach": _setup_synthetic_approach,
 }
+
+
+def _inject_synthetic_runways():
+    """Synthesise the KSEZ runway record so the approach-picker modal,
+    the runway centreline overlays, and the active-approach scene all
+    have something to read.  Real runway data ships in airports.npy
+    (gitignored, downloaded at install time); a single airport's
+    geometry is enough for the preview generator."""
+    try:
+        import numpy as np
+    except ImportError:
+        return
+    dtype = np.dtype([
+        ("airport",   "U7"),
+        ("length_ft", "f4"),
+        ("width_ft",  "f4"),
+        ("surface",   "U6"),
+        ("lighted",   "?"),
+        ("le_ident",  "U4"),
+        ("he_ident",  "U4"),
+        ("le_lat",    "f4"), ("le_lon", "f4"),
+        ("le_elev_ft","f4"), ("le_hdg", "f4"),
+        ("he_lat",    "f4"), ("he_lon", "f4"),
+        ("he_elev_ft","f4"), ("he_hdg", "f4"),
+    ])
+    # KSEZ RWY 03/21 — single physical runway, two ends (per the
+    # picker convention).  Approximate magnetic-true offset baked into
+    # the published headings (33° / 213° true ≈ 03/21 magnetic in AZ).
+    records = [
+        ("KSEZ", 5132.0, 100.0, "ASPH", True,
+         "03", "21",
+         34.8634, -111.7934, 4827.0,  33.0,
+         34.8763, -111.7818, 4827.0, 213.0),
+    ]
+    pfd._runways = np.array(records, dtype=dtype)
 
 
 def _inject_synthetic_obstacles():
@@ -215,6 +305,9 @@ def main():
     # Inject synthetic obstacles so previews show the combined symbol stack
     # (real FAA DOF data is ~20 MB, gitignored, downloaded at install time)
     _inject_synthetic_obstacles()
+    # Same idea for runways — needed by the approach picker, the active
+    # approach scene (HITS / VDI), and the runway centreline overlays.
+    _inject_synthetic_runways()
 
     surf = pygame.Surface((DISPLAY_W, DISPLAY_H))
 
@@ -319,6 +412,20 @@ def main():
     pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
     pygame.image.save(surf, os.path.join(setup_outdir, "preview_nav_confirm.png"))
     print("  \u2192 preview_nav_confirm.png")
+
+    # Approach runway-picker modal \u2014 opened when the pilot taps APPR on
+    # the nav-confirm modal.  Reads runway tiles from the synthetic
+    # KSEZ runway record we injected at startup.
+    pfd.disp["nav"] = {
+        "ident":   "KSEZ", "lat": 34.8485, "lon": -111.7882,
+        "elev_ft": 4827.0, "act_lat": 34.8485, "act_lon": -111.7882,
+    }
+    pfd.disp["approach"] = {"active": False}
+    pfd.disp["mode"]     = "approach_select"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_approach_picker.png"))
+    print("  \u2192 preview_approach_picker.png")
+    pfd.disp["mode"] = "pfd"
 
     # Compass calibration wizard mid-walk (step 2 = EAST), one cardinal already
     # captured.  Heading near 088 so RAW reads near east.
