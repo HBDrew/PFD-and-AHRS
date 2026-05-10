@@ -49,6 +49,30 @@ _WATER_TINT_RGB = (45, 80, 120)
 
 _NM_PER_DEG_LAT = 60.0
 
+
+def _gc_interp(la1, lo1, la2, lo2, f):
+    """Lat/lon at fraction f ∈ [0, 1] along the great circle from 1 to 2.
+    Same slerp the SVT direct-to trace uses — keeps the inset's D2 line
+    visually consistent with the CDI (which measures XTK off the GC) and
+    the 3D trace painted on the AI."""
+    phi1 = math.radians(la1); lam1 = math.radians(lo1)
+    phi2 = math.radians(la2); lam2 = math.radians(lo2)
+    dphi = phi2 - phi1
+    dlam = lam2 - lam1
+    a = (math.sin(dphi * 0.5) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam * 0.5) ** 2)
+    d = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    if d < 1e-9:
+        return la1, lo1
+    sd = math.sin(d)
+    A = math.sin((1.0 - f) * d) / sd
+    B = math.sin(f * d) / sd
+    x = A * math.cos(phi1) * math.cos(lam1) + B * math.cos(phi2) * math.cos(lam2)
+    y = A * math.cos(phi1) * math.sin(lam1) + B * math.cos(phi2) * math.sin(lam2)
+    z = A * math.sin(phi1) + B * math.sin(phi2)
+    return (math.degrees(math.atan2(z, math.hypot(x, y))),
+            math.degrees(math.atan2(y, x)))
+
 # Inset chrome
 _BG          = (0, 0, 0)
 _FRAME       = (60, 80, 110)
@@ -400,14 +424,26 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                              (int(wpx), int(wpy)),
                              (int(fx),  int(fy)), 2)
         else:
-            # Plain D2: line from activation point to waypoint.  Fall
-            # back to the waypoint itself if no act_lat/lon was set.
+            # Plain D2: polyline along the great-circle from activation
+            # to waypoint.  Drawing two endpoints joined by a straight
+            # line in equirectangular projection turns into a rhumb-ish
+            # path that diverges from the actual GC by tens of nm on
+            # transcontinental legs — the CDI (which uses spherical XTK)
+            # and the SVT trace (which slerps the GC) then disagree
+            # visibly with the inset.  Sample the GC and stitch with a
+            # polyline so all three views match.  Fall back to the
+            # waypoint itself if no act_lat/lon was set.
             ax_lat = float(direct_to.get("act_lat") or direct_to["lat"])
             ax_lon = float(direct_to.get("act_lon") or direct_to["lon"])
-            ax_x, ax_y = _project(ax_lat, ax_lon)
-            pygame.draw.line(surf, course_col,
-                             (int(ax_x), int(ax_y)),
-                             (int(wpx),  int(wpy)), 2)
+            n_seg = 20
+            pts = []
+            for i in range(n_seg + 1):
+                f = i / n_seg
+                la, lo = _gc_interp(ax_lat, ax_lon,
+                                    direct_to["lat"], direct_to["lon"], f)
+                px, py = _project(la, lo)
+                pts.append((int(px), int(py)))
+            pygame.draw.lines(surf, course_col, False, pts, 2)
 
         d = 5
         pygame.draw.polygon(surf, course_col,
