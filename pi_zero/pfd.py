@@ -288,36 +288,64 @@ def _poll_ahrs_diag():
 
 
 def _apply_wifi(ssid, password):
-    """Write wpa_supplicant.conf and call wpa_cli reconfigure.
-    Returns (success: bool, message: str).
-    Requires root (or a sudoers entry for the wpa_supplicant path).
+    """Connect wlan0 to ssid using nmcli (NetworkManager) or wpa_supplicant,
+    whichever is managing the interface.  Returns (success: bool, message: str).
+    For nmcli the calling user needs to be in the 'netdev' group (or run as root).
+    For wpa_supplicant the process must be root (or have a sudoers entry).
     """
     if not ssid:
         return False, "SSID required"
-    net_block = (
-        f'network={{\n'
-        f'    ssid="{ssid}"\n'
-        + (f'    psk="{password}"\n    key_mgmt=WPA-PSK\n' if password
-           else '    key_mgmt=NONE\n')
-        + '}\n'
-    )
-    conf = (
-        "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n"
-        "update_config=1\ncountry=US\n\n"
-        + net_block
-    )
+
+    # Mirror wifi_switch.sh: prefer nmcli when NetworkManager is running.
     try:
-        with open("/etc/wpa_supplicant/wpa_supplicant.conf", "w") as f:
-            f.write(conf)
-        subprocess.run(["wpa_cli", "-i", "wlan0", "reconfigure"],
-                       capture_output=True, timeout=5)
-        return True, "WiFi config applied — connecting…"
+        nm = subprocess.run(["systemctl", "is-active", "--quiet", "NetworkManager"],
+                            capture_output=True, timeout=5)
+        use_nm = nm.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        use_nm = False
+
+    try:
+        if use_nm:
+            CON = "pfd-wifi"
+            subprocess.run(["nmcli", "con", "delete", CON],
+                           capture_output=True, timeout=5)
+            cmd = ["nmcli", "dev", "wifi", "connect", ssid]
+            if password:
+                cmd += ["password", password]
+            cmd += ["name", CON]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout).strip()
+                return False, err[:80] if err else "nmcli connect failed"
+            return True, "WiFi connected"
+        else:
+            net_block = (
+                f'network={{\n'
+                f'    ssid="{ssid}"\n'
+                + (f'    psk="{password}"\n    key_mgmt=WPA-PSK\n' if password
+                   else '    key_mgmt=NONE\n')
+                + '}\n'
+            )
+            conf = (
+                "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n"
+                "update_config=1\ncountry=US\n\n"
+                + net_block
+            )
+            with open("/etc/wpa_supplicant/wpa_supplicant.conf", "w") as f:
+                f.write(conf)
+            r = subprocess.run(["wpa_cli", "-i", "wlan0", "reconfigure"],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                return False, "wpa_cli failed"
+            return True, "WiFi config applied — connecting…"
     except PermissionError:
         return False, "Permission denied — run with sudo"
-    except FileNotFoundError:
-        return False, "wpa_cli not found"
+    except FileNotFoundError as e:
+        return False, f"Not found: {e.filename}"
+    except subprocess.TimeoutExpired:
+        return False, "Timed out connecting"
     except Exception as e:
-        return False, str(e)[:50]
+        return False, str(e)[:60]
 
 
 def _restart_sse(url):
