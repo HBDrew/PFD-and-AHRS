@@ -233,6 +233,7 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
     "wifi_pass": "",        "wifi_ok":  False,
     "wifi_actual": "",      # SSID actually associated now (from iwgetid -r)
+    "scan_state": "",   "scan_nets": [], "scan_scroll": 0, "scan_error": "",
     "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
     # AHRS link diagnostics (populated by the transport client thread)
     "ahrs_transport": "",   # "usb" | "wifi" | ""
@@ -2866,6 +2867,8 @@ def handle_event(event, demo_mode):
                 disp["kbd_buf"]    = _current_str_for_kbd(key, "connectivity_setup")
                 disp["kbd_shift"]  = False
                 disp["mode"]       = "keyboard"
+            elif action == "scan_wifi":
+                _do_scan()
             elif action == "apply_wifi":
                 disp["cs"]["apply_msg"] = "Applying…"
                 def _do_apply():
@@ -2881,6 +2884,38 @@ def handle_event(event, demo_mode):
                     if ok:
                         _restart_sse(disp["cs"]["ahrs_url"])
                 threading.Thread(target=_do_test, daemon=True).start()
+            return True
+
+        # ── WiFi scan screen taps ─────────────────────────────────────────────
+        if mode == "wifi_scan":
+            action = wifi_scan_hit(x, y, disp["cs"])
+            if action == "back":
+                disp["mode"] = "connectivity_setup"
+            elif action == "rescan":
+                _do_scan()
+            elif action and action.startswith("select:"):
+                idx  = int(action.split(":", 1)[1])
+                nets = disp["cs"].get("scan_nets", [])
+                if 0 <= idx < len(nets):
+                    net = nets[idx]
+                    disp["cs"]["wifi_ssid"] = net["ssid"]
+                    disp["cs"]["wifi_pass"] = ""
+                    if net.get("secured"):
+                        disp["kbd_target"] = "wifi_pass"
+                        disp["kbd_prev"]   = "connectivity_setup"
+                        disp["kbd_buf"]    = ""
+                        disp["kbd_shift"]  = False
+                        disp["mode"]       = "keyboard"
+                    else:
+                        disp["mode"] = "connectivity_setup"
+            elif action == "scroll_up":
+                disp["cs"]["scan_scroll"] = max(0, disp["cs"].get("scan_scroll", 0) - 1)
+            elif action == "scroll_down":
+                ws_btn_y = DISPLAY_H - _WS_BTN_H - 8
+                list_h   = ws_btn_y - _WS_LIST_Y - 8
+                visible  = list_h // _WS_ITEM_H
+                max_s    = max(0, len(disp["cs"].get("scan_nets", [])) - visible)
+                disp["cs"]["scan_scroll"] = min(max_s, disp["cs"].get("scan_scroll", 0) + 1)
             return True
 
         # ── System screen taps ────────────────────────────────────────────
@@ -4426,6 +4461,152 @@ def ahrs_setup_hit(x, y, ss):
     return None
 
 
+# ── WiFi network scan ─────────────────────────────────────────────────────────
+
+def _scan_wifi():
+    """Return [{ssid, signal, secured}] sorted by signal desc, deduped by SSID."""
+    try:
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
+             "dev", "wifi", "list", "--rescan", "yes"],
+            capture_output=True, text=True, timeout=20,
+        )
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout).strip()[:80] or "nmcli scan failed")
+        seen = {}
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = re.split(r"(?<!\\):", line)
+            ssid = parts[0].replace("\\:", ":").strip()
+            if not ssid:
+                continue
+            try:
+                signal = int(parts[1]) if len(parts) > 1 else 0
+            except ValueError:
+                continue
+            secured = len(parts) > 2 and parts[2].strip() not in ("", "--")
+            if ssid not in seen or signal > seen[ssid]["signal"]:
+                seen[ssid] = {"ssid": ssid, "signal": signal, "secured": secured}
+        return sorted(seen.values(), key=lambda n: n["signal"], reverse=True)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Scan timed out")
+    except FileNotFoundError:
+        raise RuntimeError("nmcli not found")
+
+
+def _do_scan():
+    disp["cs"]["scan_state"]  = "scanning"
+    disp["cs"]["scan_nets"]   = []
+    disp["cs"]["scan_scroll"] = 0
+    disp["cs"]["scan_error"]  = ""
+    disp["mode"] = "wifi_scan"
+    def _worker():
+        try:
+            nets = _scan_wifi()
+            disp["cs"]["scan_nets"]  = nets
+            disp["cs"]["scan_state"] = "done"
+        except RuntimeError as e:
+            disp["cs"]["scan_error"] = str(e)
+            disp["cs"]["scan_state"] = "error"
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+_WS_ITEM_H = 56
+_WS_LIST_Y = 82
+_WS_BTN_H  = 46
+
+
+def _signal_bars(signal):
+    if signal >= 75: return 4
+    if signal >= 50: return 3
+    if signal >= 25: return 2
+    return 1
+
+
+def draw_wifi_scan(surf, cs):
+    ws_btn_y = DISPLAY_H - _WS_BTN_H - 8
+    surf.fill((0, 8, 22))
+    _screen_header(surf, "WIFI NETWORKS")
+    state = cs.get("scan_state", "")
+    nets  = cs.get("scan_nets", [])
+
+    if state == "scanning":
+        _text(surf, "Scanning\u2026", 22, CYAN, bold=True,
+              cx=DISPLAY_W//2, cy=DISPLAY_H//2 - 16)
+        _text(surf, "This may take a few seconds", 13, (110, 130, 160),
+              cx=DISPLAY_W//2, cy=DISPLAY_H//2 + 16)
+    elif state == "error":
+        _text(surf, cs.get("scan_error", "Scan failed"), 15, (220, 80, 80),
+              bold=True, cx=DISPLAY_W//2, cy=DISPLAY_H//2 - 10)
+    elif state == "done":
+        if not nets:
+            _text(surf, "No networks found", 18, (180, 180, 180),
+                  bold=True, cx=DISPLAY_W//2, cy=DISPLAY_H//2 - 10)
+        else:
+            _text(surf, f"{len(nets)} network{'s' if len(nets) != 1 else ''} \u2014 tap to select",
+                  11, (100, 130, 160), cx=DISPLAY_W//2, cy=62)
+            scroll  = cs.get("scan_scroll", 0)
+            list_h  = ws_btn_y - _WS_LIST_Y - 8
+            visible = list_h // _WS_ITEM_H
+            for i, net in enumerate(nets[scroll:scroll + visible]):
+                iy      = _WS_LIST_Y + i * _WS_ITEM_H
+                row_col = (0, 22, 48) if i % 2 == 0 else (0, 16, 36)
+                pygame.draw.rect(surf, row_col,
+                                 (_SS_MX, iy, DISPLAY_W - 2*_SS_MX, _WS_ITEM_H - 2))
+                bars    = _signal_bars(net["signal"])
+                bar_col = ((60, 220, 80) if bars >= 3 else
+                           (220, 180, 60) if bars == 2 else (200, 80, 80))
+                bx0 = _SS_MX + 12
+                for b in range(4):
+                    bh  = 8 + b * 7
+                    bby = iy + _WS_ITEM_H//2 + 16 - bh
+                    col = bar_col if b < bars else (35, 48, 62)
+                    pygame.draw.rect(surf, col, (bx0 + b * 10, bby, 7, bh))
+                ssid = net["ssid"]
+                if len(ssid) > 30:
+                    ssid = ssid[:29] + "\u2026"
+                _text(surf, ssid, 16, WHITE, bold=True, x=bx0 + 52, y=iy + 8)
+                _text(surf, f"{net['signal']}%", 11, (100, 130, 160), x=bx0 + 52, y=iy + 30)
+                lock_lbl = "WPA" if net["secured"] else "OPEN"
+                lock_col = (200, 160, 60) if net["secured"] else (60, 200, 100)
+                _text(surf, lock_lbl, 11, lock_col, bold=True,
+                      x=DISPLAY_W - _SS_MX - 52, y=iy + _WS_ITEM_H//2 - 8)
+            if scroll > 0:
+                _text(surf, "\u25b2", 16, (100, 140, 180),
+                      cx=DISPLAY_W//2, cy=_WS_LIST_Y - 16)
+            if scroll + visible < len(nets):
+                _text(surf, "\u25bc", 16, (100, 140, 180),
+                      cx=DISPLAY_W//2, cy=ws_btn_y - 16)
+
+    bw = DISPLAY_W - 2*_SS_MX
+    _action_btn(surf, _SS_MX, ws_btn_y, bw, _WS_BTN_H, "RESCAN", "normal")
+
+
+def wifi_scan_hit(x, y, cs):
+    ws_btn_y = DISPLAY_H - _WS_BTN_H - 8
+    if _back_hit(x, y):
+        return "back"
+    bw = DISPLAY_W - 2*_SS_MX
+    if ws_btn_y <= y <= ws_btn_y + _WS_BTN_H and _SS_MX <= x <= _SS_MX + bw:
+        return "rescan"
+    if cs.get("scan_state") == "done":
+        nets    = cs.get("scan_nets", [])
+        scroll  = cs.get("scan_scroll", 0)
+        list_h  = ws_btn_y - _WS_LIST_Y - 8
+        visible = list_h // _WS_ITEM_H
+        if _WS_LIST_Y - 20 <= y < _WS_LIST_Y and scroll > 0:
+            return "scroll_up"
+        if ws_btn_y - 20 <= y < ws_btn_y and scroll + visible < len(nets):
+            return "scroll_down"
+        if _WS_LIST_Y <= y < _WS_LIST_Y + visible * _WS_ITEM_H:
+            idx = (y - _WS_LIST_Y) // _WS_ITEM_H + scroll
+            if 0 <= idx < len(nets):
+                return f"select:{idx}"
+    return None
+
+
 # ── Connectivity screen ───────────────────────────────────────────────────────
 
 _CS_FIELDS = [
@@ -4514,10 +4695,11 @@ def draw_connectivity_setup(surf, cs):
         if msg:
             _text(surf, msg, 10, col, cx=DISPLAY_W//2, y=y_off)
 
-    # Action buttons
-    half = (bw - 10) // 2
-    _action_btn(surf, bx,          _CS_BTN_Y, half, _CS_BTN_H, "APPLY WIFI", "warn")
-    _action_btn(surf, bx+half+10,  _CS_BTN_Y, half, _CS_BTN_H, "TEST AHRS",  "ok")
+    # Action buttons (SCAN / APPLY / TEST)
+    third = (bw - 20) // 3
+    _action_btn(surf, bx,                _CS_BTN_Y, third, _CS_BTN_H, "SCAN WIFI",  "normal")
+    _action_btn(surf, bx+third+10,       _CS_BTN_Y, third, _CS_BTN_H, "APPLY WIFI", "warn")
+    _action_btn(surf, bx+2*(third+10),   _CS_BTN_Y, third, _CS_BTN_H, "TEST AHRS",  "ok")
 
 
 def connectivity_setup_hit(x, y, cs):
@@ -4532,11 +4714,13 @@ def connectivity_setup_hit(x, y, cs):
             if vbx <= x <= bx+bw-12:
                 return f"edit:{key}"
     # Action buttons
-    half = (bw - 10) // 2
+    third = (bw - 20) // 3
     if _CS_BTN_Y <= y <= _CS_BTN_Y+_CS_BTN_H:
-        if bx <= x <= bx+half:
+        if bx <= x <= bx+third:
+            return "scan_wifi"
+        if bx+third+10 <= x <= bx+2*third+10:
             return "apply_wifi"
-        if bx+half+10 <= x <= bx+half+10+half:
+        if bx+2*(third+10) <= x <= bx+3*third+20:
             return "test_ahrs"
     return None
 
@@ -7355,6 +7539,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_approach_select(surf); return
     if mode == "ahrs_setup":
         draw_ahrs_setup(surf, disp["ss"]); return
+    if mode == "wifi_scan":
+        draw_wifi_scan(surf, disp["cs"]); return
     if mode == "connectivity_setup":
         draw_connectivity_setup(surf, disp["cs"]); return
     if mode == "system_setup":
