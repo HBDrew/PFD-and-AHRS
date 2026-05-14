@@ -2502,67 +2502,68 @@ function render(ts) {
 requestAnimationFrame(render);
 
 // ── Screen keep-alive ─────────────────────────────────────────────────────
-// iOS keeps screen on while a video element is playing (even 1×1, muted).
-// Strategy: capture a 1×1 canvas as a MediaStream and feed it to a video
-// element.  canvas.captureStream() produces a real decoded stream that
-// Safari/iOS accepts without needing a pre-encoded video file.
-// Fallback: OscillatorNode audio (keeps iOS audio session alive; does NOT
-//   by itself prevent dimming, but is belt-and-suspenders).
-// Wake Lock: tried at page load — only works on HTTPS / PWA.
+// iOS 16+ only prevents dimming for UNMUTED video playback.  Muted video
+// and audio-only (AudioContext) both allow the screen to dim.
+//
+// Fix: combine a canvas video track + an AudioContext audio track into one
+// MediaStream, feed it to an UNMUTED video element at volume 0.001.
+// iOS sees "video with sound" → keeps screen on.
+//
+// The audio is 17.5 kHz at gain 0.001 — ultrasonic and inaudible in
+// practice, but iOS registers it as active audio in the video element.
+//
+// Guaranteed fallback: Settings → Display & Brightness → Auto-Lock → Never.
 
 let _wl = null, _ac = null, _vid = null, _keepAlive = null;
-let _noSleepTick = false, _noSleepCnv = null;
+let _noSleepTick = false;
 
 function _startVideo() {
-  if (_vid) { _vid.play().catch(() => {}); return; }
+  if (_vid && !_vid.paused) return;
   try {
-    // 1×1 canvas that alternates colour every second — gives the stream
-    // actual motion so iOS doesn't decide the video is frozen/idle.
-    _noSleepCnv = document.createElement('canvas');
-    _noSleepCnv.width = _noSleepCnv.height = 1;
-    const ctx2 = _noSleepCnv.getContext('2d');
+    // AudioContext → oscillator → MediaStreamDestination (audio track only)
+    if (!_ac) _ac = new (window.AudioContext || window.webkitAudioContext)();
+    if (_ac.state === 'suspended') _ac.resume().catch(() => {});
+    const osc  = _ac.createOscillator();
+    const g    = _ac.createGain();
+    const dest = _ac.createMediaStreamDestination();
+    osc.frequency.value = 17500; // ultrasonic — inaudible
+    g.gain.value = 0.001;
+    osc.connect(g);
+    g.connect(dest);             // audio track for video element
+    osc.start(0);
+
+    // 1×1 canvas that alternates colour so iOS doesn't see a frozen stream
+    const cnv = document.createElement('canvas');
+    cnv.width = cnv.height = 1;
+    const ctx2 = cnv.getContext('2d');
     function _paint() {
-      ctx2.fillStyle = _noSleepTick ? '#000001' : '#000000';
-      _noSleepTick = !_noSleepTick;
+      ctx2.fillStyle = (_noSleepTick = !_noSleepTick) ? '#000001' : '#000000';
       ctx2.fillRect(0, 0, 1, 1);
     }
     _paint();
     setInterval(_paint, 1000);
 
-    const stream = _noSleepCnv.captureStream(1);
+    // Combine video + audio into one stream
+    const combined = new MediaStream([
+      ...cnv.captureStream(1).getVideoTracks(),
+      ...dest.stream.getAudioTracks(),
+    ]);
+
+    if (_vid) { document.body.removeChild(_vid); _vid = null; }
     _vid = document.createElement('video');
     _vid.setAttribute('playsinline', '');
     _vid.setAttribute('webkit-playsinline', '');
-    _vid.setAttribute('muted', '');
-    _vid.muted = true;
-    // Must be in DOM — iOS ignores play() on detached elements
+    // NOT muted — iOS 16+ only keeps screen on for unmuted video
     _vid.style.cssText = 'position:fixed;top:-2px;left:-2px;width:1px;height:1px;opacity:.01;pointer-events:none';
     document.body.appendChild(_vid);
-    _vid.srcObject = stream;
+    _vid.srcObject = combined;
+    _vid.volume = 0.001;  // very quiet; iOS treats this as active media
     _vid.play().catch(() => {});
-  } catch (_e) {}
-}
 
-function _startAudio() {
-  if (_ac) {
-    if (_ac.state === 'suspended') _ac.resume().catch(() => {});
-    return;
-  }
-  try {
-    _ac = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = _ac.createOscillator();
-    osc.frequency.value = 17500; // ~17.5 kHz — ultrasonic, inaudible
-    const g = _ac.createGain();
-    g.gain.value = 0.01;  // low but iOS definitely treats as active audio
-    osc.connect(g);
-    g.connect(_ac.destination);
-    osc.start(0);
-    if (_ac.state === 'suspended') _ac.resume().catch(() => {});
-    if (!_keepAlive) {
-      _keepAlive = setInterval(() => {
-        if (_ac && _ac.state === 'suspended') _ac.resume().catch(() => {});
-      }, 15000);
-    }
+    if (!_keepAlive) _keepAlive = setInterval(() => {
+      if (_ac && _ac.state === 'suspended') _ac.resume().catch(() => {});
+      if (_vid && _vid.paused) _vid.play().catch(() => {});
+    }, 15000);
   } catch (_e) {}
 }
 
@@ -2578,25 +2579,20 @@ async function _tryWakeLock() {
 function _updateKeepOnBtn() {
   const btn = document.getElementById('btn-keepon');
   if (!btn) return;
-  const active = _wl !== null
-    || (_vid && !_vid.paused)
-    || (_ac && _ac.state === 'running');
+  const active = _wl !== null || (_vid && !_vid.paused);
   btn.textContent      = active ? '🔆 SCREEN ON ✓' : '🔆 SCREEN ON';
   btn.style.borderColor = active ? '#4f4' : '';
 }
 
 function keepOnTap() {
-  // synchronous calls first — iOS gesture context required
-  _startVideo();
-  _startAudio();
+  _startVideo();   // synchronous setup — must stay in gesture context
   _tryWakeLock();
   const btn = document.getElementById('btn-keepon');
-  if (btn) { btn.textContent = '🔆 activating…'; setTimeout(_updateKeepOnBtn, 800); }
+  if (btn) { btn.textContent = '🔆 activating…'; setTimeout(_updateKeepOnBtn, 1000); }
 }
 
 document.addEventListener('touchstart', () => {
   _startVideo();
-  _startAudio();
   if (!_wl) _tryWakeLock();
 }, { once: true });
 
