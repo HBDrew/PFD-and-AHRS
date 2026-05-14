@@ -446,6 +446,74 @@ def _push_baro_to_pico(qnh_hpa: float):
     threading.Thread(target=_worker, daemon=True, name="BaroPush").start()
 
 
+def _push_magcal_to_pico(table):
+    """Send a 36-point deviation table to the Pico's /magcal endpoint.
+    Runs in a background thread — failures are logged, not fatal."""
+    base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+    t_str = ",".join(f"{v:.3f}" for v in table)
+    url = f"{base}/magcal?action=set&t={t_str}"
+
+    def _worker():
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print(f"[PFD] magcal table pushed to Pico ({len(table)} pts)")
+        except Exception as e:
+            print(f"[PFD] /magcal push failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagCalPush").start()
+
+
+def _push_magcal_clear_to_pico():
+    """Clear the Pico's deviation table.  Background thread."""
+    base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+    url = f"{base}/magcal?action=clear"
+
+    def _worker():
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print("[PFD] magcal table cleared on Pico")
+        except Exception as e:
+            print(f"[PFD] /magcal clear failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagCalClear").start()
+
+
+def _build_magdev_table(samples):
+    """Build a 36-point (10°/slot) deviation table from (expected, raw) pairs.
+    Matches the circular interpolation used by the iPhone calibration UI."""
+    pts = sorted(
+        [{"a": r % 360.0, "c": ((e - r + 180 + 360) % 360) - 180}
+         for e, r in samples],
+        key=lambda p: p["a"],
+    )
+    return [_magdev_interp(i * 10.0, pts) for i in range(36)]
+
+
+def _magdev_interp(target, pts):
+    if not pts:
+        return 0.0
+    if len(pts) == 1:
+        return pts[0]["c"]
+    lo, hi = pts[-1], pts[0]
+    for p in pts:
+        if p["a"] <= target:
+            lo = p
+        else:
+            hi = p
+            break
+    hi_a = hi["a"] + (360.0 if hi["a"] <= lo["a"] else 0.0)
+    span = hi_a - lo["a"] or 360.0
+    tgt  = target + 360.0 if target < lo["a"] else target
+    dc   = hi["c"] - lo["c"]
+    if dc > 180:   dc -= 360
+    elif dc < -180: dc += 360
+    return lo["c"] + (tgt - lo["a"]) / span * dc
+
+
 def _poll_ahrs_diag():
     """Background thread: mirror the AHRS transport client's diagnostic
     counters (rx_count, err_count, last_err) into disp['cs'] so the
@@ -2540,23 +2608,18 @@ def _mag_cal_capture():
     wiz["step"] = step + 1
     wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
     if wiz["step"] >= len(_MAG_CAL_CARDINALS):
-        # Per-cardinal piecewise-linear cal: store the signed
-        # (expected − raw) deltas at N / E / S / W.  Each quadrant
-        # gets its own correction curve via interpolation in
-        # _apply_mag_cal — same pattern as an aircraft compass
-        # correction card.  Strictly more capable than a single
-        # offset (which only fixes the average bias).
-        deltas = []
-        for exp, rawv in wiz["samples"]:
-            d = ((exp - rawv + 540.0) % 360.0) - 180.0
-            deltas.append(round(d, 2))
-        disp["ss"]["mag_cal_deltas"] = deltas
-        # Drop legacy single-offset key — superseded.
+        # Build 36-point table and push to Pico so both displays
+        # see the same pre-corrected heading from the AHRS broadcast.
+        table = _build_magdev_table(wiz["samples"])
+        _push_magcal_to_pico(table)
+        # Zero local deltas — correction now lives on the Pico.
+        disp["ss"]["mag_cal_deltas"] = [0.0] * 4
         disp["ss"].pop("mag_cal_offset", None)
         disp["ss"]["mag_cal"] = "done"
         _settings.mark_dirty()
-        max_abs = max(abs(d) for d in deltas)
-        wiz["msg"] = (f"Done — N{deltas[0]:+.1f}° E{deltas[1]:+.1f}° "
+        deltas = [round(((e - r + 540) % 360) - 180, 1)
+                  for e, r in wiz["samples"]]
+        wiz["msg"] = (f"Sent to AHRS — N{deltas[0]:+.1f}° E{deltas[1]:+.1f}° "
                       f"S{deltas[2]:+.1f}° W{deltas[3]:+.1f}°")
         wiz["step"]    = 0
         wiz["samples"] = []
@@ -2570,16 +2633,16 @@ def _mag_cal_restart():
 
 
 def _mag_cal_reset():
-    """Wipe the stored cal.  Useful after moving the AHRS to a
-    different aircraft / panel."""
+    """Wipe the stored cal on Pico and locally."""
+    _push_magcal_clear_to_pico()
     disp["ss"]["mag_cal_deltas"] = [0.0, 0.0, 0.0, 0.0]
-    disp["ss"].pop("mag_cal_offset", None)   # legacy key
+    disp["ss"].pop("mag_cal_offset", None)
     disp["ss"]["mag_cal"] = "idle"
     _settings.mark_dirty()
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
     wiz["samples"] = []
-    wiz["msg"] = "Calibration cleared."
+    wiz["msg"] = "Calibration cleared on AHRS."
 
 
 def _mag_cal_close():
@@ -2619,29 +2682,27 @@ def draw_mag_cal(surf):
     _text(surf, instr, 14, WHITE, cx=bx + _MCAL_W // 2, cy=by + 56)
 
     raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
-    cur_deltas = disp["ss"].get("mag_cal_deltas") or [0.0] * 4
-    applied = _apply_mag_cal(raw, cur_deltas)
 
-    _text(surf, "RAW", 11, (170, 185, 210), bold=True,
+    _text(surf, "AHRS HDG", 11, (170, 185, 210), bold=True,
           x=bx + 30, y=by + 92)
     _text(surf, f"{raw:6.1f}°", 22, CYAN, bold=True,
           x=bx + 30, y=by + 108)
 
-    _text(surf, "APPLIED", 11, (170, 185, 210), bold=True,
-          x=bx + _MCAL_W // 2 + 20, y=by + 92)
-    _text(surf, f"{applied:6.1f}°", 22, WHITE, bold=True,
-          x=bx + _MCAL_W // 2 + 20, y=by + 108)
-
-    # Per-cardinal deltas — the compass swing card.
+    # Show per-cardinal errors captured so far this run.
+    wiz_samples = wiz.get("samples", [])
     cards_y = by + 154
-    for i, (name, _exp) in enumerate(_MAG_CAL_CARDINALS):
+    for i, (name, exp) in enumerate(_MAG_CAL_CARDINALS):
         cx_card = bx + 60 + i * (_MCAL_W - 120) // 3
-        d = cur_deltas[i]
         _text(surf, name[0], 11, (170, 185, 210), bold=True,
               cx=cx_card, cy=cards_y)
-        _text(surf, f"{d:+.1f}°", 13,
-              WHITE if abs(d) > 0.05 else (110, 120, 140),
-              bold=True, cx=cx_card, cy=cards_y + 16)
+        if i < len(wiz_samples):
+            _exp, rawv = wiz_samples[i]
+            d = ((exp - rawv + 540) % 360) - 180
+            _text(surf, f"{d:+.1f}°", 13, WHITE, bold=True,
+                  cx=cx_card, cy=cards_y + 16)
+        else:
+            _text(surf, "—", 13, (110, 120, 140), bold=True,
+                  cx=cx_card, cy=cards_y + 16)
 
     msg = wiz.get("msg", "") or ""
     if msg:
@@ -7965,13 +8026,9 @@ def render(surf, demo_mode, connected, data_stale=False):
     if ahrs_synthetic:
         yaw_corr = yaw_corr_uncal
     else:
-        deltas = ss.get("mag_cal_deltas")
-        if not deltas:
-            # Backward-compat: if a legacy single-offset is on disk,
-            # promote it to a uniform 4-cardinal correction.
-            old_off = ss.get("mag_cal_offset", 0.0)
-            deltas = [old_off] * 4 if old_off else None
-        yaw_corr = _apply_mag_cal(yaw_corr_uncal, deltas) if deltas else yaw_corr_uncal
+        # Deviation correction is now applied on the Pico before
+        # broadcasting — disp["yaw"] arrives pre-corrected.
+        yaw_corr = yaw_corr_uncal
     # Stash the uncalibrated yaw so the compass-cal wizard can read
     # the current "what the AHRS sees right now" value when the
     # pilot taps CAPTURE on each cardinal.
