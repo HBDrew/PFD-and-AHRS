@@ -4934,9 +4934,15 @@ def _find_pico_bootsel():
             parts = line.split()
             if len(parts) >= 2 and parts[1] == "RPI-RP2":
                 devpath = f"/dev/{parts[0]}"
-                subprocess.run(["udisksctl", "mount", "-b", devpath],
-                               capture_output=True, timeout=10)
-                for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2"]:
+                # Try udisksctl first, fall back to sudo mount
+                mr = subprocess.run(["udisksctl", "mount", "-b", devpath],
+                                    capture_output=True, timeout=10)
+                if mr.returncode != 0:
+                    subprocess.run(["sudo", "mkdir", "-p", "/mnt/RPI-RP2"],
+                                   capture_output=True, timeout=5)
+                    subprocess.run(["sudo", "mount", devpath, "/mnt/RPI-RP2"],
+                                   capture_output=True, timeout=10)
+                for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
                     mounts = glob.glob(pat)
                     if mounts:
                         return mounts[0]
