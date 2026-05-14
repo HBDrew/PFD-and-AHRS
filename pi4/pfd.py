@@ -4983,6 +4983,24 @@ def _do_push_scripts():
     disp["fw"]["push_state"] = "pushing"
     disp["fw"]["push_msg"]   = "Starting…"
     def _worker():
+        global _sse_client
+        # If the AHRS client is holding the USB serial port open, release it
+        # so mpremote can connect.  We restart a fresh client after the push.
+        released_serial_port = None
+        prev_client = _sse_client
+        try:
+            from serial_client import SerialClient as _SC
+            if isinstance(prev_client, _SC):
+                released_serial_port = prev_client.port
+                disp["fw"]["push_msg"] = "Releasing serial port…"
+                prev_client.stop()
+                _sse_client = None
+                global _pico_serial_cache
+                _pico_serial_cache = (0.0, None)
+                time.sleep(1.5)  # allow port to close
+        except ImportError:
+            pass
+
         port = _find_pico_serial()
         if not port:
             disp["fw"]["push_msg"]   = "Pico not detected — check USB cable"
@@ -5017,7 +5035,21 @@ def _do_push_scripts():
         except Exception as e:
             disp["fw"]["push_msg"]   = str(e)[:80]
             disp["fw"]["push_state"] = "error"
+        finally:
+            # Restart serial client if we stopped it (Pico reboots after reset)
+            if released_serial_port and _sse_client is None:
+                try:
+                    from serial_client import SerialClient as _SC
+                    time.sleep(3)  # wait for Pico to reboot and re-enumerate
+                    new_client = _SC(released_serial_port, state, _state_lock)
+                    new_client.start()
+                    _sse_client = new_client
+                    disp["cs"]["ahrs_transport"] = "usb"
+                    disp["cs"]["ahrs_port"]      = released_serial_port
+                except Exception:
+                    pass
     threading.Thread(target=_worker, daemon=True).start()
+
 
 
 def _do_flash_uf2():
