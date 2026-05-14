@@ -2475,7 +2475,7 @@ function render(ts) {
 
   // 2. Terrain mesh — drawn on top of sky/ground, clipped to full screen
   // width so TAWS-coloured horizon band reads edge-to-edge
-  Terrain.render(ctx, D, L);
+  if (typeof Terrain !== 'undefined') Terrain.render(ctx, D, L);
 
   // 3. Fixed instrument overlays (always on top of terrain)
   drawRollIndicator();

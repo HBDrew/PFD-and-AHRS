@@ -147,6 +147,8 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
             save_trims(state)
             state['_save_trims'] = False
 
+        await asyncio.sleep_ms(0)   # yield so web server can handle requests
+
         # ── GPS (always poll for position; altitude used as fallback/reference) ──
         try:
             if gps.update():
@@ -165,6 +167,8 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
         state['fix']     = gps.fix
         state['sats']    = gps.sats
         state['gps_alt'] = gps.alt_ft  # always keep GPS alt for calibration ref
+
+        await asyncio.sleep_ms(0)   # yield so web server can handle requests
 
         # ── Altitude source ──
         if baro is not None:
