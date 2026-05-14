@@ -4960,7 +4960,7 @@ def _do_push_scripts():
                 disp["fw"]["push_msg"]   = "All scripts pushed — Pico rebooting"
                 disp["fw"]["push_state"] = "done"
         except FileNotFoundError:
-            disp["fw"]["push_msg"]   = "mpremote not found — run: pip3 install mpremote"
+            disp["fw"]["push_msg"]   = "mpremote not found: pip3 install mpremote --break-system-packages"
             disp["fw"]["push_state"] = "error"
         except subprocess.TimeoutExpired:
             disp["fw"]["push_msg"]   = "Timed out — check connection"
