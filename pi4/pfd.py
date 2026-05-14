@@ -4940,7 +4940,9 @@ def _find_pico_bootsel():
                 if mr.returncode != 0:
                     subprocess.run(["sudo", "mkdir", "-p", "/mnt/RPI-RP2"],
                                    capture_output=True, timeout=5)
-                    subprocess.run(["sudo", "mount", devpath, "/mnt/RPI-RP2"],
+                    uid = os.getuid(); gid = os.getgid()
+                    subprocess.run(["sudo", "mount", "-o", f"uid={uid},gid={gid}",
+                                    devpath, "/mnt/RPI-RP2"],
                                    capture_output=True, timeout=10)
                 for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
                     mounts = glob.glob(pat)
