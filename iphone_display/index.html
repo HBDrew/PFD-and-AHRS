@@ -2525,7 +2525,11 @@ function _startVideo() {
     _vid.setAttribute('muted', '');
     _vid.muted = true;
     _vid.loop  = true;
-    _vid.src   = _NOSLEEP_MP4;
+    // Must be in the DOM for iOS to honour play() and keep screen awake
+    _vid.style.cssText = 'position:fixed;top:-2px;left:-2px;width:1px;height:1px;opacity:.01;pointer-events:none';
+    document.body.appendChild(_vid);
+    _vid.src = _NOSLEEP_MP4;
+    _vid.load();
     _vid.play().catch(() => {});
   } catch (_e) {}
 }
@@ -2540,7 +2544,7 @@ function _startAudio() {
     const osc = _ac.createOscillator();
     osc.frequency.value = 17500; // ~17.5 kHz — ultrasonic, inaudible
     const g = _ac.createGain();
-    g.gain.value = 0.001;
+    g.gain.value = 0.01;  // low but iOS definitely treats as active audio
     osc.connect(g);
     g.connect(_ac.destination);
     osc.start(0);
