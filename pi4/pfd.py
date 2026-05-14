@@ -4859,14 +4859,13 @@ def draw_system_setup(surf):
                    "AIRPORTS", ad_sub, active=True)
 
     half_w = (bw - 10) // 2
-    fw_btn_y = _SYS_BTN_Y - _SYS_BTN_H - 8
-    _action_btn(surf, bx, fw_btn_y, bw, _SYS_BTN_H, "AHRS FIRMWARE", "normal")
-    _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "SIMULATOR", "ok")
-    _action_btn(surf, bx+half_w+10,  _SYS_BTN_Y, half_w, _SYS_BTN_H, "RESET DEFAULTS", "danger")
-
-    # QUIT button at the very bottom
-    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
-    _action_btn(surf, bx, quit_y, bw, _SYS_BTN_H, "QUIT PFD", "danger")
+    # FIRMWARE first (right after terrain row), then SIMULATOR/RESET, then QUIT
+    sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
+    quit_y = sim_y       + _SYS_BTN_H + 10
+    _action_btn(surf, bx,           _SYS_BTN_Y, bw,     _SYS_BTN_H, "AHRS FIRMWARE",  "normal")
+    _action_btn(surf, bx,           sim_y,      half_w, _SYS_BTN_H, "SIMULATOR",       "ok")
+    _action_btn(surf, bx+half_w+10, sim_y,      half_w, _SYS_BTN_H, "RESET DEFAULTS",  "danger")
+    _action_btn(surf, bx,           quit_y,     bw,     _SYS_BTN_H, "QUIT PFD",        "danger")
 
 
 def system_setup_hit(x, y):
@@ -4882,15 +4881,15 @@ def system_setup_hit(x, y):
         if bx+2*(third+8) <= x <= bx+2*(third+8)+third:
             return "airport_data"
     half_w = (bw - 10) // 2
-    if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
-        fw_btn_y = _SYS_BTN_Y - _SYS_BTN_H - 8
-        if fw_btn_y <= y <= fw_btn_y+_SYS_BTN_H and bx <= x <= bx+bw:
-            return "ahrs_firmware"
+    sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
+    quit_y = sim_y       + _SYS_BTN_H + 10
+    if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H and bx <= x <= bx+bw:
+        return "ahrs_firmware"
+    if sim_y <= y <= sim_y+_SYS_BTN_H:
         if bx <= x <= bx+half_w:
             return "simulator"
         if bx+half_w+10 <= x <= bx+half_w+10+half_w:
             return "reset_defaults"
-    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
     if quit_y <= y <= quit_y+_SYS_BTN_H and bx <= x <= bx+bw:
         return "quit"
     return None
