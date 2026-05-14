@@ -3036,7 +3036,7 @@ def _scan_wifi():
     try:
         r = subprocess.run(
             ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
-             "dev", "wifi", "list", "--rescan", "yes"],
+             "dev", "wifi", "list"],
             capture_output=True, text=True, timeout=20,
         )
         if r.returncode != 0:
@@ -3075,8 +3075,8 @@ def _do_scan():
             nets = _scan_wifi()
             disp["cs"]["scan_nets"]  = nets
             disp["cs"]["scan_state"] = "done"
-        except RuntimeError as e:
-            disp["cs"]["scan_error"] = str(e)
+        except Exception as e:
+            disp["cs"]["scan_error"] = str(e)[:80]
             disp["cs"]["scan_state"] = "error"
     threading.Thread(target=_worker, daemon=True).start()
 
