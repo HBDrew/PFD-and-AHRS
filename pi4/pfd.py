@@ -4488,6 +4488,7 @@ def ahrs_setup_hit(x, y, ss):
 
 def _scan_wifi():
     """Return [{ssid, signal, secured}] sorted by signal desc, deduped by SSID."""
+    import re
     try:
         r = subprocess.run(
             ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
