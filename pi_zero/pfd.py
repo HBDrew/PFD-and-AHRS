@@ -290,7 +290,7 @@ def _poll_ahrs_diag():
 def _apply_wifi(ssid, password):
     """Connect wlan0 to ssid using nmcli (NetworkManager) or wpa_supplicant,
     whichever is managing the interface.  Returns (success: bool, message: str).
-    For nmcli the calling user needs to be in the 'netdev' group (or run as root).
+    For nmcli a sudoers entry for nmcli is required (see /etc/sudoers.d/pfd-nmcli).
     For wpa_supplicant the process must be root (or have a sudoers entry).
     """
     if not ssid:
@@ -307,9 +307,9 @@ def _apply_wifi(ssid, password):
     try:
         if use_nm:
             CON = "pfd-wifi"
-            subprocess.run(["nmcli", "con", "delete", CON],
+            subprocess.run(["sudo", "nmcli", "con", "delete", CON],
                            capture_output=True, timeout=5)
-            cmd = ["nmcli", "dev", "wifi", "connect", ssid]
+            cmd = ["sudo", "nmcli", "dev", "wifi", "connect", ssid]
             if password:
                 cmd += ["password", password]
             cmd += ["name", CON]
