@@ -18,25 +18,37 @@
 
 import uasyncio as asyncio
 import ujson
+import uos
 
-_INDEX_CACHE = None   # loaded once from flash
 
-
-def _load_index():
-    global _INDEX_CACHE
-    if _INDEX_CACHE is not None:
-        return _INDEX_CACHE
+async def _handle_root(writer):
+    """Stream index.html in 2 KB chunks to avoid loading 100 KB into RAM."""
     try:
-        with open('index.html', 'r') as f:
-            _INDEX_CACHE = f.read()
+        size = uos.stat('index.html')[6]
     except OSError:
-        _INDEX_CACHE = (
-            '<!DOCTYPE html><html><body>'
-            '<h2>index.html not found on Pico W flash.</h2>'
-            '<p>Copy iphone_display/index.html to the root of the Pico W filesystem.</p>'
-            '</body></html>'
-        )
-    return _INDEX_CACHE
+        err = (b'<!DOCTYPE html><html><body>'
+               b'<h2>index.html not found on Pico W flash.</h2>'
+               b'<p>Copy iphone_display/index.html to the Pico W filesystem.</p>'
+               b'</body></html>')
+        await _send_headers(writer, '200 OK', 'text/html; charset=utf-8',
+                            f'Content-Length: {len(err)}\r\nConnection: close\r\n')
+        writer.write(err)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    await _send_headers(writer, '200 OK', 'text/html; charset=utf-8',
+                        f'Content-Length: {size}\r\nConnection: close\r\n')
+    with open('index.html', 'rb') as f:
+        while True:
+            chunk = f.read(2048)
+            if not chunk:
+                break
+            writer.write(chunk)
+            await writer.drain()
+    writer.close()
+    await writer.wait_closed()
 
 
 def _parse_qs(qs):
@@ -63,15 +75,6 @@ async def _send_headers(writer, status, content_type, extra=''):
     writer.write(header.encode())
     await writer.drain()
 
-
-async def _handle_root(writer):
-    html = _load_index()
-    await _send_headers(writer, '200 OK', 'text/html; charset=utf-8',
-                        f'Content-Length: {len(html)}\r\nConnection: close\r\n')
-    writer.write(html.encode())
-    await writer.drain()
-    writer.close()
-    await writer.wait_closed()
 
 
 async def _handle_health(writer):

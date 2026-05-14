@@ -4903,6 +4903,8 @@ def system_setup_hit(x, y):
 
 _FW_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
 _FW_SCRIPTS = ["main.py", "config.py", "web_server.py", "wt901.py", "bme280.py", "gps.py"]
+_IPHONE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "iphone_display")
+_FW_WEB     = ["index.html"]   # web files from iphone_display/ pushed alongside scripts
 _FW_ROW_H   = 72
 _FW_Y0      = 52
 
@@ -5008,12 +5010,17 @@ def _do_push_scripts():
             return
         # Build mpremote chain: cp file1 :file1 + cp file2 :file2 + ... + reset
         cmd = ["python3", "-m", "mpremote", "connect", port]
-        for i, name in enumerate(_FW_SCRIPTS):
-            src_path = os.path.join(_FW_DIR, name)
+        first = True
+        all_files = (
+            [(name, os.path.join(_FW_DIR, name))     for name in _FW_SCRIPTS] +
+            [(name, os.path.join(_IPHONE_DIR, name)) for name in _FW_WEB]
+        )
+        for name, src_path in all_files:
             if not os.path.isfile(src_path):
                 continue
-            if i > 0:
+            if not first:
                 cmd.append("+")
+            first = False
             cmd += ["cp", src_path, f":{name}"]
         cmd += ["+", "reset"]
         try:
