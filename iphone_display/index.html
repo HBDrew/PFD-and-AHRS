@@ -2543,10 +2543,14 @@ function render(ts) {
 // correction in sensor_loop before broadcasting, so both displays agree.
 // Guided 4-cardinal calibration: N → E → S → W, auto-saves on completion.
 const MC_CARDS = [
-  { name: 'NORTH', abbr: 'N', ref: 0   },
-  { name: 'EAST',  abbr: 'E', ref: 90  },
-  { name: 'SOUTH', abbr: 'S', ref: 180 },
-  { name: 'WEST',  abbr: 'W', ref: 270 },
+  { name: 'NORTH',     abbr: 'N',  ref: 0   },
+  { name: 'NORTHEAST', abbr: 'NE', ref: 45  },
+  { name: 'EAST',      abbr: 'E',  ref: 90  },
+  { name: 'SOUTHEAST', abbr: 'SE', ref: 135 },
+  { name: 'SOUTH',     abbr: 'S',  ref: 180 },
+  { name: 'SOUTHWEST', abbr: 'SW', ref: 225 },
+  { name: 'WEST',      abbr: 'W',  ref: 270 },
+  { name: 'NORTHWEST', abbr: 'NW', ref: 315 },
 ];
 const MC = { step: 0, samples: [], tableActive: false, _timer: null };
 

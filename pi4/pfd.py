@@ -2562,12 +2562,12 @@ def _nav_open_confirm(ident: str, prev_mode: str) -> bool:
 # to the corrected yaw at render time so MAG-mode display reads true.  TRK
 # mode is unaffected (the complementary filter sees yaw deltas, which a
 # constant offset drops out of).  Same approach the iPhone display uses.
-_MAG_CAL_CARDINALS = [("NORTH",   0.0),
-                      ("EAST",   90.0),
-                      ("SOUTH", 180.0),
-                      ("WEST",  270.0)]
+_MAG_CAL_CARDINALS = [("N",   0.0), ("NE",  45.0),
+                      ("E",  90.0), ("SE", 135.0),
+                      ("S", 180.0), ("SW", 225.0),
+                      ("W", 270.0), ("NW", 315.0)]
 _MCAL_W   = 460
-_MCAL_H   = 260
+_MCAL_H   = 290
 _MCAL_BTN_H = 44
 
 
@@ -2678,8 +2678,8 @@ def draw_mag_cal(surf):
           cx=bx + _MCAL_W // 2, cy=by + 22)
 
     instr = (f"Step {step + 1} of {len(_MAG_CAL_CARDINALS)} — "
-             f"point aircraft  {card_name}  ({int(card_exp):03d}°)")
-    _text(surf, instr, 14, WHITE, cx=bx + _MCAL_W // 2, cy=by + 56)
+             f"point aircraft {card_name} ({int(card_exp):03d}°)")
+    _text(surf, instr, 13, WHITE, cx=bx + _MCAL_W // 2, cy=by + 56)
 
     raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
 
@@ -2688,21 +2688,25 @@ def draw_mag_cal(surf):
     _text(surf, f"{raw:6.1f}°", 22, CYAN, bold=True,
           x=bx + 30, y=by + 108)
 
-    # Show per-cardinal errors captured so far this run.
+    # 8-point capture results — two rows of 4 (N NE E SE / S SW W NW)
     wiz_samples = wiz.get("samples", [])
-    cards_y = by + 154
-    for i, (name, exp) in enumerate(_MAG_CAL_CARDINALS):
-        cx_card = bx + 60 + i * (_MCAL_W - 120) // 3
-        _text(surf, name[0], 11, (170, 185, 210), bold=True,
-              cx=cx_card, cy=cards_y)
-        if i < len(wiz_samples):
-            _exp, rawv = wiz_samples[i]
-            d = ((exp - rawv + 540) % 360) - 180
-            _text(surf, f"{d:+.1f}°", 13, WHITE, bold=True,
-                  cx=cx_card, cy=cards_y + 16)
-        else:
-            _text(surf, "—", 13, (110, 120, 140), bold=True,
-                  cx=cx_card, cy=cards_y + 16)
+    col_xs = [bx + 40 + c * (_MCAL_W - 80) // 3 for c in range(4)]
+    for row in range(2):
+        row_y = by + 148 + row * 26
+        for col in range(4):
+            i = row * 4 + col
+            name, exp = _MAG_CAL_CARDINALS[i]
+            cx_card = col_xs[col]
+            lbl_col = (170, 185, 210) if i >= len(wiz_samples) else (100, 200, 255)
+            _text(surf, name, 10, lbl_col, bold=True, cx=cx_card, cy=row_y)
+            if i < len(wiz_samples):
+                _exp, rawv = wiz_samples[i]
+                d = ((_exp - rawv + 540) % 360) - 180
+                _text(surf, f"{d:+.1f}°", 12, WHITE, bold=True,
+                      cx=cx_card, cy=row_y + 14)
+            else:
+                _text(surf, "—", 12, (110, 120, 140), bold=True,
+                      cx=cx_card, cy=row_y + 14)
 
     msg = wiz.get("msg", "") or ""
     if msg:
@@ -2720,7 +2724,7 @@ def draw_mag_cal(surf):
     _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",    "warn")
     _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, "RESTART",  "warn")
     _action_btn(surf, btn_xs[3], btn_y, btn_w, _MCAL_BTN_H,
-                f"⊕ CAPTURE {card_name[0]}", "ok")
+                f"⊕ CAPTURE {card_name}", "ok")
 
 
 def mag_cal_hit(x, y):
