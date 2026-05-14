@@ -2502,64 +2502,78 @@ function render(ts) {
 requestAnimationFrame(render);
 
 // ── Screen keep-alive ─────────────────────────────────────────────────────
-// Strategy 1: Screen Wake Lock API — works on HTTPS or when installed as a
-//   PWA (Add to Home Screen).  Silently fails over plain HTTP.
-// Strategy 2: Silent looping AudioContext — iOS keeps the display on while
-//   audio is "playing".  Needs one user gesture to start; we hook the first
-//   touch on the canvas so it starts automatically.
-let _wl = null, _ac = null, _acSrc = null;
+// iOS won't sleep while an AudioContext has active nodes (even silent ones).
+// The AudioContext must be created AND resumed inside a synchronous user-
+// gesture handler — any await before .resume() breaks the gesture context.
+// Strategy 1 (no gesture needed): Screen Wake Lock API — works on HTTPS or
+//   when installed as a PWA via "Add to Home Screen".
+// Strategy 2 (first touch): silent looping AudioContext.
+let _wl = null, _ac = null;
 
-async function _keepOn() {
-  // Wake Lock (HTTPS / PWA)
-  if (!_wl && 'wakeLock' in navigator) {
-    try {
-      _wl = await navigator.wakeLock.request('screen');
-      _wl.addEventListener('release', () => { _wl = null; });
-    } catch (_) {}
+function _startAudio() {
+  // Must stay synchronous — no await — so iOS grants the audio session.
+  if (_ac) {
+    if (_ac.state === 'suspended') _ac.resume().catch(() => {});
+    return;
   }
-  // Silent audio fallback
-  if (!_ac) {
-    try {
-      _ac = new (window.AudioContext || window.webkitAudioContext)();
-      const buf = _ac.createBuffer(1, _ac.sampleRate, _ac.sampleRate);
-      _acSrc = _ac.createBufferSource();
-      _acSrc.buffer = buf;
-      _acSrc.loop = true;
-      const g = _ac.createGain();
-      g.gain.value = 1e-4;   // inaudible but non-zero keeps iOS audio session alive
-      _acSrc.connect(g);
-      g.connect(_ac.destination);
-      _acSrc.start(0);
-    } catch (_) {}
-  } else if (_ac.state === 'suspended') {
-    _ac.resume().catch(() => {});
-  }
+  try {
+    _ac = new (window.AudioContext || window.webkitAudioContext)();
+    const buf = _ac.createBuffer(1, _ac.sampleRate, _ac.sampleRate);
+    const src = _ac.createBufferSource();
+    src.buffer = buf;
+    src.loop   = true;
+    const g    = _ac.createGain();
+    g.gain.value = 1e-4;   // inaudible; non-zero keeps iOS audio session alive
+    src.connect(g);
+    g.connect(_ac.destination);
+    src.start(0);
+    if (_ac.state === 'suspended') _ac.resume().catch(() => {});
+  } catch (_) {}
   _updateKeepOnBtn();
+}
+
+async function _tryWakeLock() {
+  if (_wl || !('wakeLock' in navigator)) return;
+  try {
+    _wl = await navigator.wakeLock.request('screen');
+    _wl.addEventListener('release', () => { _wl = null; _updateKeepOnBtn(); });
+    _updateKeepOnBtn();
+  } catch (_) {}
 }
 
 function _updateKeepOnBtn() {
   const btn = document.getElementById('btn-keepon');
   if (!btn) return;
   const active = (_wl !== null) || (_ac && _ac.state === 'running');
-  btn.textContent = active ? '🔆 SCREEN ON ✓' : '🔆 SCREEN ON';
+  btn.textContent  = active ? '🔆 SCREEN ON ✓' : '🔆 SCREEN ON';
   btn.style.borderColor = active ? '#4f4' : '';
 }
 
 function keepOnTap() {
-  _keepOn();
-  // Brief visual feedback
+  _startAudio();   // synchronous — must be first to stay in gesture context
+  _tryWakeLock();  // async, ok after audio is started
   const btn = document.getElementById('btn-keepon');
-  if (btn) { btn.textContent = '🔆 activating…'; setTimeout(_updateKeepOnBtn, 800); }
+  if (btn && !(_ac && _ac.state === 'running') && !_wl) {
+    btn.textContent = '🔆 activating…';
+    setTimeout(_updateKeepOnBtn, 1000);
+  }
 }
 
-// Re-acquire when tab comes back to foreground (Wake Lock releases on hide)
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') _keepOn();
+// Every touch on the canvas tries to start/resume audio automatically.
+// User never has to open the setup menu for the basic keep-alive to work.
+document.addEventListener('touchstart', () => {
+  _startAudio();
+  if (!_wl) _tryWakeLock();
 });
 
-// Hook first canvas touch to start AudioContext (iOS requires a user gesture)
-canvas.addEventListener('touchstart', _keepOn, { once: true });
-_keepOn();  // attempt immediately — Wake Lock may work without gesture
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    if (_ac && _ac.state === 'suspended') _ac.resume().catch(() => {});
+    _tryWakeLock();
+  }
+});
+
+_tryWakeLock();  // attempt immediately (no gesture needed for Wake Lock)
 </script>
 </body>
 </html>
