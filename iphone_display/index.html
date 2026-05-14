@@ -173,26 +173,23 @@
     position:fixed; top:0; left:0; right:0; bottom:0;
     background:rgba(0,0,0,.95); z-index:100;
     padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-    font-family:monospace;
+    font-family:monospace; overflow-y:auto;
   }
   #setup-menu h1 {
     color:#cef; font-size:16px; margin:12px 16px 10px;
     text-align:center; font-weight:bold;
   }
-  #setup-grid {
-    display:grid; grid-template-columns:1fr 1fr;
-    gap:10px; padding:0 12px; margin-bottom:10px;
-  }
   .setup-btn {
-    padding:18px 8px; background:#1a4a80; border:1px solid #4a8adf;
-    border-radius:8px; color:#fff; font:bold 14px monospace;
+    display:block; width:calc(100% - 32px); margin:0 16px 12px;
+    padding:24px 16px; background:#1a4a80; border:1px solid #4a8adf;
+    border-radius:8px; color:#fff; font:bold 16px monospace;
     cursor:pointer; text-align:center; touch-action:manipulation;
   }
   .setup-btn:active { background:#2a6ab0; }
   #setup-close {
-    display:block; width:calc(100% - 24px); margin:0 12px;
-    padding:14px; background:#444; border:1px solid #666;
-    border-radius:8px; color:#fff; font:bold 14px monospace;
+    display:block; width:calc(100% - 32px); margin:0 16px 16px;
+    padding:16px; background:#444; border:1px solid #666;
+    border-radius:8px; color:#fff; font:bold 16px monospace;
     cursor:pointer; text-align:center; touch-action:manipulation;
   }
 
@@ -2505,34 +2502,55 @@ function render(ts) {
 requestAnimationFrame(render);
 
 // ── Screen keep-alive ─────────────────────────────────────────────────────
-// iOS won't sleep while an AudioContext has active nodes (even silent ones).
-// The AudioContext must be created AND resumed inside a synchronous user-
-// gesture handler — any await before .resume() breaks the gesture context.
-// Strategy 1 (no gesture needed): Screen Wake Lock API — works on HTTPS or
-//   when installed as a PWA via "Add to Home Screen".
-// Strategy 2 (first touch): silent looping AudioContext.
-let _wl = null, _ac = null;
+// Three complementary strategies:
+//   1. Wake Lock API — needs HTTPS / PWA install; attempted on page load.
+//   2. Tiny looping video (1×1 px H.264) — iOS keeps screen on while a
+//      video element is playing, even muted.  Most reliable on iOS Safari.
+//   3. OscillatorNode AudioContext — fallback; iOS keeps audio session alive
+//      when real waveform data is flowing, even at inaudible gain.
+//
+// The video and audio MUST be started inside a synchronous touch/click
+// handler — no async/await before play()/start() or iOS blocks them.
+
+const _NOSLEEP_MP4 = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAKXbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAACWAAAAlgAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAiN0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAEAAAABAAAAAAG/bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAACWAAAAlhVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABam1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAC1oZGxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAAAVmlkZW9IYW5kbGVyAAAAAP1zdGJsAAAAlXN0c2QAAAAAAAAAAQAAAIVhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAEAAQBIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAL2F2Y0MBQsAe/+EAGGdCwB7ZAKBH/sgAAAMACAAAAwGUeMGSRAEABGjOOIAAAAAYc3R0cwAAAAAAAAABAAAAAQAAAlgAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAEAAAABAAAAGHN0c3oAAAAAAAAAAAAAAAEAAAA4AAAAFHN0Y28AAAAAAAAAAQAAAqsAAABAbWRhdAAAABhnQsAe2QCgR/7IAAADAAgAAAMBlHjBkkQAAAAEaM44gAAAABBliIQAM/8PQfD4Pg+D4Pg+';
+
+let _wl = null, _ac = null, _vid = null, _keepAlive = null;
+
+function _startVideo() {
+  if (_vid) { _vid.play().catch(() => {}); return; }
+  try {
+    _vid = document.createElement('video');
+    _vid.setAttribute('playsinline', '');
+    _vid.setAttribute('webkit-playsinline', '');
+    _vid.setAttribute('muted', '');
+    _vid.muted = true;
+    _vid.loop  = true;
+    _vid.src   = _NOSLEEP_MP4;
+    _vid.play().catch(() => {});
+  } catch (_e) {}
+}
 
 function _startAudio() {
-  // Must stay synchronous — no await — so iOS grants the audio session.
   if (_ac) {
     if (_ac.state === 'suspended') _ac.resume().catch(() => {});
     return;
   }
   try {
     _ac = new (window.AudioContext || window.webkitAudioContext)();
-    const buf = _ac.createBuffer(1, _ac.sampleRate, _ac.sampleRate);
-    const src = _ac.createBufferSource();
-    src.buffer = buf;
-    src.loop   = true;
-    const g    = _ac.createGain();
-    g.gain.value = 1e-4;   // inaudible; non-zero keeps iOS audio session alive
-    src.connect(g);
+    const osc = _ac.createOscillator();
+    osc.frequency.value = 17500; // ~17.5 kHz — ultrasonic, inaudible
+    const g = _ac.createGain();
+    g.gain.value = 0.001;
+    osc.connect(g);
     g.connect(_ac.destination);
-    src.start(0);
+    osc.start(0);
     if (_ac.state === 'suspended') _ac.resume().catch(() => {});
-  } catch (_) {}
-  _updateKeepOnBtn();
+    if (!_keepAlive) {
+      _keepAlive = setInterval(() => {
+        if (_ac && _ac.state === 'suspended') _ac.resume().catch(() => {});
+      }, 15000);
+    }
+  } catch (_e) {}
 }
 
 async function _tryWakeLock() {
@@ -2541,42 +2559,43 @@ async function _tryWakeLock() {
     _wl = await navigator.wakeLock.request('screen');
     _wl.addEventListener('release', () => { _wl = null; _updateKeepOnBtn(); });
     _updateKeepOnBtn();
-  } catch (_) {}
+  } catch (_e) {}
 }
 
 function _updateKeepOnBtn() {
   const btn = document.getElementById('btn-keepon');
   if (!btn) return;
-  const active = (_wl !== null) || (_ac && _ac.state === 'running');
-  btn.textContent  = active ? '🔆 SCREEN ON ✓' : '🔆 SCREEN ON';
+  const active = _wl !== null
+    || (_vid && !_vid.paused)
+    || (_ac && _ac.state === 'running');
+  btn.textContent      = active ? '🔆 SCREEN ON ✓' : '🔆 SCREEN ON';
   btn.style.borderColor = active ? '#4f4' : '';
 }
 
 function keepOnTap() {
-  _startAudio();   // synchronous — must be first to stay in gesture context
-  _tryWakeLock();  // async, ok after audio is started
+  // synchronous calls first — iOS gesture context required
+  _startVideo();
+  _startAudio();
+  _tryWakeLock();
   const btn = document.getElementById('btn-keepon');
-  if (btn && !(_ac && _ac.state === 'running') && !_wl) {
-    btn.textContent = '🔆 activating…';
-    setTimeout(_updateKeepOnBtn, 1000);
-  }
+  if (btn) { btn.textContent = '🔆 activating…'; setTimeout(_updateKeepOnBtn, 800); }
 }
 
-// Every touch on the canvas tries to start/resume audio automatically.
-// User never has to open the setup menu for the basic keep-alive to work.
 document.addEventListener('touchstart', () => {
+  _startVideo();
   _startAudio();
   if (!_wl) _tryWakeLock();
-});
+}, { once: true });
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
+    if (_vid && _vid.paused) _vid.play().catch(() => {});
     if (_ac && _ac.state === 'suspended') _ac.resume().catch(() => {});
     _tryWakeLock();
   }
 });
 
-_tryWakeLock();  // attempt immediately (no gesture needed for Wake Lock)
+_tryWakeLock();
 </script>
 </body>
 </html>
