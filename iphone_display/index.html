@@ -173,24 +173,27 @@
     position:fixed; top:0; left:0; right:0; bottom:0;
     background:rgba(0,0,0,.95); z-index:100;
     padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-    font-family:monospace; overflow-y:auto;
+    font-family:monospace;
   }
   #setup-menu h1 {
-    color:#cef; font-size:18px; margin:20px 16px 30px;
+    color:#cef; font-size:16px; margin:12px 16px 10px;
     text-align:center; font-weight:bold;
   }
+  #setup-grid {
+    display:grid; grid-template-columns:1fr 1fr;
+    gap:10px; padding:0 12px; margin-bottom:10px;
+  }
   .setup-btn {
-    display:block; width:calc(100% - 32px); margin:0 16px 12px;
-    padding:24px 16px; background:#1a4a80; border:1px solid #4a8adf;
-    border-radius:8px; color:#fff; font:bold 16px monospace;
-    cursor:pointer; text-align:center;
+    padding:18px 8px; background:#1a4a80; border:1px solid #4a8adf;
+    border-radius:8px; color:#fff; font:bold 14px monospace;
+    cursor:pointer; text-align:center; touch-action:manipulation;
   }
   .setup-btn:active { background:#2a6ab0; }
   #setup-close {
-    display:block; width:calc(100% - 32px); margin:20px 16px 16px;
-    padding:16px; background:#444; border:1px solid #666;
+    display:block; width:calc(100% - 24px); margin:0 12px;
+    padding:14px; background:#444; border:1px solid #666;
     border-radius:8px; color:#fff; font:bold 14px monospace;
-    cursor:pointer; text-align:center;
+    cursor:pointer; text-align:center; touch-action:manipulation;
   }
 
   /* ── Bug editing panel ── */
