@@ -36,6 +36,7 @@ from gps        import GPS
 from web_server import start_server
 
 TRIMS_FILE = 'trims.json'
+MAGDEV_FILE = 'magdev.json'
 
 
 def load_trims():
@@ -60,6 +61,38 @@ def save_trims(state):
                                   'yaw_trim':   state['yaw_trim']}))
     except Exception as e:
         print(f'save_trims failed: {e}')
+
+
+def load_magdev():
+    try:
+        with open(MAGDEV_FILE, 'r') as f:
+            t = ujson.loads(f.read()).get('corrections', [])
+        return [float(x) for x in t] if len(t) == 36 else []
+    except Exception:
+        return []
+
+
+def save_magdev(table):
+    try:
+        with open(MAGDEV_FILE, 'w') as f:
+            f.write(ujson.dumps({'corrections': table}))
+    except Exception as e:
+        print(f'save_magdev failed: {e}')
+
+
+def apply_magdev(yaw, table):
+    """Interpolate a 36-point (10°/slot) deviation table and apply to yaw."""
+    if len(table) != 36:
+        return yaw
+    idx = (yaw % 360) / 10.0
+    i0 = int(idx) % 36
+    i1 = (i0 + 1) % 36
+    frac = idx - int(idx)
+    c0, c1 = table[i0], table[i1]
+    dc = c1 - c0
+    if dc > 180:  dc -= 360
+    elif dc < -180: dc += 360
+    return (yaw + c0 + frac * dc) % 360
 
 # ── Onboard LED ─────────────────────────────────────────────────────────────
 led = Pin('LED', Pin.OUT)
@@ -95,6 +128,8 @@ state = {
     'gps_ok':    False,
     'gps_comm':  False,  # True when GPS UART is sending valid NMEA sentences
     'baro_ok':   False,
+    # Magnetic deviation table (36 corrections at 10° steps; loaded from magdev.json)
+    '_magdev'  : [],
 }
 
 
@@ -134,7 +169,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
             if ahrs.update():
                 state['roll']  = ahrs.roll  + state['roll_trim']
                 state['pitch'] = ahrs.pitch + state['pitch_trim']
-                state['yaw']   = (ahrs.yaw  + state['yaw_trim']) % 360
+                state['yaw']   = apply_magdev(
+                    (ahrs.yaw + state['yaw_trim']) % 360,
+                    state['_magdev'])
                 state['ay']    = ahrs.ay * WT901_AY_SIGN
                 last_ahrs_ms   = utime.ticks_ms()
         except Exception as e:
@@ -146,6 +183,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
         if state.get('_save_trims'):
             save_trims(state)
             state['_save_trims'] = False
+        if state.get('_save_magdev'):
+            save_magdev(state['_magdev'])
+            state['_save_magdev'] = False
 
         await asyncio.sleep_ms(0)   # yield so web server can handle requests
 
@@ -236,6 +276,11 @@ async def main():
 
     state.update(load_trims())
     print(f'Trims loaded: pitch={state["pitch_trim"]}° roll={state["roll_trim"]}° yaw={state["yaw_trim"]}°')
+    state['_magdev'] = load_magdev()
+    if state['_magdev']:
+        print(f'Magdev table loaded: {len(state["_magdev"])} corrections')
+    else:
+        print('Magdev: no calibration file — heading uncorrected')
 
     baro = None
     if BME280_ENABLE:

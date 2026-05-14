@@ -197,6 +197,47 @@ async def _handle_trim(writer, params, state):
     await writer.wait_closed()
 
 
+async def _handle_magcal(writer, params, state):
+    """
+    GET /magcal?action=get          → JSON {corrections:[...], active:bool}
+    GET /magcal?action=set&t=v,...  → store 36 comma-separated floats
+    GET /magcal?action=clear        → remove deviation table
+    """
+    action = params.get('action', 'get')
+
+    if action == 'set':
+        try:
+            vals = [float(x) for x in params.get('t', '').split(',')]
+            if len(vals) == 36:
+                state['_magdev'] = vals
+                state['_save_magdev'] = True
+        except Exception as e:
+            print(f'magcal set error: {e}')
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    elif action == 'clear':
+        state['_magdev'] = []
+        state['_save_magdev'] = True
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    else:  # 'get'
+        table = state.get('_magdev', [])
+        body = ujson.dumps({'corrections': table, 'active': len(table) == 36}).encode()
+        await _send_headers(writer, '200 OK', 'application/json',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def _handle_404(writer):
     body = b'Not Found'
     await _send_headers(writer, '404 Not Found', 'text/plain',
@@ -275,6 +316,8 @@ async def _client_handler(reader, writer, state):
         await _handle_baro(writer, params, state)
     elif path == '/trim':
         await _handle_trim(writer, params, state)
+    elif path == '/magcal':
+        await _handle_magcal(writer, params, state)
     else:
         await _serve_static(writer, path.lstrip('/'))
 

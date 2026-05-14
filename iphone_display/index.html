@@ -95,6 +95,18 @@
   }
   #cal-alt-input::placeholder { color:rgba(180,200,230,.4); }
 
+  /* ── Mag-dev calibration panel ── */
+  #magcal-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.92);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace; max-height:70vh; overflow-y:auto;
+  }
+  #magcal-panel p  { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:6px; }
+  #mc-sample-list  { max-height:90px; overflow-y:auto; margin:4px 0;
+                     color:rgba(200,220,255,.85); font:11px monospace; line-height:1.7; }
+
   /* ── Trim badge ── */
   #trim-status {
     position:absolute; top:6px; right:252px;
@@ -234,6 +246,7 @@
   <button class="setup-btn" onclick="openTerrainMenu()">⬇ TERRAIN</button>
   <button class="setup-btn" onclick="openBaroMenu()">📊 BAROMETER</button>
   <button class="setup-btn" onclick="openTrimMenu()">✈ TRIM</button>
+  <button class="setup-btn" onclick="openMagCalPanel()">🧲 MAG CAL</button>
   <button class="setup-btn" onclick="openHdgMenu()">🧭 HEADING</button>
   <button class="setup-btn" onclick="openSensorMenu()">📡 SENSORS</button>
   <button class="setup-btn" id="btn-keepon" onclick="keepOnTap()">🔆 SCREEN ON</button>
@@ -285,6 +298,32 @@
     <button class="trn-btn" style="flex:0 0 auto" onclick="setManualAlt()">Set Alt</button>
   </div>
   <div id="baro-msg"></div>
+</div>
+
+<div id="magcal-panel">
+  <p>AHRS compass deviation  <small id="mc-status" style="color:rgba(180,200,255,.6);margin-left:6px"></small></p>
+  <p style="color:rgba(200,220,255,.65);font-size:11px;margin-bottom:6px">
+    Tap CLEAR first. Point aircraft at each known heading, confirm AHRS reading, enter reference, ADD. Save when done (≥ 2 pts; 4+ recommended).
+  </p>
+  <div class="trim-row" style="margin-bottom:6px">
+    <span class="trim-lbl">AHRS</span>
+    <span class="trim-val" id="mc-live-hdg">—</span>
+    <span class="trim-lbl" style="margin-left:12px">REF °</span>
+    <input id="mc-ref-input" type="number" min="0" max="359" step="1" inputmode="decimal"
+           style="width:60px;background:#0a1a30;color:#fff;border:1px solid #3a6aaf;
+                  border-radius:4px;padding:4px 6px;font:bold 14px monospace;
+                  -webkit-appearance:none;text-align:right">
+  </div>
+  <div id="mc-sample-list">No samples yet.</div>
+  <div class="trn-btns" style="margin-top:6px">
+    <button class="trn-btn" onclick="mcAdd()">⊕ ADD</button>
+    <button class="trn-btn" id="mc-save-btn" onclick="mcSave()">💾 SAVE (0)</button>
+    <button class="trn-btn" onclick="mcClear()">✕ CLEAR CAL</button>
+    <button class="trn-btn" onclick="closeMagCalPanel()">⤺ BACK</button>
+  </div>
+  <div id="mc-active-badge" style="display:none;margin-top:6px;color:rgba(80,255,80,.9);font:bold 11px monospace">
+    ✓ Deviation table active on AHRS
+  </div>
 </div>
 
 <div id="trim-panel">
@@ -2499,6 +2538,122 @@ function render(ts) {
 
   requestAnimationFrame(render);
 }
+
+// ── AHRS Magnetic Deviation Calibration ─────────────────────────────────
+// Builds a 36-point (every 10°) correction table from user-captured
+// (measured-heading, reference-heading) pairs and POSTs it to the Pico
+// via GET /magcal?action=set&t=v0,v1,...  The firmware applies the
+// correction in sensor_loop before broadcasting, so both displays agree.
+const MC = { samples: [], tableActive: false, _timer: null };
+
+function openMagCalPanel() {
+  closeSetupMenu();
+  fetch('/magcal?action=get').then(r => r.json())
+    .then(d => { MC.tableActive = !!d.active; _mcRefreshUI(); })
+    .catch(() => {});
+  document.getElementById('magcal-panel').style.display = 'block';
+  _mcRefreshUI();
+  MC._timer = setInterval(() => {
+    const el = document.getElementById('mc-live-hdg');
+    if (el) el.textContent = TARGET.yaw.toFixed(1) + '°';
+  }, 250);
+}
+
+function closeMagCalPanel() {
+  clearInterval(MC._timer);
+  MC._timer = null;
+  document.getElementById('magcal-panel').style.display = 'none';
+}
+
+function mcAdd() {
+  const hdg = TARGET.yaw;
+  const ref = ((parseFloat(document.getElementById('mc-ref-input').value) || 0) + 360) % 360;
+  MC.samples.push({ m: hdg, r: ref });
+  _mcStatus('Added: AHRS ' + hdg.toFixed(1) + '° → ref ' + ref.toFixed(0) + '°');
+  _mcRefreshUI();
+}
+
+function mcSave() {
+  if (MC.samples.length < 2) { _mcStatus('Need ≥ 2 points.'); return; }
+  const table = _mcBuildTable(MC.samples);
+  const t = table.map(v => v.toFixed(3)).join(',');
+  fetch('/magcal?action=set&t=' + t)
+    .then(r => r.text())
+    .then(() => {
+      MC.tableActive = true;
+      MC.samples = [];
+      _mcStatus('Saved — 36-pt deviation table active on AHRS.');
+      _mcRefreshUI();
+    })
+    .catch(() => _mcStatus('Save failed — check WiFi connection.'));
+}
+
+function mcClear() {
+  fetch('/magcal?action=clear')
+    .then(() => {
+      MC.tableActive = false;
+      MC.samples = [];
+      _mcStatus('Cleared — AHRS now showing raw heading.');
+      _mcRefreshUI();
+    })
+    .catch(() => _mcStatus('Error — check WiFi connection.'));
+}
+
+function _mcRefreshUI() {
+  const el = document.getElementById('mc-live-hdg');
+  if (el) el.textContent = TARGET.yaw.toFixed(1) + '°';
+
+  const listEl = document.getElementById('mc-sample-list');
+  if (listEl) {
+    if (MC.samples.length === 0) {
+      listEl.textContent = 'No samples yet.';
+    } else {
+      listEl.innerHTML = MC.samples.map((s, i) => {
+        const err = ((s.r - s.m + 180 + 360) % 360) - 180;
+        return (i + 1) + ': AHRS ' + s.m.toFixed(1) + '°→ref '
+          + s.r.toFixed(0) + '° (err ' + (err >= 0 ? '+' : '') + err.toFixed(1) + '°)';
+      }).join('<br>');
+    }
+  }
+
+  const btn = document.getElementById('mc-save-btn');
+  if (btn) {
+    btn.textContent = '💾 SAVE (' + MC.samples.length + ')';
+    btn.style.opacity = MC.samples.length >= 2 ? '1' : '0.5';
+  }
+
+  const badge = document.getElementById('mc-active-badge');
+  if (badge) badge.style.display = MC.tableActive ? 'block' : 'none';
+}
+
+function _mcStatus(s) {
+  const el = document.getElementById('mc-status');
+  if (el) el.textContent = s;
+}
+
+function _mcBuildTable(samples) {
+  const pts = samples.map(s => ({
+    a: ((s.m % 360) + 360) % 360,
+    c: ((s.r - s.m + 180 + 360) % 360) - 180,
+  })).sort((a, b) => a.a - b.a);
+  return Array.from({ length: 36 }, (_, i) => _mcInterp(i * 10, pts));
+}
+
+function _mcInterp(target, pts) {
+  if (pts.length === 0) return 0;
+  if (pts.length === 1) return pts[0].c;
+  let lo = pts[pts.length - 1], hi = pts[0];
+  for (const p of pts) { if (p.a <= target) lo = p; else { hi = p; break; } }
+  let hiA = hi.a;
+  if (hiA <= lo.a) hiA += 360;
+  const span = hiA - lo.a || 360;
+  const tgt  = target < lo.a ? target + 360 : target;
+  const frac = (tgt - lo.a) / span;
+  let dc = hi.c - lo.c;
+  if (dc > 180) dc -= 360; else if (dc < -180) dc += 360;
+  return lo.c + frac * dc;
+}
+
 requestAnimationFrame(render);
 
 // ── Screen keep-alive ─────────────────────────────────────────────────────
