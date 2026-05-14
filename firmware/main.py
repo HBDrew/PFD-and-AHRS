@@ -130,12 +130,15 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
     last_gps_nmea_ms = None           # last time a valid NMEA sentence arrived
     while True:
         # ── AHRS ──
-        if ahrs.update():
-            state['roll']  = ahrs.roll  + state['roll_trim']
-            state['pitch'] = ahrs.pitch + state['pitch_trim']
-            state['yaw']   = (ahrs.yaw  + state['yaw_trim']) % 360
-            state['ay']    = ahrs.ay * WT901_AY_SIGN
-            last_ahrs_ms   = utime.ticks_ms()
+        try:
+            if ahrs.update():
+                state['roll']  = ahrs.roll  + state['roll_trim']
+                state['pitch'] = ahrs.pitch + state['pitch_trim']
+                state['yaw']   = (ahrs.yaw  + state['yaw_trim']) % 360
+                state['ay']    = ahrs.ay * WT901_AY_SIGN
+                last_ahrs_ms   = utime.ticks_ms()
+        except Exception as e:
+            print(f'[AHRS] WT901 read error: {e}')
         state['ahrs_ok'] = utime.ticks_diff(utime.ticks_ms(), last_ahrs_ms) < 5000
         state['gps_ok']  = gps.fix > 0
         state['baro_ok'] = baro is not None
@@ -145,8 +148,11 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
             state['_save_trims'] = False
 
         # ── GPS (always poll for position; altitude used as fallback/reference) ──
-        if gps.update():
-            last_gps_nmea_ms = utime.ticks_ms()
+        try:
+            if gps.update():
+                last_gps_nmea_ms = utime.ticks_ms()
+        except Exception as e:
+            print(f'[AHRS] GPS read error: {e}')
         # gps_comm: True while NMEA sentences have arrived within the last 5 s
         if last_gps_nmea_ms is not None:
             state['gps_comm'] = utime.ticks_diff(utime.ticks_ms(), last_gps_nmea_ms) < 5000
@@ -172,10 +178,17 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
                 state['baro_hpa'] = baro.qnh_hpa   # broadcast updated QNH back
                 state['_cal_ft']  = None
 
-            baro.update()
-            state['alt']      = baro.altitude_ft()
-            state['vspeed']   = baro.vspeed_fpm
-            state['baro_src'] = 'bme280'
+            try:
+                baro.update()
+                state['alt']      = baro.altitude_ft()
+                state['vspeed']   = baro.vspeed_fpm
+                state['baro_src'] = 'bme280'
+            except Exception as e:
+                print(f'[AHRS] BME280 read error: {e}')
+                # fall back to GPS altitude on I2C error
+                state['alt']      = gps.alt_ft
+                state['vspeed']   = gps.vspeed_fpm
+                state['baro_src'] = 'gps'
         else:
             state['alt']      = gps.alt_ft
             state['vspeed']   = gps.vspeed_fpm
