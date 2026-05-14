@@ -2786,7 +2786,11 @@ def handle_event(event, demo_mode):
             elif idx == 0: disp["mode"] = "flight_profile"
             elif idx == 1: disp["mode"] = "display_setup"
             elif idx == 2: disp["mode"] = "ahrs_setup"
-            elif idx == 3: disp["mode"] = "connectivity_setup"
+            elif idx == 3:
+                actual = disp["cs"].get("wifi_actual", "")
+                if actual:
+                    disp["cs"]["wifi_ssid"] = actual
+                disp["mode"] = "connectivity_setup"
             elif idx == 4: disp["mode"] = "system_setup"
             return True
 
@@ -2860,6 +2864,7 @@ def handle_event(event, demo_mode):
                 disp["kbd_target"] = key
                 disp["kbd_prev"]   = "connectivity_setup"
                 disp["kbd_buf"]    = _current_str_for_kbd(key, "connectivity_setup")
+                disp["kbd_shift"]  = False
                 disp["mode"]       = "keyboard"
             elif action == "apply_wifi":
                 disp["cs"]["apply_msg"] = "Applying…"
@@ -3061,6 +3066,7 @@ def handle_event(event, demo_mode):
                     disp["kbd_target"] = key
                     disp["kbd_prev"]   = "flight_profile"
                     disp["kbd_buf"]    = _current_str_for_kbd(key, "flight_profile")
+                    disp["kbd_shift"]  = False
                     disp["mode"]       = "keyboard"
                 else:
                     disp["numpad_target"] = key
@@ -3075,7 +3081,11 @@ def handle_event(event, demo_mode):
             if hit:
                 lbl, sty = hit
                 target  = disp["kbd_target"]
-                max_len = next((f[3] for f in _FP_FIELDS if f[0]==target), 16)
+                _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80}
+                if disp.get("kbd_prev") == "connectivity_setup":
+                    max_len = _CS_MAX.get(target, 32)
+                else:
+                    max_len = next((f[3] for f in _FP_FIELDS if f[0]==target), 16)
                 if sty == 'n':                # character / space
                     ch = ' ' if lbl == 'SPACE' else lbl
                     if len(disp["kbd_buf"]) < max_len:
@@ -3084,6 +3094,8 @@ def handle_event(event, demo_mode):
                 elif sty == 'del':            # backspace
                     disp["kbd_buf"] = disp["kbd_buf"][:-1]
                     disp["kbd_error"] = ""
+                elif sty in ('shift', 'shift_on'):
+                    disp["kbd_shift"] = not disp.get("kbd_shift", False)
                 elif sty == 'x':              # CANCEL
                     disp["kbd_buf"] = ""
                     disp["kbd_error"] = ""
@@ -3632,23 +3644,35 @@ def flight_profile_hit(x, y, fp_vals):
 
 # ── Keyboard screen ────────────────────────────────────────────────────────────
 
-_KB_ROWS = [
+# Normal layout: uppercase letters + digits.
+_KB_ROWS_NORMAL = [
     [('1',60,'n'),('2',60,'n'),('3',60,'n'),('4',60,'n'),('5',60,'n'),
      ('6',60,'n'),('7',60,'n'),('8',60,'n'),('9',60,'n'),('0',60,'n')],
     [('Q',60,'n'),('W',60,'n'),('E',60,'n'),('R',60,'n'),('T',60,'n'),
      ('Y',60,'n'),('U',60,'n'),('I',60,'n'),('O',60,'n'),('P',60,'n')],
     [('A',60,'n'),('S',60,'n'),('D',60,'n'),('F',60,'n'),('G',60,'n'),
      ('H',60,'n'),('J',60,'n'),('K',60,'n'),('L',60,'n')],
-    # Row 3: letters Z–M then period, colon, backspace.
-    # 10 keys × 60 + 9 gaps × 4 = 636 px — fits pi_zero 640 and pi4 1024.
     [('Z',60,'n'),('X',60,'n'),('C',60,'n'),('V',60,'n'),('B',60,'n'),
      ('N',60,'n'),('M',60,'n'),('.',60,'n'),(':',60,'n'),('\u232b',60,'del')],
-    # Row 4: CANCEL, hyphen, SPACE, ENTER. Hyphen moved here because row 3
-    # had to drop it to make room for . and : within the pi_zero width budget.
-    # The 'ok' style tag (not the label) is what dispatches the action,
-    # so this rename is purely cosmetic.
-    [('CANCEL',108,'x'),('-',60,'n'),('SPACE',232,'n'),('ENTER',108,'ok')],
+    # \u21e7 (shift arrow) replaces hyphen; SPACE narrowed 20 px to compensate.
+    [('CANCEL',108,'x'),('\u21e7',80,'shift'),('SPACE',212,'n'),('ENTER',108,'ok')],
 ]
+# Shift layout: lowercase letters + symbol row instead of digits.
+_KB_ROWS_SHIFT = [
+    [('!',60,'n'),('@',60,'n'),('#',60,'n'),('$',60,'n'),('%',60,'n'),
+     ('^',60,'n'),('&',60,'n'),('*',60,'n'),('(',60,'n'),(')',60,'n')],
+    [('q',60,'n'),('w',60,'n'),('e',60,'n'),('r',60,'n'),('t',60,'n'),
+     ('y',60,'n'),('u',60,'n'),('i',60,'n'),('o',60,'n'),('p',60,'n')],
+    [('a',60,'n'),('s',60,'n'),('d',60,'n'),('f',60,'n'),('g',60,'n'),
+     ('h',60,'n'),('j',60,'n'),('k',60,'n'),('l',60,'n')],
+    [('z',60,'n'),('x',60,'n'),('c',60,'n'),('v',60,'n'),('b',60,'n'),
+     ('n',60,'n'),('m',60,'n'),('-',60,'n'),('_',60,'n'),('\u232b',60,'del')],
+    [('CANCEL',108,'x'),('\u21e7',80,'shift_on'),('SPACE',212,'n'),('ENTER',108,'ok')],
+]
+
+def _current_kb_rows():
+    return _KB_ROWS_SHIFT if disp.get('kbd_shift') else _KB_ROWS_NORMAL
+
 _KB_ROW_H=66; _KB_GAP_Y=6; _KB_GAP_X=4; _KB_Y0=112
 
 # Nav-ident extras row: two big action buttons below the QWERTY when the
@@ -3688,6 +3712,10 @@ def _kb_key(surf, bx, by, bw, bh, label, style, r=6):
         bg=(5,25,10); oc=(50,200,80); tc=(60,220,90)
     elif style=='del':
         bg=(30,18,5); oc=(200,140,40);tc=(220,160,50)
+    elif style=='shift':
+        bg=(10,20,45); oc=(90,130,200); tc=(110,160,230)
+    elif style=='shift_on':
+        bg=(45,32,5);  oc=(220,160,40); tc=(255,200,60)
     else:
         bg=(0,12,32); oc=WHITE;       tc=WHITE
     pygame.draw.rect(surf, bg, (bx,by,bw,bh), border_radius=r)
@@ -3727,7 +3755,7 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
         _text(surf, f"Current: {current_val}", 10, (110, 120, 140),
               cx=DISPLAY_W//2, cy=104)
     y = _KB_Y0
-    for row in _KB_ROWS:
+    for row in _current_kb_rows():
         x = _kb_row_x0(row)
         for label,kw,style in row:
             _kb_key(surf,x,y,kw,_KB_ROW_H,label,style)
@@ -3769,7 +3797,7 @@ def keyboard_hit(x, y):
         if bx_r <= x <= bx_r + btn_w:
             return ("APPR", "appr")
     ky = _KB_Y0
-    for row in _KB_ROWS:
+    for row in _current_kb_rows():
         if ky <= y <= ky+_KB_ROW_H:
             kx = _kb_row_x0(row)
             for label,kw,style in row:
