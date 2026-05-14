@@ -4920,9 +4920,9 @@ def _find_pico_serial():
 def _find_pico_bootsel():
     """Return RPI-RP2 mount path, auto-mounting via udisksctl if needed."""
     import glob
-    # Check standard mount paths first
+    # Check standard mount paths first (must be an actual mountpoint, not a stale dir)
     for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
-        mounts = glob.glob(pat)
+        mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
         if mounts:
             return mounts[0]
     # Not mounted — look for the block device by label and mount it
@@ -4945,7 +4945,7 @@ def _find_pico_bootsel():
                                     devpath, "/mnt/RPI-RP2"],
                                    capture_output=True, timeout=10)
                 for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
-                    mounts = glob.glob(pat)
+                    mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
                     if mounts:
                         return mounts[0]
     except Exception:
