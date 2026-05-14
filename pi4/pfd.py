@@ -4907,23 +4907,40 @@ _FW_ROW_H   = 72
 _FW_Y0      = 52
 
 
+_pico_serial_cache  = (0.0, None)   # (timestamp, result)
+_pico_bootsel_cache = (0.0, None)
+_PICO_CACHE_TTL = 2.0  # seconds between lsblk / glob rescans
+
+
 def _find_pico_serial():
-    """Return first /dev/ttyACM* or /dev/ttyUSB* path, or None."""
+    """Return first /dev/ttyACM* or /dev/ttyUSB* path, or None (cached 2 s)."""
+    global _pico_serial_cache
+    now = time.time()
+    if now - _pico_serial_cache[0] < _PICO_CACHE_TTL:
+        return _pico_serial_cache[1]
     import glob
+    result = None
     for pat in ["/dev/ttyACM*", "/dev/ttyUSB*"]:
         ports = sorted(glob.glob(pat))
         if ports:
-            return ports[0]
-    return None
+            result = ports[0]
+            break
+    _pico_serial_cache = (now, result)
+    return result
 
 
 def _find_pico_bootsel():
-    """Return RPI-RP2 mount path, auto-mounting via udisksctl if needed."""
+    """Return RPI-RP2 mount path, auto-mounting via udisksctl if needed (cached 2 s)."""
+    global _pico_bootsel_cache
+    now = time.time()
+    if now - _pico_bootsel_cache[0] < _PICO_CACHE_TTL:
+        return _pico_bootsel_cache[1]
     import glob
     # Check standard mount paths first (must be an actual mountpoint, not a stale dir)
     for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
         mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
         if mounts:
+            _pico_bootsel_cache = (now, mounts[0])
             return mounts[0]
     # Not mounted — look for the block device by label and mount it
     try:
@@ -4947,9 +4964,11 @@ def _find_pico_bootsel():
                 for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
                     mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
                     if mounts:
+                        _pico_bootsel_cache = (now, mounts[0])
                         return mounts[0]
     except Exception:
         pass
+    _pico_bootsel_cache = (now, None)
     return None
 
 
@@ -5022,6 +5041,7 @@ def _do_flash_uf2():
             shutil.copy2(uf2, dest)
             disp["fw"]["flash_msg"]   = "Flash complete — Pico will reboot"
             disp["fw"]["flash_state"] = "done"
+            global _pico_bootsel_cache; _pico_bootsel_cache = (0.0, None)
         except Exception as e:
             disp["fw"]["flash_msg"]   = str(e)[:80]
             disp["fw"]["flash_state"] = "error"
