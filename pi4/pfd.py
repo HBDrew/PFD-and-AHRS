@@ -114,7 +114,7 @@ state = {
     "alt": 0.0, "gps_alt": 0.0, "vspeed": 0.0,
     "baro_src": "gps", "baro_hpa": BARO_DEFAULT_HPA,
     "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
-    "ahrs_ok": False, "gps_ok": False, "baro_ok": False,
+    "ahrs_ok": False, "gps_ok": False, "gps_comm": False, "baro_ok": False,
 }
 
 # ── Display values (smoothed) ─────────────────────────────────────────────────
@@ -598,7 +598,7 @@ def smooth_state():
     # whenever the SSE stream carried a stale QNH echo back from the firmware.
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
-              "ahrs_ok", "gps_ok", "baro_ok",
+              "ahrs_ok", "gps_ok", "gps_comm", "baro_ok",
               "pitch_trim", "roll_trim", "yaw_trim"):
         disp[k] = snap[k]
 
@@ -1668,7 +1668,7 @@ def draw_terrain_alert(surf):
 
 
 # ── Status badges ─────────────────────────────────────────────────────────────
-def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected,
+def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats, connected,
                        use_track=False):
     """
     Badges are shown only when something requires pilot attention.
@@ -1730,13 +1730,13 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
 
     # GPS state:
     #   fix valid          → no badge (clean)
-    #   satellites visible → amber sat-count (acquiring, no fix yet)
-    #   no satellites      → red NO GPS (hardware absent / no signal)
+    #   comm but no fix    → amber NO FIX (NMEA flowing, waiting for satellites)
+    #   no comm            → red NO SIGNAL (GPS hardware not responding)
     if not gps_ok:
-        if sats > 0:
-            badge_r(f"GPS {sats}sat", (120, 80, 0), (220, 180, 60))
+        if gps_comm:
+            badge_r("NO FIX", (120, 80, 0), (220, 180, 60))
         else:
-            badge_r("NO GPS", (150, 0, 0))
+            badge_r("NO SIGNAL", (150, 0, 0))
 
 
 # ── Red-X failure overlays ────────────────────────────────────────────────────
@@ -1752,7 +1752,7 @@ def draw_red_x(surf, x, y, w, h, label):
         _text(surf, "FAIL", 14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 + 8)
 
 
-def draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok, sats=0):
+def draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok):
     ai_h_used = TAPE_H
     ai_y = TAPE_TOP
     ai_w = ALT_X - SPD_W
@@ -1760,12 +1760,11 @@ def draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok, sats=0):
         # Cover AI center + heading strip
         draw_red_x(surf, SPD_W, ai_y, ai_w, ai_h_used, "ATTITUDE")
         draw_red_x(surf, 0, HDG_Y, DISPLAY_W, HDG_H, "HDG")
-    # Red X on speed/alt tapes only when GPS is truly absent (no satellites).
-    # While acquiring (sats > 0 but no fix) the tape stays live — data may
-    # still be usable and the amber badge is sufficient warning.
-    if not gps_ok and sats == 0:
+    # Red X on speed tape only when GPS has no signal at all.
+    # While communicating but no fix, the amber badge is sufficient warning.
+    if not gps_ok and not gps_comm:
         draw_red_x(surf, SPD_X, ai_y, SPD_W, ai_h_used, "AIRSPD")
-    if not baro_ok and not gps_ok and sats == 0:
+    if not baro_ok and not gps_ok and not gps_comm:
         draw_red_x(surf, ALT_X, ai_y, ALT_W, ai_h_used, "ALT")
 
 
@@ -4795,11 +4794,12 @@ def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     _gps_ok   = disp.get("gps_ok", False)
+    _gps_comm = disp.get("gps_comm", False)
     _gps_sats = int(disp.get("sats", 0) or 0)
     if _gps_ok:
         _gps_status = f"fix \u00b7 {_gps_sats} sat{'s' if _gps_sats != 1 else ''}"
-    elif _gps_sats > 0:
-        _gps_status = f"acquiring \u00b7 {_gps_sats} sat{'s' if _gps_sats != 1 else ''}"
+    elif _gps_comm:
+        _gps_status = "no fix \u00b7 acquiring"
     else:
         _gps_status = "no signal"
     lines = [
@@ -7836,6 +7836,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     baro_src = disp["baro_src"]
     ahrs_ok  = disp["ahrs_ok"]
     gps_ok   = disp["gps_ok"]
+    gps_comm = disp.get("gps_comm", False)
     baro_ok  = disp["baro_ok"]
     sats     = disp["sats"]
     hdg_bug  = disp["hdg_bug"]
@@ -8237,14 +8238,14 @@ def render(surf, demo_mode, connected, data_stale=False):
     draw_slip_ball(surf, ay)
 
     # 9. Status badges
-    draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected,
+    draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats, connected,
                        use_track=use_track)
 
     # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
     draw_terrain_alert(surf)
 
     # 10. Failure overlays
-    draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok, sats)
+    draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok)
 
     # 11. Tap-buttons for heading bug, baro, and alt bug (color = data source)
     draw_tap_buttons(surf, hdg, active_bug, baro_hpa, baro_src, alt_bug,

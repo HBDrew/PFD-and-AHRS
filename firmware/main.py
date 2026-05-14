@@ -93,6 +93,7 @@ state = {
     # Sensor health flags (set every sensor_loop tick)
     'ahrs_ok':   False,
     'gps_ok':    False,
+    'gps_comm':  False,  # True when GPS UART is sending valid NMEA sentences
     'baro_ok':   False,
 }
 
@@ -126,6 +127,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
     """
     tick = 0
     last_ahrs_ms = utime.ticks_ms()   # 5-second window before ahrs_ok goes False
+    last_gps_nmea_ms = None           # last time a valid NMEA sentence arrived
     while True:
         # ── AHRS ──
         if ahrs.update():
@@ -143,7 +145,13 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
             state['_save_trims'] = False
 
         # ── GPS (always poll for position; altitude used as fallback/reference) ──
-        gps.update()
+        if gps.update():
+            last_gps_nmea_ms = utime.ticks_ms()
+        # gps_comm: True while NMEA sentences have arrived within the last 5 s
+        if last_gps_nmea_ms is not None:
+            state['gps_comm'] = utime.ticks_diff(utime.ticks_ms(), last_gps_nmea_ms) < 5000
+        else:
+            state['gps_comm'] = False
         state['lat']     = gps.lat
         state['lon']     = gps.lon
         state['speed']   = gps.speed_kt
@@ -183,7 +191,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
                 _usb = {k: state[k] for k in (
                     'roll','pitch','yaw','ay','lat','lon','speed','track',
                     'fix','sats','alt','gps_alt','vspeed','baro_src','baro_hpa',
-                    'ahrs_ok','gps_ok','baro_ok','pitch_trim','roll_trim','yaw_trim',
+                    'ahrs_ok','gps_ok','gps_comm','baro_ok','pitch_trim','roll_trim','yaw_trim',
                 )}
                 print('$AHRS,' + ujson.dumps(_usb))
             except Exception:
