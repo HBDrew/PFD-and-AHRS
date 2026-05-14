@@ -4940,7 +4940,7 @@ def _do_push_scripts():
             disp["fw"]["push_state"] = "error"
             return
         # Build mpremote chain: cp file1 :file1 + cp file2 :file2 + ... + reset
-        cmd = ["mpremote", "connect", port]
+        cmd = ["python3", "-m", "mpremote", "connect", port]
         for i, name in enumerate(_FW_SCRIPTS):
             src_path = os.path.join(_FW_DIR, name)
             if not os.path.isfile(src_path):
@@ -4960,7 +4960,7 @@ def _do_push_scripts():
                 disp["fw"]["push_msg"]   = "All scripts pushed — Pico rebooting"
                 disp["fw"]["push_state"] = "done"
         except FileNotFoundError:
-            disp["fw"]["push_msg"]   = "mpremote not found: pip3 install mpremote --break-system-packages"
+            disp["fw"]["push_msg"]   = "mpremote not found — pip3 install mpremote --break-system-packages"
             disp["fw"]["push_state"] = "error"
         except subprocess.TimeoutExpired:
             disp["fw"]["push_msg"]   = "Timed out — check connection"
