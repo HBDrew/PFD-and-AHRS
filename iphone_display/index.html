@@ -2502,34 +2502,43 @@ function render(ts) {
 requestAnimationFrame(render);
 
 // ── Screen keep-alive ─────────────────────────────────────────────────────
-// Three complementary strategies:
-//   1. Wake Lock API — needs HTTPS / PWA install; attempted on page load.
-//   2. Tiny looping video (1×1 px H.264) — iOS keeps screen on while a
-//      video element is playing, even muted.  Most reliable on iOS Safari.
-//   3. OscillatorNode AudioContext — fallback; iOS keeps audio session alive
-//      when real waveform data is flowing, even at inaudible gain.
-//
-// The video and audio MUST be started inside a synchronous touch/click
-// handler — no async/await before play()/start() or iOS blocks them.
-
-const _NOSLEEP_MP4 = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAKXbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAACWAAAAlgAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAiN0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAEAAAABAAAAAAG/bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAACWAAAAlhVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABam1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAC1oZGxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAAAVmlkZW9IYW5kbGVyAAAAAP1zdGJsAAAAlXN0c2QAAAAAAAAAAQAAAIVhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAEAAQBIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAL2F2Y0MBQsAe/+EAGGdCwB7ZAKBH/sgAAAMACAAAAwGUeMGSRAEABGjOOIAAAAAYc3R0cwAAAAAAAAABAAAAAQAAAlgAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAEAAAABAAAAGHN0c3oAAAAAAAAAAAAAAAEAAAA4AAAAFHN0Y28AAAAAAAAAAQAAAqsAAABAbWRhdAAAABhnQsAe2QCgR/7IAAADAAgAAAMBlHjBkkQAAAAEaM44gAAAABBliIQAM/8PQfD4Pg+D4Pg+';
+// iOS keeps screen on while a video element is playing (even 1×1, muted).
+// Strategy: capture a 1×1 canvas as a MediaStream and feed it to a video
+// element.  canvas.captureStream() produces a real decoded stream that
+// Safari/iOS accepts without needing a pre-encoded video file.
+// Fallback: OscillatorNode audio (keeps iOS audio session alive; does NOT
+//   by itself prevent dimming, but is belt-and-suspenders).
+// Wake Lock: tried at page load — only works on HTTPS / PWA.
 
 let _wl = null, _ac = null, _vid = null, _keepAlive = null;
+let _noSleepTick = false, _noSleepCnv = null;
 
 function _startVideo() {
   if (_vid) { _vid.play().catch(() => {}); return; }
   try {
+    // 1×1 canvas that alternates colour every second — gives the stream
+    // actual motion so iOS doesn't decide the video is frozen/idle.
+    _noSleepCnv = document.createElement('canvas');
+    _noSleepCnv.width = _noSleepCnv.height = 1;
+    const ctx2 = _noSleepCnv.getContext('2d');
+    function _paint() {
+      ctx2.fillStyle = _noSleepTick ? '#000001' : '#000000';
+      _noSleepTick = !_noSleepTick;
+      ctx2.fillRect(0, 0, 1, 1);
+    }
+    _paint();
+    setInterval(_paint, 1000);
+
+    const stream = _noSleepCnv.captureStream(1);
     _vid = document.createElement('video');
     _vid.setAttribute('playsinline', '');
     _vid.setAttribute('webkit-playsinline', '');
     _vid.setAttribute('muted', '');
     _vid.muted = true;
-    _vid.loop  = true;
-    // Must be in the DOM for iOS to honour play() and keep screen awake
+    // Must be in DOM — iOS ignores play() on detached elements
     _vid.style.cssText = 'position:fixed;top:-2px;left:-2px;width:1px;height:1px;opacity:.01;pointer-events:none';
     document.body.appendChild(_vid);
-    _vid.src = _NOSLEEP_MP4;
-    _vid.load();
+    _vid.srcObject = stream;
     _vid.play().catch(() => {});
   } catch (_e) {}
 }
