@@ -302,22 +302,19 @@
 
 <div id="magcal-panel">
   <p>AHRS compass deviation  <small id="mc-status" style="color:rgba(180,200,255,.6);margin-left:6px"></small></p>
-  <p style="color:rgba(200,220,255,.65);font-size:11px;margin-bottom:6px">
-    Tap CLEAR first. Point aircraft at each known heading, confirm AHRS reading, enter reference, ADD. Save when done (≥ 2 pts; 4+ recommended).
+  <p id="mc-instr" style="color:rgba(200,220,255,.85);font:bold 13px monospace;margin-bottom:6px">
+    Point NORTH (000°) then tap CAPTURE.
   </p>
   <div class="trim-row" style="margin-bottom:6px">
-    <span class="trim-lbl">AHRS</span>
-    <span class="trim-val" id="mc-live-hdg">—</span>
-    <span class="trim-lbl" style="margin-left:12px">REF °</span>
-    <input id="mc-ref-input" type="number" min="0" max="359" step="1" inputmode="decimal"
-           style="width:60px;background:#0a1a30;color:#fff;border:1px solid #3a6aaf;
-                  border-radius:4px;padding:4px 6px;font:bold 14px monospace;
-                  -webkit-appearance:none;text-align:right">
+    <span class="trim-lbl">AHRS HDG</span>
+    <span class="trim-val" id="mc-live-hdg" style="font-size:18px">—</span>
+    <span class="trim-lbl" style="margin-left:16px">STEP</span>
+    <span class="trim-val" id="mc-step">1 / 4</span>
   </div>
-  <div id="mc-sample-list">No samples yet.</div>
+  <div id="mc-sample-list" style="margin-bottom:4px"></div>
   <div class="trn-btns" style="margin-top:6px">
-    <button class="trn-btn" onclick="mcAdd()">⊕ ADD</button>
-    <button class="trn-btn" id="mc-save-btn" onclick="mcSave()">💾 SAVE (0)</button>
+    <button class="trn-btn" id="mc-capture-btn" onclick="mcCapture()" style="font-size:15px;padding:12px 8px">⊕ CAPTURE N</button>
+    <button class="trn-btn" onclick="mcRestart()">↺ RESTART</button>
     <button class="trn-btn" onclick="mcClear()">✕ CLEAR CAL</button>
     <button class="trn-btn" onclick="closeMagCalPanel()">⤺ BACK</button>
   </div>
@@ -2544,7 +2541,14 @@ function render(ts) {
 // (measured-heading, reference-heading) pairs and POSTs it to the Pico
 // via GET /magcal?action=set&t=v0,v1,...  The firmware applies the
 // correction in sensor_loop before broadcasting, so both displays agree.
-const MC = { samples: [], tableActive: false, _timer: null };
+// Guided 4-cardinal calibration: N → E → S → W, auto-saves on completion.
+const MC_CARDS = [
+  { name: 'NORTH', abbr: 'N', ref: 0   },
+  { name: 'EAST',  abbr: 'E', ref: 90  },
+  { name: 'SOUTH', abbr: 'S', ref: 180 },
+  { name: 'WEST',  abbr: 'W', ref: 270 },
+];
+const MC = { step: 0, samples: [], tableActive: false, _timer: null };
 
 function openMagCalPanel() {
   closeSetupMenu();
@@ -2565,61 +2569,84 @@ function closeMagCalPanel() {
   document.getElementById('magcal-panel').style.display = 'none';
 }
 
-function mcAdd() {
-  const hdg = TARGET.yaw;
-  const ref = ((parseFloat(document.getElementById('mc-ref-input').value) || 0) + 360) % 360;
-  MC.samples.push({ m: hdg, r: ref });
-  _mcStatus('Added: AHRS ' + hdg.toFixed(1) + '° → ref ' + ref.toFixed(0) + '°');
-  _mcRefreshUI();
+function mcCapture() {
+  const card = MC_CARDS[MC.step];
+  MC.samples.push({ m: TARGET.yaw, r: card.ref });
+  _mcStatus('Captured ' + card.name + ': AHRS ' + TARGET.yaw.toFixed(1) + '°');
+  MC.step += 1;
+  if (MC.step >= MC_CARDS.length) {
+    _mcSaveTable();
+  } else {
+    _mcRefreshUI();
+  }
 }
 
-function mcSave() {
-  if (MC.samples.length < 2) { _mcStatus('Need ≥ 2 points.'); return; }
-  const table = _mcBuildTable(MC.samples);
-  const t = table.map(v => v.toFixed(3)).join(',');
-  fetch('/magcal?action=set&t=' + t)
-    .then(r => r.text())
-    .then(() => {
-      MC.tableActive = true;
-      MC.samples = [];
-      _mcStatus('Saved — 36-pt deviation table active on AHRS.');
-      _mcRefreshUI();
-    })
-    .catch(() => _mcStatus('Save failed — check WiFi connection.'));
+function mcRestart() {
+  MC.step = 0;
+  MC.samples = [];
+  _mcStatus('Restarted.');
+  _mcRefreshUI();
 }
 
 function mcClear() {
   fetch('/magcal?action=clear')
     .then(() => {
       MC.tableActive = false;
+      MC.step = 0;
       MC.samples = [];
-      _mcStatus('Cleared — AHRS now showing raw heading.');
+      _mcStatus('Cleared — AHRS showing raw heading.');
       _mcRefreshUI();
     })
     .catch(() => _mcStatus('Error — check WiFi connection.'));
+}
+
+function _mcSaveTable() {
+  const table = _mcBuildTable(MC.samples);
+  const t = table.map(v => v.toFixed(3)).join(',');
+  _mcStatus('Saving…');
+  fetch('/magcal?action=set&t=' + t)
+    .then(r => r.text())
+    .then(() => {
+      MC.tableActive = true;
+      MC.step = 0;
+      MC.samples = [];
+      _mcStatus('Done — deviation table saved to AHRS.');
+      _mcRefreshUI();
+    })
+    .catch(() => _mcStatus('Save failed — check WiFi connection.'));
 }
 
 function _mcRefreshUI() {
   const el = document.getElementById('mc-live-hdg');
   if (el) el.textContent = TARGET.yaw.toFixed(1) + '°';
 
-  const listEl = document.getElementById('mc-sample-list');
-  if (listEl) {
-    if (MC.samples.length === 0) {
-      listEl.textContent = 'No samples yet.';
-    } else {
-      listEl.innerHTML = MC.samples.map((s, i) => {
-        const err = ((s.r - s.m + 180 + 360) % 360) - 180;
-        return (i + 1) + ': AHRS ' + s.m.toFixed(1) + '°→ref '
-          + s.r.toFixed(0) + '° (err ' + (err >= 0 ? '+' : '') + err.toFixed(1) + '°)';
-      }).join('<br>');
-    }
+  const card = MC_CARDS[MC.step] || MC_CARDS[0];
+  const instr = document.getElementById('mc-instr');
+  if (instr) {
+    instr.textContent = MC.step < MC_CARDS.length
+      ? 'Point ' + card.name + ' (' + String(card.ref).padStart(3,'0') + '°) then tap CAPTURE.'
+      : 'All points captured.';
   }
 
-  const btn = document.getElementById('mc-save-btn');
-  if (btn) {
-    btn.textContent = '💾 SAVE (' + MC.samples.length + ')';
-    btn.style.opacity = MC.samples.length >= 2 ? '1' : '0.5';
+  const stepEl = document.getElementById('mc-step');
+  if (stepEl) stepEl.textContent = (MC.step + 1) + ' / ' + MC_CARDS.length;
+
+  const capBtn = document.getElementById('mc-capture-btn');
+  if (capBtn) {
+    capBtn.textContent = MC.step < MC_CARDS.length
+      ? '⊕ CAPTURE ' + card.abbr : '✓ Done';
+    capBtn.disabled = MC.step >= MC_CARDS.length;
+  }
+
+  const listEl = document.getElementById('mc-sample-list');
+  if (listEl) {
+    listEl.innerHTML = MC.samples.map((s, i) => {
+      const err = ((s.r - s.m + 180 + 360) % 360) - 180;
+      const sign = err >= 0 ? '+' : '';
+      return '<span style="color:rgba(200,220,255,.75);font:11px monospace">'
+        + MC_CARDS[i].abbr + ': AHRS ' + s.m.toFixed(1) + '° (err '
+        + sign + err.toFixed(1) + '°)</span>';
+    }).join('&nbsp;&nbsp;');
   }
 
   const badge = document.getElementById('mc-active-badge');
