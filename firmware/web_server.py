@@ -14,11 +14,24 @@
 #   GET /health        → plain-text "OK" (useful for connection check)
 #   GET /baro?qnh=X    → set QNH to X hPa  (returns "OK")
 #   GET /baro?cal_ft=X → calibrate baro to X ft MSL using current pressure
+#   GET /<file>        → serves any other file from the flash filesystem
+#                        (terrain.js, sw.js, manifest.webmanifest, icons …)
 # ---------------------------------------------------------------------------
 
 import uasyncio as asyncio
 import ujson
 import uos
+
+_MIME = {
+    'html':        'text/html; charset=utf-8',
+    'js':          'application/javascript',
+    'css':         'text/css',
+    'json':        'application/json',
+    'png':         'image/png',
+    'ico':         'image/x-icon',
+    'webmanifest': 'application/manifest+json',
+    'txt':         'text/plain',
+}
 
 
 async def _handle_root(writer):
@@ -194,6 +207,31 @@ async def _handle_404(writer):
     await writer.wait_closed()
 
 
+async def _serve_static(writer, filename):
+    """Serve any file that exists on the Pico flash filesystem."""
+    if '..' in filename:  # block directory traversal
+        await _handle_404(writer)
+        return
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    ctype = _MIME.get(ext, 'application/octet-stream')
+    try:
+        size = uos.stat(filename)[6]
+    except OSError:
+        await _handle_404(writer)
+        return
+    await _send_headers(writer, '200 OK', ctype,
+                        f'Content-Length: {size}\r\nConnection: close\r\n')
+    with open(filename, 'rb') as f:
+        while True:
+            chunk = f.read(2048)
+            if not chunk:
+                break
+            writer.write(chunk)
+            await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def _client_handler(reader, writer, state):
     try:
         request_line = await asyncio.wait_for(reader.readline(), timeout=5)
@@ -238,7 +276,7 @@ async def _client_handler(reader, writer, state):
     elif path == '/trim':
         await _handle_trim(writer, params, state)
     else:
-        await _handle_404(writer)
+        await _serve_static(writer, path.lstrip('/'))
 
 
 async def start_server(state, port=80):
