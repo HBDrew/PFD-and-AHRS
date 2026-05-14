@@ -4918,12 +4918,30 @@ def _find_pico_serial():
 
 
 def _find_pico_bootsel():
-    """Return RPI-RP2 mass-storage mount path, or None."""
+    """Return RPI-RP2 mount path, auto-mounting via udisksctl if needed."""
     import glob
+    # Check standard mount paths first
     for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
         mounts = glob.glob(pat)
         if mounts:
             return mounts[0]
+    # Not mounted — look for the block device by label and mount it
+    try:
+        r = subprocess.run(
+            ["lsblk", "-o", "NAME,LABEL", "--noheadings", "--raw"],
+            capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "RPI-RP2":
+                devpath = f"/dev/{parts[0]}"
+                subprocess.run(["udisksctl", "mount", "-b", devpath],
+                               capture_output=True, timeout=10)
+                for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2"]:
+                    mounts = glob.glob(pat)
+                    if mounts:
+                        return mounts[0]
+    except Exception:
+        pass
     return None
 
 
