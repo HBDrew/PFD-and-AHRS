@@ -3034,10 +3034,14 @@ def ahrs_setup_hit(x, y, ss):
 def _scan_wifi():
     """Return [{ssid, signal, secured}] sorted by signal desc, deduped by SSID."""
     try:
+        # Kick off a fresh scan (returns immediately) then wait for results
+        subprocess.run(["sudo", "nmcli", "dev", "wifi", "rescan"],
+                       capture_output=True, timeout=10)
+        import time; time.sleep(4)
         r = subprocess.run(
             ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
              "dev", "wifi", "list"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=10,
         )
         if r.returncode != 0:
             raise RuntimeError((r.stderr or r.stdout).strip()[:80] or "nmcli scan failed")
