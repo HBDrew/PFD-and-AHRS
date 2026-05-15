@@ -1401,10 +1401,16 @@ function updateTerrainAlert() {
   if (now - TAWS.lastCheckMs < 200) return;
   TAWS.lastCheckMs = now;
   if (!D.fix || D.fix === 0) { TAWS.level = 0; return; }
-  // Inhibit alerts below user-set Vso (taxi, rollout, etc.)
-  if (D.speed < V.vs0) { TAWS.level = 0; return; }
   if (typeof Terrain === 'undefined' || !Terrain.elevationAt) return;
+  // Always sample elevation under the aircraft — Terrain.render() bails
+  // out when its in-memory decode cache is empty, and this call is the
+  // bootstrap that lazy-loads tiles around our position. Skipping it
+  // below Vso would silently stop the terrain mesh from ever drawing
+  // on the ground / at taxi speeds.
   const elevM = Terrain.elevationAt(D.lat, D.lon);
+  // Inhibit the alert banner below user-set Vso, but keep the mesh
+  // rendering — the SVT-style red mountains ahead are still useful.
+  if (D.speed < V.vs0) { TAWS.level = 0; return; }
   if (elevM === null || elevM === undefined || !isFinite(elevM)) {
     TAWS.level = 0; return;
   }
