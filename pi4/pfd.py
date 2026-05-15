@@ -1209,6 +1209,31 @@ def _filled_polygon(surf, points, color, aa=True):
         pygame.draw.aalines(surf, color, True, points)
 
 
+# Anti-aliased polygon outline that doesn't stair-step on oblique edges.
+# pygame.draw.polygon(width=N) renders a hard-edge N-pixel stroke, and
+# pygame.gfxdraw.aapolygon only smooths a 1-pixel outline centred on the
+# polygon coords — so the outer pixel of the 2-px outline stays jaggy on
+# the Veeder-Root pointer angles (the chamfered corners are fine, the
+# pointer diagonals are the problem). Supersampling at 2× and bilinear
+# downscaling gives a clean AA stroke at any angle for the cost of a
+# small SRCALPHA surface and one smoothscale.
+def _aa_polygon_outline(surf, points, color, width=2, pad=2):
+    if not points:
+        return
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x0, y0 = min(xs) - pad, min(ys) - pad
+    x1, y1 = max(xs) + pad, max(ys) + pad
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    big = pygame.Surface((w * 2, h * 2), pygame.SRCALPHA)
+    pts_2x = [((px - x0) * 2, (py - y0) * 2) for px, py in points]
+    pygame.draw.polygon(big, color, pts_2x, width=width * 2)
+    small = pygame.transform.smoothscale(big, (w, h))
+    surf.blit(small, (x0, y0))
+
+
 # ── Roll arc ──────────────────────────────────────────────────────────────────
 def _doghouse_pts(cx, cy, ang_rad, r, size=11, inward=True):
     """
@@ -1463,8 +1488,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                   show_adjacent=True, adj_slot_h=int(23 * _fs))
     _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
-    pygame.draw.polygon(surf, WHITE, pts_s, width=2)
-    pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
+    _aa_polygon_outline(surf, pts_s, WHITE)
 
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -1607,8 +1631,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                         show_adjacent=True, adj_slot_h=int(18 * _fs))
     _drum_shade(surf, _drm_x, TAPE_MID - _half_out + 1, _drm_render_w, _drm_h)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
-    pygame.draw.polygon(surf, WHITE, pts_a, width=2)
-    pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
+    _aa_polygon_outline(surf, pts_a, WHITE)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
