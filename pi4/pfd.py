@@ -1183,14 +1183,22 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 
     cx  = ax + aw // 2
     cy  = ay + ah // 2
-    # Pitch up (positive) = nose up = horizon BELOW screen centre.
-    pitch_py = int(-pitch * px_per_deg)
 
-    # Horizon passes through (hcx, hcy) tilted by roll
-    hcx = cx
-    hcy = cy - pitch_py
     roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
+
+    # Horizon point: the point on the horizon line closest to the camera
+    # centre. At pitch=θ, roll=0 it sits at (cx, cy + θ*px_per_deg) —
+    # directly below. Rolling rotates that point around (cx, cy) so at
+    # roll=180° the horizon ends up *above* the centre, not below.
+    # The earlier formula skipped the rotation and pinned (hcx, hcy)
+    # below cy regardless of roll — visually correct only near roll=0
+    # and exactly inverted (where symmetry hid the error), but wrong
+    # everywhere else, so the sky/ground polygon flipped to ground for
+    # any pitch+roll combination past inverted.
+    pitch_offset = pitch * px_per_deg
+    hcx = cx - pitch_offset * sin_r
+    hcy = cy + pitch_offset * cos_r
 
     # Extend horizon line well beyond the rect so clipping takes care of edges.
     # Line direction in pygame Y-down is (cos_r, -sin_r); for positive roll
