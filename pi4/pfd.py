@@ -510,6 +510,23 @@ def _push_magcal_clear_to_pico():
     threading.Thread(target=_worker, daemon=True, name="MagCalClear").start()
 
 
+def _push_orient_to_pico(connector, mounting):
+    """Send orientation + mounting to the Pico via USB serial ($ORIENT, command).
+    Runs in a background thread so the UI stays responsive."""
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                cmd = f"$ORIENT,{connector},{mounting}\n".encode()
+                client.write(cmd)
+                print(f"[PFD] orient sent via USB serial ({connector},{mounting})")
+            except Exception as e:
+                print(f"[PFD] orient serial write failed: {e}")
+        else:
+            print("[PFD] orient push: no serial client available")
+    threading.Thread(target=_worker, daemon=True, name="OrientPush").start()
+
+
 def _apply_local_magdev(yaw, table):
     """Apply a 36-slot deviation table — mirrors Pico's apply_magdev exactly."""
     if len(table) != 36:
@@ -2970,6 +2987,10 @@ def handle_event(event, demo_mode):
                 _, key, val = action.split(":", 2)
                 disp["ss"][key] = val
                 _settings.mark_dirty()
+                if key in ("orientation", "mounting"):
+                    _push_orient_to_pico(
+                        disp["ss"].get("orientation", "right"),
+                        disp["ss"].get("mounting", "normal"))
             return True
 
         # ── Connectivity taps ─────────────────────────────────────────────
@@ -4465,11 +4486,11 @@ def draw_ahrs_setup(surf, ss):
     cbx = bx+bw-138-14; cby = by+(bh-_DSP_BTN_H)//2
     _action_btn(surf, cbx, cby, 138, _DSP_BTN_H, "CALIBRATE", "ok")
 
-    # Row 3: AHRS orientation — read-only; set AHRS_CONNECTOR in firmware/config.py.
-    # Highlights the value currently reported by the Pico firmware.
+    # Row 3: AHRS orientation — tap to change; change is pushed to Pico over USB.
+    # Highlight follows Pico broadcast when connected, Pi4 ss otherwise.
     bx, by, bw, bh = _setting_row(surf, 3, "ORIENTATION",
-                                   "Set AHRS_CONNECTOR in firmware/config.py")
-    cur_ori = disp.get("orientation", "right")
+                                   "Direction the connector faces – sent to AHRS")
+    cur_ori = ss.get("orientation", disp.get("orientation", "right"))
     opts_ori = [("forward", "FWD"), ("left", "LEFT"),
                 ("right",   "RIGHT"), ("aft", "AFT")]
     seg_w = 88
@@ -4480,10 +4501,10 @@ def draw_ahrs_setup(surf, ss):
         _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
                  lbl, v == cur_ori)
 
-    # Row 4: Mounting — read-only; set AHRS_MOUNTING in firmware/config.py.
+    # Row 4: Mounting — tap to change; change is pushed to Pico over USB.
     bx, by, bw, bh = _setting_row(surf, 4, "MOUNTING",
-                                   "Set AHRS_MOUNTING in firmware/config.py")
-    cur = disp.get("mounting", "normal")
+                                   "Right-side-up or inverted – sent to AHRS")
+    cur = ss.get("mounting", disp.get("mounting", "normal"))
     opts = [("normal","NORMAL"),("inverted","INVERTED")]
     total = 2*120 + _DSP_BTN_G
     rx = bx + bw - total - 14
@@ -4558,9 +4579,22 @@ def ahrs_setup_hit(x, y, ss):
             if cbx <= x <= cbx + 138 and cby <= y <= cby + _DSP_BTN_H:
                 return "mag_cal_open"
         elif ri == 3:
-            pass   # orientation is set in firmware/config.py (AHRS_CONNECTOR)
+            seg_w = 88
+            total_o = 4 * seg_w + 3 * _DSP_BTN_G
+            rx = bx + bw - total_o - 14
+            ry = by + (_SS_RH - _DSP_BTN_H) // 2
+            for i, v in enumerate(("forward", "left", "right", "aft")):
+                xi = rx + i * (seg_w + _DSP_BTN_G)
+                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:orientation:{v}"
         elif ri == 4:
-            pass   # mounting is set in firmware/config.py (AHRS_MOUNTING)
+            total_m = 2*120 + _DSP_BTN_G
+            rx = bx + bw - total_m - 14
+            ry = by + (_SS_RH - _DSP_BTN_H) // 2
+            for i, v in enumerate(("normal", "inverted")):
+                if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
+                    if ry <= y <= ry + _DSP_BTN_H:
+                        return f"set:mounting:{v}"
         elif ri == 5:
             seg_w = 96
             total_src = 3 * seg_w + 2 * _DSP_BTN_G

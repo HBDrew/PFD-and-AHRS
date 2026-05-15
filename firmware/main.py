@@ -37,8 +37,9 @@ from wt901      import WT901
 from gps        import GPS
 from web_server import start_server
 
-TRIMS_FILE = 'trims.json'
+TRIMS_FILE  = 'trims.json'
 MAGDEV_FILE = 'magdev.json'
+ORIENT_FILE = 'orient.json'
 
 
 def load_trims():
@@ -80,6 +81,31 @@ def save_magdev(table):
             f.write(ujson.dumps({'corrections': table}))
     except Exception as e:
         print(f'save_magdev failed: {e}')
+
+
+def load_orient():
+    _valid_c = ('forward', 'right', 'left', 'aft')
+    _valid_m = ('normal', 'inverted')
+    try:
+        with open(ORIENT_FILE, 'r') as f:
+            d = ujson.loads(f.read())
+        c = d.get('connector', AHRS_CONNECTOR)
+        m = d.get('mounting',  AHRS_MOUNTING)
+        if c not in _valid_c: c = AHRS_CONNECTOR
+        if m not in _valid_m: m = AHRS_MOUNTING
+        return c, m
+    except Exception:
+        return AHRS_CONNECTOR, AHRS_MOUNTING
+
+
+def save_orient(state):
+    try:
+        with open(ORIENT_FILE, 'w') as f:
+            f.write(ujson.dumps({'connector': state['orientation'],
+                                  'mounting':  state['mounting']}))
+    except Exception as e:
+        print(f'save_orient failed: {e}')
+
 
 
 def apply_magdev(yaw, table):
@@ -179,18 +205,19 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
                 # reads correctly regardless of how the sensor is mounted.
                 _r = -ahrs.roll
                 _p = ahrs.pitch
-                if AHRS_CONNECTOR == 'forward':
+                _conn = state['orientation']
+                if _conn == 'forward':
                     _p, _r = -_r, _p
                     _hdg_off = 90.0
-                elif AHRS_CONNECTOR == 'left':
+                elif _conn == 'left':
                     _p, _r = -_p, -_r
                     _hdg_off = 180.0
-                elif AHRS_CONNECTOR == 'aft':
+                elif _conn == 'aft':
                     _p, _r = _r, -_p
                     _hdg_off = 270.0
                 else:    # 'right' — default, connector points to the right
                     _hdg_off = 0.0
-                if AHRS_MOUNTING == 'inverted':
+                if state['mounting'] == 'inverted':
                     _p = -_p
                     _r = -_r
                 # Trim applied in NED frame (after axis remapping)
@@ -214,6 +241,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
         if state.get('_save_magdev'):
             save_magdev(state['_magdev'])
             state['_save_magdev'] = False
+        if state.get('_save_orient'):
+            save_orient(state)
+            state['_save_orient'] = False
 
         await asyncio.sleep_ms(0)   # yield so web server can handle requests
 
@@ -336,6 +366,21 @@ async def stdin_cmd_loop():
                                             print(f'$MAGDEV_ACK,0,ERR got {len(vals)}')
                                     except Exception as e:
                                         print(f'$MAGDEV_ACK,0,ERR {e}')
+                            elif line.startswith('$ORIENT,'):
+                                parts = line[8:].split(',')
+                                if len(parts) == 2:
+                                    c = parts[0].strip()
+                                    m = parts[1].strip()
+                                    if (c in ('forward', 'right', 'left', 'aft')
+                                            and m in ('normal', 'inverted')):
+                                        state['orientation'] = c
+                                        state['mounting']    = m
+                                        state['_save_orient'] = True
+                                        print(f'$ORIENT_ACK,{c},{m},OK')
+                                    else:
+                                        print(f'$ORIENT_ACK,ERR invalid: {c},{m}')
+                                else:
+                                    print('$ORIENT_ACK,ERR bad format')
                         elif b != 13:
                             buf.append(b)
                             if len(buf) > 600:  # guard against runaway input
@@ -360,6 +405,10 @@ async def main():
 
     state.update(load_trims())
     print(f'Trims loaded: pitch={state["pitch_trim"]}° roll={state["roll_trim"]}° yaw={state["yaw_trim"]}°')
+    _c, _m = load_orient()
+    state['orientation'] = _c
+    state['mounting']    = _m
+    print(f'Orientation: connector={_c}  mounting={_m}')
     state['_magdev'] = load_magdev()
     if state['_magdev']:
         print(f'Magdev table loaded: {len(state["_magdev"])} corrections')
