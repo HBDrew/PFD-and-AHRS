@@ -450,7 +450,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                           _project)
 
     # ── Runways ──────────────────────────────────────────────────────────────
-    if settings.get("map_show_runways", True) and runways_arr is not None:
+    # Runway rectangles only carry useful detail at terminal-area zooms —
+    # above 5 nm they collapse to single pixels and clutter the screen.
+    if (settings.get("map_show_runways", True) and runways_arr is not None
+            and range_nm <= 5):
         nearby = _rwy_mod.query_nearby(runways_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         for r in nearby:
