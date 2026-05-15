@@ -4465,13 +4465,11 @@ def draw_ahrs_setup(surf, ss):
     cbx = bx+bw-138-14; cby = by+(bh-_DSP_BTN_H)//2
     _action_btn(surf, cbx, cby, 138, _DSP_BTN_H, "CALIBRATE", "ok")
 
-    # Row 3: AHRS orientation (which side of the board the connector
-    # points toward, viewed from the pilot's seat).  Pitch / roll / heading
-    # get remapped at render time so the AHRS reads correctly regardless
-    # of how it's bolted in.
+    # Row 3: AHRS orientation — read-only; set AHRS_CONNECTOR in firmware/config.py.
+    # Highlights the value currently reported by the Pico firmware.
     bx, by, bw, bh = _setting_row(surf, 3, "ORIENTATION",
-                                   "Direction the connector faces")
-    cur_ori = ss.get("orientation", "right")
+                                   "Set AHRS_CONNECTOR in firmware/config.py")
+    cur_ori = disp.get("orientation", "right")
     opts_ori = [("forward", "FWD"), ("left", "LEFT"),
                 ("right",   "RIGHT"), ("aft", "AFT")]
     seg_w = 88
@@ -4482,11 +4480,10 @@ def draw_ahrs_setup(surf, ss):
         _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
                  lbl, v == cur_ori)
 
-    # Row 4: Mounting (right-side-up vs upside-down).  Independent of
-    # orientation — combines with it at render time.
+    # Row 4: Mounting — read-only; set AHRS_MOUNTING in firmware/config.py.
     bx, by, bw, bh = _setting_row(surf, 4, "MOUNTING",
-                                   "Right-side-up or inverted")
-    cur = ss.get("mounting", "normal")
+                                   "Set AHRS_MOUNTING in firmware/config.py")
+    cur = disp.get("mounting", "normal")
     opts = [("normal","NORMAL"),("inverted","INVERTED")]
     total = 2*120 + _DSP_BTN_G
     rx = bx + bw - total - 14
@@ -4561,22 +4558,9 @@ def ahrs_setup_hit(x, y, ss):
             if cbx <= x <= cbx + 138 and cby <= y <= cby + _DSP_BTN_H:
                 return "mag_cal_open"
         elif ri == 3:
-            seg_w = 88
-            total_o = 4 * seg_w + 3 * _DSP_BTN_G
-            rx = bx + bw - total_o - 14
-            ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            for i, v in enumerate(("forward", "left", "right", "aft")):
-                xi = rx + i * (seg_w + _DSP_BTN_G)
-                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
-                    return f"set:orientation:{v}"
+            pass   # orientation is set in firmware/config.py (AHRS_CONNECTOR)
         elif ri == 4:
-            total_m = 2*120 + _DSP_BTN_G
-            rx = bx + bw - total_m - 14
-            ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            for i, v in enumerate(("normal","inverted")):
-                if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
-                    if ry <= y <= ry+_DSP_BTN_H:
-                        return f"set:mounting:{v}"
+            pass   # mounting is set in firmware/config.py (AHRS_MOUNTING)
         elif ri == 5:
             seg_w = 96
             total_src = 3 * seg_w + 2 * _DSP_BTN_G
@@ -7996,58 +7980,21 @@ def render(surf, demo_mode, connected, data_stale=False):
     trk_bug  = disp.get("trk_bug", 0.0)
     alt_bug  = disp["alt_bug"]
 
-    # ── AHRS convention correction + orientation + mounting + trim ─────────
-    # Base correction: the AHRS firmware reports roll and yaw with an
-    # ENU-like sign convention (positive roll = LEFT wing down,
-    # positive yaw = CCW from above) while the display assumes NED
-    # (positive roll = RIGHT wing down, positive yaw = CW from above).
-    # Pitch sign matches between ENU and NED.  Negate roll up front so
-    # orientation rotations layer on top of a clean NED-aligned base;
-    # yaw is negated below in the heading-source path.  The simulator
-    # and demo path generate aircraft-frame (NED) values directly, so
-    # skip the correction in those modes.
-    #
-    # ORIENTATION (which side of the AHRS the connector points toward,
-    # viewed from the pilot's seat) is applied next as a yaw-axis
-    # rotation that remaps the IMU's pitch / roll axes onto the
-    # aircraft's, and adds a magnetic heading offset so the compass
-    # reads correctly.  MOUNTING (right-side-up vs inverted) is the
-    # final independent flip about the longitudinal axis.  Trim is
-    # added last.
+    # ── Trim (Pi4-local, additive on top of Pico's own trim) ──────────────
+    # The Pico firmware now handles ENU→NED conversion, connector-orientation
+    # axis remapping, and mounting flip in sensor_loop before broadcasting.
+    # Sim / demo generate aircraft-frame (NED) values directly.  Either way
+    # roll / pitch arrive here already in the correct NED frame.
+    # Pi4 local trim (disp["ss"]["pitch_trim"] / roll_trim) adds a small
+    # residual correction; typically both are 0.0.
     ss = disp["ss"]
     pitch_trim = ss.get("pitch_trim", 0.0)
     roll_trim  = ss.get("roll_trim",  0.0)
     ahrs_synthetic = demo_mode or (_sim_state is not None)
-    ahrs_sign = 1 if ahrs_synthetic else -1   # -1 negates for ENU→NED
 
     if not ahrs_synthetic:
-        roll = -roll   # base ENU→NED roll correction
-        orientation = ss.get("orientation", "right")
-        if orientation == "forward":
-            pitch, roll = -roll, pitch
-            hdg_offset = 90.0
-        elif orientation == "left":
-            pitch, roll = -pitch, -roll
-            hdg_offset = 180.0
-        elif orientation == "aft":
-            pitch, roll = roll, -pitch
-            hdg_offset = 270.0
-        else:    # "right" — default, no rotation
-            hdg_offset = 0.0
-        if ss.get("mounting") == "inverted":
-            pitch = -pitch
-            roll  = -roll
-        # Trim only matters for the real AHRS — sim / demo write
-        # aircraft-frame values directly so a non-zero trim would
-        # show as a permanent wing-down on a level sim flight.
         pitch += pitch_trim
         roll  += roll_trim
-    else:
-        # Sim / demo: state values are already aircraft-frame (NED).
-        # Skip every AHRS-mounting compensation, including trim.
-        hdg_offset = 0.0
-    # hdg_offset is applied later, after `hdg` is resolved from the
-    # heading-source selector (mag / trk / auto).
 
     # ── Stale-data timeout: no link for > STALE_TIMEOUT_S → treat as AHRS fail
     if data_stale:
@@ -8060,24 +8007,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     hdg_pref = ss.get("hdg_src", "auto")
     use_track, hdg_label, hdg_color = _resolve_hdg_source(
         hdg_pref, gps_ok, ahrs_ok, speed)
-    # Apply the AHRS-orientation magnetic offset to the raw yaw before
-    # feeding it to the heading-source selector, AND negate raw yaw to
-    # convert the firmware's ENU-style positive-yaw-CCW convention to
-    # the display's NED-style positive-yaw-CW.  Sim / demo skip the
-    # negation (they generate NED directly).  In TRK mode the
-    # complementary filter combines yaw with GPS ground track, so the
-    # corrected yaw must go IN to the filter — applying a correction
-    # to the filter's output would shift the GPS-track component too.
-    # Piecewise-linear mag cal: each 90° quadrant has its own
-    # correction curve from the cardinal-walk wizard.  Linearly
-    # interpolated by _apply_mag_cal between the four captured
-    # deltas at N / E / S / W.  Shifts MAG-mode display but doesn't
-    # affect TRK mode (the complementary filter operates on yaw
-    # deltas — a smoothly-varying correction's derivative just
-    # blends in with normal yaw motion).
-    # Raw sensor heading (pre-magdev) with orientation applied.
-    _pico_yaw_raw    = disp.get("yaw_raw", disp["yaw"])
-    yaw_raw_oriented = (ahrs_sign * _pico_yaw_raw + hdg_offset) % 360.0
+    # Raw NED heading pre-magdev.  Pico firmware (sensor_loop) already applied
+    # ENU→NED, connector-orientation axis mapping, and mounting flip before
+    # broadcasting.  Sim / demo generate NED headings directly.  In TRK mode
+    # the complementary filter blends yaw with GPS ground track; the corrected
+    # yaw feeds the filter so the GPS-track component is unaffected.
+    yaw_raw_oriented = disp.get("yaw_raw", disp["yaw"])
     disp["_yaw_uncal"] = yaw_raw_oriented   # used by cal wizard CAPTURE
 
     # Apply Pi4-local deviation table when available.  It is built from
@@ -8088,7 +8023,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         yaw_corr = _apply_local_magdev(yaw_raw_oriented, _pi4_magdev)
     else:
         # No local table — use Pico-corrected yaw (or synthetic).
-        yaw_corr = (ahrs_sign * disp["yaw"] + hdg_offset) % 360.0
+        yaw_corr = disp.get("yaw", yaw_raw_oriented)
     disp["_yaw_cal"] = yaw_corr
     if use_track:
         # Complementary filter: AHRS yaw rate propagates each frame, GPS

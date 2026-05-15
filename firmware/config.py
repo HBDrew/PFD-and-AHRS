@@ -70,5 +70,19 @@ AHRS_PITCH_TRIM = 0.0   # degrees; positive = nose-up correction
 AHRS_ROLL_TRIM  = 0.0   # degrees; positive = right-roll correction
 AHRS_YAW_TRIM   = 0.0   # degrees; positive = clockwise heading correction
 
+# ── AHRS Orientation ─────────────────────────────────────────────────────────
+# AHRS_CONNECTOR: which edge of the WT901 the connector points toward, viewed
+# from the pilot's seat.  Swaps pitch/roll axes and adds a heading offset so
+# the display reads correctly regardless of how the sensor is physically bolted.
+#   'right'   – connector points to the right of the aircraft (factory default)
+#   'forward' – connector points toward the nose
+#   'left'    – connector points to the left of the aircraft
+#   'aft'     – connector points toward the tail
+AHRS_CONNECTOR = 'right'
+
+# AHRS_MOUNTING: 'normal' = component-side up, 'inverted' = component-side down.
+# Applies an additional pitch/roll sign flip, independent of AHRS_CONNECTOR.
+AHRS_MOUNTING  = 'normal'
+
 # ── Data broadcast rate ──────────────────────────────────────────────────────
 BROADCAST_HZ = 10   # SSE events per second sent to the phone display

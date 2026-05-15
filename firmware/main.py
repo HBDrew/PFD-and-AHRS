@@ -30,6 +30,7 @@ from config import (
     BME280_I2C_ADDR, BME280_QNH_DEFAULT,
     WT901_AY_SIGN,
     AHRS_PITCH_TRIM, AHRS_ROLL_TRIM, AHRS_YAW_TRIM,
+    AHRS_CONNECTOR, AHRS_MOUNTING,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
 from wt901      import WT901
@@ -124,6 +125,9 @@ state = {
     'pitch_trim': 0.0,
     'roll_trim':  0.0,
     'yaw_trim':   0.0,
+    # AHRS orientation (reflects config.py values; broadcast for Pi4 info display)
+    'orientation': AHRS_CONNECTOR,
+    'mounting':    AHRS_MOUNTING,
     # Sensor health flags (set every sensor_loop tick)
     'ahrs_ok':   False,
     'gps_ok':    False,
@@ -170,9 +174,30 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
         # ── AHRS ──
         try:
             if ahrs.update():
-                state['roll']    = ahrs.roll  + state['roll_trim']
-                state['pitch']   = ahrs.pitch + state['pitch_trim']
-                _raw             = (ahrs.yaw + state['yaw_trim']) % 360
+                # ENU→NED base conversion (WT901 uses ENU: roll left-positive,
+                # yaw CCW-positive).  Orientation remaps axes so the display
+                # reads correctly regardless of how the sensor is mounted.
+                _r = -ahrs.roll
+                _p = ahrs.pitch
+                if AHRS_CONNECTOR == 'forward':
+                    _p, _r = -_r, _p
+                    _hdg_off = 90.0
+                elif AHRS_CONNECTOR == 'left':
+                    _p, _r = -_p, -_r
+                    _hdg_off = 180.0
+                elif AHRS_CONNECTOR == 'aft':
+                    _p, _r = _r, -_p
+                    _hdg_off = 270.0
+                else:    # 'right' — default, connector points to the right
+                    _hdg_off = 0.0
+                if AHRS_MOUNTING == 'inverted':
+                    _p = -_p
+                    _r = -_r
+                # Trim applied in NED frame (after axis remapping)
+                state['roll']    = _r + state['roll_trim']
+                state['pitch']   = _p + state['pitch_trim']
+                # Yaw: negate ENU→NED, apply orientation offset, then trim
+                _raw             = (-ahrs.yaw - state['yaw_trim'] + _hdg_off) % 360
                 state['yaw_raw'] = _raw
                 state['yaw']     = apply_magdev(_raw, state['_magdev'])
                 state['ay']      = ahrs.ay * WT901_AY_SIGN
@@ -252,6 +277,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
                     'roll','pitch','yaw','yaw_raw','ay','lat','lon','speed','track',
                     'fix','sats','alt','gps_alt','vspeed','baro_src','baro_hpa',
                     'ahrs_ok','gps_ok','gps_comm','baro_ok','pitch_trim','roll_trim','yaw_trim',
+                    'orientation','mounting',
                 )}
                 print('$AHRS,' + ujson.dumps(_usb))
             except Exception:
