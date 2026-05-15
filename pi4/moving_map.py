@@ -144,7 +144,7 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     if not HAS_NUMPY:
         tile = pygame.Surface((n, n))
         tile.fill(_BG)
-        return pygame.transform.smoothscale(tile, (target_px, target_px))
+        return pygame.transform.smoothscale(tile, (target_px, target_px)), None
 
     lat_top = c_lat + span_lat * 0.5
     lat_bot = c_lat - span_lat * 0.5
@@ -210,12 +210,54 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
 
     # pygame.surfarray expects (w, h, 3); our rgb is (rows, cols, 3) so swap.
     tile = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
+    # Return the n×n elevation grid alongside the smoothscaled tint so the
+    # alert overlay can recompute clearance per-frame against current alt
+    # without resampling SRTM tiles.  Grid is north-up, matching tile.
+    return (pygame.transform.smoothscale(tile, (target_px, target_px)),
+            elevs)
+
+
+# SVT clearance bands.  Mirror the palette in svt_renderer.py so a pixel
+# painted red on the AI shows up red on the inset and vice versa.
+_ALERT_RED_FT    = 0     # clearance < 0 ft  → terrain at/above aircraft
+_ALERT_ORANGE_FT = 100   # clearance < 100 ft → SVT "warning" band
+_ALERT_AMBER_FT  = 500   # clearance < 500 ft → SVT "caution" band
+_ALERT_RGBA = {
+    "red":    (220,  30,  30, 220),
+    "orange": (220,  80,   0, 200),
+    "amber":  (200, 130,   0, 170),
+}
+
+
+def _build_alert_overlay(elev_grid, alt_ft, target_px):
+    """RGBA overlay painting clearance < 500 ft pixels in SVT colours.
+
+    Reuses the cached north-up (n × n) elevation grid; the comparison
+    against current alt_ft happens every frame so the overlay tracks
+    altitude even while the underlying hypsometric tint is cache-hot."""
+    if not HAS_NUMPY or elev_grid is None:
+        return None
+    n = elev_grid.shape[0]
+    clearance = alt_ft - elev_grid
+
+    rgba = np.zeros((n, n, 4), dtype=np.uint8)
+    m_red    = clearance < _ALERT_RED_FT
+    m_orange = (~m_red) & (clearance < _ALERT_ORANGE_FT)
+    m_amber  = (clearance >= _ALERT_ORANGE_FT) & (clearance < _ALERT_AMBER_FT)
+    rgba[m_red]    = _ALERT_RGBA["red"]
+    rgba[m_orange] = _ALERT_RGBA["orange"]
+    rgba[m_amber]  = _ALERT_RGBA["amber"]
+
+    if not (m_red.any() or m_orange.any() or m_amber.any()):
+        return None
+
+    tile = pygame.image.frombuffer(rgba.tobytes(), (n, n), 'RGBA')
     return pygame.transform.smoothscale(tile, (target_px, target_px))
 
 
 def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     if not srtm_dir:
-        return None
+        return None, None
     q_lat, q_lon = _quantise_centre(c_lat, c_lon, range_nm)
     # water_dir is part of the cache key so toggling water tiles on/off
     # invalidates stale tints.  Empty string == no water sampling.
@@ -224,15 +266,15 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
            bool(water_dir))
     if key in _tint_cache:
         # Move to end to mark MRU
-        s = _tint_cache.pop(key)
-        _tint_cache[key] = s
-        return s
-    surf = _build_tint(srtm_dir, water_dir, q_lat, q_lon,
-                       range_nm, size_px, oversize)
-    _tint_cache[key] = surf
+        entry = _tint_cache.pop(key)
+        _tint_cache[key] = entry
+        return entry
+    entry = _build_tint(srtm_dir, water_dir, q_lat, q_lon,
+                        range_nm, size_px, oversize)
+    _tint_cache[key] = entry
     while len(_tint_cache) > _TINT_CACHE_MAX:
         _tint_cache.pop(next(iter(_tint_cache)))
-    return surf
+    return entry
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -241,7 +283,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
-           airport_types_visible=None, gs_kt=0.0):
+           airport_types_visible=None, gs_kt=0.0, vso_kt=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -309,8 +351,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if settings.get("map_show_terrain", True) and srtm_dir:
         oversize = 1.0 if orient == "nrth" else 1.45
         _wd = water_dir if settings.get("map_show_water", True) else ""
-        tint = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
-                         max(w, h), oversize)
+        tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
+                                    max(w, h), oversize)
         if tint is not None:
             if orient == "trk" and rot_deg != 0.0:
                 tint_r = pygame.transform.rotate(tint, rot_deg)
@@ -318,6 +360,20 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 tint_r = tint
             tr = tint_r.get_rect(center=(int(cx), int(cy)))
             surf.blit(tint_r, tr)
+
+            # SVT-style clearance overlay (red / orange / amber).  Inhibit
+            # below Vso so taxi and rollout don't paint the inset red —
+            # mirrors how the PFD's TAWS banner is gated.
+            if vso_kt is not None and gs_kt >= vso_kt and elev_grid is not None:
+                overlay = _build_alert_overlay(
+                    elev_grid, alt_ft, max(w, h))
+                if overlay is not None:
+                    if orient == "trk" and rot_deg != 0.0:
+                        overlay_r = pygame.transform.rotate(overlay, rot_deg)
+                    else:
+                        overlay_r = overlay
+                    o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
+                    surf.blit(overlay_r, o_rect)
 
     # Slightly darker veil under vector layers so labels read cleanly
     veil = pygame.Surface((w, h), pygame.SRCALPHA)

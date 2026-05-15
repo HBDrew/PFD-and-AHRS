@@ -8293,7 +8293,8 @@ def render(surf, demo_mode, connected, data_stale=False):
     # pitch ladder so the ladder reads through unobstructed.
     if ds.get("map_enabled", False) and gps_ok:
         _miw = max(140, int(AI_W * 0.30))
-        _mih = max(120, int(AI_H * 0.40))
+        # +2 px so the range ring's top doesn't clip against the inset edge.
+        _mih = max(120, int(AI_H * 0.40)) + 2
         rect = (AI_X + 6,
                 AI_Y + AI_H - _mih - 6,
                 _miw, _mih)
@@ -8349,6 +8350,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             font=_get_font(11, bold=True),
             airport_types_visible=_types_vis,
             gs_kt=speed,
+            vso_kt=fp.get("vs0", VS0),
         )
 
     # 2. Pitch ladder (with roll rotation)
