@@ -1492,7 +1492,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                   show_adjacent=True, adj_slot_h=int(23 * _fs))
     _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
-    _aa_polygon_outline(surf, pts_s, WHITE)
+    _aa_polygon_outline(surf, pts_s, WHITE, width=4)
 
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -1635,7 +1635,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                         show_adjacent=True, adj_slot_h=int(18 * _fs))
     _drum_shade(surf, _drm_x, TAPE_MID - _half_out + 1, _drm_render_w, _drm_h)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
-    _aa_polygon_outline(surf, pts_a, WHITE)
+    _aa_polygon_outline(surf, pts_a, WHITE, width=4)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
