@@ -85,6 +85,7 @@ import settings as _settings
 import moving_map as _map_mod
 import sun as _sun_mod
 import hits as _hits_mod
+import audio_alerts
 
 DEG = math.pi / 180
 
@@ -1983,6 +1984,13 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok, vso_kt=VS0):
                 level = max(level, 1)
 
     _terrain_alert_level = level
+    # Voice callouts mirror the visual band: TERRAIN at caution,
+    # PULL UP at warning. Rate-limited inside audio_alerts.play() so
+    # this can fire every render frame without spamming.
+    if level == 2:
+        audio_alerts.play("pull_up")
+    elif level == 1:
+        audio_alerts.play("terrain")
 
 
 def draw_terrain_alert(surf):
@@ -8606,6 +8614,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     # recovery chevrons + the pitch ladder.  Faster too — no SVT pass,
     # no symbol projection.
     _extreme_att = is_extreme_attitude(pitch, roll)
+    # Voice cue for extreme bank — only fires when the AHRS is trusted
+    # and the sim isn't paused (otherwise the sim's frozen attitude
+    # would keep the callout repeating forever).
+    if (ahrs_ok and abs(roll) > EXTREME_BANK_DEG
+            and not disp["sim"].get("paused", False)):
+        audio_alerts.play("bank")
     if _extreme_att:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
     elif _shared_gl_ctx is not None and gps_ok:
@@ -9050,6 +9064,7 @@ def main():
     _settings.start(disp, SETTINGS_PATH)
 
     _init_backlight()
+    audio_alerts.init()
     _set_backlight(disp["ds"].get("brightness", 8))
 
     # Load obstacle + airport databases in background (non-blocking)
