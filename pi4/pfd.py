@@ -116,6 +116,7 @@ state = {
     "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
     "ahrs_ok": False, "gps_ok": False, "gps_comm": False, "baro_ok": False,
     "orientation": "right", "mounting": "normal",
+    "yaw_raw": 0.0,
 }
 
 # ── Display values (smoothed) ─────────────────────────────────────────────────
@@ -743,7 +744,7 @@ def smooth_state():
               "gps_alt", "baro_src",
               "ahrs_ok", "gps_ok", "gps_comm", "baro_ok",
               "pitch_trim", "roll_trim", "yaw_trim",
-              "orientation", "mounting"):
+              "orientation", "mounting", "yaw_raw"):
         if k in snap:
             disp[k] = snap[k]
 
