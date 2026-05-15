@@ -22,6 +22,7 @@ North-up: own-ship anchored at centre, north stays up.
 
 import math
 import os
+import threading
 import pygame
 
 try:
@@ -87,6 +88,8 @@ _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
 _D2_MAGENTA  = (220, 0, 220)
 _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
+_STATE_LINE  = (110, 130, 160)      # muted slate-blue: visible over tint
+                                    # without competing with airports / D2
 
 
 # ── Hypsometric terrain tint cache ────────────────────────────────────────────
@@ -119,39 +122,38 @@ if HAS_NUMPY:
     _PAL_B = np.array([30,  40,  45,  25,  35, 185, 245], dtype=np.float32)
 
 
-def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
-    """Render a north-up hypsometric tint surface centred on (c_lat, c_lon).
+# Wide-zoom tints (80 nm and above) sample ~64 SRTM tiles, which evicts the
+# 32-entry SRTM cache and forces ~30 s of disk I/O on the render thread when
+# the user steps zoom out. Mirror the SVT outer-mesh strategy: numpy work
+# happens on a worker thread, pygame surface finalisation stays on the main
+# thread (pygame's surface APIs are not thread-safe), and the renderer
+# paints around a None tint while the build is in flight.
+_TINT_SYNC_MAX_NM = 40           # range cap for synchronous builds
+_TINT_RENDER_MAX_NM = 80         # range cap for rendering the tint at all
+                                 # — above this, SRTM I/O is too heavy
+_tint_async_lock = threading.Lock()
+_tint_pending: set = set()       # keys currently being built on a worker
+_tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
 
-    Fully vectorised over the (n × n) sample grid: sample points are
-    grouped by their integer SRTM/water tile, the tile is loaded once,
-    and bulk fancy-indexing fills the elevation and water arrays.  Then
-    np.interp does the elevation → RGB palette lookup for all pixels in
-    three calls (one per channel).  No per-cell Python loops in the hot
-    path, so cache misses rebuild in a few ms even with water sampling
-    enabled.
 
-    `range_nm` is the radius shown at the inset's shorter axis, so the
-    full inset diameter is 2·range_nm.  `oversize` (≥ 1.0) inflates the
-    rendered area so a track-up rotation doesn't reveal the corners."""
+def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
+    """Numpy-only pixel builder for the hypsometric tint. Returns
+    (rgb (n, n, 3) uint8, elevs (n, n) float32) — north-up — or
+    (None, None) when numpy isn't available. Safe to call from a
+    background worker because it never touches a pygame surface."""
+    if not HAS_NUMPY:
+        return None, None
     n = _TINT_N
     span_nm = 2.0 * range_nm * oversize
     span_lat = span_nm / _NM_PER_DEG_LAT
     cos_lat = max(0.05, math.cos(math.radians(c_lat)))
     span_lon = span_lat / cos_lat
 
-    target_px = max(8, int(size_px * oversize))
-
-    if not HAS_NUMPY:
-        tile = pygame.Surface((n, n))
-        tile.fill(_BG)
-        return pygame.transform.smoothscale(tile, (target_px, target_px))
-
     lat_top = c_lat + span_lat * 0.5
     lat_bot = c_lat - span_lat * 0.5
     lon_lf  = c_lon - span_lon * 0.5
     lon_rt  = c_lon + span_lon * 0.5
 
-    # Sample lat/lon as (n × n) grids (broadcast — no copy).
     rows_lat = np.linspace(lat_top, lat_bot, n, dtype=np.float64)
     cols_lon = np.linspace(lon_lf,  lon_rt,  n, dtype=np.float64)
     sample_lat = np.broadcast_to(rows_lat[:, None], (n, n))
@@ -162,7 +164,6 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
 
     lat_int = np.floor(sample_lat).astype(np.int32)
     lon_int = np.floor(sample_lon).astype(np.int32)
-    # Pack (lat, lon) into a single integer key so np.unique groups by tile.
     enc = ((lat_int.astype(np.int64) + 90) * 1000 +
            (lon_int.astype(np.int64) + 360))
 
@@ -173,7 +174,6 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
         if not mask.any():
             continue
 
-        # SRTM bulk-sample
         sres = load_tile(srtm_dir, tla, tlo)
         if sres is not None:
             sarr, sn = sres
@@ -186,7 +186,6 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
                 0, sn - 1)
             elevs[mask] = sarr[srow[mask], scol[mask]]
 
-        # Water bulk-sample (only when a tile exists for this 1° square).
         if water_dir:
             wres = _water_mod.load_tile(water_dir, tla, tlo)
             if wres is not None:
@@ -200,22 +199,99 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
                     0, wn - 1)
                 water[mask] = wmask[wrow[mask], wcol[mask]] > 0
 
-    # Vectorised palette lookup: one np.interp per channel, then stack.
     rgb_r = np.interp(elevs, _PAL_X, _PAL_R).astype(np.uint8)
     rgb_g = np.interp(elevs, _PAL_X, _PAL_G).astype(np.uint8)
     rgb_b = np.interp(elevs, _PAL_X, _PAL_B).astype(np.uint8)
     rgb = np.stack([rgb_r, rgb_g, rgb_b], axis=-1)
     if water.any():
         rgb[water] = _WATER_TINT_RGB
+    return rgb, elevs
 
-    # pygame.surfarray expects (w, h, 3); our rgb is (rows, cols, 3) so swap.
+
+def _finalize_tint_surface(rgb, target_px):
+    """Main-thread pygame finalize: rgb (n, n, 3) uint8 → smoothscaled
+    Surface at target_px. Called from _tint_get when picking up a
+    background-built result."""
+    if rgb is None:
+        surf = pygame.Surface((target_px, target_px))
+        surf.fill(_BG)
+        return surf
     tile = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
+    return pygame.transform.smoothscale(tile, (target_px, target_px))
+
+
+def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
+    """Synchronous build path — used for close-range tints where the I/O
+    cost is bounded by the SRTM tile cache. Wide ranges go through the
+    async path in _tint_get instead."""
+    target_px = max(8, int(size_px * oversize))
+    if not HAS_NUMPY:
+        n = _TINT_N
+        tile = pygame.Surface((n, n))
+        tile.fill(_BG)
+        return pygame.transform.smoothscale(tile, (target_px, target_px)), None
+    rgb, elevs = _build_tint_pixels(srtm_dir, water_dir,
+                                    c_lat, c_lon, range_nm, oversize)
+    return _finalize_tint_surface(rgb, target_px), elevs
+
+
+def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
+                       range_nm, oversize, key):
+    """Worker thread: do the heavy numpy work, post the result for the
+    main thread to convert into a pygame surface on the next render."""
+    try:
+        rgb, elevs = _build_tint_pixels(srtm_dir, water_dir,
+                                        c_lat, c_lon, range_nm, oversize)
+        with _tint_async_lock:
+            _tint_ready[key] = (rgb, elevs)
+    except Exception as e:
+        print(f"[moving_map] async tint build failed: {e}")
+    finally:
+        with _tint_async_lock:
+            _tint_pending.discard(key)
+
+
+# SVT clearance bands.  Mirror the palette in svt_renderer.py so a pixel
+# painted red on the AI shows up red on the inset and vice versa.
+_ALERT_RED_FT    = 0     # clearance < 0 ft  → terrain at/above aircraft
+_ALERT_ORANGE_FT = 100   # clearance < 100 ft → SVT "warning" band
+_ALERT_AMBER_FT  = 500   # clearance < 500 ft → SVT "caution" band
+_ALERT_RGBA = {
+    "red":    (220,  30,  30, 220),
+    "orange": (220,  80,   0, 200),
+    "amber":  (200, 130,   0, 170),
+}
+
+
+def _build_alert_overlay(elev_grid, alt_ft, target_px):
+    """RGBA overlay painting clearance < 500 ft pixels in SVT colours.
+
+    Reuses the cached north-up (n × n) elevation grid; the comparison
+    against current alt_ft happens every frame so the overlay tracks
+    altitude even while the underlying hypsometric tint is cache-hot."""
+    if not HAS_NUMPY or elev_grid is None:
+        return None
+    n = elev_grid.shape[0]
+    clearance = alt_ft - elev_grid
+
+    rgba = np.zeros((n, n, 4), dtype=np.uint8)
+    m_red    = clearance < _ALERT_RED_FT
+    m_orange = (~m_red) & (clearance < _ALERT_ORANGE_FT)
+    m_amber  = (clearance >= _ALERT_ORANGE_FT) & (clearance < _ALERT_AMBER_FT)
+    rgba[m_red]    = _ALERT_RGBA["red"]
+    rgba[m_orange] = _ALERT_RGBA["orange"]
+    rgba[m_amber]  = _ALERT_RGBA["amber"]
+
+    if not (m_red.any() or m_orange.any() or m_amber.any()):
+        return None
+
+    tile = pygame.image.frombuffer(rgba.tobytes(), (n, n), 'RGBA')
     return pygame.transform.smoothscale(tile, (target_px, target_px))
 
 
 def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     if not srtm_dir:
-        return None
+        return None, None
     q_lat, q_lon = _quantise_centre(c_lat, c_lon, range_nm)
     # water_dir is part of the cache key so toggling water tiles on/off
     # invalidates stale tints.  Empty string == no water sampling.
@@ -223,16 +299,103 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
            float(range_nm), int(size_px), round(oversize, 2),
            bool(water_dir))
     if key in _tint_cache:
-        # Move to end to mark MRU
-        s = _tint_cache.pop(key)
-        _tint_cache[key] = s
-        return s
-    surf = _build_tint(srtm_dir, water_dir, q_lat, q_lon,
-                       range_nm, size_px, oversize)
-    _tint_cache[key] = surf
-    while len(_tint_cache) > _TINT_CACHE_MAX:
-        _tint_cache.pop(next(iter(_tint_cache)))
-    return surf
+        entry = _tint_cache.pop(key)
+        _tint_cache[key] = entry
+        return entry
+
+    target_px = max(8, int(size_px * oversize))
+
+    # If a background worker has finished a build for this key, finalize
+    # it to a pygame surface here on the main thread and cache the result.
+    with _tint_async_lock:
+        ready = _tint_ready.pop(key, None)
+    if ready is not None:
+        rgb, elevs = ready
+        entry = (_finalize_tint_surface(rgb, target_px), elevs)
+        _tint_cache[key] = entry
+        while len(_tint_cache) > _TINT_CACHE_MAX:
+            _tint_cache.pop(next(iter(_tint_cache)))
+        return entry
+
+    # Close ranges: sync build (fits in the SRTM tile cache, fast enough
+    # that the render thread won't notice).
+    if range_nm <= _TINT_SYNC_MAX_NM:
+        entry = _build_tint(srtm_dir, water_dir, q_lat, q_lon,
+                            range_nm, size_px, oversize)
+        _tint_cache[key] = entry
+        while len(_tint_cache) > _TINT_CACHE_MAX:
+            _tint_cache.pop(next(iter(_tint_cache)))
+        return entry
+
+    # Wide ranges: hand off to a worker so the render thread stays
+    # responsive. Renderer paints a no-tint inset until the result
+    # comes back on a later frame.
+    with _tint_async_lock:
+        in_flight = key in _tint_pending
+        if not in_flight:
+            _tint_pending.add(key)
+    if not in_flight:
+        threading.Thread(
+            target=_tint_async_worker,
+            args=(srtm_dir, water_dir, q_lat, q_lon,
+                  range_nm, oversize, key),
+            daemon=True, name="MapTintBuild").start()
+    return None, None
+
+
+def _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
+                      project_fn):
+    """Draw admin_1 boundary polylines visible inside the inset bbox.
+
+    Uses each polyline's stored bbox to skip anything fully outside a
+    generous lat/lon window around the aircraft (1.6× the nominal range
+    on each axis — covers track-up rotation + the inset's longer axis).
+    Polylines that survive culling are projected through the caller's
+    project_fn (same rotation/translation used by every other vector
+    layer) and stroked as a single pygame.draw.lines call.
+    """
+    if state_lines is None or not HAS_NUMPY:
+        return
+
+    seg_starts = state_lines["seg_starts"]
+    seg_bboxes = state_lines["seg_bboxes"]   # (M, 4) lon_min, lat_min, lon_max, lat_max
+    points     = state_lines["points"]       # (N, 2) lon, lat
+    if len(seg_starts) <= 1:
+        return
+
+    # Visible lat/lon window — generous margin so a polyline that just
+    # clips the corner of the inset still draws cleanly.
+    d_lat = range_nm * 1.6 / _NM_PER_DEG_LAT
+    d_lon = range_nm * 1.6 / (_NM_PER_DEG_LAT * cos_lat)
+    lat_min, lat_max = lat - d_lat, lat + d_lat
+    lon_min, lon_max = lon - d_lon, lon + d_lon
+
+    # Vectorised AABB test: rejects ~99 % of the world's polylines.
+    overlaps = ((seg_bboxes[:, 0] <= lon_max)
+                & (seg_bboxes[:, 2] >= lon_min)
+                & (seg_bboxes[:, 1] <= lat_max)
+                & (seg_bboxes[:, 3] >= lat_min))
+    visible_idx = np.flatnonzero(overlaps)
+    if visible_idx.size == 0:
+        return
+
+    for idx in visible_idx:
+        s = int(seg_starts[idx])
+        e = int(seg_starts[idx + 1])
+        if e - s < 2:
+            continue
+        ring = points[s:e]
+        pts = [project_fn(float(la), float(lo)) for lo, la in ring]
+        # Quick screen-bbox reject: if every projected point is offscreen
+        # on the same side, skip the draw call entirely.
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        sx, sy, sw, sh = surf.get_clip()
+        if max(xs) < sx or min(xs) > sx + sw or \
+           max(ys) < sy or min(ys) > sy + sh:
+            continue
+        pygame.draw.lines(surf, _STATE_LINE, False,
+                          [(int(px), int(py)) for px, py in pts], 1)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -241,7 +404,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
-           airport_types_visible=None, gs_kt=0.0):
+           airport_types_visible=None, gs_kt=0.0, vso_kt=None,
+           range_label=None, state_lines=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -306,11 +470,25 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # already has on the Display setup screen — off → cells render as
     # whatever PALETTE_ABSOLUTE puts at sea level (dark green), on →
     # ocean cells override with a water-blue tint.
-    if settings.get("map_show_terrain", True) and srtm_dir:
+    # Above _TINT_RENDER_MAX_NM the tint build pulls in ~64 SRTM1 tiles
+    # (≈1.6 GB across reads). Even with the async worker the SD-card I/O
+    # storm can OOM/swap a Pi 4 hard enough to lock the PFD up. Drop the
+    # tint entirely at the widest zoom — state lines, the D2 line, and
+    # the range ring still give whole-leg context.
+    if (settings.get("map_show_terrain", True) and srtm_dir
+            and range_nm <= _TINT_RENDER_MAX_NM):
         oversize = 1.0 if orient == "nrth" else 1.45
         _wd = water_dir if settings.get("map_show_water", True) else ""
-        tint = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
-                         max(w, h), oversize)
+        tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
+                                    max(w, h), oversize)
+        if tint is None and range_nm > _TINT_SYNC_MAX_NM and font is not None:
+            # Async build in flight at 80 nm — small breadcrumb at centre
+            # so the pilot sees the inset is still alive while the
+            # worker churns through SRTM tile loads.
+            wait_surf = font.render("BUILDING…", True, _LABEL)
+            surf.blit(wait_surf,
+                      (int(cx) - wait_surf.get_width() // 2,
+                       int(cy) - wait_surf.get_height() // 2))
         if tint is not None:
             if orient == "trk" and rot_deg != 0.0:
                 tint_r = pygame.transform.rotate(tint, rot_deg)
@@ -319,13 +497,41 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             tr = tint_r.get_rect(center=(int(cx), int(cy)))
             surf.blit(tint_r, tr)
 
+            # SVT-style clearance overlay (red / orange / amber).  Inhibit
+            # below Vso so taxi and rollout don't paint the inset red —
+            # mirrors how the PFD's TAWS banner is gated.
+            if vso_kt is not None and gs_kt >= vso_kt and elev_grid is not None:
+                overlay = _build_alert_overlay(
+                    elev_grid, alt_ft, max(w, h))
+                if overlay is not None:
+                    if orient == "trk" and rot_deg != 0.0:
+                        overlay_r = pygame.transform.rotate(overlay, rot_deg)
+                    else:
+                        overlay_r = overlay
+                    o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
+                    surf.blit(overlay_r, o_rect)
+
     # Slightly darker veil under vector layers so labels read cleanly
     veil = pygame.Surface((w, h), pygame.SRCALPHA)
     veil.fill((0, 0, 0, 60))
     surf.blit(veil, (x, y))
 
+    # ── State / province lines ──────────────────────────────────────────────
+    # Only useful once the inset is showing whole-region context; at close
+    # ranges they're indistinguishable noise and never within the visible
+    # bbox.  Bbox-culled in lat/lon space so the per-frame cost stays
+    # microseconds at any range.
+    if (state_lines is not None
+            and settings.get("map_show_state_lines", True)
+            and range_nm >= 20):
+        _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
+                          _project)
+
     # ── Runways ──────────────────────────────────────────────────────────────
-    if settings.get("map_show_runways", True) and runways_arr is not None:
+    # Runway rectangles only carry useful detail at terminal-area zooms —
+    # above 5 nm they collapse to single pixels and clutter the screen.
+    if (settings.get("map_show_runways", True) and runways_arr is not None
+            and range_nm <= 5):
         nearby = _rwy_mod.query_nearby(runways_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         for r in nearby:
@@ -340,8 +546,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # 1000 ft below the aircraft (collision-risk window); obstacles
     # above are always shown (they're a hazard).  The defaults in
     # obstacles.query_nearby already encode that, so just pass alt_ft.
+    # Above 10 nm range, obstacle dots turn into useless speckle (and
+    # the pilot is too far away to care), so they're hidden regardless
+    # of the master toggle.
     if (settings.get("map_show_obstacles", True)
-            and obstacles_arr is not None):
+            and obstacles_arr is not None
+            and range_nm <= 10):
         nearby = _obs_mod.query_nearby(obstacles_arr, lat, lon,
                                        radius_nm=range_nm * 1.4,
                                        alt_ft=alt_ft)
@@ -358,7 +568,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # Per-type filtering matches the main PFD: caller passes a set of
     # visible atype letters (S/M/L = public, H = helo, W = water, B = other).
     # Default ``None`` = show every type the master toggle covers.
-    if settings.get("map_show_airports", True) and airports_arr is not None:
+    # Above 40 nm the airport dots smear into noise — the destination is
+    # still marked by the D2 waypoint diamond drawn below, which is what
+    # the pilot actually cares about at whole-leg scale.
+    if (settings.get("map_show_airports", True) and airports_arr is not None
+            and range_nm <= 40):
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
@@ -453,8 +667,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                              (int(wpx) - d, int(wpy))])
 
     # ── Range ring ───────────────────────────────────────────────────────────
+    # Shrink the ring 2 px inside the inset's shorter axis so the frame
+    # border (drawn after clip release) and pygame's half-open clip rect
+    # don't nibble the top and bottom scanlines of the outline.
     pygame.draw.circle(surf, _RING, (int(cx), int(cy)),
-                       int(range_nm * px_per_nm), 1)
+                       max(1, int(range_nm * px_per_nm) - 2), 1)
 
     # ── Own-ship chevron ─────────────────────────────────────────────────────
     # Track-up: chevron always points up.  North-up: chevron rotates to
@@ -482,7 +699,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     pygame.draw.rect(surf, _FRAME, rect, width=1)
 
     if font is not None:
-        rng_lbl = f"{range_nm:g} NM"
+        if range_label:
+            # Caller supplied a custom prefix — used by AUTO mode to show
+            # "AUTO 20 NM" instead of a bare distance.
+            rng_lbl = f"{range_label} {range_nm:g} NM"
+        else:
+            rng_lbl = f"{range_nm:g} NM"
         orient_lbl = "TRK↑" if orient == "trk" else "N↑"
         rng_surf = font.render(rng_lbl, True, _LABEL)
         orient_surf = font.render(orient_lbl, True, _LABEL)
@@ -539,13 +761,20 @@ def hit_test(rect, x, y) -> bool:
 
 
 # ── Pinch-zoom state ──────────────────────────────────────────────────────────
-# Snap-points for the discrete zoom levels.
+# Snap-points for the discrete zoom levels.  ZOOM_AUTO (== 0) is a sentinel:
+# the inset picks the smallest standard step that fits the active direct-to
+# (capped at 80 nm) and forces north-up.  AUTO sits at the end of the cycle
+# so a left-tap on the largest standard level (80) flips to AUTO when a
+# direct-to is active, and stays at 80 when one isn't.
 
-ZOOM_LEVELS = (1, 2, 5, 10, 20, 40)
+ZOOM_AUTO   = 0
+ZOOM_LEVELS = (1, 2, 5, 10, 20, 40, 80, 160)
 
 
 def zoom_in(current_nm: int) -> int:
     """Step the range to the next-smaller snap point (zoom in)."""
+    if current_nm == ZOOM_AUTO:
+        return ZOOM_LEVELS[-1]
     levels = ZOOM_LEVELS
     for i, lvl in enumerate(levels):
         if current_nm <= lvl and i > 0:
@@ -553,10 +782,25 @@ def zoom_in(current_nm: int) -> int:
     return levels[0]
 
 
-def zoom_out(current_nm: int) -> int:
-    """Step the range to the next-larger snap point (zoom out)."""
+def zoom_out(current_nm: int, allow_auto: bool = False) -> int:
+    """Step the range to the next-larger snap point (zoom out).
+    Caller passes ``allow_auto=True`` when a direct-to is active so AUTO
+    becomes reachable from the largest standard step."""
+    if current_nm == ZOOM_AUTO:
+        return ZOOM_AUTO
     levels = ZOOM_LEVELS
     for i, lvl in enumerate(levels):
         if current_nm < lvl:
             return lvl
-    return levels[-1]
+    return ZOOM_AUTO if allow_auto else levels[-1]
+
+
+def auto_fit_range(d_nm: float) -> int:
+    """Pick the smallest standard zoom step that contains a given distance.
+    Distance comes from current-position → direct-to-destination; the
+    caller adds whatever margin it wants before invoking this. Caps at
+    the largest standard step (currently 160 nm)."""
+    for lvl in ZOOM_LEVELS:
+        if d_nm <= lvl:
+            return lvl
+    return ZOOM_LEVELS[-1]

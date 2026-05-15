@@ -286,7 +286,7 @@ const Terrain = (() => {
     return { fwd: fwd1, rgt: rgt2, up: up2 };
   }
 
-  function render(ctx, D, L) {
+  function render(ctx, D, L, yawOverrideDeg) {
     // Only render if we have any tile data loaded in memory
     if (_decoded.size === 0) return;
 
@@ -295,7 +295,14 @@ const Terrain = (() => {
     const clipW = altX - clipX;
     if (clipW <= 0 || !focal) return;
 
-    const yawR   =  D.yaw   * DEG;
+    // Bearing reference for the terrain mesh: when the heading tape is in
+    // TRK / AUTO-with-fix mode it shows GPS ground track (true-north,
+    // wind-corrected), so the terrain ahead should be the terrain along
+    // the track, not the compass nose. Caller passes the active source's
+    // value; we fall back to compass yaw if nothing was provided.
+    const yawDeg = (yawOverrideDeg !== undefined && yawOverrideDeg !== null)
+                     ? yawOverrideDeg : D.yaw;
+    const yawR   =  yawDeg  * DEG;
     const pitchR =  D.pitch * DEG;
     const rollR  =  D.roll  * DEG;
     const altM   =  D.alt   * 0.3048;   // feet → metres

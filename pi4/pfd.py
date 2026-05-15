@@ -27,12 +27,23 @@ import socket
 import subprocess
 import urllib.request
 
+# SDL/pygame audio: force ALSA before pygame imports anything else so
+# SDL doesn't pre-pick PulseAudio/PipeWire (which ignore ~/.asoundrc
+# and bypass the panel-speaker redirect). Must precede `import pygame`
+# below — by the time pygame.init() runs SDL_Init reads this hint.
+os.environ.setdefault("SDL_AUDIODRIVER", "alsa")
+
 # Add shared modules to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared'))
 
 os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")  # overridden by --sim
-os.environ["SDL_AUDIODRIVER"] = "dummy"  # suppress ALSA underrun spam
+# Note: a previous version of this file hardcoded SDL_AUDIODRIVER=dummy
+# here to silence ALSA underrun warnings — but that also silenced every
+# voice callout. The TAWS/bank-angle audio depends on a real audio
+# backend; we set SDL_AUDIODRIVER=alsa near the top instead and let the
+# mixer use a large enough buffer to avoid underruns in normal operation.
 
+import numpy as np
 import pygame
 import pygame.gfxdraw
 
@@ -85,6 +96,7 @@ import settings as _settings
 import moving_map as _map_mod
 import sun as _sun_mod
 import hits as _hits_mod
+import audio_alerts
 
 DEG = math.pi / 180
 
@@ -203,6 +215,11 @@ disp["ad"] = {                      # airport download/parse state
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
+    # Audio callouts (TERRAIN / PULL UP / BANK ANGLE).  Volume is 0–10
+    # to match the rest of the integer settings; the audio module maps
+    # it to a 0.0–1.0 multiplier internally. 0 = effectively muted but
+    # the master switch is the cleaner toggle for "I want silence".
+    "audio_enabled": True, "audio_volume": 8,
     # Lower-left moving-map inset
     "map_enabled":       False,
     "map_orient":        "trk",     # "trk" | "nrth"
@@ -212,6 +229,7 @@ disp["ds"] = {                      # display settings
     "map_show_airports": True,
     "map_show_runways":  True,
     "map_show_obstacles": True,
+    "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_directto": True,
     # Real-time SVT sun position (off → SE / mid-morning fixed lighting)
     "sun_realtime":      True,
@@ -264,6 +282,10 @@ disp["sim"] = {                     # flight simulator state
     #             down the 3° glideslope to the threshold once the
     #             aircraft has intercepted it.
     "follow_mode": "bugs",
+    # Pause flag — set from the sim_controls overlay's PAUSE button.
+    # When True, _sim_state.tick() is skipped in the main loop so the
+    # aircraft state holds steady while the rest of the UI stays live.
+    "paused": False,
 }
 disp["nav"] = {                     # rudimentary direct-to-airport navigation
     "ident":   "",      # ICAO/local ID of active waypoint, "" = none
@@ -699,31 +721,100 @@ _BACKLIGHT_PATHS = [
 ]
 _backlight_path     = None
 _backlight_max_path = None   # max_brightness sysfs node
+_backlight_ddc_bus  = None   # /dev/i2c-N when DDC/CI brightness works
+_backlight_lock     = threading.Lock()   # serialise ddcutil writes
+
+
+def _detect_ddc_bus():
+    """Return the I²C bus number of a DDC/CI display whose VCP 10
+    (brightness) is gettable, or None. ddcutil's getvcp is the cheap
+    "is this connected and does brightness work?" probe — much faster
+    than a full `capabilities` parse."""
+    try:
+        r = subprocess.run(["ddcutil", "detect"],
+                           capture_output=True, text=True, timeout=8)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    # First "I2C bus: /dev/i2c-N" line in the detect output is the
+    # primary panel — that's the one we want for brightness control.
+    bus = None
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("I2C bus:") and "/dev/i2c-" in line:
+            try:
+                bus = int(line.split("/dev/i2c-")[1].strip())
+                break
+            except (IndexError, ValueError):
+                continue
+    if bus is None:
+        return None
+    try:
+        r = subprocess.run(
+            ["ddcutil", "--bus", str(bus), "getvcp", "10", "--terse"],
+            capture_output=True, text=True, timeout=4,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if r.returncode == 0 and "VCP" in r.stdout:
+        return bus
+    return None
+
 
 def _init_backlight():
-    """Find the active backlight sysfs node (called once at startup)."""
-    global _backlight_path, _backlight_max_path
+    """Find the active brightness sink — sysfs first (RPi 7" touch),
+    then DDC/CI (HDMI panels that speak VESA MCCS, e.g. ROADOM Z3)."""
+    global _backlight_path, _backlight_max_path, _backlight_ddc_bus
     for p in _BACKLIGHT_PATHS:
         if os.path.exists(p):
             _backlight_path     = p
             _backlight_max_path = os.path.join(os.path.dirname(p), "max_brightness")
             print(f"[BL] Using backlight: {p}")
-            break
+            return
+    bus = _detect_ddc_bus()
+    if bus is not None:
+        _backlight_ddc_bus = bus
+        print(f"[BL] Using DDC/CI brightness on /dev/i2c-{bus}")
+        return
+    print("[BL] No backlight control available (no sysfs node, no DDC/CI)")
+
+
+def _ddc_set_brightness(value_0_100: int):
+    """Background-thread DDC/CI brightness write. ddcutil over I²C
+    takes 200–400 ms; we don't want that on the render thread.
+    Serialised with a lock so the user spamming the brightness slider
+    doesn't queue a dozen concurrent ddcutil processes."""
+    def _worker():
+        with _backlight_lock:
+            try:
+                subprocess.run(
+                    ["ddcutil", "--bus", str(_backlight_ddc_bus),
+                     "setvcp", "10", str(value_0_100)],
+                    capture_output=True, timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+    threading.Thread(target=_worker, daemon=True, name="DDCBacklight").start()
+
 
 def _set_backlight(level: int):
-    """Set brightness 1–10 → 0..max_brightness (or 0..255 fallback)."""
-    if _backlight_path is None:
-        return
-    try:
-        max_b = 255
-        if _backlight_max_path and os.path.exists(_backlight_max_path):
-            with open(_backlight_max_path) as f:
-                max_b = int(f.read().strip())
-        raw = max(0, min(max_b, int((level - 1) / 9.0 * max_b)))
-        with open(_backlight_path, "w") as f:
-            f.write(str(raw))
-    except OSError:
-        pass
+    """Set brightness 1–10 → sysfs / DDC. No-op if neither is wired."""
+    if _backlight_path is not None:
+        try:
+            max_b = 255
+            if _backlight_max_path and os.path.exists(_backlight_max_path):
+                with open(_backlight_max_path) as f:
+                    max_b = int(f.read().strip())
+            raw = max(0, min(max_b, int((level - 1) / 9.0 * max_b)))
+            with open(_backlight_path, "w") as f:
+                f.write(str(raw))
+        except OSError:
+            pass
+    elif _backlight_ddc_bus is not None:
+        # DDC/CI VCP 10 is 0..100; map our 1-10 setting linearly.
+        pct = max(0, min(100, int((level - 1) / 9.0 * 100)))
+        _ddc_set_brightness(pct)
 
 
 def smooth_state():
@@ -1003,6 +1094,164 @@ def draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon):
     surf.blit(bg, (ax, ay))
 
 
+# Unusual-attitude thresholds.  Past these the SVT mesh and symbol
+# overlays come off (declutter) and a sky/ground split with red
+# recovery chevrons replaces them — same cue Garmin / Honeywell use.
+EXTREME_PITCH_DEG = 30.0
+EXTREME_BANK_DEG  = 60.0
+
+
+def is_extreme_attitude(pitch_deg, roll_deg):
+    return (abs(pitch_deg) > EXTREME_PITCH_DEG
+            or abs(roll_deg) > EXTREME_BANK_DEG)
+
+
+def normalize_attitude(pitch_deg, roll_deg):
+    """Remap pitch outside ±90° to its equivalent in-range Euler form.
+
+    When the aircraft goes past vertical (over-the-top loop, split-S,
+    aerobatic inverted flight) the AHRS reports pitch values >90° or
+    <-90°. The rest of the AI pipeline assumes pitch ∈ [-90, +90] for
+    the horizon math and ladder placement to stay visually continuous,
+    so reflect the pitch back into range and shift roll by 180° — the
+    physical attitude is unchanged, just expressed in the Euler chart
+    the renderer can draw without going wonky.
+    """
+    if pitch_deg > 90.0:
+        pitch_deg = 180.0 - pitch_deg
+        roll_deg += 180.0
+    elif pitch_deg < -90.0:
+        pitch_deg = -180.0 - pitch_deg
+        roll_deg += 180.0
+    # Wrap roll to (-180, 180]
+    roll_deg = ((roll_deg + 180.0) % 360.0) - 180.0
+    return pitch_deg, roll_deg
+
+
+def _draw_chevron_stack(surf, cx, cy, size, direction, color, count=3, gap=4):
+    """Draw `count` V-shaped chevrons stacked in `direction`. Filled
+    polygons — anti-aliasing the outline buys nothing at this size and
+    costs us another smoothscale pass we don't need on the render
+    thread during a recovery."""
+    step = size + gap
+    for i in range(count):
+        d = i * step
+        if direction == 'up':
+            tip = (cx, cy - d)
+            l   = (cx - size, cy - d + size)
+            r   = (cx + size, cy - d + size)
+        elif direction == 'down':
+            tip = (cx, cy + d)
+            l   = (cx - size, cy + d - size)
+            r   = (cx + size, cy + d - size)
+        elif direction == 'left':
+            tip = (cx - d, cy)
+            l   = (cx - d + size, cy - size)
+            r   = (cx - d + size, cy + size)
+        else:  # 'right'
+            tip = (cx + d, cy)
+            l   = (cx + d - size, cy - size)
+            r   = (cx + d - size, cy + size)
+        pygame.draw.polygon(surf, color, [tip, l, r])
+        pygame.gfxdraw.aapolygon(surf, [tip, l, r], color)
+
+
+def _draw_roll_recovery_arc(surf, cx, cy, radius, direction, color, width=5):
+    """Curved arrow telling the pilot to roll the wings in `direction`.
+
+    Arc curves over the top of (cx, cy) and the arrowhead lands at the
+    leading edge of the arc's motion. For direction='left' the arc
+    sweeps counter-clockwise (upper-right → over-the-top → upper-left)
+    with the arrowhead pointing further along that CCW direction —
+    matches the horizon's rotational motion as the pilot rolls left.
+    'right' is the mirror.
+    """
+    def pt(a_local_deg):
+        a = math.radians(-90.0 + a_local_deg)
+        return (cx + radius * math.cos(a), cy + radius * math.sin(a))
+
+    span = 120.0
+    if direction == 'left':
+        a_start, a_end = +span / 2, -span / 2   # CCW
+    else:
+        a_start, a_end = -span / 2, +span / 2   # CW
+
+    n = 24
+    pts = [pt(a_start + (a_end - a_start) * i / n) for i in range(n + 1)]
+    pygame.draw.lines(surf, color, False,
+                      [(int(p[0]), int(p[1])) for p in pts], width)
+    pygame.draw.aalines(surf, color, False, pts)
+
+    # Arrowhead at the end: tip along the tangent direction.
+    last, prev = pts[-1], pts[-2]
+    dx, dy = last[0] - prev[0], last[1] - prev[1]
+    length = math.hypot(dx, dy) or 1.0
+    dx /= length; dy /= length
+    px_, py_ = -dy, dx   # perpendicular unit vector
+    head_len = max(14, radius * 0.24)
+    head_wid = max(10, radius * 0.17)
+    tip = (last[0] + dx * head_len, last[1] + dy * head_len)
+    bl  = (last[0] + px_ * head_wid, last[1] + py_ * head_wid)
+    br  = (last[0] - px_ * head_wid, last[1] - py_ * head_wid)
+    pts_arrow = [(int(tip[0]), int(tip[1])),
+                 (int(bl[0]),  int(bl[1])),
+                 (int(br[0]),  int(br[1]))]
+    pygame.draw.polygon(surf, color, pts_arrow)
+    pygame.gfxdraw.aapolygon(surf, pts_arrow, color)
+
+
+def draw_unusual_attitude_arrows(surf, ai_rect, pitch_deg, roll_deg):
+    """Recovery cues for unusual attitudes.
+
+    Both glyphs are centred on the ownship so the pilot's eye doesn't
+    have to leave the centre of the AI during a recovery. Pitch arrows
+    live inside the roll arc — the arc is sized to enclose them — and
+    both can appear simultaneously when both pitch and bank are
+    extreme.
+
+    Pitch: short linear chevron stack centred at the ownship, tips
+    pointing toward the corrective input (down to push from nose-high,
+    up to pull from nose-low).
+
+    Roll: a large curved arrow sweeping over the ownship indicating the
+    rotational direction of needed input. Bigger radius than the pitch
+    chevron extent so it reads as a frame around them, not a glyph in
+    the same visual band.
+    """
+    ax, ay, aw, ah = ai_rect
+    cx, cy = ax + aw // 2, ay + ah // 2
+    arrow = max(14, int(min(aw, ah) * 0.045))
+    red   = (220, 30, 30)
+
+    # _draw_chevron_stack anchors the first chevron at the call-site
+    # (cx, cy) and stacks outward — for a 3-chevron stack this puts the
+    # geometric centre half a step + half a chevron off from cy. Offset
+    # the call so the stack's actual midline sits on cy.
+    gap     = 4
+    count   = 3
+    step    = arrow + gap
+    stack_offset = ((count - 1) * step - arrow) // 2
+
+    if pitch_deg > EXTREME_PITCH_DEG:
+        _draw_chevron_stack(surf, cx, cy - stack_offset, arrow, 'down', red,
+                            count=count, gap=gap)
+    elif pitch_deg < -EXTREME_PITCH_DEG:
+        _draw_chevron_stack(surf, cx, cy + stack_offset, arrow, 'up', red,
+                            count=count, gap=gap)
+
+    if abs(roll_deg) > EXTREME_BANK_DEG:
+        # Radius large enough that the arc's lowest points (the arc
+        # endpoints) sit clear of the pitch chevron stack's outermost
+        # tip. Pitch stack reaches ±((count-1)/2 * step + arrow) from
+        # cy; pad ~20 % beyond so the arc reads as a frame, not a
+        # collision.
+        pitch_reach = int((count - 1) * step / 2 + arrow)
+        radius = max(int(pitch_reach * 1.6),
+                     int(min(aw, ah) * 0.22))
+        direction = 'left' if roll_deg > 0 else 'right'
+        _draw_roll_recovery_arc(surf, cx, cy, radius, direction, red)
+
+
 def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     """
     Fallback SVT background (no SRTM tiles loaded).
@@ -1020,14 +1269,25 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 
     cx  = ax + aw // 2
     cy  = ay + ah // 2
-    # Pitch up (positive) = nose up = horizon BELOW screen centre.
-    pitch_py = int(-pitch * px_per_deg)
 
-    # Horizon passes through (hcx, hcy) tilted by roll
-    hcx = cx
-    hcy = cy - pitch_py
     roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
+
+    # Horizon point: the point on the horizon line closest to the camera
+    # centre. At pitch=θ, roll=0 it sits at (cx, cy + θ*px_per_deg) —
+    # directly below. Rolling rotates that point around (cx, cy) so at
+    # roll=180° the horizon ends up *above* the centre, not below.
+    #
+    # Sign convention must match draw_pitch_ladder's _rv() which rotates
+    # body coords (0, pitch_px) to screen (cx + pitch_px*sin_r,
+    # cy + pitch_px*cos_r). An earlier fix had the lateral term as
+    # -sin_r which agreed with the polygon math internally but landed
+    # on the *opposite* side of centre from the pitch ladder — visible
+    # as the horizon line and the sky/ground regions disagreeing with
+    # the pitch ladder beyond ~60° of bank.
+    pitch_offset = pitch * px_per_deg
+    hcx = cx + pitch_offset * sin_r
+    hcy = cy + pitch_offset * cos_r
 
     # Extend horizon line well beyond the rect so clipping takes care of edges.
     # Line direction in pygame Y-down is (cos_r, -sin_r); for positive roll
@@ -1150,7 +1410,11 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay, aw, ah))
 
-    for deg in range(-30, 35, 5):
+    # Pitch ladder runs from ±80° so the ladder still gives the pilot a
+    # readable scale during an unusual-attitude recovery.  Lines outside
+    # the visible window are culled below; the loop bounds just gate
+    # which pitch values are eligible to draw.
+    for deg in range(-80, 85, 5):
         rel_y = pitch_px - int(deg * px_per_deg)  # y offset from AI center
 
         # Cull lines too far from the visible window (±185 px from centre)
@@ -1159,6 +1423,13 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
 
         major = (deg % 10 == 0)
         half  = major_half if major else minor_half
+        # At extreme attitudes shorten the lines progressively so the
+        # ladder reads visually different from the cruise band — same
+        # cue Garmin uses to flag "you're a long way from level".
+        if abs(deg) > 60:
+            half = int(half * 0.45)
+        elif abs(deg) > 30:
+            half = int(half * 0.70)
 
         if deg == 0:
             # Horizon line
@@ -1206,6 +1477,31 @@ def _filled_polygon(surf, points, color, aa=True):
     pygame.draw.polygon(surf, color, points)
     if aa:
         pygame.draw.aalines(surf, color, True, points)
+
+
+# Anti-aliased polygon outline that doesn't stair-step on oblique edges.
+# pygame.draw.polygon(width=N) renders a hard-edge N-pixel stroke, and
+# pygame.gfxdraw.aapolygon only smooths a 1-pixel outline centred on the
+# polygon coords — so the outer pixel of the 2-px outline stays jaggy on
+# the Veeder-Root pointer angles (the chamfered corners are fine, the
+# pointer diagonals are the problem). Supersampling at 2× and bilinear
+# downscaling gives a clean AA stroke at any angle for the cost of a
+# small SRCALPHA surface and one smoothscale.
+def _aa_polygon_outline(surf, points, color, width=2, pad=2):
+    if not points:
+        return
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x0, y0 = min(xs) - pad, min(ys) - pad
+    x1, y1 = max(xs) + pad, max(ys) + pad
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    big = pygame.Surface((w * 2, h * 2), pygame.SRCALPHA)
+    pts_2x = [((px - x0) * 2, (py - y0) * 2) for px, py in points]
+    pygame.draw.polygon(big, color, pts_2x, width=width * 2)
+    small = pygame.transform.smoothscale(big, (w, h))
+    surf.blit(small, (x0, y0))
 
 
 # ── Roll arc ──────────────────────────────────────────────────────────────────
@@ -1462,8 +1758,7 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                   show_adjacent=True, adj_slot_h=int(23 * _fs))
     _drum_shade(surf, _sp + _inn_r + 1, TAPE_MID - _half_out + 1, _drm_sw - 2, _half_out * 2 - 2)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
-    pygame.draw.polygon(surf, WHITE, pts_s, width=2)
-    pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
+    _aa_polygon_outline(surf, pts_s, WHITE, width=4)
 
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
@@ -1606,8 +1901,7 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                         show_adjacent=True, adj_slot_h=int(18 * _fs))
     _drum_shade(surf, _drm_x, TAPE_MID - _half_out + 1, _drm_render_w, _drm_h)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
-    pygame.draw.polygon(surf, WHITE, pts_a, width=2)
-    pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
+    _aa_polygon_outline(surf, pts_a, WHITE, width=4)
 
 
 # ── Heading tape ──────────────────────────────────────────────────────────────
@@ -1707,8 +2001,10 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, yaw=None,
                       (tx,      by2 + bh),
                       (bx,      by2 + bh)], {0, 1, 2, 6}, r=3)
     _filled_polygon(surf, pts_h, (0, 0, 0))
-    pygame.draw.polygon(surf, hdg_col, pts_h, width=2)
-    pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
+    # Same 2× supersample AA outline used on the speed / altitude boxes —
+    # keeps the heading box's pointer diagonals visually consistent with
+    # its siblings now that the Veeder-Root edges are smooth.
+    _aa_polygon_outline(surf, pts_h, hdg_col, width=4)
     # Three-digit readout — centred in the box
     _text(surf, _hdg_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)
     # Source subscript ("M" / "G" / "M?" / "G?" / "?") — outboard of ° glyph
@@ -1731,31 +2027,88 @@ def _alert_radius_nm(speed_kt: float) -> float:
     return max(ALERT_RADIUS_MIN_NM, min(ALERT_RADIUS_MAX_NM, dyn))
 
 
-def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok):
+def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
+                          track_deg=0.0, vsi_fpm=0.0, vso_kt=VS0):
     """
     Compute the current terrain/obstacle alert level and store it globally.
     Called once per render frame with current aircraft position and airspeed.
       0 — no alert
       1 — CAUTION  (clearance < TERRAIN_CAUTION_FT or obstacle < OBSTACLE_CAUTION_FT)
       2 — WARNING  (clearance < TERRAIN_WARNING_FT or obstacle < OBSTACLE_WARNING_FT)
+    vso_kt is the user-set stall speed (flaps down) from the flight profile;
+    alerts are inhibited below this groundspeed to silence taxi/rollout nuisance.
+
+    Terrain check is a forward look-ahead along the GPS ground track with
+    altitude projected by current VSI — mirrors how EGPWS / TAWS-B fire
+    on a mountain *ahead* of the aircraft rather than waiting until it's
+    directly under (or in) it.
     """
     global _terrain_alert_level
     if not gps_ok:
         _terrain_alert_level = 0
         return
 
-    level = 0
+    # Inhibit terrain/obstacle alerts below Vso (taxi, rollout, etc.)
+    if speed_kt < vso_kt:
+        _terrain_alert_level = 0
+        return
 
-    # ── Terrain clearance (sampled at current position) ──────────────────────
+    level = 0
+    # Track each source separately so audio can distinguish them — TAWS
+    # convention is "TERRAIN" vs "OBSTACLE" at caution, both rolling up
+    # to "PULL UP" at warning.
+    terrain_level  = 0
+    obstacle_level = 0
+
+    # ── Terrain clearance (look-ahead along ground track) ────────────────────
+    # 45 s × current ground speed × current VSI gives a projection cone
+    # roughly matching standard TAWS-B caution-band lookahead. Sampling at
+    # 12 points along the path catches isolated peaks while keeping the
+    # per-frame cost in microseconds (cache-hot SRTM tiles).
+    agl_ft = None
     if _has_terrain:
-        elev = get_elevation_ft(SRTM_DIR, lat, lon)
-        clearance = alt_ft - elev
-        if clearance < TERRAIN_WARNING_FT:
-            level = max(level, 2)
-        elif clearance < TERRAIN_CAUTION_FT:
-            level = max(level, 1)
+        TERRAIN_LOOKAHEAD_S = 45.0
+        SAMPLES = 12
+        dist_nm = speed_kt * TERRAIN_LOOKAHEAD_S / 3600.0
+        track_rad = math.radians(track_deg)
+        cos_lat = max(0.05, math.cos(math.radians(lat)))
+        # Pre-compute per-step delta in (lat, lon) so the per-sample work
+        # is just two adds + one elevation lookup.
+        step_lat = (dist_nm / SAMPLES) * math.cos(track_rad) / 60.0
+        step_lon = (dist_nm / SAMPLES) * math.sin(track_rad) / (60.0 * cos_lat)
+        step_t_s = TERRAIN_LOOKAHEAD_S / SAMPLES
+        # Walk from current position (i=0) out to full lookahead (i=SAMPLES).
+        # Track worst (minimum) clearance — that's what trips the alert.
+        elev_under = get_elevation_ft(SRTM_DIR, lat, lon)
+        agl_ft = alt_ft - elev_under
+        worst_clearance = agl_ft
+        s_lat, s_lon = lat, lon
+        for i in range(1, SAMPLES + 1):
+            s_lat += step_lat
+            s_lon += step_lon
+            elev = get_elevation_ft(SRTM_DIR, s_lat, s_lon)
+            pred_alt = alt_ft + (vsi_fpm * step_t_s * i / 60.0)
+            clearance = pred_alt - elev
+            if clearance < worst_clearance:
+                worst_clearance = clearance
+        if worst_clearance < TERRAIN_WARNING_FT:
+            terrain_level = 2
+        elif worst_clearance < TERRAIN_CAUTION_FT:
+            terrain_level = 1
+
+    # ── Sink rate (GPWS Mode 1: excessive descent rate scaled by AGL) ───────
+    # Threshold curve: 1500 fpm at the surface, climbing to 5000 fpm at
+    # 2500 ft AGL. Above 2500 ft AGL no alert — normal cruise descents
+    # routinely hit 1000–2000 fpm and we don't want to nag at altitude.
+    sink_rate_active = False
+    if agl_ft is not None and 0 < agl_ft < 2500.0 and vsi_fpm < 0:
+        sink_threshold_fpm = 1500.0 + agl_ft * 1.4
+        if -vsi_fpm > sink_threshold_fpm:
+            sink_rate_active = True
 
     # ── Obstacle clearance (time-based lookahead radius) ─────────────────────
+    # Filter the radius-query down to a forward wedge (±OBSTACLE_WEDGE_HALF_DEG
+    # off ground track) so towers behind / abeam don't fire spurious alerts.
     if _obstacles is not None:
         radius = _alert_radius_nm(speed_kt)
         nearby = obs_mod.query_nearby(_obstacles, lat, lon,
@@ -1763,14 +2116,45 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok):
                                       alt_ft=alt_ft,
                                       below_ft=OBSTACLE_CAUTION_FT)
         if len(nearby) > 0:
-            # Vectorised clearance check — nearby is a structured array.
-            clearance = alt_ft - nearby["msl_ft"]
-            if (clearance < OBSTACLE_WARNING_FT).any():
-                level = max(level, 2)
-            elif (clearance < OBSTACLE_CAUTION_FT).any():
-                level = max(level, 1)
+            # Vectorised forward-wedge filter: bearing-to-obstacle vs
+            # ground track, wrapped to (-180, +180], kept only if its
+            # absolute delta is inside the wedge half-angle.
+            cos_lat = max(0.05, math.cos(math.radians(lat)))
+            d_north = nearby["lat"] - lat
+            d_east  = (nearby["lon"] - lon) * cos_lat
+            brg_deg = (np.degrees(np.arctan2(d_east, d_north)) + 360.0) % 360.0
+            delta = ((brg_deg - track_deg + 540.0) % 360.0) - 180.0
+            in_wedge = np.abs(delta) <= OBSTACLE_WEDGE_HALF_DEG
+            ahead = nearby[in_wedge]
+            if len(ahead) > 0:
+                clearance = alt_ft - ahead["msl_ft"]
+                if (clearance < OBSTACLE_WARNING_FT).any():
+                    obstacle_level = 2
+                elif (clearance < OBSTACLE_CAUTION_FT).any():
+                    obstacle_level = 1
 
+    level = max(terrain_level, obstacle_level)
     _terrain_alert_level = level
+    # Voice callouts (EGPWS-style, source-identifying at every band):
+    #   warning → "Terrain Terrain Pull up Pull up"  or
+    #             "Obstacle Obstacle Pull up Pull up"
+    #   caution → "Sink rate"  (excessive descent)
+    #          or "Terrain Terrain" / "Obstacle Obstacle"
+    # Priority order: pull-up warnings first (life-critical), then sink
+    # rate (root cause that's eroding clearance), then proximity
+    # cautions. Obstacle wins over terrain at the same band — towers /
+    # antennas demand a tighter visual scan than a broad terrain band.
+    # Rate-limited inside audio_alerts.play() so this is safe per-frame.
+    if obstacle_level == 2:
+        audio_alerts.play("obstacle_pull_up")
+    elif terrain_level == 2:
+        audio_alerts.play("terrain_pull_up")
+    elif sink_rate_active:
+        audio_alerts.play("sink_rate")
+    elif obstacle_level == 1:
+        audio_alerts.play("obstacle")
+    elif terrain_level == 1:
+        audio_alerts.play("terrain")
 
 
 def draw_terrain_alert(surf):
@@ -2406,7 +2790,7 @@ _SIM_EXIT_Y = CY - 36 - _SIM_EXIT_H
 # ── Sim controls overlay ─────────────────────────────────────────────────────
 
 _SIMCTRL_W = 320
-_SIMCTRL_H = 320
+_SIMCTRL_H = 372
 _SIMCTRL_X = (DISPLAY_W - _SIMCTRL_W) // 2
 _SIMCTRL_Y = (DISPLAY_H - _SIMCTRL_H) // 2 - 10
 
@@ -2422,8 +2806,12 @@ def _simctrl_follow_y() -> int:
     return _SIMCTRL_ROW_Y0 + 3 * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 8
 
 
-def _simctrl_exit_setup_y() -> int:
+def _simctrl_pause_y() -> int:
     return _simctrl_follow_y() + _SIMCTRL_ROW_H + 14
+
+
+def _simctrl_exit_setup_y() -> int:
+    return _simctrl_pause_y() + 44 + 8
 
 
 def _simctrl_exit_sim_y() -> int:
@@ -2491,6 +2879,16 @@ def draw_sim_controls(surf):
         _text(surf, lbl, 12, tc, bold=active,
               cx=bx + _SIMCTRL_FOLLOW_BW // 2, cy=fy + _SIMCTRL_ROW_H // 2)
 
+    # PAUSE / RESUME — freezes the sim's tick() while keeping the rest of
+    # the UI live. Amber when running ("PAUSE → stop"), green when paused
+    # ("RESUME → go") so the current state reads at a glance.
+    paused = sim.get("paused", False)
+    pz_y = _simctrl_pause_y()
+    _action_btn(surf, _SIMCTRL_X + 14, pz_y,
+                _SIMCTRL_W - 28, 44,
+                "RESUME" if paused else "PAUSE",
+                "ok"      if paused else "warn")
+
     # EXIT SETUP — closes the overlay, sim continues running.
     es_y = _simctrl_exit_setup_y()
     _action_btn(surf, _SIMCTRL_X + 14, es_y,
@@ -2529,6 +2927,12 @@ def sim_controls_hit(x, y):
             bx = fx_b + i * (_SIMCTRL_FOLLOW_BW + 6)
             if bx <= x <= bx + _SIMCTRL_FOLLOW_BW:
                 return f"follow:{val}"
+
+    # PAUSE / RESUME
+    pz_y = _simctrl_pause_y()
+    if (pz_y <= y <= pz_y + 44 and
+            _SIMCTRL_X + 14 <= x <= _SIMCTRL_X + _SIMCTRL_W - 14):
+        return "toggle_pause"
 
     # EXIT SETUP
     es_y = _simctrl_exit_setup_y()
@@ -2964,11 +3368,20 @@ def handle_event(event, demo_mode):
                 else:
                     val = val_str
                 disp["ds"][key] = val
+                if key == "audio_enabled":
+                    audio_alerts.set_enabled(bool(val))
                 _settings.mark_dirty()
-            elif action and action.startswith("inc:brightness:"):
-                delta = int(action.split(":")[-1])
-                disp["ds"]["brightness"] = max(1, min(10, disp["ds"]["brightness"] + delta))
-                _set_backlight(disp["ds"]["brightness"])
+            elif action and action.startswith("inc:"):
+                # Generic 1–10 stepper for any display-setup row that
+                # uses the inc/dec UI (brightness, audio_volume, ...).
+                _, k, delta_str = action.split(":", 2)
+                delta = int(delta_str)
+                cur = int(disp["ds"].get(k, 8))
+                disp["ds"][k] = max(1, min(10, cur + delta))
+                if k == "brightness":
+                    _set_backlight(disp["ds"][k])
+                elif k == "audio_volume":
+                    audio_alerts.set_volume(disp["ds"][k] / 10.0)
                 _settings.mark_dirty()
             return True
 
@@ -3172,6 +3585,8 @@ def handle_event(event, demo_mode):
                 disp["sim"][sensor + "_fail"] = True
             elif action and action.startswith("follow:"):
                 disp["sim"]["follow_mode"] = action.split(":", 1)[1]
+            elif action == "toggle_pause":
+                disp["sim"]["paused"] = not disp["sim"].get("paused", False)
             # "noop" or None: consume the event either way
             return True
 
@@ -3499,16 +3914,34 @@ def handle_event(event, demo_mode):
                 return True
 
         # Tap on the moving-map inset → cycle range one step.  Right
-        # half zooms IN (smaller range), left half zooms OUT.
+        # half zooms IN (smaller range), left half zooms OUT.  Left-tap
+        # at the largest standard step rolls into AUTO when a direct-to
+        # is active so the pilot can reach AUTO without diving into the
+        # display-setup screen.  The top-right corner (where the TRK↑ /
+        # N↑ label sits) is split off as its own hot-zone — tapping it
+        # toggles orientation without changing the range.
         if (mode == "pfd" and _last_map_rect is not None
                 and disp["ds"].get("map_enabled", False)):
             mrx, mry, mrw, mrh = _last_map_rect
             if mrx <= x <= mrx + mrw and mry <= y <= mry + mrh:
+                # Orient-toggle corner: top-right slab, sized to comfortably
+                # cover the TRK↑ / N↑ label without stealing usable area
+                # from the zoom-in half.
+                corner_w = max(46, mrw // 4)
+                corner_h = max(22, mrh // 5)
+                if (x >= mrx + mrw - corner_w and
+                        y <= mry + corner_h):
+                    cur_or = disp["ds"].get("map_orient", "trk")
+                    disp["ds"]["map_orient"] = "nrth" if cur_or == "trk" else "trk"
+                    _settings.mark_dirty()
+                    return True
                 cur = int(disp["ds"].get("map_zoom_nm", 5))
+                _has_d2 = bool((disp.get("nav") or {}).get("ident"))
                 if x >= mrx + mrw / 2:
                     disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
                 else:
-                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur)
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(
+                        cur, allow_auto=_has_d2)
                 _settings.mark_dirty()
                 return True
 
@@ -4122,13 +4555,18 @@ _DSP_ROWS = [
      ["inhg","hpa"],     ["inHg","hPa"],     100),
     ("brightness", "BRIGHTNESS",   "Screen brightness 1\u201310",
      None, None, None),
+    ("audio_enabled","ALERT AUDIO", "Voice callouts (TERRAIN / PULL UP / BANK)",
+     [False, True],      ["OFF", "ON"],       80),
+    ("audio_volume","ALERT VOLUME", "Callout volume 1\u201310",
+     None, None, None),
     # MAP INSET row carries TWO segmented controls: enable + orientation.
     # Custom drawing/hit-test below handles the second pair.  Listed here
     # as a single key so it occupies one row in the standard loop.
     ("map_enabled", "MAP INSET",    "Lower-left 2D moving map \u00b7 orient",
      [False, True],      ["OFF", "ON"],       80),
-    ("map_zoom_nm", "MAP RANGE",    "Default radius (nm)",
-     [1, 2, 5, 10, 20, 40], ["1","2","5","10","20","40"], 50),
+    ("map_zoom_nm", "MAP RANGE",    "Default radius (nm) · AUTO fits D2",
+     [1, 2, 5, 10, 20, 40, 80, 160, 0],
+     ["1","2","5","10","20","40","80","160","AUTO"], 50),
     ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
      [False, True],      ["FIXED", "REAL"],   80),
 ]
@@ -4143,11 +4581,12 @@ _DSP_MAP_ORIENT_GAP   = 24    # gap between orient pair and on/off pair
 # airports / runways / obstacles) into one row.  Drawn separately from
 # _DSP_ROWS because the standard row schema is one control per row.
 _DSP_MAP_LAYERS = [
-    ("map_show_terrain",   "TER"),
-    ("map_show_water",     "WTR"),
-    ("map_show_airports",  "APT"),
-    ("map_show_runways",   "RWY"),
-    ("map_show_obstacles", "OBS"),
+    ("map_show_terrain",    "TER"),
+    ("map_show_water",      "WTR"),
+    ("map_show_airports",   "APT"),
+    ("map_show_runways",    "RWY"),
+    ("map_show_obstacles",  "OBS"),
+    ("map_show_state_lines","STA"),
 ]
 _DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
 _DSP_LAYERS_BTN_W     = 70
@@ -4178,8 +4617,8 @@ def draw_display_setup(surf, ds):
         bx, by, bw, bh = _setting_row(surf, ri, label, sub)
         ry = by + (bh - _DSP_BTN_H) // 2
         rx = _dsp_rx(row, bx, bw)
-        if opts_v is None:                              # brightness stepper
-            val = ds.get("brightness", 8)
+        if opts_v is None:                              # 1–10 stepper row
+            val = ds.get(key, 8)
             _step_btn(surf, rx, ry, _DSP_SW, _DSP_BTN_H, "\u2212")
             vx = rx + _DSP_SW + _DSP_BTN_G
             pygame.draw.rect(surf, (0,18,38), (vx, ry, _DSP_VW, _DSP_BTN_H), border_radius=4)
@@ -4232,10 +4671,10 @@ def display_setup_hit(x, y, ds):
             continue
         if opts_v is None:
             if rx <= x <= rx+_DSP_SW:
-                return "inc:brightness:-1"
+                return f"inc:{key}:-1"
             plus_x = rx + _DSP_SW + _DSP_BTN_G + _DSP_VW + _DSP_BTN_G
             if plus_x <= x <= plus_x+_DSP_SW:
-                return "inc:brightness:1"
+                return f"inc:{key}:1"
         else:
             for i, v in enumerate(opts_v):
                 bx_b = rx + i*(bw_each+_DSP_BTN_G)
@@ -5613,6 +6052,139 @@ def _wd_load_shapes(name, wd):
     return cache
 
 
+# ── State / province boundary lines ───────────────────────────────────────────
+# Companion to the water-mask download.  Pulls Natural Earth's 10m admin-1
+# (states / provinces) shapefile, parses its polygons as a flat polyline cache
+# the inset can scan with bbox culling, persists the parsed result as a small
+# .npz alongside the water shapefiles so subsequent boots load in ~10 ms.
+
+_SL_NE_NAME       = "ne_10m_admin_1_states_provinces"
+_SL_NE_PRIMARY    = "https://naciscdn.org/naturalearth/10m/cultural"
+_SL_NE_MIRROR     = ("https://github.com/nvkelso/natural-earth-vector/"
+                     "raw/master/zips/10m_cultural")
+_SL_NPZ_NAME      = _SL_NE_NAME + "_lines.npz"
+
+
+def _sl_ensure_shapefile(wd):
+    """Download + unzip the admin_1 shapefile if missing.  Status text reuses
+    disp["wd"] so it shows up in the existing water-mask progress strip."""
+    import zipfile as _zipfile
+    sdir = _wd_shapes_dir()
+    os.makedirs(sdir, exist_ok=True)
+    shp_path = os.path.join(sdir, _SL_NE_NAME + ".shp")
+    if os.path.exists(shp_path):
+        return shp_path
+    zip_path = os.path.join(sdir, _SL_NE_NAME + ".zip")
+    wd["dl_status"] = f"Downloading {_SL_NE_NAME}.zip…"
+    urls = (f"{_SL_NE_PRIMARY}/{_SL_NE_NAME}.zip",
+            f"{_SL_NE_MIRROR}/{_SL_NE_NAME}.zip")
+    for url in urls:
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                blob = resp.read()
+            with open(zip_path, "wb") as f:
+                f.write(blob)
+            break
+        except Exception as e:
+            wd["dl_status"] = f"  state-lines retry: {e}"
+    else:
+        wd["dl_status"] = f"Failed to download {_SL_NE_NAME}.zip"
+        return None
+    try:
+        with _zipfile.ZipFile(zip_path) as z:
+            z.extractall(sdir)
+        os.remove(zip_path)
+    except Exception as e:
+        wd["dl_status"] = f"Unzip failed: {e}"
+        return None
+    return shp_path if os.path.exists(shp_path) else None
+
+
+def _sl_build_cache(wd):
+    """Parse the admin_1 shapefile into a flat polyline cache and persist
+    it as .npz.  Returns the cache dict, or None on failure.
+
+        {'points':     (N, 2) float32   flat (lon, lat) for every vertex
+         'seg_starts': (M+1,) int32     indices into points[] per polyline
+         'seg_bboxes': (M, 4) float32   (lon_min, lat_min, lon_max, lat_max)}
+
+    State borders ship as polygons in the shapefile; we copy each ring's
+    vertices verbatim and let the renderer draw it as a closed polyline.
+    No simplification — the file is small (~3000 rings, ~500 K points) and
+    bbox culling skips everything outside the inset bbox in microseconds."""
+    import numpy as _np
+    try:
+        import shapefile as _shapefile
+    except ImportError:
+        wd["dl_status"] = ("Install pyshp: sudo pip3 install "
+                           "--break-system-packages pyshp")
+        return None
+
+    shp_path = _sl_ensure_shapefile(wd)
+    if shp_path is None:
+        return None
+
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, _SL_NPZ_NAME)
+
+    wd["dl_status"] = f"Parsing {_SL_NE_NAME}.shp (one-time)…"
+    all_pts, seg_starts, seg_bboxes = [], [0], []
+    cum = 0
+    with _shapefile.Reader(shp_path) as sf:
+        for shp in sf.iterShapes():
+            parts = list(shp.parts) + [len(shp.points)]
+            for i in range(len(parts) - 1):
+                ring = shp.points[parts[i]:parts[i + 1]]
+                if len(ring) < 2:
+                    continue
+                arr = _np.asarray(ring, dtype=_np.float32)
+                all_pts.append(arr)
+                cum += len(arr)
+                seg_starts.append(cum)
+                seg_bboxes.append((arr[:, 0].min(), arr[:, 1].min(),
+                                   arr[:, 0].max(), arr[:, 1].max()))
+
+    if not all_pts:
+        return None
+    cache = {
+        "points":     _np.concatenate(all_pts, axis=0).astype(_np.float32),
+        "seg_starts": _np.asarray(seg_starts, dtype=_np.int32),
+        "seg_bboxes": _np.asarray(seg_bboxes, dtype=_np.float32),
+    }
+    try:
+        _np.savez(npz_path,
+                  points=cache["points"],
+                  seg_starts=cache["seg_starts"],
+                  seg_bboxes=cache["seg_bboxes"])
+    except OSError:
+        pass
+    return cache
+
+
+def _sl_load_cache():
+    """Load the parsed state-lines .npz if it exists.  Returns the cache
+    dict or None.  Called once at startup and again after the worker
+    finishes a fresh download/parse."""
+    import numpy as _np
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, _SL_NPZ_NAME)
+    if not os.path.exists(npz_path):
+        return None
+    try:
+        with _np.load(npz_path, allow_pickle=False) as z:
+            return {
+                "points":     z["points"],
+                "seg_starts": z["seg_starts"],
+                "seg_bboxes": z["seg_bboxes"],
+            }
+    except Exception:
+        return None
+
+
+_state_lines = None  # populated on startup by _sl_load_cache(); rebound after
+                     # the water/state worker finishes building the cache.
+
+
 def _wd_fill_ring(out, ring_xy_px):
     """Burn one polygon ring (N×2 float pixel coords) into out (H, W)
     uint8 array via numpy scanline fill.  Even–odd fill rule means
@@ -5809,6 +6381,23 @@ def _wd_download_thread():
         wd["dl_status"]  = (f"Done ✓  {ok} new"
                             + (f", {skip} skipped" if skip else "")
                             + (f", {err} errors"   if err   else ""))
+
+        # State / province boundary polylines.  Downloaded + parsed once
+        # alongside the water shapefiles so the inset can paint state
+        # context at the wider zoom levels.  Best-effort: if pyshp /
+        # network fail the rest of the water flow still completes.
+        global _state_lines
+        if _sl_load_cache() is None:
+            wd["dl_status"] = "Fetching state boundaries…"
+            built = _sl_build_cache(wd)
+            if built is not None:
+                _state_lines = built
+                wd["dl_status"] = (f"Done ✓  {ok} new"
+                                   + (f", {skip} skipped" if skip else "")
+                                   + (f", {err} errors"   if err   else "")
+                                   + "  · state lines ready")
+        else:
+            _state_lines = _sl_load_cache()
     finally:
         wd["downloading"] = False
 
@@ -8022,6 +8611,12 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     roll    = disp["roll"]
     pitch   = disp["pitch"]
+    # When the aircraft goes past vertical (loop, split-S, inverted
+    # cruise) the AHRS may report |pitch| > 90°. Reflect that back into
+    # ±90° and pick up the extra 180° as roll — same physical attitude,
+    # but the Euler chart the AI / pitch-ladder / horizon math can draw
+    # without going wonky.
+    pitch, roll = normalize_attitude(pitch, roll)
     alt     = disp["alt"]
     speed   = disp["speed"]
     vspeed  = disp["vspeed"]
@@ -8133,7 +8728,9 @@ def render(surf, demo_mode, connected, data_stale=False):
             _SVT_GL_AVAILABLE = False
 
     # 0. Compute terrain/obstacle alert level for this frame
-    _update_terrain_alert(lat, lon, alt, speed, gps_ok)
+    _update_terrain_alert(lat, lon, alt, speed, gps_ok,
+                          track_deg=track, vsi_fpm=vspeed,
+                          vso_kt=fp.get("vs0", VS0))
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground.
     # Shared-GL composite path renders sky+terrain directly into the default
@@ -8178,14 +8775,32 @@ def render(surf, demo_mode, connected, data_stale=False):
     # FRAGMENT_SHADER clearance_color() exactly so the gap and the
     # nearest mesh fragment never differ by more than the band edge.
     _clr = alt - _ground_elev_ft if gps_ok else 9999.0
-    if   _clr < 200:  _below_col = (0.86, 0.12, 0.12)
-    elif _clr < 300:  _below_col = (0.86, 0.31, 0.0)
-    elif _clr < 700:  _below_col = (0.78, 0.51, 0.0)
+    # Same Garmin-style ground inhibit applied in clearance_color() — when
+    # below Vso, skip the red/orange/amber bands so taxi rollout doesn't
+    # paint horizon gaps red.
+    _alert_on = speed >= fp.get("vs0", VS0)
+    if   _alert_on and _clr < 200:  _below_col = (0.86, 0.12, 0.12)
+    elif _alert_on and _clr < 300:  _below_col = (0.86, 0.31, 0.0)
+    elif _alert_on and _clr < 700:  _below_col = (0.78, 0.51, 0.0)
     elif _clr < 1200: _below_col = (0.55, 0.39, 0.16)
     elif _clr < 2200: _below_col = (0.39, 0.29, 0.14)
     else:             _below_col = (0.27, 0.22, 0.11)
 
-    if _shared_gl_ctx is not None and gps_ok:
+    # Unusual-attitude declutter: at |pitch| > 30° or |roll| > 60° the
+    # SVT mesh, water mask, airport / runway / obstacle overlays all
+    # come off so the pilot sees nothing but solid sky/ground + the red
+    # recovery chevrons + the pitch ladder.  Faster too — no SVT pass,
+    # no symbol projection.
+    _extreme_att = is_extreme_attitude(pitch, roll)
+    # Voice cue for extreme bank — only fires when the AHRS is trusted
+    # and the sim isn't paused (otherwise the sim's frozen attitude
+    # would keep the callout repeating forever).
+    if (ahrs_ok and abs(roll) > EXTREME_BANK_DEG
+            and not disp["sim"].get("paused", False)):
+        audio_alerts.play("bank")
+    if _extreme_att:
+        draw_simple_ai_background(surf, _full_ai, pitch, roll)
+    elif _shared_gl_ctx is not None and gps_ok:
         # Render terrain into the AI region of the default framebuffer.
         # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
         # GL rows HDG_H..DISPLAY_H.
@@ -8226,6 +8841,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             sun_el_deg=_sun_el,
             sun_intensity=_sun_int,
             below_horizon_color=_below_col,
+            alert_enable=(speed >= fp.get("vs0", VS0)),
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain and gps_ok:
@@ -8240,7 +8856,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # drew everything onto a SRCALPHA overlay rotated by pygame at the end,
     # which cost ~20 ms/frame in a turn at 1024×600 — replaced with the
     # per-feature projection-roll for that win.
-    if gps_ok and (
+    if (not _extreme_att) and gps_ok and (
             _runways is not None or _airports is not None or _obstacles is not None):
         # Roll sign: the per-feature projections rotate by (cos/sin) in math
         # convention but write to screen-Y-down pixels, which flips CW/CCW.
@@ -8284,7 +8900,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # Drawn after symbols so the inset frame sits on top, before the
     # pitch ladder so the ladder reads through unobstructed.
     if ds.get("map_enabled", False) and gps_ok:
-        _miw = max(140, int(AI_W * 0.30))
+        _miw = max(130, int(AI_W * 0.28))
         _mih = max(120, int(AI_H * 0.40))
         rect = (AI_X + 6,
                 AI_Y + AI_H - _mih - 6,
@@ -8327,10 +8943,38 @@ def render(surf, demo_mode, connected, data_stale=False):
             _types_vis.add("W")
         if _ad.get("show_other", False):
             _types_vis.add("B")
+        # Resolve the effective range and orientation. In AUTO mode the
+        # inset picks the smallest standard step that fits the active
+        # direct-to and forces north-up so the destination doesn't spin
+        # under the chevron. If no D2 is active the fallback is 80 nm —
+        # the user can still pan around at the widest standard range.
+        _zoom_pref  = int(ds.get("map_zoom_nm", 5))
+        _orient_pref = ds.get("map_orient", "trk")
+        if _zoom_pref == _map_mod.ZOOM_AUTO:
+            _d2_dst = d2 if d2.get("ident") else None
+            if _d2_dst:
+                _cos_lat = max(0.05, math.cos(math.radians(lat)))
+                _n_nm = (_d2_dst["lat"] - lat) * 60.0
+                _e_nm = (_d2_dst["lon"] - lon) * 60.0 * _cos_lat
+                _eff_range = _map_mod.auto_fit_range(
+                    math.hypot(_n_nm, _e_nm) * 1.10)  # 10 % framing margin
+            else:
+                _eff_range = _map_mod.ZOOM_LEVELS[-1]
+            _eff_label = "AUTO"
+        else:
+            _eff_range  = _zoom_pref
+            _eff_label  = None  # use the inset's standard "X NM" label
+        # Force north-up at wide ranges regardless of how we got there
+        # (AUTO-resolved or manually selected). At 80+ nm the whole-leg
+        # picture matters more than nose-up orientation, the rotated
+        # tint smear is more pronounced, and the async tint rebuild only
+        # has to run once per quantised centre instead of every heading
+        # change.
+        _eff_orient = "nrth" if _eff_range > 40 else _orient_pref
         _map_mod.render(
             surf, rect, lat, lon, alt, hdg, _map_track,
-            ds.get("map_orient", "trk"),
-            int(ds.get("map_zoom_nm", 5)),
+            _eff_orient,
+            _eff_range,
             ds,
             airports_arr=_airports,
             runways_arr=_runways,
@@ -8341,10 +8985,19 @@ def render(surf, demo_mode, connected, data_stale=False):
             font=_get_font(11, bold=True),
             airport_types_visible=_types_vis,
             gs_kt=speed,
+            vso_kt=fp.get("vs0", VS0),
+            range_label=_eff_label,
+            state_lines=_state_lines,
         )
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
+
+    # Unusual-attitude recovery chevrons (drawn over the pitch ladder so
+    # they catch the eye through the ladder lines, under the aircraft
+    # symbol which goes last).
+    if _extreme_att:
+        draw_unusual_attitude_arrows(surf, ai_rect, pitch, roll)
 
     # 3. Speed tape (display unit, fp V-speeds)
     draw_speed_tape(surf, speed_d, gs_bug=gs_bug_d,
@@ -8528,6 +9181,14 @@ def _startup_load_airports():
         print(f"[PFD] Airports: {len(_airports):,} records loaded")
     else:
         print("[PFD] Airports: no data on disk")
+    # Same thread does the state-lines load — it's a small npz, but the
+    # mmap-friendly numpy load is cheap and we don't want it on the
+    # render thread the first frame after boot.
+    global _state_lines
+    _state_lines = _sl_load_cache()
+    if _state_lines is not None:
+        print(f"[PFD] State lines: "
+              f"{len(_state_lines['seg_starts']) - 1:,} polylines loaded")
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -8613,6 +9274,15 @@ def main():
     except pygame.error:
         # Mouse subsystem not available under some headless drivers; ignore.
         pass
+
+    # Audio: init AFTER pygame.init() so SDL_Init has fully come up and
+    # the mixer's audio callback thread can actually pump samples.
+    # Doing this before pygame.init() left the mixer in a half-alive
+    # state where Sound.play() returned success but no audio reached
+    # the speaker.
+    audio_alerts.init()
+    audio_alerts.set_enabled(disp["ds"].get("audio_enabled", True))
+    audio_alerts.set_volume(disp["ds"].get("audio_volume", 8) / 10.0)
 
     # ── Shared-context GL composite path ─────────────────────────────────────
     # When SVT_RENDERER == "opengl_shared", pygame owns the display in
@@ -9097,8 +9767,10 @@ def main():
         if demo_mode and demo:
             demo.tick()
 
-        # Update flight simulator state (mutually exclusive with demo)
-        if _sim_state is not None:
+        # Update flight simulator state (mutually exclusive with demo).
+        # Skip the tick while paused so the freeze-frame holds steady —
+        # taps, panels and the live UI still run normally.
+        if _sim_state is not None and not disp["sim"].get("paused", False):
             _sim_state.tick()
 
         # Smooth sensor values into display values

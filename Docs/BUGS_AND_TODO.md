@@ -10,6 +10,50 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### AHRS-GIMBAL-LOCK  WT901 Euler output is unusable near high bank
+Status: **OPEN — affects AI behaviour in aerobatic / unusual attitudes**
+Target: `firmware/wt901.py`, `firmware/main.py`, `shared/serial_client.py`,
+the SSE / serial protocol, and the AI math in `pi4/pfd.py`.
+Context: at bank angles near ±90° the pitch readout exhibits massive
+swings driven by small yaw (azimuth) inputs — the physical attitude
+is changing smoothly, but the WT901's Euler representation has a
+mathematical singularity that re-expresses the same motion as huge
+pitch deltas. Pilot reports it as "the unit is becoming EXTREMELY
+sensitive to azimuth inputs creating massive pitch swings" once roll
+gets past ~75–90°.
+Root cause: the WT901 streams `PKT_ANGLE = 0x53` Euler angles
+directly (wt901.py:75). Euler ZYX (or any 3-axis sequence) has a
+gimbal-lock point at the second axis = ±90°. Which axis hits the
+singularity depends on the sensor mounting orientation — for the
+current install it lands at aircraft roll = ±90°. This is a
+fundamental property of the representation, not a bug in our code.
+Display-side fixes can only paper over the symptom (slew-limit
+pitch when |roll| > 75°, IIR-smooth pitch at high bank); they
+don't fix the underlying representation.
+Real fix:
+  - **A. Read raw quaternions from the WT901** — sensor has a
+    quaternion output (`PKT_QUAT = 0x59`, four int16s `q0,q1,q2,q3`).
+    Quaternions parameterize SO(3) with no singularities. Send the
+    quaternion over the serial link instead of Euler; do the
+    quaternion→display conversion on the Pi 4 side using a formula
+    that doesn't go through Euler near the singularity (e.g. drive
+    the AI horizon directly off the quaternion's body-up basis
+    vector, which is well-behaved everywhere).
+  - **B. Slew-limit / IIR-smooth pitch when |roll| > 75°** — pure
+    PFD-side band-aid. Hides the visual symptom but the underlying
+    attitude data is still garbage at the singularity, and any
+    derived computation (TAWS, sink rate, recovery chevrons) still
+    sees the wild values.
+Recommended: A is the right answer. Touch points: enable PKT_QUAT
+in WT901 config write at boot in `wt901.py`, add quaternion parsing
+alongside the existing Euler parsing, serialise q0..q3 in the JSON
+state dict in `firmware/main.py`, mirror in `serial_client.py` /
+`sse_client.py`, replace Euler-driven horizon math in
+`draw_simple_ai_background` and `draw_pitch_ladder` with
+quaternion basis-vector projection. Should be its own branch
+(`claude/wt901-quaternions` or similar) — non-trivial firmware
+churn, needs real-flight test at high bank to confirm fix.
+
 ### IPHONE-PICO-HOSTING  iPhone display HTML too large for Pico W to serve
 Status: **OPEN — blocks iPhone display use over the Pico's WiFi AP**
 Target: `firmware/web_server.py` `_load_index` / `_handle_root`,

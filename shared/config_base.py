@@ -49,6 +49,14 @@ OBSTACLE_WARNING_FT  = 200    # red below this clearance — matches
                               # TERRAIN_WARNING_FT so the obstacle and
                               # terrain palettes flip to red on the same
                               # 200 ft buffer.
+# Forward-look half-angle for the obstacle alert wedge. Bearings beyond
+# this delta from the GPS ground track are filtered out — a tower 90°
+# off the wingtip isn't a hazard and shouldn't fire the callout. ±25°
+# is the middle of standard GA TAWS-B implementations (Honeywell EGPWS
+# uses ±15° near-field expanding to ±30° at distance; we use a flat
+# half-angle for simplicity since our look-ahead radius is already
+# small relative to that ±15→30° dilation envelope).
+OBSTACLE_WEDGE_HALF_DEG = 25.0
 OBSTACLE_EXPIRY_DAYS = 28     # FAA DOF update cycle (days)
 
 # ── Airport database (OurAirports CSV) ────────────────────────────────────────

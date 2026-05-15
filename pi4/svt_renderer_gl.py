@@ -174,6 +174,9 @@ uniform vec3  u_sun_dir;            // unit vector pointing TOWARD the sun
 uniform float u_sun_intensity;      // 0.0 = no lighting, 1.0 = full
 uniform float u_ambient;            // 0.0 = pitch black shadows, 1.0 = no shadow
 uniform float u_water_enable;       // 0.0 = ignore water flag, 1.0 = render
+uniform float u_alert_enable;       // 0.0 = neutral browns only (taxi /
+                                    // rollout, below Vso); 1.0 = full
+                                    // red/orange/amber proximity palette.
                                     // water with the water palette (lets the
                                     // pilot disable water rendering for debug).
 
@@ -182,9 +185,15 @@ uniform float u_water_enable;       // 0.0 = ignore water flag, 1.0 = render
 // red at clearance < 200 ft gives the pilot a 200 ft buffer warning before
 // actual contact, matching TERRAIN_WARNING_FT in shared/config_base.py.
 vec3 clearance_color(float c) {
-    if (c < 200.0)  return vec3(0.86, 0.12, 0.12);
-    if (c < 300.0)  return vec3(0.86, 0.31, 0.0);
-    if (c < 700.0)  return vec3(0.78, 0.51, 0.0);
+    // Garmin-style ground inhibit: when u_alert_enable is 0 (groundspeed
+    // below user-set Vso — taxi, rollout) the warning bands are skipped
+    // so terrain reads as neutral browns instead of painting the entire
+    // foreground red.  Above Vso the full palette engages.
+    if (u_alert_enable > 0.5) {
+        if (c < 200.0)  return vec3(0.86, 0.12, 0.12);
+        if (c < 300.0)  return vec3(0.86, 0.31, 0.0);
+        if (c < 700.0)  return vec3(0.78, 0.51, 0.0);
+    }
     if (c < 1200.0) return vec3(0.55, 0.39, 0.16);
     if (c < 2200.0) return vec3(0.39, 0.29, 0.14);
     return vec3(0.27, 0.22, 0.11);
@@ -697,6 +706,7 @@ def render_svt_gl(
         _terrain_prog['u_grid_max_dist_m'].value  = _mesh_radius_m
         _terrain_prog['u_discard_inside_m'].value = 0.0
         _terrain_prog['u_water_enable'].value     = 0.0   # standalone has no water data
+        _terrain_prog['u_alert_enable'].value     = 1.0   # standalone has no speed gate
         # Sun direction vector (world frame: X=East, Y=North, Z=Up).
         # Caller-supplied az/el override the module defaults so a real-time
         # solar-position feed can drive the lighting from UTC + GPS.
@@ -1236,6 +1246,7 @@ def render_svt_into_current_fb(
     sun_el_deg: float | None = None,
     sun_intensity: float | None = None,
     below_horizon_color: tuple = (0.35, 0.27, 0.15),
+    alert_enable: bool = True,
 ) -> bool:
     """Render the SVT terrain+sky directly into the currently-bound
     framebuffer using the caller-provided moderngl context.
@@ -1335,6 +1346,7 @@ def render_svt_into_current_fb(
         st.terrain_prog['u_grid_max_dist_m'].value  = grid_max_dist_m
         st.terrain_prog['u_discard_inside_m'].value = float(discard_inside_m)
         st.terrain_prog['u_water_enable'].value     = 1.0 if water_enable else 0.0
+        st.terrain_prog['u_alert_enable'].value     = 1.0 if alert_enable else 0.0
         st.terrain_prog['u_sun_dir'].value       = sun_dir
         st.terrain_prog['u_sun_intensity'].value = _si
         st.terrain_prog['u_ambient'].value       = SUN_AMBIENT
