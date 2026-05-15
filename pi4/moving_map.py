@@ -129,6 +129,8 @@ if HAS_NUMPY:
 # thread (pygame's surface APIs are not thread-safe), and the renderer
 # paints around a None tint while the build is in flight.
 _TINT_SYNC_MAX_NM = 40           # range cap for synchronous builds
+_TINT_RENDER_MAX_NM = 80         # range cap for rendering the tint at all
+                                 # — above this, SRTM I/O is too heavy
 _tint_async_lock = threading.Lock()
 _tint_pending: set = set()       # keys currently being built on a worker
 _tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
@@ -468,16 +470,21 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # already has on the Display setup screen — off → cells render as
     # whatever PALETTE_ABSOLUTE puts at sea level (dark green), on →
     # ocean cells override with a water-blue tint.
-    if settings.get("map_show_terrain", True) and srtm_dir:
+    # Above _TINT_RENDER_MAX_NM the tint build pulls in ~64 SRTM1 tiles
+    # (≈1.6 GB across reads). Even with the async worker the SD-card I/O
+    # storm can OOM/swap a Pi 4 hard enough to lock the PFD up. Drop the
+    # tint entirely at the widest zoom — state lines, the D2 line, and
+    # the range ring still give whole-leg context.
+    if (settings.get("map_show_terrain", True) and srtm_dir
+            and range_nm <= _TINT_RENDER_MAX_NM):
         oversize = 1.0 if orient == "nrth" else 1.45
         _wd = water_dir if settings.get("map_show_water", True) else ""
         tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
                                     max(w, h), oversize)
         if tint is None and range_nm > _TINT_SYNC_MAX_NM and font is not None:
-            # Async build in flight — small breadcrumb at centre so the
-            # pilot sees the inset is still alive while the worker churns
-            # through the SRTM tile loads (can take ~30 s the first time
-            # at 160 nm with SRTM1 data).
+            # Async build in flight at 80 nm — small breadcrumb at centre
+            # so the pilot sees the inset is still alive while the
+            # worker churns through SRTM tile loads.
             wait_surf = font.render("BUILDING…", True, _LABEL)
             surf.blit(wait_surf,
                       (int(cx) - wait_surf.get_width() // 2,
