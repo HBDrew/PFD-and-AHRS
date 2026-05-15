@@ -78,45 +78,57 @@ def _generate_wav(text: str, path: str) -> bool:
     return os.path.exists(path) and os.path.getsize(path) > 0
 
 
+def _log_sdl_driver():
+    """Best-effort diagnostic: what audio driver did SDL actually pick?
+    pygame doesn't expose SDL_GetCurrentAudioDriver, so reach into the
+    shared library via ctypes. Logged so we can see in journalctl what
+    backend is actually live — env-var setdefault doesn't guarantee
+    the hint took effect."""
+    try:
+        import ctypes
+        sdl = ctypes.CDLL("libSDL2-2.0.so.0")
+        sdl.SDL_GetCurrentAudioDriver.restype = ctypes.c_char_p
+        drv = sdl.SDL_GetCurrentAudioDriver()
+        print(f"[audio] SDL driver in use: "
+              f"{drv.decode() if drv else 'none'}; "
+              f"SDL_AUDIODRIVER env={os.environ.get('SDL_AUDIODRIVER')!r}")
+    except Exception as e:
+        print(f"[audio] SDL driver lookup failed: {e}")
+
+
 def init():
     """Initialise the mixer and load (or generate-then-load) every
     callout WAV. Idempotent and never raises — leaves _disabled set
-    when audio is unavailable so play() becomes a cheap no-op."""
+    when audio is unavailable so play() becomes a cheap no-op.
+
+    Must be called AFTER pygame.init() (which auto-inits the mixer with
+    defaults). We don't quit + re-init: that previously left SDL in a
+    half-alive state where Sound.play() returned success but the
+    audio callback thread never pumped samples. Instead, accept
+    whatever sample rate / channel layout pygame chose and load the
+    WAVs against it. SDL will resample 22 050 Hz callouts on the fly.
+    """
     global _initialized, _disabled
     if _initialized or _disabled:
         return
     if not HAS_PYGAME:
         _disabled = True
         return
-    # Quit any mixer that pygame.init() may have grabbed against a
-    # different driver, then re-init under ALSA (forced above) so the
-    # asoundrc redirect to the HDMI panel actually takes effect. A
-    # PFD_AUDIO_DEVICE env-var can pin a specific ALSA device when the
-    # default isn't right for a given setup.
-    device = os.environ.get("PFD_AUDIO_DEVICE")
-    try:
-        pygame.mixer.quit()
-    except pygame.error:
-        pass
-    init_kw = dict(frequency=22050, size=-16, channels=2, buffer=512)
-    if device:
-        init_kw["devicename"] = device
-    try:
-        pygame.mixer.init(**init_kw)
-    except (TypeError, pygame.error) as e:
-        # Either the named device didn't open or pygame is too old for
-        # the devicename kwarg — fall back to whatever ALSA picks as
-        # default (which, with the user's asoundrc, is the panel).
-        print(f"[audio] init with device={device!r} failed ({e}); "
-              f"falling back to ALSA default")
+
+    # pygame.init() should have inited the mixer by now. If it didn't
+    # (e.g. SDL_INIT_AUDIO failed silently), bring it up ourselves.
+    if not pygame.mixer.get_init():
         try:
             pygame.mixer.init(frequency=22050, size=-16, channels=2,
                               buffer=512)
-        except pygame.error as ee:
-            print(f"[audio] default mixer init also failed: {ee}")
+        except pygame.error as e:
+            print(f"[audio] mixer init failed: {e}")
             _disabled = True
             return
-    print(f"[audio] mixer running, init state {pygame.mixer.get_init()}")
+
+    print(f"[audio] mixer state: {pygame.mixer.get_init()}, "
+          f"channels: {pygame.mixer.get_num_channels()}")
+    _log_sdl_driver()
 
     try:
         os.makedirs(_CACHE_DIR, exist_ok=True)
@@ -148,8 +160,15 @@ def init():
             ping = _sounds.get("terrain")
             if ping is not None:
                 try:
-                    ping.play()
-                    print("[audio] startup self-test played")
+                    chan = ping.play()
+                    # Confirm the mixer thinks something's playing —
+                    # if get_busy() returns 0 and no channel came back,
+                    # SDL accepted the play but the audio thread isn't
+                    # actually pumping samples (the silent-failure
+                    # mode we keep hitting).
+                    busy = pygame.mixer.get_busy()
+                    print(f"[audio] startup self-test: chan={chan} "
+                          f"busy={busy} length={ping.get_length():.2f}s")
                 except pygame.error as e:
                     print(f"[audio] startup self-test failed: {e}")
     else:
