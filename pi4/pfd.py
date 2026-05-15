@@ -9157,11 +9157,6 @@ def main():
     _settings.start(disp, SETTINGS_PATH)
 
     _init_backlight()
-    audio_alerts.init()
-    # Push persisted audio prefs into the module so the user's last
-    # mute/volume state survives a reboot.
-    audio_alerts.set_enabled(disp["ds"].get("audio_enabled", True))
-    audio_alerts.set_volume(disp["ds"].get("audio_volume", 8) / 10.0)
     _set_backlight(disp["ds"].get("brightness", 8))
 
     # Load obstacle + airport databases in background (non-blocking)
@@ -9194,6 +9189,15 @@ def main():
     except pygame.error:
         # Mouse subsystem not available under some headless drivers; ignore.
         pass
+
+    # Audio: init AFTER pygame.init() so SDL_Init has fully come up and
+    # the mixer's audio callback thread can actually pump samples.
+    # Doing this before pygame.init() left the mixer in a half-alive
+    # state where Sound.play() returned success but no audio reached
+    # the speaker.
+    audio_alerts.init()
+    audio_alerts.set_enabled(disp["ds"].get("audio_enabled", True))
+    audio_alerts.set_volume(disp["ds"].get("audio_volume", 8) / 10.0)
 
     # ── Shared-context GL composite path ─────────────────────────────────────
     # When SVT_RENDERER == "opengl_shared", pygame owns the display in
