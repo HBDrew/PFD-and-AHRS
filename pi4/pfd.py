@@ -2104,15 +2104,18 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
 
     level = max(terrain_level, obstacle_level)
     _terrain_alert_level = level
-    # Voice callouts: TERRAIN / OBSTACLE differentiated at caution, both
-    # roll up to PULL UP at warning. Rate-limited inside audio_alerts.play()
-    # so calling every render frame is safe.
-    if level == 2:
-        audio_alerts.play("pull_up")
+    # Voice callouts (EGPWS-style, source-identifying at every band):
+    #   caution → "Terrain Terrain"  or  "Obstacle Obstacle"
+    #   warning → "Terrain Terrain Pull up Pull up"  or
+    #             "Obstacle Obstacle Pull up Pull up"
+    # Obstacle wins when both sources trip simultaneously — towers /
+    # antennas demand a tighter visual scan than a broad terrain band.
+    # Rate-limited inside audio_alerts.play() so this is safe per-frame.
+    if obstacle_level == 2:
+        audio_alerts.play("obstacle_pull_up")
+    elif terrain_level == 2:
+        audio_alerts.play("terrain_pull_up")
     elif obstacle_level == 1:
-        # Obstacle caution wins over terrain caution when both are
-        # tripped at the same time — towers / antennas are smaller and
-        # require more urgent visual scan than a broad terrain band.
         audio_alerts.play("obstacle")
     elif terrain_level == 1:
         audio_alerts.play("terrain")

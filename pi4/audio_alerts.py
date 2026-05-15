@@ -35,22 +35,30 @@ except ImportError:
 # Voice text for each callout. Short and decisive — small panel
 # speakers and the pilot's brain don't want a paragraph.
 _CALLOUTS = {
-    "terrain":  "Terrain. Terrain.",
-    "obstacle": "Obstacle. Obstacle.",
-    "pull_up":  "Pull up. Pull up.",
-    "bank":     "Bank angle. Bank angle.",
+    # Caution band — source-identifying, no urgent action verb.
+    "terrain":           "Terrain. Terrain.",
+    "obstacle":          "Obstacle. Obstacle.",
+    # Warning band — source-identifying plus the PULL UP action cue,
+    # standard EGPWS convention. Source-specific so the pilot knows
+    # what they're avoiding even with eyes inside the cockpit.
+    "terrain_pull_up":   "Terrain. Terrain. Pull up. Pull up.",
+    "obstacle_pull_up":  "Obstacle. Obstacle. Pull up. Pull up.",
+    # Attitude
+    "bank":              "Bank angle. Bank angle.",
 }
 
-# Per-alert minimum interval between repeats (seconds). Pull-up sits
-# tighter than the caution callouts because the warning band needs
-# urgency, and bank-angle sits looser because pilots can spend longer
-# in a hard bank than they should be allowed to spend at a TAWS
-# warning.
+# Per-alert minimum interval between repeats (seconds). Warning-band
+# phrases need to clear their own length plus a beat before they can
+# fire again; caution phrases sit at 3 s to match real avionics
+# repeat cadence; bank-angle sits looser because pilots can spend
+# longer in a hard bank than they should be allowed to spend at a
+# TAWS warning.
 _MIN_INTERVAL = {
-    "terrain":  3.0,
-    "obstacle": 3.0,
-    "pull_up":  1.5,
-    "bank":     3.0,
+    "terrain":           3.0,
+    "obstacle":          3.0,
+    "terrain_pull_up":   4.0,
+    "obstacle_pull_up":  4.0,
+    "bank":              3.0,
 }
 
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".pfd_audio")
