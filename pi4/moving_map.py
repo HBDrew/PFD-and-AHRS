@@ -690,7 +690,7 @@ def hit_test(rect, x, y) -> bool:
 # direct-to is active, and stays at 80 when one isn't.
 
 ZOOM_AUTO   = 0
-ZOOM_LEVELS = (1, 2, 5, 10, 20, 40, 80)
+ZOOM_LEVELS = (1, 2, 5, 10, 20, 40, 80, 160)
 
 
 def zoom_in(current_nm: int) -> int:
@@ -721,8 +721,7 @@ def auto_fit_range(d_nm: float) -> int:
     """Pick the smallest standard zoom step that contains a given distance.
     Distance comes from current-position → direct-to-destination; the
     caller adds whatever margin it wants before invoking this. Caps at
-    the largest standard step so AUTO never zooms further out than 80
-    (the user agreed an 80 nm horizon is plenty)."""
+    the largest standard step (currently 160 nm)."""
     for lvl in ZOOM_LEVELS:
         if d_nm <= lvl:
             return lvl

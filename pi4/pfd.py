@@ -4141,8 +4141,8 @@ _DSP_ROWS = [
     ("map_enabled", "MAP INSET",    "Lower-left 2D moving map \u00b7 orient",
      [False, True],      ["OFF", "ON"],       80),
     ("map_zoom_nm", "MAP RANGE",    "Default radius (nm) · AUTO fits D2",
-     [1, 2, 5, 10, 20, 40, 80, 0],
-     ["1","2","5","10","20","40","80","AUTO"], 50),
+     [1, 2, 5, 10, 20, 40, 80, 160, 0],
+     ["1","2","5","10","20","40","80","160","AUTO"], 50),
     ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
      [False, True],      ["FIXED", "REAL"],   80),
 ]
