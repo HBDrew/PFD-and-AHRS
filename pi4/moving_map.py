@@ -22,6 +22,7 @@ North-up: own-ship anchored at centre, north stays up.
 
 import math
 import os
+import threading
 import pygame
 
 try:
@@ -121,39 +122,36 @@ if HAS_NUMPY:
     _PAL_B = np.array([30,  40,  45,  25,  35, 185, 245], dtype=np.float32)
 
 
-def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
-    """Render a north-up hypsometric tint surface centred on (c_lat, c_lon).
+# Wide-zoom tints (80 nm and above) sample ~64 SRTM tiles, which evicts the
+# 32-entry SRTM cache and forces ~30 s of disk I/O on the render thread when
+# the user steps zoom out. Mirror the SVT outer-mesh strategy: numpy work
+# happens on a worker thread, pygame surface finalisation stays on the main
+# thread (pygame's surface APIs are not thread-safe), and the renderer
+# paints around a None tint while the build is in flight.
+_TINT_SYNC_MAX_NM = 40           # range cap for synchronous builds
+_tint_async_lock = threading.Lock()
+_tint_pending: set = set()       # keys currently being built on a worker
+_tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
 
-    Fully vectorised over the (n × n) sample grid: sample points are
-    grouped by their integer SRTM/water tile, the tile is loaded once,
-    and bulk fancy-indexing fills the elevation and water arrays.  Then
-    np.interp does the elevation → RGB palette lookup for all pixels in
-    three calls (one per channel).  No per-cell Python loops in the hot
-    path, so cache misses rebuild in a few ms even with water sampling
-    enabled.
 
-    `range_nm` is the radius shown at the inset's shorter axis, so the
-    full inset diameter is 2·range_nm.  `oversize` (≥ 1.0) inflates the
-    rendered area so a track-up rotation doesn't reveal the corners."""
+def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
+    """Numpy-only pixel builder for the hypsometric tint. Returns
+    (rgb (n, n, 3) uint8, elevs (n, n) float32) — north-up — or
+    (None, None) when numpy isn't available. Safe to call from a
+    background worker because it never touches a pygame surface."""
+    if not HAS_NUMPY:
+        return None, None
     n = _TINT_N
     span_nm = 2.0 * range_nm * oversize
     span_lat = span_nm / _NM_PER_DEG_LAT
     cos_lat = max(0.05, math.cos(math.radians(c_lat)))
     span_lon = span_lat / cos_lat
 
-    target_px = max(8, int(size_px * oversize))
-
-    if not HAS_NUMPY:
-        tile = pygame.Surface((n, n))
-        tile.fill(_BG)
-        return pygame.transform.smoothscale(tile, (target_px, target_px)), None
-
     lat_top = c_lat + span_lat * 0.5
     lat_bot = c_lat - span_lat * 0.5
     lon_lf  = c_lon - span_lon * 0.5
     lon_rt  = c_lon + span_lon * 0.5
 
-    # Sample lat/lon as (n × n) grids (broadcast — no copy).
     rows_lat = np.linspace(lat_top, lat_bot, n, dtype=np.float64)
     cols_lon = np.linspace(lon_lf,  lon_rt,  n, dtype=np.float64)
     sample_lat = np.broadcast_to(rows_lat[:, None], (n, n))
@@ -164,7 +162,6 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
 
     lat_int = np.floor(sample_lat).astype(np.int32)
     lon_int = np.floor(sample_lon).astype(np.int32)
-    # Pack (lat, lon) into a single integer key so np.unique groups by tile.
     enc = ((lat_int.astype(np.int64) + 90) * 1000 +
            (lon_int.astype(np.int64) + 360))
 
@@ -175,7 +172,6 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
         if not mask.any():
             continue
 
-        # SRTM bulk-sample
         sres = load_tile(srtm_dir, tla, tlo)
         if sres is not None:
             sarr, sn = sres
@@ -188,7 +184,6 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
                 0, sn - 1)
             elevs[mask] = sarr[srow[mask], scol[mask]]
 
-        # Water bulk-sample (only when a tile exists for this 1° square).
         if water_dir:
             wres = _water_mod.load_tile(water_dir, tla, tlo)
             if wres is not None:
@@ -202,21 +197,56 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
                     0, wn - 1)
                 water[mask] = wmask[wrow[mask], wcol[mask]] > 0
 
-    # Vectorised palette lookup: one np.interp per channel, then stack.
     rgb_r = np.interp(elevs, _PAL_X, _PAL_R).astype(np.uint8)
     rgb_g = np.interp(elevs, _PAL_X, _PAL_G).astype(np.uint8)
     rgb_b = np.interp(elevs, _PAL_X, _PAL_B).astype(np.uint8)
     rgb = np.stack([rgb_r, rgb_g, rgb_b], axis=-1)
     if water.any():
         rgb[water] = _WATER_TINT_RGB
+    return rgb, elevs
 
-    # pygame.surfarray expects (w, h, 3); our rgb is (rows, cols, 3) so swap.
+
+def _finalize_tint_surface(rgb, target_px):
+    """Main-thread pygame finalize: rgb (n, n, 3) uint8 → smoothscaled
+    Surface at target_px. Called from _tint_get when picking up a
+    background-built result."""
+    if rgb is None:
+        surf = pygame.Surface((target_px, target_px))
+        surf.fill(_BG)
+        return surf
     tile = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
-    # Return the n×n elevation grid alongside the smoothscaled tint so the
-    # alert overlay can recompute clearance per-frame against current alt
-    # without resampling SRTM tiles.  Grid is north-up, matching tile.
-    return (pygame.transform.smoothscale(tile, (target_px, target_px)),
-            elevs)
+    return pygame.transform.smoothscale(tile, (target_px, target_px))
+
+
+def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
+    """Synchronous build path — used for close-range tints where the I/O
+    cost is bounded by the SRTM tile cache. Wide ranges go through the
+    async path in _tint_get instead."""
+    target_px = max(8, int(size_px * oversize))
+    if not HAS_NUMPY:
+        n = _TINT_N
+        tile = pygame.Surface((n, n))
+        tile.fill(_BG)
+        return pygame.transform.smoothscale(tile, (target_px, target_px)), None
+    rgb, elevs = _build_tint_pixels(srtm_dir, water_dir,
+                                    c_lat, c_lon, range_nm, oversize)
+    return _finalize_tint_surface(rgb, target_px), elevs
+
+
+def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
+                       range_nm, oversize, key):
+    """Worker thread: do the heavy numpy work, post the result for the
+    main thread to convert into a pygame surface on the next render."""
+    try:
+        rgb, elevs = _build_tint_pixels(srtm_dir, water_dir,
+                                        c_lat, c_lon, range_nm, oversize)
+        with _tint_async_lock:
+            _tint_ready[key] = (rgb, elevs)
+    except Exception as e:
+        print(f"[moving_map] async tint build failed: {e}")
+    finally:
+        with _tint_async_lock:
+            _tint_pending.discard(key)
 
 
 # SVT clearance bands.  Mirror the palette in svt_renderer.py so a pixel
@@ -267,16 +297,48 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
            float(range_nm), int(size_px), round(oversize, 2),
            bool(water_dir))
     if key in _tint_cache:
-        # Move to end to mark MRU
         entry = _tint_cache.pop(key)
         _tint_cache[key] = entry
         return entry
-    entry = _build_tint(srtm_dir, water_dir, q_lat, q_lon,
-                        range_nm, size_px, oversize)
-    _tint_cache[key] = entry
-    while len(_tint_cache) > _TINT_CACHE_MAX:
-        _tint_cache.pop(next(iter(_tint_cache)))
-    return entry
+
+    target_px = max(8, int(size_px * oversize))
+
+    # If a background worker has finished a build for this key, finalize
+    # it to a pygame surface here on the main thread and cache the result.
+    with _tint_async_lock:
+        ready = _tint_ready.pop(key, None)
+    if ready is not None:
+        rgb, elevs = ready
+        entry = (_finalize_tint_surface(rgb, target_px), elevs)
+        _tint_cache[key] = entry
+        while len(_tint_cache) > _TINT_CACHE_MAX:
+            _tint_cache.pop(next(iter(_tint_cache)))
+        return entry
+
+    # Close ranges: sync build (fits in the SRTM tile cache, fast enough
+    # that the render thread won't notice).
+    if range_nm <= _TINT_SYNC_MAX_NM:
+        entry = _build_tint(srtm_dir, water_dir, q_lat, q_lon,
+                            range_nm, size_px, oversize)
+        _tint_cache[key] = entry
+        while len(_tint_cache) > _TINT_CACHE_MAX:
+            _tint_cache.pop(next(iter(_tint_cache)))
+        return entry
+
+    # Wide ranges: hand off to a worker so the render thread stays
+    # responsive. Renderer paints a no-tint inset until the result
+    # comes back on a later frame.
+    with _tint_async_lock:
+        in_flight = key in _tint_pending
+        if not in_flight:
+            _tint_pending.add(key)
+    if not in_flight:
+        threading.Thread(
+            target=_tint_async_worker,
+            args=(srtm_dir, water_dir, q_lat, q_lon,
+                  range_nm, oversize, key),
+            daemon=True, name="MapTintBuild").start()
+    return None, None
 
 
 def _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
@@ -411,6 +473,15 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         _wd = water_dir if settings.get("map_show_water", True) else ""
         tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
                                     max(w, h), oversize)
+        if tint is None and range_nm > _TINT_SYNC_MAX_NM and font is not None:
+            # Async build in flight — small breadcrumb at centre so the
+            # pilot sees the inset is still alive while the worker churns
+            # through the SRTM tile loads (can take ~30 s the first time
+            # at 160 nm with SRTM1 data).
+            wait_surf = font.render("BUILDING…", True, _LABEL)
+            surf.blit(wait_surf,
+                      (int(cx) - wait_surf.get_width() // 2,
+                       int(cy) - wait_surf.get_height() // 2))
         if tint is not None:
             if orient == "trk" and rot_deg != 0.0:
                 tint_r = pygame.transform.rotate(tint, rot_deg)
