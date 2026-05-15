@@ -1277,13 +1277,16 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     # centre. At pitch=θ, roll=0 it sits at (cx, cy + θ*px_per_deg) —
     # directly below. Rolling rotates that point around (cx, cy) so at
     # roll=180° the horizon ends up *above* the centre, not below.
-    # The earlier formula skipped the rotation and pinned (hcx, hcy)
-    # below cy regardless of roll — visually correct only near roll=0
-    # and exactly inverted (where symmetry hid the error), but wrong
-    # everywhere else, so the sky/ground polygon flipped to ground for
-    # any pitch+roll combination past inverted.
+    #
+    # Sign convention must match draw_pitch_ladder's _rv() which rotates
+    # body coords (0, pitch_px) to screen (cx + pitch_px*sin_r,
+    # cy + pitch_px*cos_r). An earlier fix had the lateral term as
+    # -sin_r which agreed with the polygon math internally but landed
+    # on the *opposite* side of centre from the pitch ladder — visible
+    # as the horizon line and the sky/ground regions disagreeing with
+    # the pitch ladder beyond ~60° of bank.
     pitch_offset = pitch * px_per_deg
-    hcx = cx - pitch_offset * sin_r
+    hcx = cx + pitch_offset * sin_r
     hcy = cy + pitch_offset * cos_r
 
     # Extend horizon line well beyond the rect so clipping takes care of edges.
