@@ -2622,8 +2622,10 @@ function render(ts) {
   drawAI();
 
   // 2. Terrain mesh — drawn on top of sky/ground, clipped to full screen
-  // width so TAWS-coloured horizon band reads edge-to-edge
-  if (typeof Terrain !== 'undefined') Terrain.render(ctx, D, L);
+  // width so TAWS-coloured horizon band reads edge-to-edge. Pass the active
+  // heading source so the mesh tracks the GPS ground course in TRK / AUTO
+  // mode (wind-corrected, true-north) instead of the compass nose.
+  if (typeof Terrain !== 'undefined') Terrain.render(ctx, D, L, _activeHdg().value);
 
   // 3. Fixed instrument overlays (always on top of terrain)
   drawRollIndicator();
