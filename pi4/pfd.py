@@ -8363,7 +8363,10 @@ def render(surf, demo_mode, connected, data_stale=False):
                     math.hypot(_n_nm, _e_nm) * 1.10)  # 10 % framing margin
             else:
                 _eff_range = _map_mod.ZOOM_LEVELS[-1]
-            _eff_orient = "nrth"
+            # Honour the user's track/north-up setting at the closer ranges
+            # where it's useful; force north-up only above 40 nm, where
+            # whole-leg context matters more than nose-up orientation.
+            _eff_orient = "nrth" if _eff_range > 40 else _orient_pref
             _eff_label = "AUTO"
         else:
             _eff_range  = _zoom_pref
