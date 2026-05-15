@@ -87,6 +87,8 @@ _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
 _D2_MAGENTA  = (220, 0, 220)
 _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
+_STATE_LINE  = (110, 130, 160)      # muted slate-blue: visible over tint
+                                    # without competing with airports / D2
 
 
 # ── Hypsometric terrain tint cache ────────────────────────────────────────────
@@ -277,6 +279,61 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     return entry
 
 
+def _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
+                      project_fn):
+    """Draw admin_1 boundary polylines visible inside the inset bbox.
+
+    Uses each polyline's stored bbox to skip anything fully outside a
+    generous lat/lon window around the aircraft (1.6× the nominal range
+    on each axis — covers track-up rotation + the inset's longer axis).
+    Polylines that survive culling are projected through the caller's
+    project_fn (same rotation/translation used by every other vector
+    layer) and stroked as a single pygame.draw.lines call.
+    """
+    if state_lines is None or not HAS_NUMPY:
+        return
+
+    seg_starts = state_lines["seg_starts"]
+    seg_bboxes = state_lines["seg_bboxes"]   # (M, 4) lon_min, lat_min, lon_max, lat_max
+    points     = state_lines["points"]       # (N, 2) lon, lat
+    if len(seg_starts) <= 1:
+        return
+
+    # Visible lat/lon window — generous margin so a polyline that just
+    # clips the corner of the inset still draws cleanly.
+    d_lat = range_nm * 1.6 / _NM_PER_DEG_LAT
+    d_lon = range_nm * 1.6 / (_NM_PER_DEG_LAT * cos_lat)
+    lat_min, lat_max = lat - d_lat, lat + d_lat
+    lon_min, lon_max = lon - d_lon, lon + d_lon
+
+    # Vectorised AABB test: rejects ~99 % of the world's polylines.
+    overlaps = ((seg_bboxes[:, 0] <= lon_max)
+                & (seg_bboxes[:, 2] >= lon_min)
+                & (seg_bboxes[:, 1] <= lat_max)
+                & (seg_bboxes[:, 3] >= lat_min))
+    visible_idx = np.flatnonzero(overlaps)
+    if visible_idx.size == 0:
+        return
+
+    for idx in visible_idx:
+        s = int(seg_starts[idx])
+        e = int(seg_starts[idx + 1])
+        if e - s < 2:
+            continue
+        ring = points[s:e]
+        pts = [project_fn(float(la), float(lo)) for lo, la in ring]
+        # Quick screen-bbox reject: if every projected point is offscreen
+        # on the same side, skip the draw call entirely.
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        sx, sy, sw, sh = surf.get_clip()
+        if max(xs) < sx or min(xs) > sx + sw or \
+           max(ys) < sy or min(ys) > sy + sh:
+            continue
+        pygame.draw.lines(surf, _STATE_LINE, False,
+                          [(int(px), int(py)) for px, py in pts], 1)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
@@ -284,7 +341,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
-           range_label=None):
+           range_label=None, state_lines=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -381,6 +438,17 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     veil.fill((0, 0, 0, 60))
     surf.blit(veil, (x, y))
 
+    # ── State / province lines ──────────────────────────────────────────────
+    # Only useful once the inset is showing whole-region context; at close
+    # ranges they're indistinguishable noise and never within the visible
+    # bbox.  Bbox-culled in lat/lon space so the per-frame cost stays
+    # microseconds at any range.
+    if (state_lines is not None
+            and settings.get("map_show_state_lines", True)
+            and range_nm >= 20):
+        _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
+                          _project)
+
     # ── Runways ──────────────────────────────────────────────────────────────
     if settings.get("map_show_runways", True) and runways_arr is not None:
         nearby = _rwy_mod.query_nearby(runways_arr, lat, lon,
@@ -419,7 +487,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # Per-type filtering matches the main PFD: caller passes a set of
     # visible atype letters (S/M/L = public, H = helo, W = water, B = other).
     # Default ``None`` = show every type the master toggle covers.
-    if settings.get("map_show_airports", True) and airports_arr is not None:
+    # Above 40 nm the airport dots smear into noise — the destination is
+    # still marked by the D2 waypoint diamond drawn below, which is what
+    # the pilot actually cares about at whole-leg scale.
+    if (settings.get("map_show_airports", True) and airports_arr is not None
+            and range_nm <= 40):
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:

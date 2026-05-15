@@ -212,6 +212,7 @@ disp["ds"] = {                      # display settings
     "map_show_airports": True,
     "map_show_runways":  True,
     "map_show_obstacles": True,
+    "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_directto": True,
     # Real-time SVT sun position (off → SE / mid-morning fixed lighting)
     "sun_realtime":      True,
@@ -4156,11 +4157,12 @@ _DSP_MAP_ORIENT_GAP   = 24    # gap between orient pair and on/off pair
 # airports / runways / obstacles) into one row.  Drawn separately from
 # _DSP_ROWS because the standard row schema is one control per row.
 _DSP_MAP_LAYERS = [
-    ("map_show_terrain",   "TER"),
-    ("map_show_water",     "WTR"),
-    ("map_show_airports",  "APT"),
-    ("map_show_runways",   "RWY"),
-    ("map_show_obstacles", "OBS"),
+    ("map_show_terrain",    "TER"),
+    ("map_show_water",      "WTR"),
+    ("map_show_airports",   "APT"),
+    ("map_show_runways",    "RWY"),
+    ("map_show_obstacles",  "OBS"),
+    ("map_show_state_lines","STA"),
 ]
 _DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
 _DSP_LAYERS_BTN_W     = 70
@@ -5626,6 +5628,139 @@ def _wd_load_shapes(name, wd):
     return cache
 
 
+# ── State / province boundary lines ───────────────────────────────────────────
+# Companion to the water-mask download.  Pulls Natural Earth's 10m admin-1
+# (states / provinces) shapefile, parses its polygons as a flat polyline cache
+# the inset can scan with bbox culling, persists the parsed result as a small
+# .npz alongside the water shapefiles so subsequent boots load in ~10 ms.
+
+_SL_NE_NAME       = "ne_10m_admin_1_states_provinces"
+_SL_NE_PRIMARY    = "https://naciscdn.org/naturalearth/10m/cultural"
+_SL_NE_MIRROR     = ("https://github.com/nvkelso/natural-earth-vector/"
+                     "raw/master/zips/10m_cultural")
+_SL_NPZ_NAME      = _SL_NE_NAME + "_lines.npz"
+
+
+def _sl_ensure_shapefile(wd):
+    """Download + unzip the admin_1 shapefile if missing.  Status text reuses
+    disp["wd"] so it shows up in the existing water-mask progress strip."""
+    import zipfile as _zipfile
+    sdir = _wd_shapes_dir()
+    os.makedirs(sdir, exist_ok=True)
+    shp_path = os.path.join(sdir, _SL_NE_NAME + ".shp")
+    if os.path.exists(shp_path):
+        return shp_path
+    zip_path = os.path.join(sdir, _SL_NE_NAME + ".zip")
+    wd["dl_status"] = f"Downloading {_SL_NE_NAME}.zip…"
+    urls = (f"{_SL_NE_PRIMARY}/{_SL_NE_NAME}.zip",
+            f"{_SL_NE_MIRROR}/{_SL_NE_NAME}.zip")
+    for url in urls:
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                blob = resp.read()
+            with open(zip_path, "wb") as f:
+                f.write(blob)
+            break
+        except Exception as e:
+            wd["dl_status"] = f"  state-lines retry: {e}"
+    else:
+        wd["dl_status"] = f"Failed to download {_SL_NE_NAME}.zip"
+        return None
+    try:
+        with _zipfile.ZipFile(zip_path) as z:
+            z.extractall(sdir)
+        os.remove(zip_path)
+    except Exception as e:
+        wd["dl_status"] = f"Unzip failed: {e}"
+        return None
+    return shp_path if os.path.exists(shp_path) else None
+
+
+def _sl_build_cache(wd):
+    """Parse the admin_1 shapefile into a flat polyline cache and persist
+    it as .npz.  Returns the cache dict, or None on failure.
+
+        {'points':     (N, 2) float32   flat (lon, lat) for every vertex
+         'seg_starts': (M+1,) int32     indices into points[] per polyline
+         'seg_bboxes': (M, 4) float32   (lon_min, lat_min, lon_max, lat_max)}
+
+    State borders ship as polygons in the shapefile; we copy each ring's
+    vertices verbatim and let the renderer draw it as a closed polyline.
+    No simplification — the file is small (~3000 rings, ~500 K points) and
+    bbox culling skips everything outside the inset bbox in microseconds."""
+    import numpy as _np
+    try:
+        import shapefile as _shapefile
+    except ImportError:
+        wd["dl_status"] = ("Install pyshp: sudo pip3 install "
+                           "--break-system-packages pyshp")
+        return None
+
+    shp_path = _sl_ensure_shapefile(wd)
+    if shp_path is None:
+        return None
+
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, _SL_NPZ_NAME)
+
+    wd["dl_status"] = f"Parsing {_SL_NE_NAME}.shp (one-time)…"
+    all_pts, seg_starts, seg_bboxes = [], [0], []
+    cum = 0
+    with _shapefile.Reader(shp_path) as sf:
+        for shp in sf.iterShapes():
+            parts = list(shp.parts) + [len(shp.points)]
+            for i in range(len(parts) - 1):
+                ring = shp.points[parts[i]:parts[i + 1]]
+                if len(ring) < 2:
+                    continue
+                arr = _np.asarray(ring, dtype=_np.float32)
+                all_pts.append(arr)
+                cum += len(arr)
+                seg_starts.append(cum)
+                seg_bboxes.append((arr[:, 0].min(), arr[:, 1].min(),
+                                   arr[:, 0].max(), arr[:, 1].max()))
+
+    if not all_pts:
+        return None
+    cache = {
+        "points":     _np.concatenate(all_pts, axis=0).astype(_np.float32),
+        "seg_starts": _np.asarray(seg_starts, dtype=_np.int32),
+        "seg_bboxes": _np.asarray(seg_bboxes, dtype=_np.float32),
+    }
+    try:
+        _np.savez(npz_path,
+                  points=cache["points"],
+                  seg_starts=cache["seg_starts"],
+                  seg_bboxes=cache["seg_bboxes"])
+    except OSError:
+        pass
+    return cache
+
+
+def _sl_load_cache():
+    """Load the parsed state-lines .npz if it exists.  Returns the cache
+    dict or None.  Called once at startup and again after the worker
+    finishes a fresh download/parse."""
+    import numpy as _np
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, _SL_NPZ_NAME)
+    if not os.path.exists(npz_path):
+        return None
+    try:
+        with _np.load(npz_path, allow_pickle=False) as z:
+            return {
+                "points":     z["points"],
+                "seg_starts": z["seg_starts"],
+                "seg_bboxes": z["seg_bboxes"],
+            }
+    except Exception:
+        return None
+
+
+_state_lines = None  # populated on startup by _sl_load_cache(); rebound after
+                     # the water/state worker finishes building the cache.
+
+
 def _wd_fill_ring(out, ring_xy_px):
     """Burn one polygon ring (N×2 float pixel coords) into out (H, W)
     uint8 array via numpy scanline fill.  Even–odd fill rule means
@@ -5822,6 +5957,23 @@ def _wd_download_thread():
         wd["dl_status"]  = (f"Done ✓  {ok} new"
                             + (f", {skip} skipped" if skip else "")
                             + (f", {err} errors"   if err   else ""))
+
+        # State / province boundary polylines.  Downloaded + parsed once
+        # alongside the water shapefiles so the inset can paint state
+        # context at the wider zoom levels.  Best-effort: if pyshp /
+        # network fail the rest of the water flow still completes.
+        global _state_lines
+        if _sl_load_cache() is None:
+            wd["dl_status"] = "Fetching state boundaries…"
+            built = _sl_build_cache(wd)
+            if built is not None:
+                _state_lines = built
+                wd["dl_status"] = (f"Done ✓  {ok} new"
+                                   + (f", {skip} skipped" if skip else "")
+                                   + (f", {err} errors"   if err   else "")
+                                   + "  · state lines ready")
+        else:
+            _state_lines = _sl_load_cache()
     finally:
         wd["downloading"] = False
 
@@ -8388,6 +8540,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             gs_kt=speed,
             vso_kt=fp.get("vs0", VS0),
             range_label=_eff_label,
+            state_lines=_state_lines,
         )
 
     # 2. Pitch ladder (with roll rotation)
@@ -8575,6 +8728,14 @@ def _startup_load_airports():
         print(f"[PFD] Airports: {len(_airports):,} records loaded")
     else:
         print("[PFD] Airports: no data on disk")
+    # Same thread does the state-lines load — it's a small npz, but the
+    # mmap-friendly numpy load is cheap and we don't want it on the
+    # render thread the first frame after boot.
+    global _state_lines
+    _state_lines = _sl_load_cache()
+    if _state_lines is not None:
+        print(f"[PFD] State lines: "
+              f"{len(_state_lines['seg_starts']) - 1:,} polylines loaded")
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
