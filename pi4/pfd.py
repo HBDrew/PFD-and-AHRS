@@ -1020,6 +1020,28 @@ def is_extreme_attitude(pitch_deg, roll_deg):
             or abs(roll_deg) > EXTREME_BANK_DEG)
 
 
+def normalize_attitude(pitch_deg, roll_deg):
+    """Remap pitch outside ±90° to its equivalent in-range Euler form.
+
+    When the aircraft goes past vertical (over-the-top loop, split-S,
+    aerobatic inverted flight) the AHRS reports pitch values >90° or
+    <-90°. The rest of the AI pipeline assumes pitch ∈ [-90, +90] for
+    the horizon math and ladder placement to stay visually continuous,
+    so reflect the pitch back into range and shift roll by 180° — the
+    physical attitude is unchanged, just expressed in the Euler chart
+    the renderer can draw without going wonky.
+    """
+    if pitch_deg > 90.0:
+        pitch_deg = 180.0 - pitch_deg
+        roll_deg += 180.0
+    elif pitch_deg < -90.0:
+        pitch_deg = -180.0 - pitch_deg
+        roll_deg += 180.0
+    # Wrap roll to (-180, 180]
+    roll_deg = ((roll_deg + 180.0) % 360.0) - 180.0
+    return pitch_deg, roll_deg
+
+
 def _draw_chevron_stack(surf, cx, cy, size, direction, color, count=3, gap=4):
     """Draw `count` V-shaped chevrons stacked in `direction`. Filled
     polygons — anti-aliasing the outline buys nothing at this size and
@@ -1048,34 +1070,80 @@ def _draw_chevron_stack(surf, cx, cy, size, direction, color, count=3, gap=4):
         pygame.gfxdraw.aapolygon(surf, [tip, l, r], color)
 
 
-def draw_unusual_attitude_arrows(surf, ai_rect, pitch_deg, roll_deg):
-    """Red chevron stacks pointing toward the corrective control input.
+def _draw_roll_recovery_arc(surf, cx, cy, radius, direction, color, width=5):
+    """Curved arrow telling the pilot to roll the wings in `direction`.
 
-    Pitch nose-up too high → chevrons at the top pointing DOWN (push).
-    Pitch nose-down too low → chevrons at the bottom pointing UP (pull).
-    Banked right past EXTREME_BANK_DEG → chevrons on the left pointing
-    LEFT (roll left); mirrored for left bank.  Arrows are drawn in
-    screen-fixed orientation — they're a control-input cue, not an
-    attitude indicator."""
+    Arc curves over the top of (cx, cy) and the arrowhead lands at the
+    leading edge of the arc's motion. For direction='left' the arc
+    sweeps counter-clockwise (upper-right → over-the-top → upper-left)
+    with the arrowhead pointing further along that CCW direction —
+    matches the horizon's rotational motion as the pilot rolls left.
+    'right' is the mirror.
+    """
+    def pt(a_local_deg):
+        a = math.radians(-90.0 + a_local_deg)
+        return (cx + radius * math.cos(a), cy + radius * math.sin(a))
+
+    span = 120.0
+    if direction == 'left':
+        a_start, a_end = +span / 2, -span / 2   # CCW
+    else:
+        a_start, a_end = -span / 2, +span / 2   # CW
+
+    n = 24
+    pts = [pt(a_start + (a_end - a_start) * i / n) for i in range(n + 1)]
+    pygame.draw.lines(surf, color, False,
+                      [(int(p[0]), int(p[1])) for p in pts], width)
+    pygame.draw.aalines(surf, color, False, pts)
+
+    # Arrowhead at the end: tip along the tangent direction.
+    last, prev = pts[-1], pts[-2]
+    dx, dy = last[0] - prev[0], last[1] - prev[1]
+    length = math.hypot(dx, dy) or 1.0
+    dx /= length; dy /= length
+    px_, py_ = -dy, dx   # perpendicular unit vector
+    head_len = max(14, radius * 0.24)
+    head_wid = max(10, radius * 0.17)
+    tip = (last[0] + dx * head_len, last[1] + dy * head_len)
+    bl  = (last[0] + px_ * head_wid, last[1] + py_ * head_wid)
+    br  = (last[0] - px_ * head_wid, last[1] - py_ * head_wid)
+    pts_arrow = [(int(tip[0]), int(tip[1])),
+                 (int(bl[0]),  int(bl[1])),
+                 (int(br[0]),  int(br[1]))]
+    pygame.draw.polygon(surf, color, pts_arrow)
+    pygame.gfxdraw.aapolygon(surf, pts_arrow, color)
+
+
+def draw_unusual_attitude_arrows(surf, ai_rect, pitch_deg, roll_deg):
+    """Recovery cues for unusual attitudes.
+
+    Pitch: linear chevron stacks at the top / bottom of the AI pointing
+    toward the corrective input (down to push from nose-high, up to pull
+    from nose-low).
+
+    Roll: a curved arrow centred above the ownship symbol indicating the
+    rotational direction of needed input — a linear left/right chevron
+    looks like a translation cue, which is wrong; rotation needs a
+    rotational glyph.
+    """
     ax, ay, aw, ah = ai_rect
     cx, cy = ax + aw // 2, ay + ah // 2
     arrow = max(14, int(min(aw, ah) * 0.045))
     red   = (220, 30, 30)
 
     if pitch_deg > EXTREME_PITCH_DEG:
-        # Nose too high → push.  Chevrons stack near the top of the AI,
-        # tips pointing down toward the horizon.
         _draw_chevron_stack(surf, cx, ay + arrow + 8, arrow, 'down', red)
     elif pitch_deg < -EXTREME_PITCH_DEG:
-        # Nose too low → pull.  Bottom of AI, tips pointing up.
         _draw_chevron_stack(surf, cx, ay + ah - arrow - 8, arrow, 'up', red)
 
-    if roll_deg > EXTREME_BANK_DEG:
-        # Banked right → roll left.  Chevrons on the left side of the AI,
-        # tips pointing left.
-        _draw_chevron_stack(surf, ax + arrow + 8, cy, arrow, 'left', red)
-    elif roll_deg < -EXTREME_BANK_DEG:
-        _draw_chevron_stack(surf, ax + aw - arrow - 8, cy, arrow, 'right', red)
+    if abs(roll_deg) > EXTREME_BANK_DEG:
+        radius = max(36, int(min(aw, ah) * 0.16))
+        # Place the arc's centre above the ownship so the curve sits in
+        # the upper half of the AI; both ends of the arc remain inside
+        # the AI rect even at the larger radii on wide displays.
+        arc_cy = cy - int(radius * 0.6)
+        direction = 'left' if roll_deg > 0 else 'right'
+        _draw_roll_recovery_arc(surf, cx, arc_cy, radius, direction, red)
 
 
 def draw_simple_ai_background(surf, ai_rect, pitch, roll):
@@ -8330,6 +8398,12 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     roll    = disp["roll"]
     pitch   = disp["pitch"]
+    # When the aircraft goes past vertical (loop, split-S, inverted
+    # cruise) the AHRS may report |pitch| > 90°. Reflect that back into
+    # ±90° and pick up the extra 180° as roll — same physical attitude,
+    # but the Euler chart the AI / pitch-ladder / horizon math can draw
+    # without going wonky.
+    pitch, roll = normalize_attitude(pitch, roll)
     alt     = disp["alt"]
     speed   = disp["speed"]
     vspeed  = disp["vspeed"]
