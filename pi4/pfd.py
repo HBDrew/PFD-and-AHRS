@@ -4486,11 +4486,15 @@ def draw_ahrs_setup(surf, ss):
     cbx = bx+bw-138-14; cby = by+(bh-_DSP_BTN_H)//2
     _action_btn(surf, cbx, cby, 138, _DSP_BTN_H, "CALIBRATE", "ok")
 
-    # Row 3: AHRS orientation — tap to change; change is pushed to Pico over USB.
-    # Highlight follows Pico broadcast when connected, Pi4 ss otherwise.
-    bx, by, bw, bh = _setting_row(surf, 3, "ORIENTATION",
-                                   "Direction the connector faces – sent to AHRS")
-    cur_ori = ss.get("orientation", disp.get("orientation", "right"))
+    # Row 3: AHRS orientation — highlight = what Pico is actually using (broadcast).
+    # Tap sends $ORIENT, to Pico; Pi4 selection shown as pending until confirmed.
+    pico_ori = disp.get("orientation", "right")
+    sel_ori  = ss.get("orientation", pico_ori)
+    if sel_ori != pico_ori:
+        ori_sub = f"Direction connector faces  (AHRS: {pico_ori} — sending…)"
+    else:
+        ori_sub = f"Direction connector faces  (AHRS: {pico_ori})"
+    bx, by, bw, bh = _setting_row(surf, 3, "ORIENTATION", ori_sub)
     opts_ori = [("forward", "FWD"), ("left", "LEFT"),
                 ("right",   "RIGHT"), ("aft", "AFT")]
     seg_w = 88
@@ -4499,18 +4503,22 @@ def draw_ahrs_setup(surf, ss):
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts_ori):
         _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
-                 lbl, v == cur_ori)
+                 lbl, v == pico_ori)   # highlight = Pico-confirmed value
 
-    # Row 4: Mounting — tap to change; change is pushed to Pico over USB.
-    bx, by, bw, bh = _setting_row(surf, 4, "MOUNTING",
-                                   "Right-side-up or inverted – sent to AHRS")
-    cur = ss.get("mounting", disp.get("mounting", "normal"))
+    # Row 4: Mounting — same pattern: highlight = Pico-confirmed, tap pushes change.
+    pico_mnt = disp.get("mounting", "normal")
+    sel_mnt  = ss.get("mounting", pico_mnt)
+    if sel_mnt != pico_mnt:
+        mnt_sub = f"Right-side-up or inverted  (AHRS: {pico_mnt} — sending…)"
+    else:
+        mnt_sub = f"Right-side-up or inverted  (AHRS: {pico_mnt})"
+    bx, by, bw, bh = _setting_row(surf, 4, "MOUNTING", mnt_sub)
     opts = [("normal","NORMAL"),("inverted","INVERTED")]
     total = 2*120 + _DSP_BTN_G
     rx = bx + bw - total - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts):
-        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
+        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==pico_mnt)
 
     # Row 5: Heading source (MAG / TRK / AUTO) — matches the iPhone display.
     # Sub-line documents what each option does so a pilot can pick without

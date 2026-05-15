@@ -52,6 +52,7 @@ class SerialClient(threading.Thread):
         if ser is not None:
             try:
                 ser.write(data)
+                ser.flush()   # push bytes out of the OS buffer immediately
             except Exception as e:
                 print(f"[Serial] write error: {e}")
 
@@ -87,6 +88,8 @@ class SerialClient(threading.Thread):
                 if not raw:
                     continue
                 line = raw.decode("utf-8", errors="ignore").strip()
+                if line.startswith("$ORIENT_ACK,"):
+                    print(f"[Serial] {line}")
                 if not line.startswith(self.PREFIX):
                     continue
                 payload = line[len(self.PREFIX):]
