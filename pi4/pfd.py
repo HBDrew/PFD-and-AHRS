@@ -447,61 +447,82 @@ def _push_baro_to_pico(qnh_hpa: float):
 
 
 def _push_magcal_to_pico(table):
-    """Send a 36-point deviation table to the Pico's /magcal endpoint.
-    Runs in a background thread — failures are logged, not fatal."""
-    base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+    """Send a 36-point deviation table to the Pico.
+    Tries USB serial ($MAGDEV, command) first — works even when the Pi4
+    is not on the Pico's WiFi AP.  Falls back to HTTP GET as a bonus.
+    Runs in a background thread."""
     t_str = ",".join(f"{v:.3f}" for v in table)
-    url = f"{base}/magcal?action=set&t={t_str}"
-    verify_url = f"{base}/magcal?action=get"
 
     def _worker():
-        import json as _json
-        try:
-            import urllib.request
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                resp.read()
-            print(f"[PFD] magcal sent ({len(table)} pts, url_len={len(url)})")
-        except Exception as e:
-            print(f"[PFD] /magcal push failed: {e}")
-            wiz = disp.get("mag_cal_wiz") or {}
-            wiz["msg"] = f"PUSH FAILED: {e}"
-            return
-        # Verify the table was actually stored on the Pico.
-        try:
-            import urllib.request
-            with urllib.request.urlopen(verify_url, timeout=5) as resp:
-                d = _json.loads(resp.read())
-            n = len(d.get("corrections", []))
-            active = d.get("active", False)
-            print(f"[PFD] magcal verify: active={active}, stored={n}/36")
-            wiz = disp.get("mag_cal_wiz") or {}
-            if active and n == 36:
-                wiz["msg"] = f"Saved on AHRS ✓  ({n}/36 pts)"
-            else:
-                wiz["msg"] = f"WARNING: Pico stored {n}/36 — retry?"
-        except Exception as e:
-            print(f"[PFD] magcal verify failed: {e}")
-            wiz = disp.get("mag_cal_wiz") or {}
-            wiz["msg"] = f"Sent OK but verify failed: {e}"
+        sent_ok = False
+        # ── Try USB serial (primary) ──
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                cmd = f"$MAGDEV,{t_str}\n".encode()
+                client.write(cmd)
+                print(f"[PFD] magcal sent via USB serial ({len(table)} pts)")
+                sent_ok = True
+            except Exception as e:
+                print(f"[PFD] magcal serial write failed: {e}")
+        # ── Try HTTP (bonus, only if serial unavailable) ──
+        if not sent_ok:
+            base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+            url = f"{base}/magcal?action=set&t={t_str}"
+            try:
+                import urllib.request
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    resp.read()
+                print(f"[PFD] magcal sent via HTTP ({len(table)} pts)")
+                sent_ok = True
+            except Exception as e:
+                print(f"[PFD] magcal HTTP push failed: {e}")
+        wiz = disp.get("mag_cal_wiz") or {}
+        if sent_ok:
+            wiz["msg"] = "Saved locally + sent to AHRS ✓"
+        else:
+            wiz["msg"] = "Saved locally only (AHRS unreachable)"
 
     threading.Thread(target=_worker, daemon=True, name="MagCalPush").start()
 
 
 def _push_magcal_clear_to_pico():
-    """Clear the Pico's deviation table.  Background thread."""
-    base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
-    url = f"{base}/magcal?action=clear"
-
+    """Clear the Pico's deviation table via serial then HTTP.  Background thread."""
     def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                client.write(b"$MAGDEV,CLEAR\n")
+                print("[PFD] magcal cleared via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magcal serial clear failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magcal?action=clear"
         try:
             import urllib.request
             with urllib.request.urlopen(url, timeout=5) as resp:
                 resp.read()
-            print("[PFD] magcal table cleared on Pico")
+            print("[PFD] magcal cleared via HTTP")
         except Exception as e:
-            print(f"[PFD] /magcal clear failed: {e}")
+            print(f"[PFD] magcal HTTP clear failed: {e}")
 
     threading.Thread(target=_worker, daemon=True, name="MagCalClear").start()
+
+
+def _apply_local_magdev(yaw, table):
+    """Apply a 36-slot deviation table — mirrors Pico's apply_magdev exactly."""
+    if len(table) != 36:
+        return yaw
+    idx = (yaw % 360) / 10.0
+    i0 = int(idx) % 36
+    i1 = (i0 + 1) % 36
+    frac = idx - int(idx)
+    c0, c1 = table[i0], table[i1]
+    dc = c1 - c0
+    if dc > 180:  dc -= 360
+    elif dc < -180: dc += 360
+    return (yaw + c0 + frac * dc) % 360
 
 
 def _build_magdev_table(samples):
@@ -2633,13 +2654,15 @@ def _mag_cal_capture():
         # Build 36-point table and push to Pico so both displays
         # see the same pre-corrected heading from the AHRS broadcast.
         table = _build_magdev_table(wiz["samples"])
-        _push_magcal_to_pico(table)
-        # Zero local deltas — correction now lives on the Pico.
+        # Store locally so Pi4 always shows calibrated heading,
+        # even when the HTTP push to the Pico can't reach it.
+        disp["ss"]["pi4_magdev"] = table
         disp["ss"]["mag_cal_deltas"] = [0.0] * 4
         disp["ss"].pop("mag_cal_offset", None)
         disp["ss"]["mag_cal"] = "done"
         _settings.mark_dirty()
-        wiz["msg"] = "Sending to AHRS — verifying…"
+        _push_magcal_to_pico(table)   # also sends to Pico (serial → HTTP fallback)
+        wiz["msg"] = "Saved locally — sending to AHRS…"
         wiz["step"]    = 0
         wiz["samples"] = []
 
@@ -2654,6 +2677,7 @@ def _mag_cal_restart():
 def _mag_cal_reset():
     """Wipe the stored cal on Pico and locally."""
     _push_magcal_clear_to_pico()
+    disp["ss"].pop("pi4_magdev", None)
     disp["ss"]["mag_cal_deltas"] = [0.0, 0.0, 0.0, 0.0]
     disp["ss"].pop("mag_cal_offset", None)
     disp["ss"]["mag_cal"] = "idle"
@@ -2661,7 +2685,7 @@ def _mag_cal_reset():
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
     wiz["samples"] = []
-    wiz["msg"] = "Calibration cleared on AHRS."
+    wiz["msg"] = "Calibration cleared."
 
 
 def _mag_cal_close():
@@ -8051,18 +8075,21 @@ def render(surf, demo_mode, connected, data_stale=False):
     # affect TRK mode (the complementary filter operates on yaw
     # deltas — a smoothly-varying correction's derivative just
     # blends in with normal yaw motion).
-    yaw_corr_uncal = (ahrs_sign * disp["yaw"] + hdg_offset) % 360.0
-    if ahrs_synthetic:
-        yaw_corr = yaw_corr_uncal
+    # Raw sensor heading (pre-magdev) with orientation applied.
+    _pico_yaw_raw    = disp.get("yaw_raw", disp["yaw"])
+    yaw_raw_oriented = (ahrs_sign * _pico_yaw_raw + hdg_offset) % 360.0
+    disp["_yaw_uncal"] = yaw_raw_oriented   # used by cal wizard CAPTURE
+
+    # Apply Pi4-local deviation table when available.  It is built from
+    # yaw_raw captures, so it always starts from the true sensor reading
+    # regardless of what table (if any) the Pico has applied.
+    _pi4_magdev = ss.get("pi4_magdev", [])
+    if not ahrs_synthetic and _pi4_magdev:
+        yaw_corr = _apply_local_magdev(yaw_raw_oriented, _pi4_magdev)
     else:
-        # Deviation correction is now applied on the Pico before
-        # broadcasting — disp["yaw"] arrives pre-corrected.
-        yaw_corr = yaw_corr_uncal
-    # Stash pre- and post-magdev headings (with orientation) so the cal wizard
-    # can show both values and capture the true raw sensor reading.
-    _pico_yaw_raw = disp.get("yaw_raw", disp["yaw"])
-    disp["_yaw_uncal"] = (ahrs_sign * _pico_yaw_raw + hdg_offset) % 360.0
-    disp["_yaw_cal"]   = yaw_corr_uncal   # post-magdev with orientation
+        # No local table — use Pico-corrected yaw (or synthetic).
+        yaw_corr = (ahrs_sign * disp["yaw"] + hdg_offset) % 360.0
+    disp["_yaw_cal"] = yaw_corr
     if use_track:
         # Complementary filter: AHRS yaw rate propagates each frame, GPS
         # track slowly slaves the absolute reference.  Smoother than raw

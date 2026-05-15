@@ -41,9 +41,19 @@ class SerialClient(threading.Thread):
         self.err_count       = 0     # JSON/IO errors
         self.last_err        = ""    # most recent error message
         self._stop_event     = threading.Event()
+        self._ser            = None  # set while port is open; used by write()
 
     def stop(self):
         self._stop_event.set()
+
+    def write(self, data: bytes):
+        """Send bytes to the Pico over the same USB serial port. Thread-safe."""
+        ser = self._ser
+        if ser is not None:
+            try:
+                ser.write(data)
+            except Exception as e:
+                print(f"[Serial] write error: {e}")
 
     @staticmethod
     def find_port():
@@ -70,6 +80,7 @@ class SerialClient(threading.Thread):
         import serial
         print(f"[Serial] Opening {self.port} @ {self.baud}")
         ser = serial.Serial(self.port, self.baud, timeout=2)
+        self._ser = ser
         try:
             while not self._stop_event.is_set():
                 raw = ser.readline()
@@ -93,4 +104,5 @@ class SerialClient(threading.Thread):
                     self.err_count += 1
                     self.last_err = f"JSON: {e.msg} @ col {e.colno}"
         finally:
+            self._ser = None
             ser.close()

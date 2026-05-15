@@ -20,6 +20,7 @@ import uasyncio as asyncio
 import network
 import utime
 import ujson
+import sys
 from machine import Pin
 
 from config import (
@@ -263,6 +264,61 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
         await asyncio.sleep_ms(20)   # 50 Hz poll
 
 
+# ── USB serial command reader ($MAGDEV, from Pi4) ────────────────────────────
+async def stdin_cmd_loop():
+    """
+    Read commands sent by the Pi4 over USB serial.
+    Currently handles:
+      $MAGDEV,v0,v1,...,v35\n  – store 36-pt deviation table
+      $MAGDEV,CLEAR\n          – wipe the deviation table
+    Replies with $MAGDEV_ACK,<n>,OK or $MAGDEV_ACK,0,ERR ... on the same
+    USB line so the Pi4's SerialClient can see the confirmation.
+    """
+    try:
+        import uselect
+        poll = uselect.poll()
+        poll.register(sys.stdin, uselect.POLLIN)
+    except Exception:
+        return  # uselect not available on this build
+
+    buf = bytearray()
+    while True:
+        ready = poll.poll(0)
+        if ready:
+            try:
+                ch = sys.stdin.read(1)
+                if ch:
+                    b = ord(ch)
+                    if b in (10, 13):   # newline / CR
+                        if b == 10 and buf:
+                            line = buf.decode('utf-8', 'ignore').strip()
+                            buf = bytearray()
+                            if line.startswith('$MAGDEV,'):
+                                payload = line[8:]
+                                if payload == 'CLEAR':
+                                    state['_magdev'] = []
+                                    state['_save_magdev'] = True
+                                    print('$MAGDEV_ACK,0,CLEARED')
+                                else:
+                                    try:
+                                        vals = [float(x) for x in payload.split(',') if x.strip()]
+                                        if len(vals) == 36:
+                                            state['_magdev'] = vals
+                                            state['_save_magdev'] = True
+                                            print(f'$MAGDEV_ACK,{len(vals)},OK')
+                                        else:
+                                            print(f'$MAGDEV_ACK,0,ERR got {len(vals)}')
+                                    except Exception as e:
+                                        print(f'$MAGDEV_ACK,0,ERR {e}')
+                        elif b != 13:
+                            buf.append(b)
+                            if len(buf) > 600:  # guard against runaway input
+                                buf = bytearray()
+            except Exception:
+                pass
+        await asyncio.sleep_ms(20)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 async def main():
     print('─' * 40)
@@ -307,6 +363,7 @@ async def main():
     await asyncio.gather(
         sensor_loop(ahrs, gps, baro),
         start_server(state, port=HTTP_PORT),
+        stdin_cmd_loop(),
     )
 
 
