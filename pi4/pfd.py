@@ -1744,6 +1744,11 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok):
         _terrain_alert_level = 0
         return
 
+    # Inhibit terrain/obstacle alerts below Vso (taxi, rollout, etc.)
+    if speed_kt < VS0:
+        _terrain_alert_level = 0
+        return
+
     level = 0
 
     # ── Terrain clearance (sampled at current position) ──────────────────────
