@@ -1390,7 +1390,189 @@ catch(e) {}
 const BUG_MAGENTA = '#e100e1';
 const BUG_CYAN    = '#00dcdc';
 
-// ── TAWS proximity alert ──────────────────────────────────────────────────
+// ── Moving-map inset ──────────────────────────────────────────────────────
+// Top-down 2D map showing terrain + water tint around the aircraft, with a
+// range ring and ownship chevron. Mirrors the pi4 moving_map.py layout at a
+// fraction of the LOC — no airports / runways / obstacles / state lines yet,
+// just what we can drive off the on-device terrain tiles plus the existing
+// EGPWS palette.
+//
+// Tint pipeline: sample Terrain.elevationAt() across a north-up N×N grid
+// into an offscreen canvas, then drawImage it with rotation to flip into
+// track-up when the user wants it. Cells with elevM < 1 paint as water.
+// Above Vso, cells with clearance < 100 / 500 ft override with red / amber
+// to match the SVT proximity bands.
+const INSET = {
+  enabled:  (localStorage.getItem('inset_enabled') ?? '1') === '1',
+  zoom:     parseInt(localStorage.getItem('inset_zoom_nm') || '5', 10),
+  orient:   localStorage.getItem('inset_orient') || 'trk',
+  zoomSteps: [1, 2, 5, 10, 20, 40],
+  tintN:    48,                  // sample resolution (per side)
+  tintCanvas: document.createElement('canvas'),
+  tintCtx:   null,
+  imgData:   null,
+};
+INSET.tintCanvas.width = INSET.tintN;
+INSET.tintCanvas.height = INSET.tintN;
+INSET.tintCtx = INSET.tintCanvas.getContext('2d');
+INSET.imgData = INSET.tintCtx.createImageData(INSET.tintN, INSET.tintN);
+
+function _insetSave() {
+  localStorage.setItem('inset_enabled', INSET.enabled ? '1' : '0');
+  localStorage.setItem('inset_zoom_nm', String(INSET.zoom));
+  localStorage.setItem('inset_orient',  INSET.orient);
+}
+
+function _insetCycleZoom() {
+  const i = INSET.zoomSteps.indexOf(INSET.zoom);
+  INSET.zoom = INSET.zoomSteps[(i + 1) % INSET.zoomSteps.length];
+  _insetSave();
+}
+
+function _insetToggleOrient() {
+  INSET.orient = INSET.orient === 'trk' ? 'nrth' : 'trk';
+  _insetSave();
+}
+
+// Hypsometric palette (meters → RGB). Breakpoints + colours match the
+// pi4 _PAL_X table in moving_map.py so the two displays read the same.
+function _insetHypsoRGB(elevM, out, offset) {
+  if (elevM < 1) {                // water (no separate mask on iPhone)
+    out[offset]     = 45;
+    out[offset + 1] = 80;
+    out[offset + 2] = 120;
+    return;
+  }
+  // Piecewise linear interp between the pi4 break points.
+  const px = [0, 610, 1220, 1830, 2440, 3050, 3960];
+  const pr = [30,  80, 130, 160, 190, 210, 240];
+  const pg = [100, 110,  95,  65,  80, 195, 240];
+  const pb = [30,  40,  45,  25,  35, 185, 245];
+  let i = 0;
+  while (i < px.length - 1 && elevM > px[i + 1]) i++;
+  const t = (elevM - px[i]) / Math.max(1, px[i + 1] - px[i]);
+  out[offset]     = pr[i] + t * (pr[i + 1] - pr[i]);
+  out[offset + 1] = pg[i] + t * (pg[i + 1] - pg[i]);
+  out[offset + 2] = pb[i] + t * (pb[i + 1] - pb[i]);
+}
+
+const _FT_PER_M_INV = 1 / 3.28084;
+
+function drawInset() {
+  if (!INSET.enabled) return;
+  if (!D.gps_ok)      return;
+  if (typeof Terrain === 'undefined' || !Terrain.elevationAt) return;
+
+  const { x, y, w, h } = L.inset;
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const rng = INSET.zoom;
+  const halfMin = Math.min(w, h) / 2;
+  const pxPerNm = halfMin / Math.max(0.5, rng);
+
+  // Track-up rotation falls back to compass heading at low GPS speed
+  // (same rule the inset on pi4 uses — keeps the map yawing visibly when
+  // taxiing).
+  let rotDeg = 0;
+  const useTrack = INSET.orient === 'trk';
+  if (useTrack) {
+    rotDeg = (D.speed > 3 && D.gps_ok) ? D.track : D.yaw;
+  }
+  const cosLat = Math.max(0.05, Math.cos(D.lat * DEG));
+
+  // ── Build hypsometric / EGPWS tint into the offscreen canvas ─────────
+  // Oversize > 1 in track-up so the rotated tile still covers the inset
+  // corners — same trick the pi4 inset uses.
+  const N = INSET.tintN;
+  const oversize = useTrack ? 1.45 : 1.0;
+  const spanLat = (2 * rng * oversize) / 60;
+  const spanLon = spanLat / cosLat;
+  const altM = D.alt * 0.3048;
+  const alertOn = D.speed >= V.vs0;
+  const data = INSET.imgData.data;
+  for (let row = 0; row < N; row++) {
+    const lat = D.lat + ((N / 2 - 0.5 - row) / N) * spanLat;
+    for (let col = 0; col < N; col++) {
+      const lon  = D.lon + ((col - N / 2 + 0.5) / N) * spanLon;
+      const elev = Terrain.elevationAt(lat, lon);
+      const idx  = (row * N + col) * 4;
+      _insetHypsoRGB(elev, data, idx);
+      if (alertOn) {
+        const clearFt = (altM - elev) * 3.28084;
+        if (clearFt < 100) {
+          data[idx] = 220; data[idx + 1] = 30; data[idx + 2] = 30;
+        } else if (clearFt < 500) {
+          data[idx] = 200; data[idx + 1] = 130; data[idx + 2] = 0;
+        }
+      }
+      data[idx + 3] = 255;
+    }
+  }
+  INSET.tintCtx.putImageData(INSET.imgData, 0, 0);
+
+  // ── Composite onto main canvas ────────────────────────────────────────
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(x, y, w, h);
+
+  // Tint: translate to centre, rotate (track-up only), draw centred.
+  ctx.translate(cx, cy);
+  if (useTrack && rotDeg !== 0) ctx.rotate(-rotDeg * DEG);
+  const tintSide = Math.max(w, h) * oversize;
+  ctx.drawImage(INSET.tintCanvas,
+                -tintSide / 2, -tintSide / 2, tintSide, tintSide);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Slight veil so labels and vector layers stay legible over bright tint.
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.fillRect(x, y, w, h);
+
+  // Range ring — 2 px inside the frame so the border stops eating its top.
+  ctx.strokeStyle = 'rgba(110,140,180,0.95)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, Math.max(1, rng * pxPerNm - 2), 0, 2 * Math.PI);
+  ctx.stroke();
+
+  // Ownship chevron. Track-up = always points up.  North-up = points to
+  // current track when GPS gives one, else mag heading.
+  let chevronRotDeg = 0;
+  if (!useTrack) {
+    chevronRotDeg = (D.speed > 3 && D.gps_ok) ? D.track : D.yaw;
+  }
+  ctx.translate(cx, cy);
+  ctx.rotate(chevronRotDeg * DEG);
+  const s = Math.max(6, Math.min(w, h) * 0.06);
+  ctx.fillStyle = '#ffdc32';
+  ctx.beginPath();
+  ctx.moveTo(0, -s);
+  ctx.lineTo(s, s);
+  ctx.lineTo(0, s * 0.4);
+  ctx.lineTo(-s, s);
+  ctx.closePath();
+  ctx.fill();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  ctx.restore();
+
+  // Frame border + corner labels (outside clip).
+  ctx.strokeStyle = 'rgba(80,100,130,0.95)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+  const lblFs = Math.max(9, Math.min(12, h * 0.10));
+  ctx.font = `bold ${lblFs}px monospace`;
+  ctx.fillStyle = 'rgba(190,210,225,0.92)';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.fillText(`${rng} NM`, x + 4, y + 3);
+  ctx.textAlign = 'right';
+  ctx.fillText(useTrack ? 'TRK↑' : 'N↑', x + w - 4, y + 3);
+}
 // See preview.html for the algorithm.  Uses Terrain.elevationAt() from
 // terrain.js (shared between preview + live) to compute clearance.
 const TAWS = { level: 0, lastCheckMs: 0 };
@@ -1680,6 +1862,19 @@ function computeLayout() {
   // Perspective focal length: 70° horizontal FOV across the AI clip area
   const clipW = L.altX - (L.spdX + L.spdW);
   L.focal = clipW > 0 ? (clipW / 2) / Math.tan(35 * Math.PI / 180) : 300;
+
+  // Moving-map inset: bottom-left, sandwiched between the speed tape and
+  // the heading tape so it overlaps the AI/SVT only (never the tapes or
+  // the heading box). Sized proportional to the viewport with hard floors
+  // so it stays legible on a phone screen.
+  const insW = Math.max(118, Math.round(W * 0.16));
+  const insH = Math.max(96,  Math.round(H * 0.30));
+  L.inset = {
+    x: L.spdX + L.spdW + 6,
+    y: L.hdgY - insH - 6,
+    w: insW,
+    h: insH,
+  };
 }
 
 // Display is locked to landscape. When the viewport reports portrait (which
@@ -1741,6 +1936,23 @@ const _TAP_DEBOUNCE = 300;  // ms
 function _handleSpdTap(x, y) {
   const now = performance.now();
   if (now - _lastTapMs < _TAP_DEBOUNCE) return;
+
+  // Moving-map inset: top-right corner toggles TRK↑/N↑, rest of the box
+  // cycles the range one step. Compare in screen coords from L.inset.
+  if (INSET.enabled && L.inset) {
+    const r = L.inset;
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+      _lastTapMs = now;
+      const cornerW = Math.min(48, r.w * 0.35);
+      const cornerH = Math.min(28, r.h * 0.28);
+      if (x >= r.x + r.w - cornerW && y <= r.y + cornerH) {
+        _insetToggleOrient();
+      } else {
+        _insetCycleZoom();
+      }
+      return;
+    }
+  }
 
   // Check for speed digital readout tap (center area of speed tape)
   // Tapping the readout numbers opens the editor
@@ -2632,6 +2844,11 @@ function render(ts) {
   // heading source so the mesh tracks the GPS ground course in TRK / AUTO
   // mode (wind-corrected, true-north) instead of the compass nose.
   if (typeof Terrain !== 'undefined') Terrain.render(ctx, D, L, _activeHdg().value);
+
+  // 2b. Moving-map inset — top-down terrain + water tint with own-ship.
+  // Drawn after the SVT mesh and before the instrument overlays so the
+  // tapes/roll arc/heading box always sit on top of it.
+  drawInset();
 
   // 3. Fixed instrument overlays (always on top of terrain)
   drawRollIndicator();
