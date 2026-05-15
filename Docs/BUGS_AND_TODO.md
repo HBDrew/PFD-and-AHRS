@@ -317,7 +317,7 @@ and divide by the airframe's lift-curve slope:
   `α ≈ α₀ + Cl / Cl_α`
   `Cl  = (n·W) / (½·ρ·V²·S)`
 where `n` is load factor (from the WT901 accel Z, in g), `V` is
-TAS (SDP31 + BME280), `ρ` is air density (BME280 static + OAT), and
+TAS (SDP33 + BME280), `ρ` is air density (BME280 static + OAT), and
 `W` / `S` / `Cl_α` / `α₀` are airframe constants for the Rans S21.
 Inputs (with the same fallback ladder AHRS-GPS-AID uses):
   - **Velocity** — TAS from SDP31-AIRDATA when it lands; GS from
