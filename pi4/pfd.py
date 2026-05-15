@@ -43,6 +43,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")  # overridden by --sim
 # backend; we set SDL_AUDIODRIVER=alsa near the top instead and let the
 # mixer use a large enough buffer to avoid underruns in normal operation.
 
+import numpy as np
 import pygame
 import pygame.gfxdraw
 
@@ -2103,6 +2104,8 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
             sink_rate_active = True
 
     # ── Obstacle clearance (time-based lookahead radius) ─────────────────────
+    # Filter the radius-query down to a forward wedge (±OBSTACLE_WEDGE_HALF_DEG
+    # off ground track) so towers behind / abeam don't fire spurious alerts.
     if _obstacles is not None:
         radius = _alert_radius_nm(speed_kt)
         nearby = obs_mod.query_nearby(_obstacles, lat, lon,
@@ -2110,12 +2113,22 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
                                       alt_ft=alt_ft,
                                       below_ft=OBSTACLE_CAUTION_FT)
         if len(nearby) > 0:
-            # Vectorised clearance check — nearby is a structured array.
-            clearance = alt_ft - nearby["msl_ft"]
-            if (clearance < OBSTACLE_WARNING_FT).any():
-                obstacle_level = 2
-            elif (clearance < OBSTACLE_CAUTION_FT).any():
-                obstacle_level = 1
+            # Vectorised forward-wedge filter: bearing-to-obstacle vs
+            # ground track, wrapped to (-180, +180], kept only if its
+            # absolute delta is inside the wedge half-angle.
+            cos_lat = max(0.05, math.cos(math.radians(lat)))
+            d_north = nearby["lat"] - lat
+            d_east  = (nearby["lon"] - lon) * cos_lat
+            brg_deg = (np.degrees(np.arctan2(d_east, d_north)) + 360.0) % 360.0
+            delta = ((brg_deg - track_deg + 540.0) % 360.0) - 180.0
+            in_wedge = np.abs(delta) <= OBSTACLE_WEDGE_HALF_DEG
+            ahead = nearby[in_wedge]
+            if len(ahead) > 0:
+                clearance = alt_ft - ahead["msl_ft"]
+                if (clearance < OBSTACLE_WARNING_FT).any():
+                    obstacle_level = 2
+                elif (clearance < OBSTACLE_CAUTION_FT).any():
+                    obstacle_level = 1
 
     level = max(terrain_level, obstacle_level)
     _terrain_alert_level = level
