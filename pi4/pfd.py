@@ -3506,16 +3506,21 @@ def handle_event(event, demo_mode):
                 return True
 
         # Tap on the moving-map inset → cycle range one step.  Right
-        # half zooms IN (smaller range), left half zooms OUT.
+        # half zooms IN (smaller range), left half zooms OUT.  Left-tap
+        # at the largest standard step rolls into AUTO when a direct-to
+        # is active so the pilot can reach AUTO without diving into the
+        # display-setup screen.
         if (mode == "pfd" and _last_map_rect is not None
                 and disp["ds"].get("map_enabled", False)):
             mrx, mry, mrw, mrh = _last_map_rect
             if mrx <= x <= mrx + mrw and mry <= y <= mry + mrh:
                 cur = int(disp["ds"].get("map_zoom_nm", 5))
+                _has_d2 = bool((disp.get("nav") or {}).get("ident"))
                 if x >= mrx + mrw / 2:
                     disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
                 else:
-                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur)
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(
+                        cur, allow_auto=_has_d2)
                 _settings.mark_dirty()
                 return True
 
@@ -4134,8 +4139,9 @@ _DSP_ROWS = [
     # as a single key so it occupies one row in the standard loop.
     ("map_enabled", "MAP INSET",    "Lower-left 2D moving map \u00b7 orient",
      [False, True],      ["OFF", "ON"],       80),
-    ("map_zoom_nm", "MAP RANGE",    "Default radius (nm)",
-     [1, 2, 5, 10, 20, 40], ["1","2","5","10","20","40"], 50),
+    ("map_zoom_nm", "MAP RANGE",    "Default radius (nm) · AUTO fits D2",
+     [1, 2, 5, 10, 20, 40, 80, 0],
+     ["1","2","5","10","20","40","80","AUTO"], 50),
     ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
      [False, True],      ["FIXED", "REAL"],   80),
 ]
@@ -8297,7 +8303,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # Drawn after symbols so the inset frame sits on top, before the
     # pitch ladder so the ladder reads through unobstructed.
     if ds.get("map_enabled", False) and gps_ok:
-        _miw = max(140, int(AI_W * 0.30))
+        _miw = max(130, int(AI_W * 0.28))
         _mih = max(120, int(AI_H * 0.40))
         rect = (AI_X + 6,
                 AI_Y + AI_H - _mih - 6,
@@ -8340,10 +8346,33 @@ def render(surf, demo_mode, connected, data_stale=False):
             _types_vis.add("W")
         if _ad.get("show_other", False):
             _types_vis.add("B")
+        # Resolve the effective range and orientation. In AUTO mode the
+        # inset picks the smallest standard step that fits the active
+        # direct-to and forces north-up so the destination doesn't spin
+        # under the chevron. If no D2 is active the fallback is 80 nm —
+        # the user can still pan around at the widest standard range.
+        _zoom_pref  = int(ds.get("map_zoom_nm", 5))
+        _orient_pref = ds.get("map_orient", "trk")
+        if _zoom_pref == _map_mod.ZOOM_AUTO:
+            _d2_dst = d2 if d2.get("ident") else None
+            if _d2_dst:
+                _cos_lat = max(0.05, math.cos(math.radians(lat)))
+                _n_nm = (_d2_dst["lat"] - lat) * 60.0
+                _e_nm = (_d2_dst["lon"] - lon) * 60.0 * _cos_lat
+                _eff_range = _map_mod.auto_fit_range(
+                    math.hypot(_n_nm, _e_nm) * 1.10)  # 10 % framing margin
+            else:
+                _eff_range = _map_mod.ZOOM_LEVELS[-1]
+            _eff_orient = "nrth"
+            _eff_label = "AUTO"
+        else:
+            _eff_range  = _zoom_pref
+            _eff_orient = _orient_pref
+            _eff_label  = None  # use the inset's standard "X NM" label
         _map_mod.render(
             surf, rect, lat, lon, alt, hdg, _map_track,
-            ds.get("map_orient", "trk"),
-            int(ds.get("map_zoom_nm", 5)),
+            _eff_orient,
+            _eff_range,
             ds,
             airports_arr=_airports,
             runways_arr=_runways,
@@ -8355,6 +8384,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             airport_types_visible=_types_vis,
             gs_kt=speed,
             vso_kt=fp.get("vs0", VS0),
+            range_label=_eff_label,
         )
 
     # 2. Pitch ladder (with roll rotation)

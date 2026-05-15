@@ -283,7 +283,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
-           airport_types_visible=None, gs_kt=0.0, vso_kt=None):
+           airport_types_visible=None, gs_kt=0.0, vso_kt=None,
+           range_label=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -396,8 +397,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # 1000 ft below the aircraft (collision-risk window); obstacles
     # above are always shown (they're a hazard).  The defaults in
     # obstacles.query_nearby already encode that, so just pass alt_ft.
+    # Above 10 nm range, obstacle dots turn into useless speckle (and
+    # the pilot is too far away to care), so they're hidden regardless
+    # of the master toggle.
     if (settings.get("map_show_obstacles", True)
-            and obstacles_arr is not None):
+            and obstacles_arr is not None
+            and range_nm <= 10):
         nearby = _obs_mod.query_nearby(obstacles_arr, lat, lon,
                                        radius_nm=range_nm * 1.4,
                                        alt_ft=alt_ft)
@@ -541,7 +546,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     pygame.draw.rect(surf, _FRAME, rect, width=1)
 
     if font is not None:
-        rng_lbl = f"{range_nm:g} NM"
+        if range_label:
+            # Caller supplied a custom prefix — used by AUTO mode to show
+            # "AUTO 20 NM" instead of a bare distance.
+            rng_lbl = f"{range_label} {range_nm:g} NM"
+        else:
+            rng_lbl = f"{range_nm:g} NM"
         orient_lbl = "TRK↑" if orient == "trk" else "N↑"
         rng_surf = font.render(rng_lbl, True, _LABEL)
         orient_surf = font.render(orient_lbl, True, _LABEL)
@@ -598,13 +608,20 @@ def hit_test(rect, x, y) -> bool:
 
 
 # ── Pinch-zoom state ──────────────────────────────────────────────────────────
-# Snap-points for the discrete zoom levels.
+# Snap-points for the discrete zoom levels.  ZOOM_AUTO (== 0) is a sentinel:
+# the inset picks the smallest standard step that fits the active direct-to
+# (capped at 80 nm) and forces north-up.  AUTO sits at the end of the cycle
+# so a left-tap on the largest standard level (80) flips to AUTO when a
+# direct-to is active, and stays at 80 when one isn't.
 
-ZOOM_LEVELS = (1, 2, 5, 10, 20, 40)
+ZOOM_AUTO   = 0
+ZOOM_LEVELS = (1, 2, 5, 10, 20, 40, 80)
 
 
 def zoom_in(current_nm: int) -> int:
     """Step the range to the next-smaller snap point (zoom in)."""
+    if current_nm == ZOOM_AUTO:
+        return ZOOM_LEVELS[-1]
     levels = ZOOM_LEVELS
     for i, lvl in enumerate(levels):
         if current_nm <= lvl and i > 0:
@@ -612,10 +629,26 @@ def zoom_in(current_nm: int) -> int:
     return levels[0]
 
 
-def zoom_out(current_nm: int) -> int:
-    """Step the range to the next-larger snap point (zoom out)."""
+def zoom_out(current_nm: int, allow_auto: bool = False) -> int:
+    """Step the range to the next-larger snap point (zoom out).
+    Caller passes ``allow_auto=True`` when a direct-to is active so AUTO
+    becomes reachable from the largest standard step."""
+    if current_nm == ZOOM_AUTO:
+        return ZOOM_AUTO
     levels = ZOOM_LEVELS
     for i, lvl in enumerate(levels):
         if current_nm < lvl:
             return lvl
-    return levels[-1]
+    return ZOOM_AUTO if allow_auto else levels[-1]
+
+
+def auto_fit_range(d_nm: float) -> int:
+    """Pick the smallest standard zoom step that contains a given distance.
+    Distance comes from current-position → direct-to-destination; the
+    caller adds whatever margin it wants before invoking this. Caps at
+    the largest standard step so AUTO never zooms further out than 80
+    (the user agreed an 80 nm horizon is plenty)."""
+    for lvl in ZOOM_LEVELS:
+        if d_nm <= lvl:
+            return lvl
+    return ZOOM_LEVELS[-1]
