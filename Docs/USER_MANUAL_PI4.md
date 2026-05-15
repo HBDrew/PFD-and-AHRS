@@ -1,6 +1,6 @@
 # AHRS PFD — Pi 4 Pilot's User Manual
 
-**Software version 0.5 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP31-500Pa) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
+**Software version 0.5 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP31-1500Pa) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
 
 *Full SVT version — OpenGL vector graphics with 3D terrain rendering*
 
@@ -89,7 +89,7 @@ A chevron marker tracks the speed bug. Tap the readout button at the **top** of 
 
 | Colour | Source |
 |--------|--------|
-| Cyan | IAS — SDP31-500Pa differential-pressure sensor with BME280 density correction. Default when the air-data path reports `airdata_ok = True`. |
+| Cyan | IAS — SDP31-1500Pa differential-pressure sensor with BME280 density correction. Default when the air-data path reports `airdata_ok = True`. |
 | Magenta | GPS groundspeed (GS) — fallback when SDP31 is absent, has failed, or AIRSPEED SOURCE is forced to GPS GS in AHRS / Sensors. |
 
 The active source is also surfaced in the AIRSPEED SOURCE row of the AHRS / Sensors menu (§11) and on the speed tape itself as the bug colour. When pulling the IAS feed offline (cap on pitot, low altitude, sensor failure) the tape silently switches to GS — the bug + drum recolour from cyan to magenta so the change is unambiguous.
@@ -188,7 +188,7 @@ When no SRTM tiles are loaded the SVT falls back to a traditional blue-sky-over-
 
 ### Pitch ladder
 
-Grey pitch bars at ±5°, ±10°, ±15°, ±20°, ±30°. GI-275 style. Horizon bar is white. Scale is 10 px/° (matches the SVT horizon projection exactly so the 0° bar and the terrain horizon align at all pitches).
+White pitch bars run from ±5° out to ±80° (every 5° to ±20°, every 10° beyond). The horizon bar is white; line length narrows progressively at extreme attitudes so the ladder reads clean during unusual-attitude recoveries. Scale is 10 px/° and matches the SVT horizon projection exactly so the 0° bar and the terrain horizon align at every pitch.
 
 ### Roll arc and pointer
 
@@ -206,7 +206,11 @@ A short white horizontal bar (16×4 px) sits below the roll pointer's doghouse b
 
 **TERRAIN CAUTION** (amber, steady) — terrain clearance below **500 ft** along the 45-second look-ahead, or an obstacle within the forward wedge below **500 ft** of the aircraft.
 
+![Amber TERRAIN CAUTION banner during a low pass into rising terrain](../pi4/previews/preview_terrain_caution.png)
+
 **PULL UP TERRAIN** (red, 1 Hz flash) — terrain clearance below **100 ft** along the look-ahead, or an obstacle within the forward wedge below **100 ft**.
+
+![Red PULL UP TERRAIN at critical clearance — flashes at 1 Hz](../pi4/previews/preview_terrain_warning.png)
 
 **TERRAIN look-ahead**: the alert isn't fired off your current ground point alone. Each render frame the PFD walks twelve samples along your current GPS ground track for 45 s of flight (≈ 1.2 NM at 100 kt), projects altitude forward at the current VSI, and trips the alert on the worst clearance encountered — same convention EGPWS / TAWS-B uses. The benefit is that you get the banner (and the voice callout) while there's still room to climb, not when you're already in the wall.
 
@@ -395,11 +399,11 @@ Seven rows on this screen, each independent:
 |-----|---------|---------|-------|
 | **PITCH TRIM** | ± steppers | 0.0° | 0.1° per tap. Use to fine-trim a horizon that sits above/below level on the ground. |
 | **ROLL TRIM** | ± steppers | 0.0° | 0.1° per tap. Use to fine-trim a wing that reads low on the ground. |
-| **MAGNETOMETER** | CALIBRATE button | (idle) | Opens the cardinal-walk compass-cal wizard. Status row shows `max \|Δ\| X.X°` once a cal is stored. |
+| **MAGNETOMETER** | CALIBRATE button | (idle) | Opens the 8-point compass-cal wizard (N / NE / E / SE / S / SW / W / NW). Cal is stored *on the AHRS* in flash, so both Pi 4 and Pi Zero displays read the same calibrated heading off the SSE / USB broadcast. Status row shows `max \|Δ\| X.X°` once a cal is committed. |
 | **ORIENTATION** | FWD / LEFT / RIGHT / AFT | RIGHT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. |
 | **MOUNTING** | NORMAL / INVERTED | NORMAL | Whether the AHRS is right-side-up or upside-down. Independent of orientation. |
 | **HEADING SOURCE** | MAG / TRK / AUTO | AUTO | Magnetometer, GPS ground track (via complementary filter), or auto-select (TRK in motion, MAG when stationary). |
-| **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | IAS SENSOR | IAS from the SDP31-500Pa differential-pressure sensor (default when `airdata_ok`). Forced fallback to GPS groundspeed when the sensor is unhealthy or the pilot pins it manually. |
+| **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | IAS SENSOR | IAS from the SDP31-1500Pa differential-pressure sensor (default when `airdata_ok`). Forced fallback to GPS groundspeed when the sensor is unhealthy or the pilot pins it manually. |
 | **SDP31 ZERO** | CAPTURE button | (idle) | Capture the current differential-pressure reading as the in-flight zero offset. Aircraft must be stationary with no airflow over the pitot. Status row shows `LAST ZERO h:mm ago`. |
 
 ### Mounting and orientation
@@ -417,27 +421,42 @@ The base AHRS firmware reports yaw and roll with an ENU-style sign convention; t
 
 **Sim and Demo modes bypass every AHRS-mounting compensation** (orientation, mounting, base correction, trim, compass cal) so a calibrated trim doesn't show up as wing-down on a level sim flight.
 
-### Compass calibration (cardinal walk-through)
+### Compass calibration (8-point walk-through)
 
-![Compass cal wizard — point cardinal, capture, repeat](../pi4/previews/preview_compass_cal.png)
+![Compass cal wizard — point cardinal / intercardinal, capture, repeat](../pi4/previews/preview_compass_cal.png)
 
-Tap CALIBRATE on the MAGNETOMETER row to open the wizard. Step through the four cardinals:
+Tap CALIBRATE on the MAGNETOMETER row to open the wizard. Step through eight headings, holding each one steady before you tap CAPTURE:
 
-1. Point the aircraft's nose **NORTH** (000°). Tap **⊕ CAPTURE N** (or press ENTER on a keyboard).
-2. **EAST** (090°) → CAPTURE E.
-3. **SOUTH** (180°) → CAPTURE S.
-4. **WEST** (270°) → CAPTURE W.
+1. **N** (000°) → **⊕ CAPTURE N** (or press ENTER on a keyboard).
+2. **NE** (045°) → CAPTURE NE.
+3. **E** (090°) → CAPTURE E.
+4. **SE** (135°) → CAPTURE SE.
+5. **S** (180°) → CAPTURE S.
+6. **SW** (225°) → CAPTURE SW.
+7. **W** (270°) → CAPTURE W.
+8. **NW** (315°) → CAPTURE NW.
 
-The modal shows live readouts for **RAW** (the raw compass output before cal) and **APPLIED** (with the cal applied), plus the four captured Δ values once they're recorded. After the fourth capture, the cal is committed automatically — you'll see the four values displayed across N / E / S / W.
+The modal shows live readouts for **RAW HDG** (the raw compass output before cal) and **CAL HDG** (with the cal applied), plus the captured Δ values laid out in two rows of four (N / NE / E / SE on top, S / SW / W / NW below). After the eighth capture the cal commits automatically.
 
 | Button | Action |
 |--------|--------|
-| **EXIT** | Close the modal. The cal is committed on the 4th capture so this is non-destructive. Reads CANCEL only mid-walk when there are partial captures to discard. |
-| **RESET** | Wipe the stored cal back to zero. |
-| **RESTART** | Abandon partial captures and restart the four-capture sequence. |
-| **⊕ CAPTURE *N*** | Record the current heading at the cardinal. Available throughout. |
+| **EXIT** | Close the modal. The cal commits on the 8th capture so this is non-destructive. Reads CANCEL only mid-walk when there are partial captures still in flight to the AHRS. |
+| **RESET** | Wipe the stored cal back to zero (sends `$MAGDEV,CLEAR` to the AHRS, or `/magcal?action=clear` over Wi-Fi). |
+| **RESTART** | Abandon partial captures and restart the eight-capture sequence. |
+| **⊕ CAPTURE *X*** | Record the current heading at the cardinal/intercardinal indicated by *X*. Available throughout. |
 
-The cal is stored as a **piecewise-linear correction card** — four signed deltas at N / E / S / W persisted in `data/settings.json`. At render time each 90° quadrant gets its own correction curve via linear interpolation between the two bracketing cardinals (same convention as a real aircraft compass swing card; strictly better than a single average offset for a sinusoidal hard-iron error or higher-order soft-iron error).
+### Storage — AHRS-side, not display-side
+
+Magnetometer calibration and the AHRS orientation / mounting selection both live in flash **on the Pico W**, not in the display's `settings.json`. The wizard builds a 36-point deviation table from your eight samples (linear interpolation per 10° slot) and pushes it to the AHRS over the USB serial link (`$MAGDEV,<36 floats>`) or the Wi-Fi config endpoint (`GET /magcal?action=set&t=…`). The Pico writes the table to `magdev.json` on its own filesystem and applies it before broadcasting yaw on the SSE / `$AHRS` stream. Same for orientation / mounting (`$ORIENT,connector,mounting` → `orient.json`).
+
+Practical consequences:
+
+- **Both displays see the same calibrated heading** — Pi 4, Pi Zero, and the iPhone PWA all consume the AHRS's pre-corrected yaw. You don't need to redo cal per display.
+- **Re-flashing the display SD card doesn't lose the cal.** The cal sits on the AHRS, not on the display.
+- **Re-flashing the Pico firmware does** — the deviation table lives on the Pico flash filesystem; a clean reflash wipes it. Re-run the wizard after a Pico re-flash.
+- **The Pi 4 also keeps a local 36-point table** (`pi4_magdev` in `settings.json`) that it applies on top of the broadcast yaw if the push to the Pico fails (the wizard tries USB first, falls back to HTTP). This is a belt-and-braces second copy, not the source of truth.
+
+The 36-point form on the AHRS gives finer resolution than the 8-sample input — at render time the firmware interpolates between adjacent slots so each 10° heading window has its own correction. Same convention as a real aircraft compass swing card; strictly better than a single average offset for sinusoidal hard-iron or higher-order soft-iron error.
 
 ### Heading source — MAG / TRK / AUTO
 
@@ -507,19 +526,24 @@ All configurable settings — V-speeds, tail number, units, backlight brightness
 
 ## 14. Terrain Data Download
 
-![Terrain idle screen — DOWNLOAD CURRENT AREA at top, nine preset region tiles below](../pi4/previews/preview_terrain_idle.png)
+![Terrain idle screen — DOWNLOAD CURRENT AREA + DOWNLOAD WATER MASKS along the top, preset region tiles below](../pi4/previews/preview_terrain_idle.png)
 
-SRTM elevation tiles provide the ground texture for the SVT background and power the TAWS proximity alerting. Without tiles the AI shows a plain blue/brown split and the `NO TER` badge appears.
+The TERRAIN DATA screen now manages three layered datasets in one place:
 
-Tiles are stored in `pi4/data/srtm/` as `.hgt` files (~1 MB each, 1°×1° patches).
+- **SRTM elevation tiles** (`pi4/data/srtm/*.hgt`) — ground texture for the SVT background and the TAWS proximity check. Without these the AI shows a plain blue/brown split and the `NO TER` badge appears.
+- **Water masks** (`pi4/data/water/*.npy`) — rasterised Natural Earth ocean + lake polygons so the SVT mesh and the moving-map inset paint water blue rather than terrain-coloured. ~12 MB worldwide, downloaded once.
+- **State / province boundary polylines** (`pi4/data/natural_earth/admin_1_*`) — used by the moving-map inset at wide zoom levels to give context (set boundaries fade in around 20 NM range). Downloaded automatically alongside the water masks as a free side-effect.
 
-### DOWNLOAD CURRENT AREA
+### Top row — DOWNLOAD CURRENT AREA · DOWNLOAD WATER MASKS
 
-Top tile — downloads a 5°×5° box (≈ 25 tiles, ~35 MB) centred on the current GPS position. Requires a GPS fix. This is the fastest way to get flying in an unfamiliar area: one tap and the tiles you actually need are on disk a minute later.
+Two side-by-side full-width tiles at the top of the screen.
+
+- **DOWNLOAD CURRENT AREA** — downloads a 5°×5° SRTM box (≈ 25 tiles, ~35 MB) centred on the current GPS position. Requires a GPS fix. This is the fastest way to get flying in an unfamiliar area: one tap and the tiles you actually need are on disk a minute later.
+- **DOWNLOAD WATER MASKS** — rasterises Natural Earth's 10 m ocean + lake vectors against every SRTM tile already on disk, then fetches the admin-1 (state / province) line set in the same run. ~12 MB for the global vector source, plus a small per-tile cache. Re-tap any time you've added new SRTM tiles — the rasteriser skips masks that are already on disk and only builds the new ones.
 
 ### Preset regions
 
-Nine preset regions below **DOWNLOAD CURRENT AREA**. Each tile shows the states/countries it covers, approximate tile count, and estimated size. Tap a tile to start the download; a progress bar replaces the status strip at the top of the screen.
+Preset regions below the two top tiles. Each tile shows the states/countries it covers, approximate tile count, and estimated size. Tap a tile to start the download; a progress bar replaces the status strip at the bottom of the screen.
 
 | Region | Coverage | ~Tiles | ~Size |
 |--------|----------|-------:|------:|
@@ -697,20 +721,21 @@ A small box in the lower-right corner of the AI shows your **altitude above the 
 
 Layout: a translucent dark backplate with a 1-px light-grey border, sized 78 × 42 px, sitting just left of the altitude tape and just above the heading tape. Two-line stack:
 - Top: **"AGL"** label in dim grey.
-- Bottom: numeric value in white (or dashes if invalid), e.g. `1234`.
+- Bottom: numeric value in white (or dashes if invalid), rounded to the nearest 10 ft, e.g. `1230`.
 
 ### What it reads
 
-`AGL = real_alt − ground_elev_ft_at_lat_lon`
+`AGL = round(real_alt − ground_elev_ft_at_lat_lon, 10)`
 
 - `real_alt` is the unclamped sensor altitude (NOT the camera-floor-clamped value used to keep the SVT camera above terrain), so a punched-ground state shows in dashes as a sanity-check warning rather than being silently clamped to ≥0.
 - `ground_elev_ft_at_lat_lon` is the SRTM tile sample at your current GPS position, taken once per render frame and shared with the SVT camera-floor calculation.
+- The result is rounded to the nearest 10 ft. Both the GPS altitude and the SRTM terrain sample carry ~10–30 ft of real precision, so a 1-ft display would just flicker on GPS/DEM jitter without telling you anything new — same minimum-resolved-value treatment that the altitude tape's rolling drum already uses.
 
 ### Display states
 
 | State | Reading | Why |
 |-------|---------|-----|
-| Above ground | `1234` (white, comma-grouped for ≥1000) | Normal flight. |
+| Above ground | `1230` (white, comma-grouped for ≥1000) | Normal flight, nearest 10 ft. |
 | At or below ground | `---` (dim grey) | Sensor / DEM disagreement (baro miss-set, runway elev vs SRTM, missing tile). Not useful info — show dashes rather than a misleading negative. |
 | No GPS | (hidden) | No position, no terrain lookup. |
 | Outside SRTM coverage | (hidden) | Tile not loaded; would be misleading. |
@@ -742,7 +767,7 @@ The trace on the moving-map inset turns cyan to match while approach is active; 
 
 5. Tap a runway tile. The approach activates: HITS boxes draw, the VDI appears, the CDI rescales to ±0.3 NM, the inset trace turns cyan, and the airport ident readout becomes `IDENT/RWY` (e.g. `KSEZ/03`).
 
-![Synthetic approach to KSEZ RWY 03 — VDI on the right, cyan inset trace, KSEZ/03 readout, ±0.3 NM CDI scale (HITS boxes render on the GL pipeline)](../pi4/previews/pfd_gl/preview_synthetic_approach.png)
+![Short final to KSEZ RWY 03 — cyan HITS boxes stack along the centreline, VDI on the right, KSEZ/03 readout, ±0.3 NM CDI scale](../pi4/previews/pfd_gl/preview_hits_boxes.png)
 
 6. Tap **CANCEL APPROACH** at the bottom of the runway picker (only present when an approach is active) to clear the approach and revert to plain D2 to the airport.
 
@@ -780,9 +805,9 @@ When the simulator is in **FOLLOW FLT PLAN** with an approach active (see §18),
 
 ## 16D. Moving-Map Inset
 
-A 2D top-down moving map sits at the lower-left of the AI. Off by default — turn it on in DISPLAY setup (`MAP INSET`). When enabled it draws hypsometric terrain, water, runways, airports, obstacles, and the active direct-to course line over a black backplate, with own-ship pinned to the centre and the map rotating in either **TRK↑** or **N↑**.
+A 2D top-down moving map sits at the lower-left of the AI. Off by default — turn it on in DISPLAY setup (`MAP INSET`). When enabled it draws hypsometric terrain, water, state lines, runways, airports, obstacles, and the active direct-to course line over a black backplate, with own-ship pinned to the centre and the map rotating in either **TRK↑** or **N↑**.
 
-![Moving-map inset on a long direct-to leg — magenta great-circle line passes through ownship; range ring + chevron + range/orient labels around the chrome](../pi4/previews/preview_inset_long_d2.png)
+![Moving-map inset on a long direct-to leg at AUTO range — magenta great-circle line passes through ownship, set boundaries faded in around the leg](../pi4/previews/preview_inset_long_d2.png)
 
 ### Course line — great-circle, not rhumb
 
@@ -792,9 +817,28 @@ The magenta direct-to line is drawn as a polyline along the **great circle** fro
 
 The magenta D2 line is replaced by a cyan line drawn from the **threshold along the reciprocal of the published course** (the actual extended centreline) for the same 5 NM final length the HITS boxes cover. The ETE label in the corner also turns cyan to match the HITS / VDI / cyan-CDI colour cluster (§16C).
 
-### Tap-to-zoom
+### Zoom ranges + orientation
 
-Tap anywhere on the inset to step the range ring through 1 / 2 / 5 / 10 / 20 / 40 NM. The default range is set in DISPLAY setup (`MAP RANGE`). Per-layer visibility (terrain / water / airports / runways / obstacles / direct-to) is also toggleable from the same setup screen.
+| Range | Orientation | Notes |
+|------:|-------------|-------|
+| 1 NM | TRK↑ or N↑ (user choice) | Pattern work, taxi survey |
+| 2 / 5 / 10 / 20 / 40 NM | TRK↑ or N↑ (user choice) | Everyday flight; default is 5 NM |
+| **80 NM** | **N↑ forced** | Whole-leg picture; rotated terrain tint smears at this scale |
+| **160 NM** | **N↑ forced** | Cross-country overview |
+| **AUTO** | **N↑ forced** | Picks the smallest standard step that contains the active direct-to (capped at 160 NM); destination doesn't spin under the chevron |
+
+At 80 NM and 160 NM the inset forces north-up regardless of the user setting — the whole-leg picture matters more than nose-up orientation at that scale, the rotated terrain tint smears more visibly, and the async tint rebuild only has to run once per quantised centre instead of every heading change. AUTO mode picks the smallest standard step that contains the leg (with 10 % framing margin) and likewise locks to north-up.
+
+### Tap-to-zoom and tap-to-flip-orientation
+
+Tap-zones inside the inset:
+
+- **Tap the left half** → zoom out one snap-point (e.g. 5 → 10 NM). On the largest range with a direct-to active, tap again to switch to **AUTO**.
+- **Tap the right half** → zoom in one snap-point. From AUTO, taps zoom in to the largest standard step (160 NM) and continue downward.
+- **Pinch** (two-finger spread / pinch) → also walks the snap-points if the touch driver surfaces FINGERMOTION events. Single-tap is the reliable fallback.
+- **Tap the orientation label** in the chrome (`TRK↑` / `N↑`) → toggle between the two. The toggle is inert at 80 NM and above (the inset is locked to N↑ there).
+
+Defaults for range and orientation are set in DISPLAY setup (`MAP RANGE`, `MAP INSET` orientation pair). Per-layer visibility (terrain / water / state lines / airports / runways / obstacles / direct-to) is toggleable from the same setup screen.
 
 ---
 
@@ -833,6 +877,8 @@ Setup → System → **FLIGHT SIMULATOR**. The setup screen lets you pick:
 KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA — chosen for geographic variety so you can watch SVT, TAWS caution/warning thresholds, and obstacle proximity alerting behave naturally in different environments. Sedona (KSEZ) is the default because the surrounding red-rock mesas exercise the clearance-colour banding dramatically.
 
 ### While the simulator is running
+
+![PFD inside a running sim — SIM watermark visible at AI centre, full instrumentation live](../pi4/previews/pfd_gl/preview_sim_running.png)
 
 - A small `SIM` watermark appears at the centre of the AI.
 - Tap the watermark to open **SIM CONTROLS** (overlay on top of the live PFD) — from here you can toggle GPS/BARO/AHRS failures mid-flight, switch the AP follow mode (see below), exit setup, or end the simulator.
@@ -941,6 +987,8 @@ If audio is dead but visual alerts work, the master mute is the right fallback �
 
 At **|pitch| > 30°** or **|roll| > 60°** the PFD enters an unusual-attitude declutter mode. The SVT mesh, water mask, airport / runway / obstacle / direct-to overlays all come off so the pilot sees nothing but solid sky/ground + the pitch ladder + a pair of red recovery glyphs centred on the aircraft symbol. The same triggers that fire the visual cues also fire the bank-angle voice callout (§19).
 
+![Unusual-attitude recovery — 75° right bank, nose +25°; curved red arrow sweeps left (CCW) over the ownship, sky/ground polygon agrees with the pitch ladder past 60°](../pi4/previews/pfd_gl/preview_unusual_attitude.png)
+
 ### Pitch-recovery chevron stack
 
 A short stack of three filled red chevrons centred on the ownship.
@@ -971,7 +1019,7 @@ When the AHRS reports pitch outside ±90° (over-the-top loop, split-S, aerobati
 
 ## 21. AHRS PCB and Air-Data Hardware
 
-The AHRS sensor head is now a single PCB (rev A) that integrates the Pico W, IMU, GPS, baro and the new SDP31-500Pa differential-pressure sensor on one board. The bench-breakout build path is documented in the README appendix and remains supported — same firmware, same wiring map.
+The AHRS sensor head is now a single PCB (rev A) that integrates the Pico W, IMU, GPS, baro and the new SDP31-1500Pa differential-pressure sensor on one board. The bench-breakout build path is documented in the README appendix and remains supported — same firmware, same wiring map.
 
 ### Block diagram
 
@@ -1006,7 +1054,7 @@ The AHRS sensor head is now a single PCB (rev A) that integrates the Pico W, IMU
 
 I²C1 is shared across the BME280 (`0x76`), the SDP31 (`0x21` by default), and the AOA-probe pad reserved for the next board spin (`0x22`; second SDP3x — see AOA-PROBE in `Docs/BUGS_AND_TODO.md`). Each device has a distinct 7-bit address so they coexist without arbitration logic.
 
-### SDP31-500Pa wiring + pneumatic plumbing
+### SDP31-1500Pa wiring + pneumatic plumbing
 
 Electrical:
 
@@ -1021,15 +1069,17 @@ Pneumatic:
 - **`+` port** → pitot tube (ram pressure)
 - **`−` port** → static port. Tee the static reference into the BME280's open port so both sensors see the same static pressure.
 
-The SDP31 measures bidirectional differential pressure on the −500 … +500 Pa range. Normal-flight IAS at sea level is roughly:
+The SDP31 measures bidirectional differential pressure on the −1500 … +1500 Pa range. Normal-flight IAS at sea level is roughly:
 
-| IAS | dp (Pa) |
-|----:|--------:|
-| 30 kt | ~143 |
-| 60 kt | ~568 (just over full-scale) |
-| 80 kt | ~1010 (off-scale; saturates to ~500 → reads ~55 kt) |
+| IAS | dp (Pa) | Fraction of full-scale |
+|----:|--------:|----------------------:|
+| 30 kt | ~146 | 10 % |
+| 60 kt | ~583 | 39 % |
+| 80 kt | ~1037 | 69 % |
+| 95 kt | ~1463 | 98 % |
+| 97 kt | ~1525 (saturates) | top-of-scale |
 
-The 500 Pa range is well-matched for J-3 / S-21 / similar slow ultralight cruise. **For aircraft cruising above ~55 kt IAS at sea level the SDP31-500Pa will saturate**; an SDP31-2500Pa swap (same footprint, same driver) is the next-rev path for faster airframes. The firmware reports the raw `dp_pa` field on the SSE / USB packet, so a saturated reading is visible in the connectivity diagnostics row (§12) — `dp_pa` pinned at +500 with a non-zero IAS means the sensor is at top of scale.
+The 1500 Pa range comfortably covers the S-21's full cruise envelope (slow flight through about 95 kt IAS at sea level). Above ~97 kt IAS at sea level the sensor saturates — the indicated airspeed pegs at the top of scale rather than continuing to rise. At altitude the saturation point moves up with density (TAS keeps climbing but IAS reads against ρ₀, and the underlying dp scales with ρ), so cruise at 100 kt IAS / 8500 ft is still in range. The firmware reports the raw `dp_pa` field on the SSE / USB packet, so a saturated reading is visible in the connectivity diagnostics row (§12) — `dp_pa` pinned near +1500 with a non-rising IAS reading means the sensor is at top of scale and the displayed airspeed is a floor, not a measurement.
 
 ### Air-data outputs
 
@@ -1079,7 +1129,7 @@ Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pi
 | **Cancel synthetic approach** | Setup → AIRPORTS → DIRECT TO → APPR → CANCEL APPROACH |
 | **Sim AP follow flight plan** | SIM CONTROLS → FOLLOW row → **FLT PLAN** |
 | **Sim AP follow bugs** | SIM CONTROLS → FOLLOW row → **BUGS** |
-| **Run compass cal** | Setup → AHRS / SENSORS → CALIBRATE → walk through N / E / S / W |
+| **Run compass cal** | Setup → AHRS / SENSORS → CALIBRATE → walk through N / NE / E / SE / S / SW / W / NW (cal stored on the AHRS) |
 | **Reset compass cal** | Setup → AHRS / SENSORS → CALIBRATE → RESET |
 | **Set AHRS mounting orientation** | Setup → AHRS / SENSORS → ORIENTATION row (FWD/LEFT/RIGHT/AFT) |
 | **Set AHRS upside-down** | Setup → AHRS / SENSORS → MOUNTING → INVERTED |

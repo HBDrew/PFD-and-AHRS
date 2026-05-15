@@ -1,6 +1,6 @@
 # AHRS PFD — Pi Zero 2W Pilot's User Manual
 
-**Software version 0.3 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP31-500Pa) + Pi Zero 2W · Display: Waveshare 3.5" DPI LCD (640×480)**
+**Software version 0.3 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP31-1500Pa) + Pi Zero 2W · Display: Waveshare 3.5" DPI LCD (640×480)**
 
 *No SVT version — plain horizon background with TAWS alerting*
 
@@ -77,7 +77,7 @@ The bug and its readout button are **colour-coded by data source**:
 
 | Colour | Source |
 |--------|--------|
-| Cyan | IAS — SDP31-500Pa differential-pressure sensor with BME280 density correction. Default when the AHRS reports `airdata_ok = True`. |
+| Cyan | IAS — SDP31-1500Pa differential-pressure sensor with BME280 density correction. Default when the AHRS reports `airdata_ok = True`. |
 | Magenta | GPS groundspeed (GS) — fallback when the SDP31 isn't healthy or AIRSPEED SOURCE is forced to GPS GS in AHRS / Sensors. |
 
 ---
@@ -345,7 +345,7 @@ Corrects horizon tilt. ±0.5° steps.
 
 | Option | Behaviour |
 |--------|-----------|
-| **IAS SENSOR** | SDP31-500Pa differential pressure + BME280 density correction. Cyan readout. Default when the AHRS reports `airdata_ok`. |
+| **IAS SENSOR** | SDP31-1500Pa differential pressure + BME280 density correction. Cyan readout. Default when the AHRS reports `airdata_ok`. |
 | **GPS GS** | GPS groundspeed. Magenta readout. Auto fallback when SDP31 is absent / unhealthy. |
 
 ---
@@ -578,7 +578,7 @@ SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is co
 
 ## 19. AHRS PCB and Air-Data Hardware
 
-The AHRS sensor head is shared with the Pi 4 build — a single PCB carrying the Pico W, WT901 IMU, NEO-6M GPS, BME280 baro and SDP31-500Pa differential-pressure sensor. The Pi Zero 2W consumes the same `$AHRS` packet over USB serial (or SSE over Wi-Fi).
+The AHRS sensor head is shared with the Pi 4 build — a single PCB carrying the Pico W, WT901 IMU, NEO-6M GPS, BME280 baro and SDP31-1500Pa differential-pressure sensor. The Pi Zero 2W consumes the same `$AHRS` packet over USB serial (or SSE over Wi-Fi).
 
 ### Pin map (AHRS PCB rev A)
 
@@ -596,7 +596,7 @@ With the SDP31 installed and `airdata_ok` reported, the Pi Zero speed tape and b
 
 ### SDP31 range note
 
-The SDP31-500Pa saturates around 55 kt IAS at sea level. The Pi Zero variant typically lives on slow ultralight / experimental airframes (S-21, J-3, etc.) where this is the right range. Faster aircraft want the SDP31-2500Pa swap; see the Pi 4 manual §21 for the longer discussion.
+The SDP31-1500Pa saturates around 97 kt IAS at sea level — comfortably above S-21 cruise. At altitude the saturation point moves up with density, so a 100 kt IAS / 8500 ft cruise stays in range. See the Pi 4 manual §21 for the full saturation table and the `dp_pa` diagnostics.
 
 ### Recapturing the zero offset
 

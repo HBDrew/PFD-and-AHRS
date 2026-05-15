@@ -1,9 +1,9 @@
 # ---------------------------------------------------------------------------
-# sdp31.py  –  Sensirion SDP31-500Pa differential-pressure driver
+# sdp31.py  –  Sensirion SDP31-1500Pa differential-pressure driver
 # ---------------------------------------------------------------------------
 # Datasheet: Sensirion SDP3x_Sensors_Datasheet (rev. 1.0)
 #
-# The SDP31-500Pa measures bidirectional differential pressure across a
+# The SDP31-1500Pa measures bidirectional differential pressure across a
 # pitot/static pair (P_pitot − P_static).  Together with the BME280 it
 # completes the air-data computer:
 #   IAS_kt = sqrt(2·dp / ρ₀) · (m/s → kt)
@@ -22,8 +22,9 @@
 #   Read 9 bytes: dp[2] + crc + temp[2] + crc + scale[2] + crc
 #
 # Each 2-byte word is followed by a CRC-8 (poly 0x31, init 0xFF).
-# Pressure_Pa = dp_raw / scale     (scale is a uint16 read from the sensor;
-#                                   typically 60 for SDP31-500Pa)
+# Pressure_Pa = dp_raw / scale     (scale is a uint16 read from the sensor
+#                                   on each frame, so the driver auto-adapts
+#                                   to any SDP3x range variant)
 # Temp_C      = t_raw  / 200       (signed int16, °C per LSB = 1/200)
 #
 # Public attributes:
@@ -72,7 +73,7 @@ class SDP31:
 
         self.dp_pa          = 0.0   # signed; pitot − static
         self.temperature_c  = 0.0
-        self.scale          = 60    # SDP31-500Pa nominal; overwritten on first read
+        self.scale          = 60    # nominal fallback; overwritten on first read
         self.last_update_ms = 0
         self._dp_zero       = 0.0   # captured by zero(); subtracted on update()
 

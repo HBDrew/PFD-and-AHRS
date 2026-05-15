@@ -101,6 +101,27 @@ SCENES = [
     # VDI, ±0.3 nm cyan CDI, and the cyan inset trace.
     ("preview_synthetic_approach", 0,  -3,  33, 5500,  85, -500,   0,
                                    34.809, -111.823),
+    # Dedicated HITS scene — closer to the threshold (~1.3 NM out) and
+    # lower (5100 ft, ~270 ft above threshold) so the cyan HITS boxes
+    # are large and prominent in the foreground rather than crowded
+    # behind the extended centreline at the 3-NM scene above.
+    ("preview_hits_boxes",         0,  -2,  33, 5100,  80, -500,   0,
+                                   34.842, -111.811),
+    # Unusual-attitude recovery — 75° right bank, +25° pitch.  Trips
+    # both EXTREME thresholds so the chevron stack + roll-recovery arc
+    # render simultaneously, plus the declutter strips overlays.
+    ("preview_unusual_attitude",  75,  25, 130, 7500, 105,  200, 0.18),
+    # Sim-running scene — flight scene with the SIM watermark in place.
+    # Setup hook (_setup_sim_running) puts disp["sim"]["enabled"] = True.
+    ("preview_sim_running",        0,   2, 133, 8500, 115,    0,   0),
+    # TAWS caution + warning previews — punched low into rising
+    # terrain so the look-ahead trips the alert.  GPS fix is required
+    # for the alert to evaluate; the helpers below set alt + ground
+    # elev so worst_clearance lands in the caution / warning band.
+    ("preview_terrain_caution",    0,  -2, 200, 5800, 110, -400,   0,
+                                   34.860, -111.770),
+    ("preview_terrain_warning",    0,  -4, 200, 5500, 110, -600,   0,
+                                   34.860, -111.770),
 ]
 
 
@@ -168,9 +189,77 @@ def _setup_approach_picker():
     pfd.disp["mode"] = "approach_select"
 
 
+def _setup_hits_boxes():
+    """Tight short-final scene for the HITS-box documentation shot.
+    Aircraft sits ~1.3 NM SSW of the RWY 03 threshold, ~270 ft above
+    threshold elevation — close enough that the cyan HITS boxes occupy
+    the centre of the AI rather than being lost behind extended
+    centreline dashes at the 3-NM scene."""
+    pfd.disp["nav"] = {
+        "ident":   "KSEZ",
+        "lat":     34.8634,    # RWY 03 threshold (LE)
+        "lon":     -111.7934,
+        "elev_ft": 4827.0,
+        "act_lat": 34.8420,
+        "act_lon": -111.8110,
+    }
+    pfd.disp["approach"] = {
+        "active":         True,
+        "airport":        "KSEZ",
+        "runway":         "03",
+        "thresh_lat":     34.8634,
+        "thresh_lon":     -111.7934,
+        "thresh_elev_ft": 4827.0,
+        "course_deg":     33.0,
+    }
+    # Inset hidden for this shot so the boxes own the frame
+    pfd.disp["ds"]["map_enabled"] = False
+
+
+def _setup_sim_running():
+    """Live-PFD scene with the SIM watermark visible."""
+    pfd.disp["sim"] = {
+        "enabled": True,
+        "paused":  False,
+        "follow":  "bugs",
+    }
+    pfd.disp["ds"]["map_enabled"] = True
+    pfd.disp["ds"]["map_zoom_nm"] = 10
+
+
+_REAL_UPDATE_TERRAIN_ALERT = pfd._update_terrain_alert
+
+
+def _force_terrain_alert(level):
+    """Pin the alert level for a single render.  Offline previews don't
+    load real SRTM tiles, so the look-ahead math zero-clears the alert
+    every frame — we monkey-patch _update_terrain_alert to a no-op
+    after seeding the desired level.  main() restores the real
+    function once the SCENES loop ends so subsequent modals don't
+    inherit a stale pinned alert."""
+    pfd._terrain_alert_level = level
+
+    def _noop(*args, **kwargs):
+        pass
+
+    pfd._update_terrain_alert = _noop
+
+
+def _setup_terrain_caution():
+    _force_terrain_alert(1)
+
+
+def _setup_terrain_warning():
+    _force_terrain_alert(2)
+
+
 SCENE_EXTRA_SETUP = {
     "preview_direct_to_ksez":     _setup_direct_to_ksez,
     "preview_synthetic_approach": _setup_synthetic_approach,
+    "preview_hits_boxes":         _setup_hits_boxes,
+    "preview_sim_running":        _setup_sim_running,
+    "preview_terrain_caution":    _setup_terrain_caution,
+    "preview_terrain_warning":    _setup_terrain_warning,
 }
 
 
@@ -333,6 +422,13 @@ def main():
         outpath = os.path.join(args.outdir, f"{name}.png")
         pygame.image.save(surf, outpath)
         print(f"  → {os.path.basename(outpath)}")
+
+    # Restore the real terrain-alert evaluator + clear any pinned level
+    # before we move on to setup screens and modal previews — those run
+    # the full render pipeline and would otherwise inherit a stale
+    # PULL UP banner from the last TAWS scene.
+    pfd._update_terrain_alert = _REAL_UPDATE_TERRAIN_ALERT
+    pfd._terrain_alert_level  = 0
 
     # ── Setup screens (no GL needed) ─────────────────────────────────────────
     # Move output dir up one level so setup PNGs go alongside the existing

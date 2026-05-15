@@ -232,7 +232,7 @@ Pairs with firmware item AHRS-MAGCAL below — when the firmware-side
 mag cal also lands, the iPhone compass and the AHRS compass will both
 converge on the GPS track and stay aligned.
 
-### SDP31-AIRDATA  SDP31-500Pa airspeed driver + air-data computer
+### SDP31-AIRDATA  SDP31-1500Pa airspeed driver + air-data computer
 Status: **FIRMWARE LANDED — waiting on hardware install + in-flight calibration**
 Target: new `firmware/sdp31.py`, additions to `firmware/main.py`,
 new fields in the `$AHRS,{json}` packet consumed by `pi4/serial_link`
@@ -253,16 +253,18 @@ gains §7B Air-Data Computer (REQ-AHRS-AIR-001 … 008); USER_MANUAL_PI4
 is documented in §2 of both pilot manuals.
 Still open:
   - **Hardware install + first-flight cal.** Bench the SDP31 with
-    a hand pump (0–500 Pa) to confirm `dp_pa → ias_kt` math; then
+    a hand pump (0–1500 Pa) to confirm `dp_pa → ias_kt` math; then
     plumb pitot + static and validate IAS against GS at cruise in
     near-zero wind.
-  - **SDP31-2500Pa swap path** for airframes that cruise above ~55 kt
-    IAS at sea level — same I²C address, same driver, same `dp_pa`
-    field, just trade off resolution for range.
+  - **Higher-range swap path** (e.g. SDP31-2500Pa, SDP810-2500Pa) for
+    airframes that cruise above ~97 kt IAS at sea level — same I²C
+    address, same driver, same `dp_pa` field, just trade off
+    resolution for range. The current 1500 Pa unit covers S-21 cruise
+    end-to-end so no swap is queued for this build.
   - **Stall-warn enunciator** below configured Vs1 — visual + voice
     callout to make the existing speed-tape colour band
     authoritative. Pairs with REQ-DISP-PI4-AUD-001.
-Context: the new sensor board carries a Sensirion SDP31-500Pa
+Context: the new sensor board carries a Sensirion SDP31-1500Pa
 differential-pressure sensor — pitot pressure on one port, static on
 the other.  With the existing BME280 (static pressure + OAT) we get
 a complete pitot-static air-data set:
@@ -470,7 +472,7 @@ This is why the leans-during-coordinated-turn artefact survives
 even a perfect mag cal.
 Architecture is straightforward because **all inputs already live
 on the Pico**: WT901 raw accel/gyro on UART, GPS speed/track from
-`firmware/gps.py`, and (on the laid-out hardware) an SDP31-500Pa
+`firmware/gps.py`, and (on the laid-out hardware) an SDP31-1500Pa
 differential-pressure sensor for IAS/TAS plus a BME280 for static
 pressure + OAT.  No cross-device transport needed — the Pi 4 just
 consumes the fused result over USB CDC the same way it does today.

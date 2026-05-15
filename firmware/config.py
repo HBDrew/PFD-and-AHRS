@@ -9,7 +9,7 @@
 #   WT901 AHRS         UART0   GP0 TX / GP1 RX        3V3 @ 36
 #   GY-NEO6MV2 GPS     UART1   GP4 TX / GP5 RX        VSYS @ 39
 #   BME280 baro        I2C1    GP2 SDA / GP3 SCL      addr 0x76, 3V3
-#   SDP31-500Pa        I2C1    GP2 SDA / GP3 SCL      addr 0x21, 3V3
+#   SDP31-1500Pa        I2C1    GP2 SDA / GP3 SCL      addr 0x21, 3V3
 #   (reserved AOA)     I2C1    GP2 SDA / GP3 SCL      addr 0x22 (future SDP3x)
 #
 # I²C1 is shared across BME280 + SDP31 + (future) AOA sensor — each device
@@ -57,7 +57,7 @@ BME280_SCL_PIN     = 3      # GP3  (I2C1 SCL)
 BME280_I2C_ADDR    = 0x76   # 0x76 (SDO=GND) or 0x77 (SDO=VCC)
 BME280_QNH_DEFAULT = 1013.25  # hPa – ICAO standard; update via /baro on the display
 
-# ── SDP31-500Pa Differential Pressure (optional – airspeed sensor) ──────────
+# ── SDP31-1500Pa Differential Pressure (optional – airspeed sensor) ──────────
 # Set SDP31_ENABLE = False on bench builds that don't carry the air-data
 # sensor; the firmware will fall back to GPS groundspeed automatically and
 # the $AHRS packet will report airdata_ok = False.

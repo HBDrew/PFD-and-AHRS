@@ -157,7 +157,7 @@ state = {
     # AHRS orientation (reflects config.py values; broadcast for Pi4 info display)
     'orientation': AHRS_CONNECTOR,
     'mounting':    AHRS_MOUNTING,
-    # Air data (SDP31-500Pa + BME280 density correction)
+    # Air data (SDP31-1500Pa + BME280 density correction)
     'ias_kt'     : 0.0,  # indicated airspeed (knots) — ρ₀ reference
     'tas_kt'     : 0.0,  # true airspeed (knots) — density-corrected
     'dp_pa'      : 0.0,  # raw differential pressure (Pa); diagnostic

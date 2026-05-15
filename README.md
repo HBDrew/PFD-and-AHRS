@@ -91,7 +91,7 @@ The AHRS sensor head is now a single integrated PCB carrying every sensor on one
 | WitMotion WT901 | UART0 (GP0/GP1, 9600 baud) | — | 9-DOF IMU, fused Euler output |
 | u-blox NEO-6M | UART1 (GP4/GP5, 9600 baud) | — | NMEA GPS (GGA + RMC) |
 | Bosch BME280 | I²C1 (GP2/GP3, 400 kHz) | `0x76` | Static pressure + OAT |
-| Sensirion SDP31-500Pa | I²C1 (GP2/GP3) | `0x21` | Differential pressure (pitot − static) |
+| Sensirion SDP31-1500Pa | I²C1 (GP2/GP3) | `0x21` | Differential pressure (pitot − static) |
 | *(reserved)* SDP3x AOA twin | I²C1 (GP2/GP3) | `0x22` | Future AOA probe — see `Docs/BUGS_AND_TODO.md → AOA-PROBE` |
 | MAX3232 breakout | — | — | RS-232 driver for future TruTrak autopilot tie-in |
 
@@ -214,7 +214,7 @@ firmware/
 ├── wt901.py
 ├── gps.py
 ├── bme280.py          ← BME280 (static pressure + OAT)
-├── sdp31.py           ← SDP31-500Pa differential pressure (IAS)
+├── sdp31.py           ← SDP31-1500Pa differential pressure (IAS)
 └── airdata.py         ← IAS / TAS / density alt / wind triangle
 ```
 
@@ -297,32 +297,36 @@ Configure how the AHRS box is physically mounted in the aircraft, fine-trim resi
 |-----|---------|--------------|
 | PITCH TRIM | ± steppers (0.1° per tap) | Fine-trim if the horizon sits above/below level on the ground |
 | ROLL TRIM | ± steppers (0.1° per tap) | Fine-trim if a wing reads low on the ground |
-| MAGNETOMETER | CALIBRATE button | Opens the compass-calibration wizard (cardinal walk-through, see below) |
-| ORIENTATION | FWD / LEFT / RIGHT / AFT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. Default is RIGHT |
-| MOUNTING | NORMAL / INVERTED | Whether the AHRS is right-side-up or upside-down. Independent of orientation |
+| MAGNETOMETER | CALIBRATE button | Opens the 8-point compass-cal wizard (N / NE / E / SE / S / SW / W / NW). Cal table is stored *on the AHRS* in flash, shared by every display |
+| ORIENTATION | FWD / LEFT / RIGHT / AFT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. Default is RIGHT. Stored on the AHRS (`orient.json` on Pico flash) |
+| MOUNTING | NORMAL / INVERTED | Whether the AHRS is right-side-up or upside-down. Independent of orientation. Stored on the AHRS |
 | HEADING SOURCE | MAG / TRK / AUTO | Magnetometer, GPS ground track, or auto-select (TRK in motion, MAG when stationary) |
-| AIRSPEED SOURCE | GPS GS / IAS SENSOR | GPS ground speed (default) or pitot-static (future) |
+| AIRSPEED SOURCE | GPS GS / IAS SENSOR | IAS SENSOR by default — SDP31-1500Pa with BME280 density correction; falls back to GPS groundspeed when the air-data path reports unhealthy |
 
 Trim, orientation, mounting, and the compass cal all combine cleanly — orientation remaps pitch/roll axes for a non-RIGHT mounting, mounting flips for upside-down, the cal corrects the residual mag bias, and trim is the final fine-tuning. Sim and Demo modes bypass every AHRS-mounting compensation so a calibrated trim doesn't show up as wing-down on a level sim flight.
 
 ### Compass Calibration
 
-Tap CALIBRATE to open the cardinal walk-through wizard:
+Tap CALIBRATE to open the 8-point walk-through wizard:
 
 1. Point the aircraft's nose **NORTH** (000°) and tap **⊕ CAPTURE N**.
-2. Point **EAST** (090°), tap CAPTURE E.
-3. Point **SOUTH** (180°), tap CAPTURE S.
-4. Point **WEST** (270°), tap CAPTURE W.
+2. **NE** (045°), tap CAPTURE NE.
+3. **EAST** (090°), tap CAPTURE E.
+4. **SE** (135°), tap CAPTURE SE.
+5. **SOUTH** (180°), tap CAPTURE S.
+6. **SW** (225°), tap CAPTURE SW.
+7. **WEST** (270°), tap CAPTURE W.
+8. **NW** (315°), tap CAPTURE NW.
 
-The wizard captures `(expected − raw)` at each cardinal and stores them as a four-value compass-correction card (`mag_cal_deltas` in `data/settings.json`). At render time each 90° quadrant gets its own correction curve via linear interpolation between adjacent cardinals — same convention as a real aircraft compass swing card, and strictly better than a single average offset for hard-iron / soft-iron error.
+The wizard builds a 36-point deviation table (linear interpolation between the 8 captures, one slot per 10°) and pushes it to the AHRS over USB serial (`$MAGDEV,<36 floats>`) or the Wi-Fi config endpoint (`GET /magcal?action=set&t=…`). The Pico W writes the table to `magdev.json` on its flash and applies it before broadcasting yaw — so every display (Pi 4, Pi Zero, iPhone PWA) reads the same calibrated heading off the SSE / `$AHRS` stream without per-display calibration. The Pi 4 also keeps a belt-and-braces local copy in `pi4/data/settings.json` (`pi4_magdev`) that it applies on top of the broadcast yaw if the push to the Pico fails. AHRS orientation + mounting are persisted the same way (`orient.json` on Pico flash, via `$ORIENT,connector,mounting`).
 
 Buttons:
-- **EXIT** — close the modal (the cal is committed on the 4th capture, so this is non-destructive). Reads CANCEL only mid-walk when there are partial captures to discard.
-- **RESET** — wipe the stored cal and return to zero.
-- **RESTART** — abandon partial captures and start the four-capture sequence over.
-- **⊕ CAPTURE X** — record the current heading at the cardinal indicated by X (N/E/S/W).
+- **EXIT** — close the modal (the cal is committed on the 8th capture, so this is non-destructive). Reads CANCEL only mid-walk when there are partial captures still in flight to the AHRS.
+- **RESET** — wipe the stored cal back to zero (sends `$MAGDEV,CLEAR` to the AHRS).
+- **RESTART** — abandon partial captures and start the eight-capture sequence over.
+- **⊕ CAPTURE X** — record the current heading at the cardinal / intercardinal indicated by X (N / NE / E / SE / S / SW / W / NW).
 
-The status row on the AHRS Setup screen shows `max |Δ|` (worst-case residual across the four cardinals) so a glance tells you whether the cal is current.
+The status row on the AHRS Setup screen shows `max |Δ|` (worst-case residual across the eight captures) so a glance tells you whether the cal is current.
 
 The cal only shifts MAG-mode display — TRK mode is unaffected because the complementary filter operates on yaw deltas, where a constant-shape correction's frame-to-frame derivative is negligible.
 
@@ -477,7 +481,9 @@ Shared work (firmware, `shared/` modules, docs touched by both) is generally app
 | ✅ V4.7 | AGL readout (lower-right of AI) + magenta direct-to course trace draped over SRTM terrain (async, progressive build) |
 | ✅ V4.8 | Direct-to nav with on-screen keyboard, "Activate Direct to XXXX?" confirmation modal, NEAREST quick-button showing the resolved ident |
 | ✅ V4.9 | AHRS 4-way mounting orientation (FWD / LEFT / RIGHT / AFT) with magnetic offset, ENU→NED base correction, sim/demo bypass |
-| ✅ V5.0 | Compass calibration wizard — cardinal walk-through with piecewise-linear per-quadrant correction, persistent across power cycles |
+| ✅ V5.0 | Compass calibration wizard — 8-point walk-through, 36-slot deviation table stored on the AHRS in flash so every display reads the same calibrated heading |
+| ✅ V5.1 | AHRS PCB rev A — single-board Pico W + WT901 + NEO-6M + BME280 + SDP31-1500Pa; full pitot-static air-data set (IAS / TAS / density alt / wind triangle) on the SSE / USB stream |
+| ✅ V5.2 | EGPWS-style voice callouts (TERRAIN / OBSTACLE / SINK RATE / PULL UP / BANK ANGLE), unusual-attitude recovery cues, look-ahead TAWS, ±25° forward-wedge obstacle filter |
 | V6 | TruTrak Vizion RS-232 autopilot interface |
 | V7 | Moving map / MFD (separate dedicated hardware unit) |
 | V8 | Flight path vector, highway-in-the-sky waypoint tunnel |
@@ -514,7 +520,7 @@ The original development build wired the Pico W to four separate breakout boards
 | SDA | GP2 (pin 4) | I²C1 (shared with SDP31) |
 | SCL | GP3 (pin 5) | I²C1 (shared with SDP31) |
 
-### SDP31-500Pa → Pico W
+### SDP31-1500Pa → Pico W
 | SDP31 | Pico W | Notes |
 |-------|--------|-------|
 | VDD | 3V3 | |

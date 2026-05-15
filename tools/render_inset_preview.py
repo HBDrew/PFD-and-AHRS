@@ -88,12 +88,22 @@ def main():
         "act_lat": KSEZ[0],
         "act_lon": KSEZ[1],
     }
-    range_nm = 600   # wide range so the leg's GC bend is visible
+    # Resolve AUTO range against the active D2 the same way the live
+    # inset does — picks the smallest standard zoom step that frames
+    # the whole leg (capped at 160 NM, the real maximum; there is no
+    # 600 NM zoom level on the inset).  AUTO also forces north-up so
+    # the destination doesn't spin under the chevron at this scale.
+    import math
+    _cos_lat = max(0.05, math.cos(math.radians(la_cur)))
+    _n_nm    = (KOSH[0] - la_cur) * 60.0
+    _e_nm    = (KOSH[1] - lo_cur) * 60.0 * _cos_lat
+    range_nm = _map_mod.auto_fit_range(math.hypot(_n_nm, _e_nm) * 1.10)
+    orient   = "nrth"                      # AUTO forces north-up
     font = pygame.font.SysFont("monospace", 12, bold=True)
 
     _map_mod.render(
         surf, inset_rect, la_cur, lo_cur, 12000.0, track, track,
-        "trk", range_nm, settings,
+        orient, range_nm, settings,
         airports_arr=None, runways_arr=None, obstacles_arr=None,
         srtm_dir="", water_dir="",
         direct_to=direct_to, font=font,
@@ -103,7 +113,8 @@ def main():
     # Caption strip below the inset — labels what the picture is, so
     # the documentation reader doesn't have to context-switch.
     cap = pygame.font.SysFont("monospace", 11)
-    label = "MOVING-MAP INSET  TRK 058°  RNG 600 NM  D2 KOSH  great-circle course"
+    label = (f"MOVING-MAP INSET  N↑ (AUTO)  RNG {range_nm} NM  "
+             f"D2 KOSH  great-circle course")
     img = cap.render(label, True, (190, 210, 230))
     surf.blit(img, ((W - img.get_width()) // 2, H - 14))
 

@@ -70,7 +70,7 @@ For the lightweight variant without SVT, see HLR-DISP-ZERO-001.
 
 > **REQ-DISP-PI4-SPD-006** The pilot shall be able to set the speed bug via numpad entry by tapping the readout button.
 
-> **REQ-DISP-PI4-SPD-007** The airspeed source shall be selectable from the AHRS / Sensors sub-menu. The selectable options shall be `IAS SENSOR` (SDP31-500Pa with BME280 density correction, sourced from the AHRS `ias_kt` field) and `GPS GS` (GPS groundspeed, sourced from `speed`). The default selection shall be `IAS SENSOR`, with automatic fallback to `GPS GS` when `airdata_ok = False`.
+> **REQ-DISP-PI4-SPD-007** The airspeed source shall be selectable from the AHRS / Sensors sub-menu. The selectable options shall be `IAS SENSOR` (SDP31-1500Pa with BME280 density correction, sourced from the AHRS `ias_kt` field) and `GPS GS` (GPS groundspeed, sourced from `speed`). The default selection shall be `IAS SENSOR`, with automatic fallback to `GPS GS` when `airdata_ok = False`.
 
 > **REQ-DISP-PI4-SPD-008** When the active airspeed source falls back from `IAS SENSOR` to `GPS GS` (sensor failure, missing baro, or `airdata_ok` cleared), the speed tape, drum, and bug shall recolour from cyan to magenta to communicate the source change without an explicit banner. No additional alert is required: the colour convention is the same as the altitude tape's baro/GPS fallback indication.
 
@@ -466,7 +466,7 @@ The following features are planned for future versions of the Pi 4 display and a
 - **Texture-mapped terrain** with satellite imagery, USGS terrain textures, or elevation-shaded relief maps
 - **Velocity vector / flight-path marker** on the AI — see TODO `FPV` (software-only with current sensors)
 - **Computed AOA indexer** on the right side of the AI when no approach is active — see TODOs `AOA-CALC` and `AOA-PROBE`
-- **Air-data integration** (IAS / TAS / wind triangle / stall warn) once the SDP31-500Pa ships on the new sensor board — see TODO `SDP31-AIRDATA`
+- **Air-data integration** (IAS / TAS / wind triangle / stall warn) once the SDP31-1500Pa ships on the new sensor board — see TODO `SDP31-AIRDATA`
 - **GPS-aided AHRS** for centripetal-corrected attitude in coordinated turns (Pico 2 W) — see TODO `AHRS-GPS-AID`
 
 Landed since v0.2 (now in §7, §9D, §13 above): time-of-day sun position, moving-map inset, Highway-In-The-Sky (HITS) rendering with runway picker, vertical glideslope diamond (VDI), approach-mode CDI scaling, sim FOLLOW FLT PLAN with 45° intercept, glideslope capture from above, coordinated-turn AP model.
