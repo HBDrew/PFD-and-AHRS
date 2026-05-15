@@ -217,12 +217,13 @@ def _setup_hits_boxes():
 
 
 def _setup_sim_running():
-    """Live-PFD scene with the SIM watermark visible."""
-    pfd.disp["sim"] = {
-        "enabled": True,
-        "paused":  False,
-        "follow":  "bugs",
-    }
+    """Live-PFD scene with the SIM watermark visible.  Merge into the
+    existing disp["sim"] dict rather than replacing it — wiping out
+    preset_idx (and the other init_* / *_fail keys) crashes the later
+    sim_setup screen render that reads sim["preset_idx"]."""
+    pfd.disp["sim"]["enabled"]     = True
+    pfd.disp["sim"]["paused"]      = False
+    pfd.disp["sim"]["follow_mode"] = "bugs"
     pfd.disp["ds"]["map_enabled"] = True
     pfd.disp["ds"]["map_zoom_nm"] = 10
 
@@ -246,10 +247,14 @@ def _force_terrain_alert(level):
 
 
 def _setup_terrain_caution():
+    # Clear the SIM watermark left over from the preceding sim_running
+    # scene so the TAWS shot doesn't render with SIM superimposed on it.
+    pfd.disp["sim"]["enabled"] = False
     _force_terrain_alert(1)
 
 
 def _setup_terrain_warning():
+    pfd.disp["sim"]["enabled"] = False
     _force_terrain_alert(2)
 
 
@@ -426,9 +431,12 @@ def main():
     # Restore the real terrain-alert evaluator + clear any pinned level
     # before we move on to setup screens and modal previews — those run
     # the full render pipeline and would otherwise inherit a stale
-    # PULL UP banner from the last TAWS scene.
+    # PULL UP banner from the last TAWS scene.  Also clear the sim
+    # enable flag in case the SCENES list gets reordered and the
+    # sim_running scene ends up last.
     pfd._update_terrain_alert = _REAL_UPDATE_TERRAIN_ALERT
     pfd._terrain_alert_level  = 0
+    pfd.disp["sim"]["enabled"] = False
 
     # ── Setup screens (no GL needed) ─────────────────────────────────────────
     # Move output dir up one level so setup PNGs go alongside the existing
