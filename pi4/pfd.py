@@ -452,15 +452,37 @@ def _push_magcal_to_pico(table):
     base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
     t_str = ",".join(f"{v:.3f}" for v in table)
     url = f"{base}/magcal?action=set&t={t_str}"
+    verify_url = f"{base}/magcal?action=get"
 
     def _worker():
+        import json as _json
         try:
             import urllib.request
             with urllib.request.urlopen(url, timeout=5) as resp:
                 resp.read()
-            print(f"[PFD] magcal table pushed to Pico ({len(table)} pts)")
+            print(f"[PFD] magcal sent ({len(table)} pts, url_len={len(url)})")
         except Exception as e:
             print(f"[PFD] /magcal push failed: {e}")
+            wiz = disp.get("mag_cal_wiz") or {}
+            wiz["msg"] = f"PUSH FAILED: {e}"
+            return
+        # Verify the table was actually stored on the Pico.
+        try:
+            import urllib.request
+            with urllib.request.urlopen(verify_url, timeout=5) as resp:
+                d = _json.loads(resp.read())
+            n = len(d.get("corrections", []))
+            active = d.get("active", False)
+            print(f"[PFD] magcal verify: active={active}, stored={n}/36")
+            wiz = disp.get("mag_cal_wiz") or {}
+            if active and n == 36:
+                wiz["msg"] = f"Saved on AHRS ✓  ({n}/36 pts)"
+            else:
+                wiz["msg"] = f"WARNING: Pico stored {n}/36 — retry?"
+        except Exception as e:
+            print(f"[PFD] magcal verify failed: {e}")
+            wiz = disp.get("mag_cal_wiz") or {}
+            wiz["msg"] = f"Sent OK but verify failed: {e}"
 
     threading.Thread(target=_worker, daemon=True, name="MagCalPush").start()
 
@@ -2617,10 +2639,7 @@ def _mag_cal_capture():
         disp["ss"].pop("mag_cal_offset", None)
         disp["ss"]["mag_cal"] = "done"
         _settings.mark_dirty()
-        deltas = [round(((e - r + 540) % 360) - 180, 1)
-                  for e, r in wiz["samples"]]
-        wiz["msg"] = (f"Sent to AHRS — N{deltas[0]:+.1f}° E{deltas[1]:+.1f}° "
-                      f"S{deltas[2]:+.1f}° W{deltas[3]:+.1f}°")
+        wiz["msg"] = "Sending to AHRS — verifying…"
         wiz["step"]    = 0
         wiz["samples"] = []
 
@@ -2715,8 +2734,9 @@ def draw_mag_cal(surf):
 
     msg = wiz.get("msg", "") or ""
     if msg:
-        _text(surf, msg, 12, (60, 220, 80), cx=bx + _MCAL_W // 2,
-              cy=by + 178)
+        col = (255, 180, 60) if ("WARNING" in msg or "FAILED" in msg or "failed" in msg) \
+              else (60, 220, 80)
+        _text(surf, msg, 12, col, cx=bx + _MCAL_W // 2, cy=by + 178)
 
     # Left button reads CANCEL only when there's something to cancel —
     # i.e. partial captures haven't been committed yet.  Once the

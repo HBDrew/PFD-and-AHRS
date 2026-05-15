@@ -207,10 +207,15 @@ async def _handle_magcal(writer, params, state):
 
     if action == 'set':
         try:
-            vals = [float(x) for x in params.get('t', '').split(',')]
+            t_str = params.get('t', '')
+            vals = [float(x) for x in t_str.split(',') if x.strip()]
+            print(f'magcal: received {len(vals)} values (url_t_len={len(t_str)})')
             if len(vals) == 36:
                 state['_magdev'] = vals
                 state['_save_magdev'] = True
+                print('magcal: stored 36-pt table')
+            else:
+                print(f'magcal: REJECTED — need 36, got {len(vals)}')
         except Exception as e:
             print(f'magcal set error: {e}')
         body = b'OK'
