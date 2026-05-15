@@ -37,7 +37,11 @@ os.environ.setdefault("SDL_AUDIODRIVER", "alsa")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared'))
 
 os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")  # overridden by --sim
-os.environ["SDL_AUDIODRIVER"] = "dummy"  # suppress ALSA underrun spam
+# Note: a previous version of this file hardcoded SDL_AUDIODRIVER=dummy
+# here to silence ALSA underrun warnings — but that also silenced every
+# voice callout. The TAWS/bank-angle audio depends on a real audio
+# backend; we set SDL_AUDIODRIVER=alsa near the top instead and let the
+# mixer use a large enough buffer to avoid underruns in normal operation.
 
 import pygame
 import pygame.gfxdraw
