@@ -47,6 +47,8 @@ _sounds: dict = {}
 _last_played: dict = {}
 _initialized = False
 _disabled = False
+_enabled = True       # master mute (False suppresses every callout)
+_volume = 1.0         # 0.0..1.0 (applied via Sound.set_volume on each load)
 
 
 def _generate_wav(text: str, path: str) -> bool:
@@ -99,7 +101,9 @@ def init():
             if not _generate_wav(text, path):
                 continue
         try:
-            _sounds[name] = pygame.mixer.Sound(path)
+            snd = pygame.mixer.Sound(path)
+            snd.set_volume(_volume)
+            _sounds[name] = snd
         except pygame.error as e:
             print(f"[audio] load {name} failed: {e}")
 
@@ -112,10 +116,9 @@ def init():
 
 
 def play(name: str) -> None:
-    """Play callout `name` if loaded and the per-alert rate limit
-    allows. Safe to call every frame — the rate limit handles
-    repetition for persistent conditions."""
-    if not _initialized or name not in _sounds:
+    """Play callout `name` if loaded, the master switch is on, and the
+    per-alert rate limit allows. Safe to call every frame."""
+    if not _initialized or not _enabled or name not in _sounds:
         return
     now = time.monotonic()
     if now - _last_played.get(name, 0.0) < _MIN_INTERVAL.get(name, 3.0):
@@ -136,3 +139,33 @@ def stop_all() -> None:
         pygame.mixer.stop()
     except pygame.error:
         pass
+
+
+def set_enabled(on: bool) -> None:
+    """Master mute: when False, play() becomes a no-op and any sound
+    in flight is cut immediately."""
+    global _enabled
+    _enabled = bool(on)
+    if not _enabled:
+        stop_all()
+
+
+def is_enabled() -> bool:
+    return _enabled
+
+
+def set_volume(vol_0_1: float) -> None:
+    """Apply a 0..1 volume multiplier to every loaded callout. Live —
+    takes effect on the next play() call (already-playing sound keeps
+    its previous volume until the clip ends, which is short)."""
+    global _volume
+    _volume = max(0.0, min(1.0, float(vol_0_1)))
+    for s in _sounds.values():
+        try:
+            s.set_volume(_volume)
+        except pygame.error:
+            pass
+
+
+def get_volume() -> float:
+    return _volume

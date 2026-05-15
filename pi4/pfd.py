@@ -204,6 +204,11 @@ disp["ad"] = {                      # airport download/parse state
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
+    # Audio callouts (TERRAIN / PULL UP / BANK ANGLE).  Volume is 0–10
+    # to match the rest of the integer settings; the audio module maps
+    # it to a 0.0–1.0 multiplier internally. 0 = effectively muted but
+    # the master switch is the cleaner toggle for "I want silence".
+    "audio_enabled": True, "audio_volume": 8,
     # Lower-left moving-map inset
     "map_enabled":       False,
     "map_orient":        "trk",     # "trk" | "nrth"
@@ -705,31 +710,100 @@ _BACKLIGHT_PATHS = [
 ]
 _backlight_path     = None
 _backlight_max_path = None   # max_brightness sysfs node
+_backlight_ddc_bus  = None   # /dev/i2c-N when DDC/CI brightness works
+_backlight_lock     = threading.Lock()   # serialise ddcutil writes
+
+
+def _detect_ddc_bus():
+    """Return the I²C bus number of a DDC/CI display whose VCP 10
+    (brightness) is gettable, or None. ddcutil's getvcp is the cheap
+    "is this connected and does brightness work?" probe — much faster
+    than a full `capabilities` parse."""
+    try:
+        r = subprocess.run(["ddcutil", "detect"],
+                           capture_output=True, text=True, timeout=8)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    # First "I2C bus: /dev/i2c-N" line in the detect output is the
+    # primary panel — that's the one we want for brightness control.
+    bus = None
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("I2C bus:") and "/dev/i2c-" in line:
+            try:
+                bus = int(line.split("/dev/i2c-")[1].strip())
+                break
+            except (IndexError, ValueError):
+                continue
+    if bus is None:
+        return None
+    try:
+        r = subprocess.run(
+            ["ddcutil", "--bus", str(bus), "getvcp", "10", "--terse"],
+            capture_output=True, text=True, timeout=4,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if r.returncode == 0 and "VCP" in r.stdout:
+        return bus
+    return None
+
 
 def _init_backlight():
-    """Find the active backlight sysfs node (called once at startup)."""
-    global _backlight_path, _backlight_max_path
+    """Find the active brightness sink — sysfs first (RPi 7" touch),
+    then DDC/CI (HDMI panels that speak VESA MCCS, e.g. ROADOM Z3)."""
+    global _backlight_path, _backlight_max_path, _backlight_ddc_bus
     for p in _BACKLIGHT_PATHS:
         if os.path.exists(p):
             _backlight_path     = p
             _backlight_max_path = os.path.join(os.path.dirname(p), "max_brightness")
             print(f"[BL] Using backlight: {p}")
-            break
+            return
+    bus = _detect_ddc_bus()
+    if bus is not None:
+        _backlight_ddc_bus = bus
+        print(f"[BL] Using DDC/CI brightness on /dev/i2c-{bus}")
+        return
+    print("[BL] No backlight control available (no sysfs node, no DDC/CI)")
+
+
+def _ddc_set_brightness(value_0_100: int):
+    """Background-thread DDC/CI brightness write. ddcutil over I²C
+    takes 200–400 ms; we don't want that on the render thread.
+    Serialised with a lock so the user spamming the brightness slider
+    doesn't queue a dozen concurrent ddcutil processes."""
+    def _worker():
+        with _backlight_lock:
+            try:
+                subprocess.run(
+                    ["ddcutil", "--bus", str(_backlight_ddc_bus),
+                     "setvcp", "10", str(value_0_100)],
+                    capture_output=True, timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+    threading.Thread(target=_worker, daemon=True, name="DDCBacklight").start()
+
 
 def _set_backlight(level: int):
-    """Set brightness 1–10 → 0..max_brightness (or 0..255 fallback)."""
-    if _backlight_path is None:
-        return
-    try:
-        max_b = 255
-        if _backlight_max_path and os.path.exists(_backlight_max_path):
-            with open(_backlight_max_path) as f:
-                max_b = int(f.read().strip())
-        raw = max(0, min(max_b, int((level - 1) / 9.0 * max_b)))
-        with open(_backlight_path, "w") as f:
-            f.write(str(raw))
-    except OSError:
-        pass
+    """Set brightness 1–10 → sysfs / DDC. No-op if neither is wired."""
+    if _backlight_path is not None:
+        try:
+            max_b = 255
+            if _backlight_max_path and os.path.exists(_backlight_max_path):
+                with open(_backlight_max_path) as f:
+                    max_b = int(f.read().strip())
+            raw = max(0, min(max_b, int((level - 1) / 9.0 * max_b)))
+            with open(_backlight_path, "w") as f:
+                f.write(str(raw))
+        except OSError:
+            pass
+    elif _backlight_ddc_bus is not None:
+        # DDC/CI VCP 10 is 0..100; map our 1-10 setting linearly.
+        pct = max(0, min(100, int((level - 1) / 9.0 * 100)))
+        _ddc_set_brightness(pct)
 
 
 def smooth_state():
@@ -3204,11 +3278,20 @@ def handle_event(event, demo_mode):
                 else:
                     val = val_str
                 disp["ds"][key] = val
+                if key == "audio_enabled":
+                    audio_alerts.set_enabled(bool(val))
                 _settings.mark_dirty()
-            elif action and action.startswith("inc:brightness:"):
-                delta = int(action.split(":")[-1])
-                disp["ds"]["brightness"] = max(1, min(10, disp["ds"]["brightness"] + delta))
-                _set_backlight(disp["ds"]["brightness"])
+            elif action and action.startswith("inc:"):
+                # Generic 1–10 stepper for any display-setup row that
+                # uses the inc/dec UI (brightness, audio_volume, ...).
+                _, k, delta_str = action.split(":", 2)
+                delta = int(delta_str)
+                cur = int(disp["ds"].get(k, 8))
+                disp["ds"][k] = max(1, min(10, cur + delta))
+                if k == "brightness":
+                    _set_backlight(disp["ds"][k])
+                elif k == "audio_volume":
+                    audio_alerts.set_volume(disp["ds"][k] / 10.0)
                 _settings.mark_dirty()
             return True
 
@@ -4382,6 +4465,10 @@ _DSP_ROWS = [
      ["inhg","hpa"],     ["inHg","hPa"],     100),
     ("brightness", "BRIGHTNESS",   "Screen brightness 1\u201310",
      None, None, None),
+    ("audio_enabled","ALERT AUDIO", "Voice callouts (TERRAIN / PULL UP / BANK)",
+     [False, True],      ["OFF", "ON"],       80),
+    ("audio_volume","ALERT VOLUME", "Callout volume 1\u201310",
+     None, None, None),
     # MAP INSET row carries TWO segmented controls: enable + orientation.
     # Custom drawing/hit-test below handles the second pair.  Listed here
     # as a single key so it occupies one row in the standard loop.
@@ -4440,8 +4527,8 @@ def draw_display_setup(surf, ds):
         bx, by, bw, bh = _setting_row(surf, ri, label, sub)
         ry = by + (bh - _DSP_BTN_H) // 2
         rx = _dsp_rx(row, bx, bw)
-        if opts_v is None:                              # brightness stepper
-            val = ds.get("brightness", 8)
+        if opts_v is None:                              # 1–10 stepper row
+            val = ds.get(key, 8)
             _step_btn(surf, rx, ry, _DSP_SW, _DSP_BTN_H, "\u2212")
             vx = rx + _DSP_SW + _DSP_BTN_G
             pygame.draw.rect(surf, (0,18,38), (vx, ry, _DSP_VW, _DSP_BTN_H), border_radius=4)
@@ -4494,10 +4581,10 @@ def display_setup_hit(x, y, ds):
             continue
         if opts_v is None:
             if rx <= x <= rx+_DSP_SW:
-                return "inc:brightness:-1"
+                return f"inc:{key}:-1"
             plus_x = rx + _DSP_SW + _DSP_BTN_G + _DSP_VW + _DSP_BTN_G
             if plus_x <= x <= plus_x+_DSP_SW:
-                return "inc:brightness:1"
+                return f"inc:{key}:1"
         else:
             for i, v in enumerate(opts_v):
                 bx_b = rx + i*(bw_each+_DSP_BTN_G)
@@ -9065,6 +9152,10 @@ def main():
 
     _init_backlight()
     audio_alerts.init()
+    # Push persisted audio prefs into the module so the user's last
+    # mute/volume state survives a reboot.
+    audio_alerts.set_enabled(disp["ds"].get("audio_enabled", True))
+    audio_alerts.set_volume(disp["ds"].get("audio_volume", 8) / 10.0)
     _set_backlight(disp["ds"].get("brightness", 8))
 
     # Load obstacle + airport databases in background (non-blocking)
