@@ -115,6 +115,7 @@ state = {
     "baro_src": "gps", "baro_hpa": BARO_DEFAULT_HPA,
     "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
     "ahrs_ok": False, "gps_ok": False, "gps_comm": False, "baro_ok": False,
+    "orientation": "right", "mounting": "normal",
 }
 
 # ── Display values (smoothed) ─────────────────────────────────────────────────
@@ -741,8 +742,10 @@ def smooth_state():
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
               "ahrs_ok", "gps_ok", "gps_comm", "baro_ok",
-              "pitch_trim", "roll_trim", "yaw_trim"):
-        disp[k] = snap[k]
+              "pitch_trim", "roll_trim", "yaw_trim",
+              "orientation", "mounting"):
+        if k in snap:
+            disp[k] = snap[k]
 
 
 # ── Font helpers ──────────────────────────────────────────────────────────────

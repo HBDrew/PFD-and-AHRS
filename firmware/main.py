@@ -362,30 +362,10 @@ async def stdin_cmd_loop():
     Read commands sent by the Pi4 over USB serial.
     Handles: $MAGDEV,... and $ORIENT,connector,mounting
 
-    Primary: asyncio.StreamReader(sys.stdin) — integrates with the event
-    loop's _io_queue via ioctl(MP_STREAM_POLL_RD), reliably waking on USB
-    CDC data.  Falls back to uselect polling if StreamReader is unavailable.
+    Drains all available bytes on each pass before yielding back to the
+    event loop.  Reading one byte per 20 ms tick would take ~440 ms for a
+    22-byte command; draining the full ring buffer avoids that latency.
     """
-    # Primary: event-loop-integrated I/O — more reliable than manual uselect
-    # on Pico W USB CDC.
-    try:
-        reader = asyncio.StreamReader(sys.stdin)
-        print('[stdin] using asyncio.StreamReader')
-        while True:
-            try:
-                raw = await reader.readline()
-                if raw:
-                    line = raw.decode('utf-8', 'ignore').strip()
-                    if line:
-                        _process_stdin_line(line)
-            except Exception as e:
-                print(f'[stdin] readline error: {e}')
-                await asyncio.sleep_ms(100)
-        return
-    except Exception as e:
-        print(f'[stdin] StreamReader unavailable ({e}), falling back to uselect')
-
-    # Fallback: manual uselect polling.
     try:
         import uselect
         poll = uselect.poll()
@@ -395,25 +375,25 @@ async def stdin_cmd_loop():
 
     buf = bytearray()
     while True:
-        if poll.poll(0):
+        # Drain all bytes currently in the ring buffer before sleeping.
+        while poll.poll(0):
             try:
                 ch = sys.stdin.read(1)
-                if ch:
-                    b = ord(ch)
-                    if b == 10:    # LF — end of line
-                        if buf:
-                            line = buf.decode('utf-8', 'ignore').strip()
-                            buf = bytearray()
-                            if line:
-                                _process_stdin_line(line)
-                    elif b == 13:  # CR — ignore (\r\n line endings)
-                        pass
-                    else:
-                        buf.append(b)
-                        if len(buf) > 600:
-                            buf = bytearray()
+                if not ch:
+                    break
+                b = ord(ch)
+                if b == 10:    # LF — end of line
+                    if buf:
+                        line = buf.decode('utf-8', 'ignore').strip()
+                        buf = bytearray()
+                        if line:
+                            _process_stdin_line(line)
+                elif b != 13:  # ignore CR
+                    buf.append(b)
+                    if len(buf) > 600:
+                        buf = bytearray()
             except Exception:
-                pass
+                break
         await asyncio.sleep_ms(20)
 
 
