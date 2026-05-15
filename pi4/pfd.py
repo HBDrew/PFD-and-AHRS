@@ -1117,33 +1117,53 @@ def _draw_roll_recovery_arc(surf, cx, cy, radius, direction, color, width=5):
 def draw_unusual_attitude_arrows(surf, ai_rect, pitch_deg, roll_deg):
     """Recovery cues for unusual attitudes.
 
-    Pitch: linear chevron stacks at the top / bottom of the AI pointing
-    toward the corrective input (down to push from nose-high, up to pull
-    from nose-low).
+    Both glyphs are centred on the ownship so the pilot's eye doesn't
+    have to leave the centre of the AI during a recovery. Pitch arrows
+    live inside the roll arc — the arc is sized to enclose them — and
+    both can appear simultaneously when both pitch and bank are
+    extreme.
 
-    Roll: a curved arrow centred above the ownship symbol indicating the
-    rotational direction of needed input — a linear left/right chevron
-    looks like a translation cue, which is wrong; rotation needs a
-    rotational glyph.
+    Pitch: short linear chevron stack centred at the ownship, tips
+    pointing toward the corrective input (down to push from nose-high,
+    up to pull from nose-low).
+
+    Roll: a large curved arrow sweeping over the ownship indicating the
+    rotational direction of needed input. Bigger radius than the pitch
+    chevron extent so it reads as a frame around them, not a glyph in
+    the same visual band.
     """
     ax, ay, aw, ah = ai_rect
     cx, cy = ax + aw // 2, ay + ah // 2
     arrow = max(14, int(min(aw, ah) * 0.045))
     red   = (220, 30, 30)
 
+    # _draw_chevron_stack anchors the first chevron at the call-site
+    # (cx, cy) and stacks outward — for a 3-chevron stack this puts the
+    # geometric centre half a step + half a chevron off from cy. Offset
+    # the call so the stack's actual midline sits on cy.
+    gap     = 4
+    count   = 3
+    step    = arrow + gap
+    stack_offset = ((count - 1) * step - arrow) // 2
+
     if pitch_deg > EXTREME_PITCH_DEG:
-        _draw_chevron_stack(surf, cx, ay + arrow + 8, arrow, 'down', red)
+        _draw_chevron_stack(surf, cx, cy - stack_offset, arrow, 'down', red,
+                            count=count, gap=gap)
     elif pitch_deg < -EXTREME_PITCH_DEG:
-        _draw_chevron_stack(surf, cx, ay + ah - arrow - 8, arrow, 'up', red)
+        _draw_chevron_stack(surf, cx, cy + stack_offset, arrow, 'up', red,
+                            count=count, gap=gap)
 
     if abs(roll_deg) > EXTREME_BANK_DEG:
-        radius = max(36, int(min(aw, ah) * 0.16))
-        # Place the arc's centre above the ownship so the curve sits in
-        # the upper half of the AI; both ends of the arc remain inside
-        # the AI rect even at the larger radii on wide displays.
-        arc_cy = cy - int(radius * 0.6)
+        # Radius large enough that the arc's lowest points (the arc
+        # endpoints) sit clear of the pitch chevron stack's outermost
+        # tip. Pitch stack reaches ±((count-1)/2 * step + arrow) from
+        # cy; pad ~20 % beyond so the arc reads as a frame, not a
+        # collision.
+        pitch_reach = int((count - 1) * step / 2 + arrow)
+        radius = max(int(pitch_reach * 1.6),
+                     int(min(aw, ah) * 0.22))
         direction = 'left' if roll_deg > 0 else 'right'
-        _draw_roll_recovery_arc(surf, cx, arc_cy, radius, direction, red)
+        _draw_roll_recovery_arc(surf, cx, cy, radius, direction, red)
 
 
 def draw_simple_ai_background(surf, ai_rect, pitch, roll):
