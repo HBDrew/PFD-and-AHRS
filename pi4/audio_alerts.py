@@ -36,16 +36,19 @@ except ImportError:
 # speakers and the pilot's brain don't want a paragraph.
 _CALLOUTS = {
     "terrain":  "Terrain. Terrain.",
+    "obstacle": "Obstacle. Obstacle.",
     "pull_up":  "Pull up. Pull up.",
     "bank":     "Bank angle. Bank angle.",
 }
 
 # Per-alert minimum interval between repeats (seconds). Pull-up sits
-# tighter than terrain because the warning band needs urgency, and
-# bank-angle sits looser because pilots can spend longer in a hard
-# bank than they should be allowed to spend at a TAWS warning.
+# tighter than the caution callouts because the warning band needs
+# urgency, and bank-angle sits looser because pilots can spend longer
+# in a hard bank than they should be allowed to spend at a TAWS
+# warning.
 _MIN_INTERVAL = {
     "terrain":  3.0,
+    "obstacle": 3.0,
     "pull_up":  1.5,
     "bank":     3.0,
 }

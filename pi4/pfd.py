@@ -2021,7 +2021,8 @@ def _alert_radius_nm(speed_kt: float) -> float:
     return max(ALERT_RADIUS_MIN_NM, min(ALERT_RADIUS_MAX_NM, dyn))
 
 
-def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok, vso_kt=VS0):
+def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
+                          track_deg=0.0, vsi_fpm=0.0, vso_kt=VS0):
     """
     Compute the current terrain/obstacle alert level and store it globally.
     Called once per render frame with current aircraft position and airspeed.
@@ -2030,6 +2031,11 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok, vso_kt=VS0):
       2 — WARNING  (clearance < TERRAIN_WARNING_FT or obstacle < OBSTACLE_WARNING_FT)
     vso_kt is the user-set stall speed (flaps down) from the flight profile;
     alerts are inhibited below this groundspeed to silence taxi/rollout nuisance.
+
+    Terrain check is a forward look-ahead along the GPS ground track with
+    altitude projected by current VSI — mirrors how EGPWS / TAWS-B fire
+    on a mountain *ahead* of the aircraft rather than waiting until it's
+    directly under (or in) it.
     """
     global _terrain_alert_level
     if not gps_ok:
@@ -2042,15 +2048,44 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok, vso_kt=VS0):
         return
 
     level = 0
+    # Track each source separately so audio can distinguish them — TAWS
+    # convention is "TERRAIN" vs "OBSTACLE" at caution, both rolling up
+    # to "PULL UP" at warning.
+    terrain_level  = 0
+    obstacle_level = 0
 
-    # ── Terrain clearance (sampled at current position) ──────────────────────
+    # ── Terrain clearance (look-ahead along ground track) ────────────────────
+    # 45 s × current ground speed × current VSI gives a projection cone
+    # roughly matching standard TAWS-B caution-band lookahead. Sampling at
+    # 12 points along the path catches isolated peaks while keeping the
+    # per-frame cost in microseconds (cache-hot SRTM tiles).
     if _has_terrain:
-        elev = get_elevation_ft(SRTM_DIR, lat, lon)
-        clearance = alt_ft - elev
-        if clearance < TERRAIN_WARNING_FT:
-            level = max(level, 2)
-        elif clearance < TERRAIN_CAUTION_FT:
-            level = max(level, 1)
+        TERRAIN_LOOKAHEAD_S = 45.0
+        SAMPLES = 12
+        dist_nm = speed_kt * TERRAIN_LOOKAHEAD_S / 3600.0
+        track_rad = math.radians(track_deg)
+        cos_lat = max(0.05, math.cos(math.radians(lat)))
+        # Pre-compute per-step delta in (lat, lon) so the per-sample work
+        # is just two adds + one elevation lookup.
+        step_lat = (dist_nm / SAMPLES) * math.cos(track_rad) / 60.0
+        step_lon = (dist_nm / SAMPLES) * math.sin(track_rad) / (60.0 * cos_lat)
+        step_t_s = TERRAIN_LOOKAHEAD_S / SAMPLES
+        # Walk from current position (i=0) out to full lookahead (i=SAMPLES).
+        # Track worst (minimum) clearance — that's what trips the alert.
+        worst_clearance = alt_ft - get_elevation_ft(SRTM_DIR, lat, lon)
+        s_lat, s_lon = lat, lon
+        for i in range(1, SAMPLES + 1):
+            s_lat += step_lat
+            s_lon += step_lon
+            elev = get_elevation_ft(SRTM_DIR, s_lat, s_lon)
+            pred_alt = alt_ft + (vsi_fpm * step_t_s * i / 60.0)
+            clearance = pred_alt - elev
+            if clearance < worst_clearance:
+                worst_clearance = clearance
+        if worst_clearance < TERRAIN_WARNING_FT:
+            terrain_level = 2
+        elif worst_clearance < TERRAIN_CAUTION_FT:
+            terrain_level = 1
 
     # ── Obstacle clearance (time-based lookahead radius) ─────────────────────
     if _obstacles is not None:
@@ -2063,17 +2098,23 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok, vso_kt=VS0):
             # Vectorised clearance check — nearby is a structured array.
             clearance = alt_ft - nearby["msl_ft"]
             if (clearance < OBSTACLE_WARNING_FT).any():
-                level = max(level, 2)
+                obstacle_level = 2
             elif (clearance < OBSTACLE_CAUTION_FT).any():
-                level = max(level, 1)
+                obstacle_level = 1
 
+    level = max(terrain_level, obstacle_level)
     _terrain_alert_level = level
-    # Voice callouts mirror the visual band: TERRAIN at caution,
-    # PULL UP at warning. Rate-limited inside audio_alerts.play() so
-    # this can fire every render frame without spamming.
+    # Voice callouts: TERRAIN / OBSTACLE differentiated at caution, both
+    # roll up to PULL UP at warning. Rate-limited inside audio_alerts.play()
+    # so calling every render frame is safe.
     if level == 2:
         audio_alerts.play("pull_up")
-    elif level == 1:
+    elif obstacle_level == 1:
+        # Obstacle caution wins over terrain caution when both are
+        # tripped at the same time — towers / antennas are smaller and
+        # require more urgent visual scan than a broad terrain band.
+        audio_alerts.play("obstacle")
+    elif terrain_level == 1:
         audio_alerts.play("terrain")
 
 
@@ -8649,6 +8690,7 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 0. Compute terrain/obstacle alert level for this frame
     _update_terrain_alert(lat, lon, alt, speed, gps_ok,
+                          track_deg=track, vsi_fpm=vspeed,
                           vso_kt=fp.get("vs0", VS0))
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground.
