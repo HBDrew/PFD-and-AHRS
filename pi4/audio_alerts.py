@@ -38,6 +38,10 @@ _CALLOUTS = {
     # Caution band — source-identifying, no urgent action verb.
     "terrain":           "Terrain. Terrain.",
     "obstacle":          "Obstacle. Obstacle.",
+    # Excessive-descent caution (GPWS Mode 1). Fires below 2500 ft AGL
+    # when the descent rate exceeds an AGL-scaled threshold curve, so
+    # it nags during a hot approach long before terrain proximity does.
+    "sink_rate":         "Sink rate. Sink rate.",
     # Warning band — source-identifying plus the PULL UP action cue,
     # standard EGPWS convention. Source-specific so the pilot knows
     # what they're avoiding even with eyes inside the cockpit.
@@ -56,6 +60,7 @@ _CALLOUTS = {
 _MIN_INTERVAL = {
     "terrain":           3.0,
     "obstacle":          3.0,
+    "sink_rate":         3.0,
     "terrain_pull_up":   4.0,
     "obstacle_pull_up":  4.0,
     "bank":              3.0,

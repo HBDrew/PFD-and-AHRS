@@ -1997,8 +1997,10 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, yaw=None,
                       (tx,      by2 + bh),
                       (bx,      by2 + bh)], {0, 1, 2, 6}, r=3)
     _filled_polygon(surf, pts_h, (0, 0, 0))
-    pygame.draw.polygon(surf, hdg_col, pts_h, width=2)
-    pygame.gfxdraw.aapolygon(surf, pts_h, hdg_col)
+    # Same 2× supersample AA outline used on the speed / altitude boxes —
+    # keeps the heading box's pointer diagonals visually consistent with
+    # its siblings now that the Veeder-Root edges are smooth.
+    _aa_polygon_outline(surf, pts_h, hdg_col, width=4)
     # Three-digit readout — centred in the box
     _text(surf, _hdg_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)
     # Source subscript ("M" / "G" / "M?" / "G?" / "?") — outboard of ° glyph
@@ -2059,6 +2061,7 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
     # roughly matching standard TAWS-B caution-band lookahead. Sampling at
     # 12 points along the path catches isolated peaks while keeping the
     # per-frame cost in microseconds (cache-hot SRTM tiles).
+    agl_ft = None
     if _has_terrain:
         TERRAIN_LOOKAHEAD_S = 45.0
         SAMPLES = 12
@@ -2072,7 +2075,9 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
         step_t_s = TERRAIN_LOOKAHEAD_S / SAMPLES
         # Walk from current position (i=0) out to full lookahead (i=SAMPLES).
         # Track worst (minimum) clearance — that's what trips the alert.
-        worst_clearance = alt_ft - get_elevation_ft(SRTM_DIR, lat, lon)
+        elev_under = get_elevation_ft(SRTM_DIR, lat, lon)
+        agl_ft = alt_ft - elev_under
+        worst_clearance = agl_ft
         s_lat, s_lon = lat, lon
         for i in range(1, SAMPLES + 1):
             s_lat += step_lat
@@ -2086,6 +2091,16 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
             terrain_level = 2
         elif worst_clearance < TERRAIN_CAUTION_FT:
             terrain_level = 1
+
+    # ── Sink rate (GPWS Mode 1: excessive descent rate scaled by AGL) ───────
+    # Threshold curve: 1500 fpm at the surface, climbing to 5000 fpm at
+    # 2500 ft AGL. Above 2500 ft AGL no alert — normal cruise descents
+    # routinely hit 1000–2000 fpm and we don't want to nag at altitude.
+    sink_rate_active = False
+    if agl_ft is not None and 0 < agl_ft < 2500.0 and vsi_fpm < 0:
+        sink_threshold_fpm = 1500.0 + agl_ft * 1.4
+        if -vsi_fpm > sink_threshold_fpm:
+            sink_rate_active = True
 
     # ── Obstacle clearance (time-based lookahead radius) ─────────────────────
     if _obstacles is not None:
@@ -2105,16 +2120,21 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
     level = max(terrain_level, obstacle_level)
     _terrain_alert_level = level
     # Voice callouts (EGPWS-style, source-identifying at every band):
-    #   caution → "Terrain Terrain"  or  "Obstacle Obstacle"
     #   warning → "Terrain Terrain Pull up Pull up"  or
     #             "Obstacle Obstacle Pull up Pull up"
-    # Obstacle wins when both sources trip simultaneously — towers /
+    #   caution → "Sink rate"  (excessive descent)
+    #          or "Terrain Terrain" / "Obstacle Obstacle"
+    # Priority order: pull-up warnings first (life-critical), then sink
+    # rate (root cause that's eroding clearance), then proximity
+    # cautions. Obstacle wins over terrain at the same band — towers /
     # antennas demand a tighter visual scan than a broad terrain band.
     # Rate-limited inside audio_alerts.play() so this is safe per-frame.
     if obstacle_level == 2:
         audio_alerts.play("obstacle_pull_up")
     elif terrain_level == 2:
         audio_alerts.play("terrain_pull_up")
+    elif sink_rate_active:
+        audio_alerts.play("sink_rate")
     elif obstacle_level == 1:
         audio_alerts.play("obstacle")
     elif terrain_level == 1:
