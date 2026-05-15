@@ -16,6 +16,15 @@ import os
 import subprocess
 import time
 
+# SDL's default audio backend picks PulseAudio/PipeWire when available
+# and only falls back to ALSA otherwise. PA/PW have their own default
+# sink that doesn't follow ~/.asoundrc, so the asoundrc redirect that
+# pins audio to the HDMI panel is silently bypassed by pygame.mixer.
+# Force ALSA before pygame imports so mixer.init() lands on the device
+# the asoundrc points at. setdefault so a user can still override via
+# environment if they explicitly want a different backend.
+os.environ.setdefault("SDL_AUDIODRIVER", "alsa")
+
 try:
     import pygame
     HAS_PYGAME = True
@@ -79,28 +88,27 @@ def init():
     if not HAS_PYGAME:
         _disabled = True
         return
-    # Quit any mixer that pygame.init() may have grabbed against the
-    # default device so we can re-init against the device the panel
-    # speakers actually live on. The Pi 4 advertises three cards
-    # (headphone jack + 2× HDMI); on the ROADOM the speakers are on
-    # HDMI 0 which lands as ALSA card 1. PFD_AUDIO_DEVICE overrides
-    # for setups where it's different.
-    device = os.environ.get("PFD_AUDIO_DEVICE", "plughw:1,0")
+    # Quit any mixer that pygame.init() may have grabbed against a
+    # different driver, then re-init under ALSA (forced above) so the
+    # asoundrc redirect to the HDMI panel actually takes effect. A
+    # PFD_AUDIO_DEVICE env-var can pin a specific ALSA device when the
+    # default isn't right for a given setup.
+    device = os.environ.get("PFD_AUDIO_DEVICE")
     try:
         pygame.mixer.quit()
     except pygame.error:
         pass
+    init_kw = dict(frequency=22050, size=-16, channels=2, buffer=512)
+    if device:
+        init_kw["devicename"] = device
     try:
-        # Small buffer keeps callout-to-speaker latency under ~30 ms,
-        # which matters when the warning band fires.
-        pygame.mixer.init(frequency=22050, size=-16, channels=2,
-                          buffer=512, devicename=device)
+        pygame.mixer.init(**init_kw)
     except (TypeError, pygame.error) as e:
-        # Older pygame (no `devicename` kwarg) or device unavailable —
-        # fall back to whatever SDL picks as default rather than
-        # silently going mute.
-        print(f"[audio] init with device={device} failed ({e}); "
-              f"falling back to system default")
+        # Either the named device didn't open or pygame is too old for
+        # the devicename kwarg — fall back to whatever ALSA picks as
+        # default (which, with the user's asoundrc, is the panel).
+        print(f"[audio] init with device={device!r} failed ({e}); "
+              f"falling back to ALSA default")
         try:
             pygame.mixer.init(frequency=22050, size=-16, channels=2,
                               buffer=512)
