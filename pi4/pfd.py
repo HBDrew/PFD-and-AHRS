@@ -1008,6 +1008,76 @@ def draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon):
     surf.blit(bg, (ax, ay))
 
 
+# Unusual-attitude thresholds.  Past these the SVT mesh and symbol
+# overlays come off (declutter) and a sky/ground split with red
+# recovery chevrons replaces them — same cue Garmin / Honeywell use.
+EXTREME_PITCH_DEG = 30.0
+EXTREME_BANK_DEG  = 60.0
+
+
+def is_extreme_attitude(pitch_deg, roll_deg):
+    return (abs(pitch_deg) > EXTREME_PITCH_DEG
+            or abs(roll_deg) > EXTREME_BANK_DEG)
+
+
+def _draw_chevron_stack(surf, cx, cy, size, direction, color, count=3, gap=4):
+    """Draw `count` V-shaped chevrons stacked in `direction`. Filled
+    polygons — anti-aliasing the outline buys nothing at this size and
+    costs us another smoothscale pass we don't need on the render
+    thread during a recovery."""
+    step = size + gap
+    for i in range(count):
+        d = i * step
+        if direction == 'up':
+            tip = (cx, cy - d)
+            l   = (cx - size, cy - d + size)
+            r   = (cx + size, cy - d + size)
+        elif direction == 'down':
+            tip = (cx, cy + d)
+            l   = (cx - size, cy + d - size)
+            r   = (cx + size, cy + d - size)
+        elif direction == 'left':
+            tip = (cx - d, cy)
+            l   = (cx - d + size, cy - size)
+            r   = (cx - d + size, cy + size)
+        else:  # 'right'
+            tip = (cx + d, cy)
+            l   = (cx + d - size, cy - size)
+            r   = (cx + d - size, cy + size)
+        pygame.draw.polygon(surf, color, [tip, l, r])
+        pygame.gfxdraw.aapolygon(surf, [tip, l, r], color)
+
+
+def draw_unusual_attitude_arrows(surf, ai_rect, pitch_deg, roll_deg):
+    """Red chevron stacks pointing toward the corrective control input.
+
+    Pitch nose-up too high → chevrons at the top pointing DOWN (push).
+    Pitch nose-down too low → chevrons at the bottom pointing UP (pull).
+    Banked right past EXTREME_BANK_DEG → chevrons on the left pointing
+    LEFT (roll left); mirrored for left bank.  Arrows are drawn in
+    screen-fixed orientation — they're a control-input cue, not an
+    attitude indicator."""
+    ax, ay, aw, ah = ai_rect
+    cx, cy = ax + aw // 2, ay + ah // 2
+    arrow = max(14, int(min(aw, ah) * 0.045))
+    red   = (220, 30, 30)
+
+    if pitch_deg > EXTREME_PITCH_DEG:
+        # Nose too high → push.  Chevrons stack near the top of the AI,
+        # tips pointing down toward the horizon.
+        _draw_chevron_stack(surf, cx, ay + arrow + 8, arrow, 'down', red)
+    elif pitch_deg < -EXTREME_PITCH_DEG:
+        # Nose too low → pull.  Bottom of AI, tips pointing up.
+        _draw_chevron_stack(surf, cx, ay + ah - arrow - 8, arrow, 'up', red)
+
+    if roll_deg > EXTREME_BANK_DEG:
+        # Banked right → roll left.  Chevrons on the left side of the AI,
+        # tips pointing left.
+        _draw_chevron_stack(surf, ax + arrow + 8, cy, arrow, 'left', red)
+    elif roll_deg < -EXTREME_BANK_DEG:
+        _draw_chevron_stack(surf, ax + aw - arrow - 8, cy, arrow, 'right', red)
+
+
 def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     """
     Fallback SVT background (no SRTM tiles loaded).
@@ -1155,7 +1225,11 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay, aw, ah))
 
-    for deg in range(-30, 35, 5):
+    # Pitch ladder runs from ±80° so the ladder still gives the pilot a
+    # readable scale during an unusual-attitude recovery.  Lines outside
+    # the visible window are culled below; the loop bounds just gate
+    # which pitch values are eligible to draw.
+    for deg in range(-80, 85, 5):
         rel_y = pitch_px - int(deg * px_per_deg)  # y offset from AI center
 
         # Cull lines too far from the visible window (±185 px from centre)
@@ -1164,6 +1238,13 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
 
         major = (deg % 10 == 0)
         half  = major_half if major else minor_half
+        # At extreme attitudes shorten the lines progressively so the
+        # ladder reads visually different from the cruise band — same
+        # cue Garmin uses to flag "you're a long way from level".
+        if abs(deg) > 60:
+            half = int(half * 0.45)
+        elif abs(deg) > 30:
+            half = int(half * 0.70)
 
         if deg == 0:
             # Horizon line
@@ -8417,7 +8498,15 @@ def render(surf, demo_mode, connected, data_stale=False):
     elif _clr < 2200: _below_col = (0.39, 0.29, 0.14)
     else:             _below_col = (0.27, 0.22, 0.11)
 
-    if _shared_gl_ctx is not None and gps_ok:
+    # Unusual-attitude declutter: at |pitch| > 30° or |roll| > 60° the
+    # SVT mesh, water mask, airport / runway / obstacle overlays all
+    # come off so the pilot sees nothing but solid sky/ground + the red
+    # recovery chevrons + the pitch ladder.  Faster too — no SVT pass,
+    # no symbol projection.
+    _extreme_att = is_extreme_attitude(pitch, roll)
+    if _extreme_att:
+        draw_simple_ai_background(surf, _full_ai, pitch, roll)
+    elif _shared_gl_ctx is not None and gps_ok:
         # Render terrain into the AI region of the default framebuffer.
         # GL viewport origin is bottom-left: pygame AI row 0..HDG_Y maps to
         # GL rows HDG_H..DISPLAY_H.
@@ -8473,7 +8562,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # drew everything onto a SRCALPHA overlay rotated by pygame at the end,
     # which cost ~20 ms/frame in a turn at 1024×600 — replaced with the
     # per-feature projection-roll for that win.
-    if gps_ok and (
+    if (not _extreme_att) and gps_ok and (
             _runways is not None or _airports is not None or _obstacles is not None):
         # Roll sign: the per-feature projections rotate by (cos/sin) in math
         # convention but write to screen-Y-down pixels, which flips CW/CCW.
@@ -8609,6 +8698,12 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
+
+    # Unusual-attitude recovery chevrons (drawn over the pitch ladder so
+    # they catch the eye through the ladder lines, under the aircraft
+    # symbol which goes last).
+    if _extreme_att:
+        draw_unusual_attitude_arrows(surf, ai_rect, pitch, roll)
 
     # 3. Speed tape (display unit, fp V-speeds)
     draw_speed_tape(surf, speed_d, gs_bug=gs_bug_d,
