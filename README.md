@@ -81,14 +81,28 @@ Both versions share the same AHRS unit, instrument layout, menus, simulator, dem
 
 ## Hardware
 
-### Pico W sensor board (shared)
-| Part | Notes |
-|------|-------|
-| Raspberry Pi Pico W | Any revision |
-| WitMotion WT901 AHRS | UART, 9-DOF IMU |
-| u-blox NEO-6M GPS module | UART |
-| BME280 baro (optional) | I2C, improves altitude accuracy |
-| MAX3232 breakout | For future TruTrak autopilot RS-232 |
+### AHRS PCB rev A (shared by both display variants)
+
+The AHRS sensor head is now a single integrated PCB carrying every sensor on one board. Wiring is fixed in the board layout — no bench breakouts, no jumpers, no per-build pinout drift.
+
+| Part | Bus | Address / Port | Role |
+|------|-----|----------------|------|
+| Raspberry Pi Pico W | — | USB-C (debug + power) | Host processor + WiFi AP |
+| WitMotion WT901 | UART0 (GP0/GP1, 9600 baud) | — | 9-DOF IMU, fused Euler output |
+| u-blox NEO-6M | UART1 (GP4/GP5, 9600 baud) | — | NMEA GPS (GGA + RMC) |
+| Bosch BME280 | I²C1 (GP2/GP3, 400 kHz) | `0x76` | Static pressure + OAT |
+| Sensirion SDP31-500Pa | I²C1 (GP2/GP3) | `0x21` | Differential pressure (pitot − static) |
+| *(reserved)* SDP3x AOA twin | I²C1 (GP2/GP3) | `0x22` | Future AOA probe — see `Docs/BUGS_AND_TODO.md → AOA-PROBE` |
+| MAX3232 breakout | — | — | RS-232 driver for future TruTrak autopilot tie-in |
+
+Power draw is ~130 mA at 5 V from the Pico's USB-C — typical wallwart / cigarette-lighter 5 V supply works fine; aircraft-grade builds run through a regulated 5 V converter.
+
+Pneumatic plumbing for the air-data path:
+
+- SDP31 `+` port → pitot tube (ram pressure)
+- SDP31 `−` port → static reference (teed into the BME280's open port)
+
+The combination produces the full pitot-static set — IAS, TAS, density altitude, and a wind solution from the AHRS heading + GPS track — broadcast on the same `$AHRS` SSE / USB JSON packet. See `Docs/REQUIREMENTS_AHRS.md §7B` for the field-level requirements and `Docs/USER_MANUAL_PI4.md §21` for the pilot-facing description.
 
 ### Pi Zero 2W display
 | Part | Notes |
@@ -195,11 +209,13 @@ Connect Pico W via USB. Copy the `firmware/` folder contents to the Pico root (u
 ```
 firmware/
 ├── main.py
-├── config.py          ← edit WiFi credentials and pin assignments here
+├── config.py          ← WiFi credentials, pin map, sensor enables
 ├── web_server.py
 ├── wt901.py
 ├── gps.py
-└── bme280.py          ← only needed if BME280 is connected
+├── bme280.py          ← BME280 (static pressure + OAT)
+├── sdp31.py           ← SDP31-500Pa differential pressure (IAS)
+└── airdata.py         ← IAS / TAS / density alt / wind triangle
 ```
 
 ### Edit config.py
@@ -209,31 +225,11 @@ AP_SSID     = "PFD_AP"      # must match wifi_switch.sh PICO_SSID
 AP_PASSWORD = "picoahrs1"   # must match wifi_switch.sh PICO_PSK
 ```
 
-### Wiring
+`config.py` also carries the sensor enable flags (`BME280_ENABLE`, `SDP31_ENABLE`) so a bench Pico W without one or both sensors still boots cleanly — the firmware sets `baro_ok` / `airdata_ok = False` and the displays fall back automatically.
 
-#### WT901 AHRS → Pico W
-| WT901 | Pico W | Notes |
-|-------|--------|-------|
-| VCC (5V) | VBUS (pin 40) | 5V from USB |
-| GND | GND (pin 38) | |
-| TX | GP1 (pin 2) | UART0 RX |
-| RX | GP0 (pin 1) | UART0 TX |
+### Wiring — AHRS PCB rev A
 
-#### NEO-6M GPS → Pico W
-| NEO-6M | Pico W | Notes |
-|--------|--------|-------|
-| VCC | 3V3 (pin 36) | |
-| GND | GND | |
-| TX | GP5 (pin 7) | UART1 RX |
-| RX | GP4 (pin 6) | UART1 TX |
-
-#### BME280 (optional) → Pico W
-| BME280 | Pico W | Notes |
-|--------|--------|-------|
-| VCC | 3V3 | |
-| GND | GND | |
-| SDA | GP2 (pin 4) | I2C1 |
-| SCL | GP3 (pin 5) | I2C1 |
+The pin map matches the [hardware table](#ahrs-pcb-rev-a-shared-by-both-display-variants) above. On the PCB build everything is already wired; on the bench-breakout build see the [Appendix](#appendix-bench-breakout-wiring) below.
 
 ---
 
@@ -487,3 +483,46 @@ Shared work (firmware, `shared/` modules, docs touched by both) is generally app
 | V8 | Flight path vector, highway-in-the-sky waypoint tunnel |
 | V9 | Time-of-day sun position, texture-mapped terrain |
 | V10 | Setup-screen vertical scrolling for compact display profiles |
+
+---
+
+## Appendix — Bench breakout wiring
+
+The original development build wired the Pico W to four separate breakout boards. The same firmware runs on the bench rig as on the PCB — the pin map below matches `firmware/config.py` and produces an identical `$AHRS` packet. Use this when bringing up a Pico without the rev A board.
+
+### WT901 AHRS → Pico W
+| WT901 | Pico W | Notes |
+|-------|--------|-------|
+| VCC (5V) | VBUS (pin 40) | 5 V from USB |
+| GND | GND (pin 38) | |
+| TX | GP1 (pin 2) | UART0 RX |
+| RX | GP0 (pin 1) | UART0 TX |
+
+### NEO-6M GPS → Pico W
+| NEO-6M | Pico W | Notes |
+|--------|--------|-------|
+| VCC | 3V3 (pin 36) | |
+| GND | GND | |
+| TX | GP5 (pin 7) | UART1 RX |
+| RX | GP4 (pin 6) | UART1 TX |
+
+### BME280 → Pico W
+| BME280 | Pico W | Notes |
+|--------|--------|-------|
+| VCC | 3V3 | |
+| GND | GND | |
+| SDA | GP2 (pin 4) | I²C1 (shared with SDP31) |
+| SCL | GP3 (pin 5) | I²C1 (shared with SDP31) |
+
+### SDP31-500Pa → Pico W
+| SDP31 | Pico W | Notes |
+|-------|--------|-------|
+| VDD | 3V3 | |
+| GND | GND | |
+| SDA | GP2 (pin 4) | I²C1 (shared with BME280) |
+| SCL | GP3 (pin 5) | I²C1 (shared with BME280) |
+| ADDR | floating | I²C address `0x21`; tie to VDD for `0x22` (AOA twin) |
+| `+` port | airframe pitot | ram pressure |
+| `−` port | airframe static (teed into BME280's open port) | static reference |
+
+If your bench Pico has only some of these sensors connected, leave the corresponding `*_ENABLE` flag in `firmware/config.py` as default (the firmware probes for each sensor and gracefully falls back when one is missing — speed tape switches to GPS GS, altitude tape switches to GPS ALT, etc.).

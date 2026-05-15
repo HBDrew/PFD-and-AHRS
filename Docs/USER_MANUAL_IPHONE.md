@@ -185,7 +185,14 @@ Defaults are Cessna 172S (VS0=48, VS1=55, VFE=85, VNO=129, VNE=163 kt). Override
 
 ### Speed bug
 
-A **magenta chevron** on the inner edge of the tape tracks the speed bug (GPS groundspeed is the only iPhone source today, hence magenta — matches the pi4 data-source convention). The bug value is stored in `localStorage['bugs'].spd_bug`.
+The speed bug chevron sits on the inner edge of the tape and tracks the stored bug value. Colour reflects the active airspeed source published in the `$AHRS` packet:
+
+| Colour | Source | When |
+|--------|--------|------|
+| Cyan | IAS — SDP31-500Pa + BME280 air-data path | `airdata_ok = True` in the AHRS frame |
+| Magenta | GPS groundspeed | Default fallback (no SDP31, sensor unhealthy, or sourced from the AHRS unit's groundspeed) |
+
+The drum and tape colour ramp follow the same source — cyan in IAS mode, magenta in GS mode — so a glance at the tape tells you whether you're looking at airspeed or groundspeed. The bug value is stored in `localStorage['bugs'].spd_bug` and is unit-canonical in knots regardless of the displayed unit.
 
 ## 6. Altitude Tape and VSI
 
@@ -307,6 +314,10 @@ With terrain tiles loaded, the PFD computes clearance between the aircraft's GPS
 ![Red PULL UP TERRAIN at critical clearance](../iphone_display/previews/preview_taws_pullup.png)
 
 Alerts require a GPS fix; without one the banner stays off regardless of terrain data availability. The banner is positioned at the top of the AI so it's visible above the horizon and overlaps neither the tapes nor the aircraft reference.
+
+**Low-speed inhibit**: alerts are silenced below **VS0** (default 48 kt) so taxi, takeoff roll and landing rollout don't continuously fire the banner. The threshold tracks the V-speeds configured in `localStorage['vspeeds']` so updating Vs0 also updates the inhibit floor.
+
+The iPhone display does not emit voice callouts (no audio stack); the visual banner is the only alert surface. The Pi 4 build adds an EGPWS-style voice pipeline on top of the same banner logic — see `USER_MANUAL_PI4.md` §19.
 
 ---
 

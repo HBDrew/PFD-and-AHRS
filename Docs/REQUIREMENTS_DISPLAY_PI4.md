@@ -5,8 +5,8 @@
 | Document No.   | HLR-DISP-PI4-001                              |
 | Title          | Display Unit (Pi 4) — High-Level Requirements |
 | Project        | Pico-AHRS / PFD                               |
-| Date           | 2026-05-09                                    |
-| Version        | 0.3                                           |
+| Date           | 2026-05-15                                    |
+| Version        | 0.4                                           |
 
 ---
 
@@ -70,7 +70,9 @@ For the lightweight variant without SVT, see HLR-DISP-ZERO-001.
 
 > **REQ-DISP-PI4-SPD-006** The pilot shall be able to set the speed bug via numpad entry by tapping the readout button.
 
-> **REQ-DISP-PI4-SPD-007** The airspeed source shall be selectable from the AHRS / Sensors sub-menu.
+> **REQ-DISP-PI4-SPD-007** The airspeed source shall be selectable from the AHRS / Sensors sub-menu. The selectable options shall be `IAS SENSOR` (SDP31-500Pa with BME280 density correction, sourced from the AHRS `ias_kt` field) and `GPS GS` (GPS groundspeed, sourced from `speed`). The default selection shall be `IAS SENSOR`, with automatic fallback to `GPS GS` when `airdata_ok = False`.
+
+> **REQ-DISP-PI4-SPD-008** When the active airspeed source falls back from `IAS SENSOR` to `GPS GS` (sensor failure, missing baro, or `airdata_ok` cleared), the speed tape, drum, and bug shall recolour from cyan to magenta to communicate the source change without an explicit banner. No additional alert is required: the colour convention is the same as the altitude tape's baro/GPS fallback indication.
 
 ---
 
@@ -165,6 +167,14 @@ The attitude indicator on the Pi 4 variant provides full 3D Synthetic Vision Ter
 > **REQ-DISP-PI4-TAWS-004** SRTM terrain tiles shall be downloadable from within the PFD user interface.
 
 > **REQ-DISP-PI4-TAWS-005** FAA Digital Obstacle File data shall be downloadable from within the PFD user interface, with a 28-day expiry indication.
+
+> **REQ-DISP-PI4-TAWS-006** Terrain-clearance alerting shall use a look-ahead along the current GPS ground track of at least 45 seconds at the current ground speed, sampled at no fewer than 12 points and with altitude projected forward by the current vertical speed. The worst (minimum) projected clearance along the look-ahead shall determine the alert level.
+
+> **REQ-DISP-PI4-TAWS-007** Obstacle proximity alerting shall be gated by a forward-facing wedge of ±25° around the GPS ground track. Obstacles abeam or behind the wing shall not trigger the alert, regardless of their absolute clearance.
+
+> **REQ-DISP-PI4-TAWS-008** Both terrain and obstacle alerting (visual banners and audio callouts) shall be inhibited when ground speed is below the pilot-configured VS0 stall speed. This inhibit shall apply uniformly to all alert classes (TERRAIN, OBSTACLE, SINK RATE, PULL UP) to silence false fires during taxi, takeoff roll, and landing rollout.
+
+> **REQ-DISP-PI4-TAWS-009** A SINK RATE caution (audio only; the banner band is owned by TERRAIN / OBSTACLE) shall fire when the aircraft is below 2 500 ft AGL and the descent rate exceeds an AGL-scaled threshold curve: 1 500 fpm at the surface, rising linearly to approximately 5 000 fpm at 2 500 ft AGL. This implements the GPWS Mode 1 (excessive descent rate) callout.
 
 ---
 
@@ -281,6 +291,67 @@ The display unit shall provide a synthetic approach capability that loads a 3° 
 > **REQ-DISP-PI4-APPR-009** The moving-map inset's course trace shall switch colour: cyan while a synthetic approach is active (matching HITS / VDI / CDI), magenta otherwise. While approach is active the trace shall be drawn from the threshold along the reciprocal of the published course (the actual extended centreline), NOT from the activation point.
 
 > **REQ-DISP-PI4-APPR-010** The moving-map inset's ETE label shall be coloured cyan in approach mode and magenta in direct-to mode, matching the active trace colour.
+
+---
+
+## 9E. Audio Alerts (EGPWS-style voice callouts)
+
+The Pi 4 display shall provide aviation-style voice callouts coordinated with the visual TAWS / obstacle / attitude alerts.
+
+> **REQ-DISP-PI4-AUD-001** The PFD shall play short, pre-rendered voice callouts through the system audio output for the following conditions, with phrasing chosen to identify the alert source rather than emit a generic tone:
+>
+> | Trigger | Callout | Band |
+> |---------|---------|------|
+> | Terrain look-ahead clearance < 500 ft | `Terrain. Terrain.` | Caution |
+> | Obstacle in the ±25° forward wedge with clearance < 500 ft | `Obstacle. Obstacle.` | Caution |
+> | Descent rate exceeding the AGL-scaled threshold curve (REQ-DISP-PI4-TAWS-009) | `Sink rate. Sink rate.` | Caution |
+> | Terrain look-ahead clearance < 100 ft | `Terrain. Terrain. Pull up. Pull up.` | Warning |
+> | Obstacle in the ±25° forward wedge with clearance < 100 ft | `Obstacle. Obstacle. Pull up. Pull up.` | Warning |
+> | Absolute bank > 60° with AHRS healthy and simulator not paused | `Bank angle. Bank angle.` | Attention |
+
+> **REQ-DISP-PI4-AUD-002** Callout phrases shall be generated once at first run using a text-to-speech engine (default: `espeak`) and cached on disk so subsequent boots can play the clips with no synthesis cost.
+
+> **REQ-DISP-PI4-AUD-003** When multiple alert conditions are satisfied in the same frame, only the highest-priority callout shall be played. Priority order, highest first: obstacle pull-up, terrain pull-up, sink rate, obstacle caution, terrain caution, bank angle.
+
+> **REQ-DISP-PI4-AUD-004** Each callout shall be rate-limited by a minimum repeat interval — warning-band callouts (the `Pull up` variants) at no less than 4 s, caution-band and bank-angle callouts at no less than 3 s. New triggers within the hold-off window shall be silently dropped, not queued.
+
+> **REQ-DISP-PI4-AUD-005** The DISPLAY setup screen shall expose an `ALERT AUDIO` master mute (OFF / ON, default ON) that suppresses all callouts when OFF, and an `ALERT VOLUME` control (1–10) that applies a linear volume multiplier to every loaded callout. Both settings shall persist across power cycles via the settings persistence layer.
+
+> **REQ-DISP-PI4-AUD-006** The PFD shall fire one self-test callout (`Terrain. Terrain.`) at startup when `ALERT AUDIO` is ON, so that speaker continuity and the audio pipeline state can be confirmed without a real alert.
+
+> **REQ-DISP-PI4-AUD-007** Audio initialization shall not block the PFD render loop: if the mixer cannot be opened, the audio module shall log a diagnostic and silently no-op subsequent `play()` calls. The visual alert pipeline shall continue to operate unaffected.
+
+> **REQ-DISP-PI4-AUD-008** The audio module shall force the SDL audio backend to ALSA before pygame imports so that an `~/.asoundrc` redirect to a specific device (e.g. HDMI panel speakers via `plughw:1,0`) is honoured.
+
+---
+
+## 9F. Unusual-Attitude Recovery Cues
+
+When the aircraft enters an extreme attitude, the PFD shall declutter to a minimum legible set and overlay red recovery glyphs centred on the aircraft symbol.
+
+> **REQ-DISP-PI4-UA-001** Unusual-attitude declutter shall trigger when absolute pitch exceeds 30° or absolute roll exceeds 60°. While active, the SVT terrain mesh, water mask, airport / runway / obstacle / direct-to overlays shall all be suppressed, leaving only the sky/ground polygon, the pitch ladder, the aircraft symbol, and the recovery glyphs visible.
+
+> **REQ-DISP-PI4-UA-002** A vertical chevron stack (three filled red chevrons) shall be drawn centred on the aircraft symbol whenever |pitch| > 30°. The stack shall point downward when pitch is nose-high (push to recover) and upward when pitch is nose-low (pull to recover). The midline of the stack shall coincide exactly with the aircraft symbol so the pilot's eye does not need to leave AI centre to read the cue.
+
+> **REQ-DISP-PI4-UA-003** A curved red arrow shall be drawn sweeping over the aircraft symbol whenever |roll| > 60°. The arc shall sweep counter-clockwise when right wing is low (roll left to recover) and clockwise when left wing is low (roll right to recover). The arc radius shall be large enough that the glyph reads as a frame around the pitch chevrons rather than colliding with them, and shall scale with the AI region's short dimension.
+
+> **REQ-DISP-PI4-UA-004** Both glyphs shall be drawable simultaneously when both pitch and roll exceed their respective thresholds.
+
+> **REQ-DISP-PI4-UA-005** The PFD shall correctly express attitudes outside ±90° pitch by re-folding them into the renderer's expected Euler chart (pitch ′ = 180° − pitch; roll ′ = roll + 180°), so that over-the-top loops, split-S manoeuvres, and aerobatic inverted flight remain continuously drawable.
+
+> **REQ-DISP-PI4-UA-006** When the terrain mesh is suppressed (no SRTM tiles, or unusual-attitude declutter), the sky/ground polygon shall be drawn from a roll-aware horizon direction vector so that the brown half of the AI always corresponds to the actual ground side, including past ±90° bank.
+
+---
+
+## 9G. Backlight Control
+
+> **REQ-DISP-PI4-BL-001** The PFD shall provide a brightness control (1–10) on the DISPLAY setup screen, persisted across power cycles, that drives whichever backlight transport is available on the host hardware.
+
+> **REQ-DISP-PI4-BL-002** The PFD shall attempt to control panel brightness through, in order of preference: (a) the `/sys/class/backlight/*/brightness` sysfs node, (b) DDC/CI VCP code 0x10 (luminance) over an i2c-N bus matching a DDC-capable HDMI display, (c) no-op if neither is available.
+
+> **REQ-DISP-PI4-BL-003** DDC/CI writes shall be executed on a background thread under a serialising lock so that brightness adjustments do not block the render loop and concurrent writes do not collide on the I²C bus.
+
+> **REQ-DISP-PI4-BL-004** Diagnostic log lines at startup shall report which backlight transport is in use, or that no transport could be selected.
 
 ---
 

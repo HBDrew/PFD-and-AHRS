@@ -2,24 +2,24 @@
 # config.py  –  Hardware pin assignments and system settings
 # ---------------------------------------------------------------------------
 #
-# Wiring guide
-# ============
-#  WT901 AHRS  →  Pico W
-#    VCC       →  3V3(OUT)   pin 36
-#    GND       →  GND        pin 38
-#    TXD       →  GP1        pin 2   (UART0 RX)
-#    RXD       →  GP0        pin 1   (UART0 TX, only needed for config cmds)
+# Pin map (same as the AHRS PCB rev A; matches bench breakouts wired the
+# same way).  Both build paths share this file — the only difference is
+# whether the sensors hang off a single board or four separate breakouts.
 #
-#  GY-NEO6MV2  →  Pico W
-#    VCC       →  VSYS       pin 39  (5 V tolerant; or 3V3 on some modules)
-#    GND       →  GND        pin 38
-#    TXD       →  GP5        pin 7   (UART1 RX)
-#    RXD       →  GP4        pin 6   (UART1 TX, optional – only needed for UBX config)
+#   WT901 AHRS         UART0   GP0 TX / GP1 RX        3V3 @ 36
+#   GY-NEO6MV2 GPS     UART1   GP4 TX / GP5 RX        VSYS @ 39
+#   BME280 baro        I2C1    GP2 SDA / GP3 SCL      addr 0x76, 3V3
+#   SDP31-500Pa        I2C1    GP2 SDA / GP3 SCL      addr 0x21, 3V3
+#   (reserved AOA)     I2C1    GP2 SDA / GP3 SCL      addr 0x22 (future SDP3x)
 #
-# NOTE: UART0 on GP0/GP1 is shared with USB-serial debug.
-#       During normal (non-debug) flight use this is fine.
-#       If you need USB debug simultaneously, move WT901 to GP12/13 (UART0 alt)
-#       and update WT901_TX_PIN / WT901_RX_PIN below.
+# I²C1 is shared across BME280 + SDP31 + (future) AOA sensor — each device
+# has a distinct address so they coexist on the same SDA/SCL pair without
+# arbitration logic.
+#
+# NOTE: UART0 on GP0/GP1 is shared with USB-serial debug.  During normal
+#       (non-debug) flight use this is fine.  If you need USB debug
+#       simultaneously, move WT901 to GP12/13 (UART0 alt) and update
+#       WT901_TX_PIN / WT901_RX_PIN below.
 # ---------------------------------------------------------------------------
 
 # ── WT901 AHRS ──────────────────────────────────────────────────────────────
@@ -56,6 +56,34 @@ BME280_SDA_PIN     = 2      # GP2  (I2C1 SDA)
 BME280_SCL_PIN     = 3      # GP3  (I2C1 SCL)
 BME280_I2C_ADDR    = 0x76   # 0x76 (SDO=GND) or 0x77 (SDO=VCC)
 BME280_QNH_DEFAULT = 1013.25  # hPa – ICAO standard; update via /baro on the display
+
+# ── SDP31-500Pa Differential Pressure (optional – airspeed sensor) ──────────
+# Set SDP31_ENABLE = False on bench builds that don't carry the air-data
+# sensor; the firmware will fall back to GPS groundspeed automatically and
+# the $AHRS packet will report airdata_ok = False.
+#
+# Wiring (I2C1, shared with BME280):
+#   VDD → 3V3(OUT)  GND → GND
+#   SDA → GP2       SCL → GP3
+#   ADDR pin floating → 0x21  (default; 0x22 if pulled to VDD — useful when
+#   pairing a second SDP3x for AOA on the same bus, see AOA-PROBE in
+#   Docs/BUGS_AND_TODO.md)
+#
+# Pneumatic plumbing on the airframe:
+#   "+" port  → pitot   (ram pressure)
+#   "−" port  → static  (cabin/airframe static reference, tee'd into BME280)
+SDP31_ENABLE   = True
+SDP31_I2C_ID   = 1
+SDP31_SDA_PIN  = 2          # shared with BME280 (I2C1 SDA)
+SDP31_SCL_PIN  = 3          # shared with BME280 (I2C1 SCL)
+SDP31_I2C_ADDR = 0x21       # 0x21 default; 0x22 when ADDR pin tied to VDD
+
+# Zero-offset capture at boot.  When True, the firmware records the dp_pa
+# reading observed in the first ~2 s after power-up and subtracts it from
+# subsequent readings — relies on the aircraft being stationary at boot.
+# Disable if the aircraft is already moving at firmware start (in-flight
+# restart).  The display also exposes a manual /sdp_zero endpoint.
+SDP31_AUTO_ZERO_AT_BOOT = True
 
 # ── WT901 lateral-acceleration sign ──────────────────────────────────────────
 # The WT901's ay axis drives the slip/skid ball.  If the ball deflects the

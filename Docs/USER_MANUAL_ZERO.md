@@ -1,6 +1,6 @@
 # AHRS PFD — Pi Zero 2W Pilot's User Manual
 
-**Software version 0.2 · Hardware: Raspberry Pi Pico W + Pi Zero 2W · Display: Waveshare 3.5" DPI LCD (640×480)**
+**Software version 0.3 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP31-500Pa) + Pi Zero 2W · Display: Waveshare 3.5" DPI LCD (640×480)**
 
 *No SVT version — plain horizon background with TAWS alerting*
 
@@ -28,6 +28,7 @@
 16. [Airport Data Download](#16-airport-data-download)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
+19. [AHRS PCB and Air-Data Hardware](#19-ahrs-pcb-and-air-data-hardware)
 
 ---
 
@@ -76,8 +77,8 @@ The bug and its readout button are **colour-coded by data source**:
 
 | Colour | Source |
 |--------|--------|
-| Magenta | GPS groundspeed (GS) — current hardware default |
-| Cyan | IAS sensor — when a pitot/static airspeed transducer is fitted |
+| Cyan | IAS — SDP31-500Pa differential-pressure sensor with BME280 density correction. Default when the AHRS reports `airdata_ok = True`. |
+| Magenta | GPS groundspeed (GS) — fallback when the SDP31 isn't healthy or AIRSPEED SOURCE is forced to GPS GS in AHRS / Sensors. |
 
 ---
 
@@ -149,6 +150,8 @@ A banner appears centred at the top of the display when terrain or an obstacle i
 **TERRAIN CAUTION** (amber, steady) — terrain or obstacle MSL height is within **500 ft** below aircraft altitude.
 
 **PULL UP TERRAIN** (red, 1 Hz flash) — terrain or obstacle MSL height is within **100 ft** below aircraft altitude.
+
+**Low-speed inhibit**: alerts are silenced below **VS0** (default 48 kt). Taxi, takeoff roll and landing rollout don't trip a continuous alert — the alert pipeline only arms above the configured stall speed. (The Pi 4 also adds forward look-ahead and voice callouts on top of this; the Pi Zero variant has neither because it doesn't run an audio stack and the spot-sampled terrain check is adequate for the slower airframes this build typically serves.)
 
 Requires a valid GPS fix and SRTM terrain tiles or obstacle data to be loaded.
 
@@ -342,8 +345,8 @@ Corrects horizon tilt. ±0.5° steps.
 
 | Option | Behaviour |
 |--------|-----------|
-| **GPS GS** | GPS groundspeed. Magenta readout. |
-| **IAS SENSOR** | Pitot/static sensor. Cyan readout. *(Future)* |
+| **IAS SENSOR** | SDP31-500Pa differential pressure + BME280 density correction. Cyan readout. Default when the AHRS reports `airdata_ok`. |
+| **GPS GS** | GPS groundspeed. Magenta readout. Auto fallback when SDP31 is absent / unhealthy. |
 
 ---
 
@@ -570,6 +573,34 @@ All failures revert the moment you toggle back to ON — use them for quick what
 ### Exit
 
 SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is connected the display simply shows stale indications (`NO LINK`). If you're connected to the Pico W AHRS, live data resumes immediately.
+
+---
+
+## 19. AHRS PCB and Air-Data Hardware
+
+The AHRS sensor head is shared with the Pi 4 build — a single PCB carrying the Pico W, WT901 IMU, NEO-6M GPS, BME280 baro and SDP31-500Pa differential-pressure sensor. The Pi Zero 2W consumes the same `$AHRS` packet over USB serial (or SSE over Wi-Fi).
+
+### Pin map (AHRS PCB rev A)
+
+| Function | Pico pin | Pico GP |
+|----------|---------:|--------:|
+| WT901 (UART0 TX/RX) | 1 / 2 | GP0 / GP1 |
+| BME280 + SDP31 (I²C1 SDA/SCL) | 4 / 5 | GP2 / GP3 |
+| NEO-6M (UART1 TX/RX) | 6 / 7 | GP4 / GP5 |
+
+I²C1 carries the BME280 at `0x76`, the SDP31 at `0x21`, and reserves `0x22` for the future AOA twin (see `Docs/BUGS_AND_TODO.md → AOA-PROBE`).
+
+### Speed tape source
+
+With the SDP31 installed and `airdata_ok` reported, the Pi Zero speed tape and bug switch to cyan (IAS) and stop being a re-skin of GPS groundspeed. The numpad entry units don't change — knots in, knots out — but the value now responds to airspeed instead of crab-corrupted ground speed. In wind the tape will read differently from the magenta GPS tick on the heading bar; the difference *is* the wind, and a healthy reading is also visible on the AHRS LINK diagnostics row of the Connectivity screen (`ias_kt` value, `airdata_ok` badge).
+
+### SDP31 range note
+
+The SDP31-500Pa saturates around 55 kt IAS at sea level. The Pi Zero variant typically lives on slow ultralight / experimental airframes (S-21, J-3, etc.) where this is the right range. Faster aircraft want the SDP31-2500Pa swap; see the Pi 4 manual §21 for the longer discussion.
+
+### Recapturing the zero offset
+
+The firmware captures a zero offset 2 s after boot, assuming the aircraft is stationary. For an in-flight reboot or a long ground hold with a temperature swing, recapture from the Pi Zero AHRS / Sensors screen if the **SDP31 ZERO** row is present, or hit `GET http://192.168.4.1/sdp_zero` from any browser on the Pico W AP.
 
 ---
 

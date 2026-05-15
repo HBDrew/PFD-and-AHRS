@@ -1,6 +1,6 @@
 # AHRS PFD — Pi 4 Pilot's User Manual
 
-**Software version 0.4 · Hardware: Raspberry Pi Pico W + Pi 4 (2 GB) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
+**Software version 0.5 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP31-500Pa) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
 
 *Full SVT version — OpenGL vector graphics with 3D terrain rendering*
 
@@ -32,6 +32,9 @@
 16D. [Moving-Map Inset](#16d-moving-map-inset)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
+19. [Audio Alerts](#19-audio-alerts)
+20. [Unusual-Attitude Recovery Cues](#20-unusual-attitude-recovery-cues)
+21. [AHRS PCB and Air-Data Hardware](#21-ahrs-pcb-and-air-data-hardware)
 
 ---
 
@@ -86,8 +89,10 @@ A chevron marker tracks the speed bug. Tap the readout button at the **top** of 
 
 | Colour | Source |
 |--------|--------|
-| Magenta | GPS groundspeed (GS) — current default |
-| Cyan | IAS sensor — when pitot/static is fitted |
+| Cyan | IAS — SDP31-500Pa differential-pressure sensor with BME280 density correction. Default when the air-data path reports `airdata_ok = True`. |
+| Magenta | GPS groundspeed (GS) — fallback when SDP31 is absent, has failed, or AIRSPEED SOURCE is forced to GPS GS in AHRS / Sensors. |
+
+The active source is also surfaced in the AIRSPEED SOURCE row of the AHRS / Sensors menu (§11) and on the speed tape itself as the bug colour. When pulling the IAS feed offline (cap on pitot, low altitude, sensor failure) the tape silently switches to GS — the bug + drum recolour from cyan to magenta so the change is unambiguous.
 
 ---
 
@@ -199,11 +204,27 @@ A short white horizontal bar (16×4 px) sits below the roll pointer's doghouse b
 
 ### Terrain / obstacle proximity alert
 
-**TERRAIN CAUTION** (amber, steady) — terrain or obstacle within **500 ft** below.
+**TERRAIN CAUTION** (amber, steady) — terrain clearance below **500 ft** along the 45-second look-ahead, or an obstacle within the forward wedge below **500 ft** of the aircraft.
 
-**PULL UP TERRAIN** (red, 1 Hz flash) — terrain or obstacle within **100 ft** below.
+**PULL UP TERRAIN** (red, 1 Hz flash) — terrain clearance below **100 ft** along the look-ahead, or an obstacle within the forward wedge below **100 ft**.
 
-Requires GPS fix and SRTM tiles or obstacle data loaded.
+**TERRAIN look-ahead**: the alert isn't fired off your current ground point alone. Each render frame the PFD walks twelve samples along your current GPS ground track for 45 s of flight (≈ 1.2 NM at 100 kt), projects altitude forward at the current VSI, and trips the alert on the worst clearance encountered — same convention EGPWS / TAWS-B uses. The benefit is that you get the banner (and the voice callout) while there's still room to climb, not when you're already in the wall.
+
+**Forward wedge**: obstacle proximity is filtered to a **±25° wedge** around the GPS ground track. A 1500 ft tower abeam or behind the wing won't fire the alert — only obstacles you're actually flying toward. The wedge is wider than the AI's angular FOV so a sloppy bank doesn't unhide a tower you were about to overfly.
+
+**Low-speed inhibit**: alerts (terrain and obstacle, both banners *and* the voice callouts) are silenced below **VS0** (default 48 kt). This kills the nuisance fire during taxi, takeoff roll, and landing rollout where the aircraft is in continuous "ground-impact territory" by design. Sink-rate / bank-angle callouts share the same inhibit.
+
+Requires GPS fix and SRTM tiles (terrain) or FAA obstacle data (obstacles) loaded.
+
+Voice callouts for the same conditions live in §19. The full alert pipeline (banner + voice + on-AI red recovery cues at extreme attitudes) is designed so the pilot gets the same information whether their eyes are on the instruments or on the windscreen.
+
+### Past 60° bank — sky/ground and pitch ladder agreement
+
+At extreme bank the simple sky/ground polygon (used when there is no SRTM tile or when the unusual-attitude declutter has stripped the SVT mesh, see §20) is drawn from a roll-aware horizon **direction vector** rather than a fixed-up horizontal line. Past ±60° this prevents the brown half from sliding across the wrong side of the AI — the sky/ground split now agrees with the pitch ladder all the way to inverted, and the AI no longer flips to "all brown" when rolled past vertical.
+
+### Roll-aware horizon point
+
+The horizon point the SVT camera projects through is rotated with bank so that inverted flight no longer puts the entire SVT inside the brown half of the screen. Combined with the pitch-ladder Euler-chart fix (pitch >90° re-expressed as 180°−pitch with a 180° roll offset; see `normalize_attitude` in `pi4/pfd.py`) the AI stays drawable through over-the-top loops and split-S manoeuvres.
 
 ---
 
@@ -336,7 +357,31 @@ The period and colon keys are useful for entering URLs (e.g. `http://192.168.4.1
 
 ![Display settings screen](../pi4/previews/preview_setup_display.png)
 
-**Speed:** KT / MPH / KPH. **Altitude:** FT / M. **Pressure:** inHg / hPa. **Brightness:** 1–10 steps.
+| Row | Options | Default | Notes |
+|-----|---------|---------|-------|
+| **SPEED UNITS** | KT / MPH / KPH | KT | Speed tape + bug numpad units. |
+| **ALTITUDE** | FT / M | FT | Altitude tape, bug, AGL readout. |
+| **PRESSURE** | inHg / hPa | inHg | Baro setting; numpad title and entry mode follow this. |
+| **BRIGHTNESS** | 1 – 10 | 8 | Backlight level. Routed to the active backlight transport (see below). |
+| **ALERT AUDIO** | OFF / ON | ON | Master mute for the voice-callout pipeline. When OFF, terrain / obstacle / sink-rate / bank-angle callouts are suppressed and any in-flight clip is cut. The visual banners stay on regardless. |
+| **ALERT VOLUME** | 1 – 10 | 8 | Callout volume scale. 0 is effectively muted; 10 is unity. Applied live to the pygame mixer; takes effect on the next callout. |
+| **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §16D. |
+| **MAP RANGE** | 1/2/5/10/20/40/80/160 NM · AUTO | 5 NM | Default inset radius; AUTO fits to the active direct-to. |
+| **SUN POSITION** | FIXED / REAL | REAL | SVT terrain lighting: FIXED uses a SE mid-morning sun; REAL pulls UTC + GPS lat/lon through the NOAA solar formulas. |
+
+### Backlight transports
+
+`BRIGHTNESS` writes to whichever backlight control is wired:
+
+1. **sysfs** — `/sys/class/backlight/rpi_backlight/brightness` (Waveshare 3.5" DPI; some HDMI panels with backlight pads on the DSI bus expose the same node).
+2. **DDC/CI** — `ddcutil` on the i2c-N bus matching a panel that speaks VESA MCCS. The ROADOM 7" / 10" HDMI panels fall into this bucket. Writes are background-threaded and serialised so a brightness drag never blocks the render loop.
+3. **None** — neither found; the slider still works in the UI but won't change panel output. Diagnostic logs print `[BL] No backlight control available` at startup.
+
+The Pi 4 setup script installs `ddcutil` and pre-loads the `i2c-dev` module. If brightness control silently does nothing on an HDMI panel, run `sudo ddcutil detect` to confirm the panel responds and that `Brightness (10)` is in its VCP feature list.
+
+### Alert volume / mute persistence
+
+`ALERT AUDIO` and `ALERT VOLUME` persist with the rest of the display settings in `data/settings.json` and reload at boot, so the speaker level you set on the bench is what powers up in the cockpit. The startup self-test fires a one-shot `"terrain"` callout at boot (unless ALERT AUDIO is OFF) so you can confirm the speaker is alive without waiting for a real alert.
 
 ---
 
@@ -354,7 +399,8 @@ Seven rows on this screen, each independent:
 | **ORIENTATION** | FWD / LEFT / RIGHT / AFT | RIGHT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. |
 | **MOUNTING** | NORMAL / INVERTED | NORMAL | Whether the AHRS is right-side-up or upside-down. Independent of orientation. |
 | **HEADING SOURCE** | MAG / TRK / AUTO | AUTO | Magnetometer, GPS ground track (via complementary filter), or auto-select (TRK in motion, MAG when stationary). |
-| **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | GPS GS | GPS ground speed (default); IAS sensor is greyed-out until pitot/static is fitted. |
+| **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | IAS SENSOR | IAS from the SDP31-500Pa differential-pressure sensor (default when `airdata_ok`). Forced fallback to GPS groundspeed when the sensor is unhealthy or the pilot pins it manually. |
+| **SDP31 ZERO** | CAPTURE button | (idle) | Capture the current differential-pressure reading as the in-flight zero offset. Aircraft must be stationary with no airflow over the pitot. Status row shows `LAST ZERO h:mm ago`. |
 
 ### Mounting and orientation
 
@@ -838,6 +884,180 @@ SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is co
 
 ---
 
+## 19. Audio Alerts
+
+The PFD ships with an EGPWS-style voice-callout pipeline. Six short clips are generated once at first boot using `espeak`, cached in `~/.pfd_audio/`, and played through the SDL/ALSA mixer pinned to the HDMI panel speakers (the ROADOM panels carry the audio out alongside HDMI; the Waveshare 3.5" DPI has no speaker pad so audio is silent on that variant).
+
+### Callouts and triggers
+
+| Callout | Voice | Trigger | Band |
+|---------|-------|---------|------|
+| **Terrain** | `Terrain. Terrain.` | Look-ahead clearance < 500 ft and ≥ 100 ft | Caution |
+| **Obstacle** | `Obstacle. Obstacle.` | Obstacle in the forward wedge with clearance < 500 ft and ≥ 100 ft | Caution |
+| **Sink rate** | `Sink rate. Sink rate.` | Descent rate exceeds an AGL-scaled curve (1500 fpm at the surface → 5000 fpm at 2500 ft AGL), below 2500 ft AGL. GPWS Mode 1. | Caution |
+| **Terrain — pull up** | `Terrain. Terrain. Pull up. Pull up.` | Look-ahead clearance < 100 ft | Warning |
+| **Obstacle — pull up** | `Obstacle. Obstacle. Pull up. Pull up.` | Obstacle in the forward wedge with clearance < 100 ft | Warning |
+| **Bank angle** | `Bank angle. Bank angle.` | Roll > 60° absolute, AHRS healthy, sim not paused | Attention |
+
+Source-identifying phrasing follows real EGPWS / TAWS-B convention: at every band the callout names what the airplane is about to hit, so the pilot doesn't have to guess from a generic "TERRAIN" whether to climb or to scan for a tower. The PULL UP suffix is reserved for the warning band — the action verb only fires when an immediate input is required.
+
+### Priority and rate limits
+
+When several conditions trip at once, the audio pipeline plays only the highest-priority phrase:
+
+1. Pull-up warnings (obstacle, then terrain) — life-critical action cue.
+2. Sink rate — root cause that's eroding clearance.
+3. Proximity cautions (obstacle, then terrain).
+
+Each callout is independently rate-limited: warnings repeat no faster than every 4 s, cautions every 3 s. The pipeline doesn't queue or stack — a fresh trigger during a clip's hold-off window is silently dropped. This mirrors the cadence on certified avionics so the cockpit doesn't sound like a slot machine in a busy approach.
+
+### Master mute and volume
+
+The full pipeline is gated by ALERT AUDIO (master) and ALERT VOLUME (1–10) on the DISPLAY setup screen (§10). Both persist in `data/settings.json`. Muting cuts in-flight clips immediately. Volume changes take effect on the next callout (the in-flight clip plays through at the previous level).
+
+### Self-test
+
+On startup, with audio enabled, the pipeline fires one `Terrain. Terrain.` callout as a confirmation that the speaker and mixer chain are live. If you don't hear it at power-up and ALERT AUDIO is ON, see Troubleshooting → No audio at boot below.
+
+### Troubleshooting — no audio at boot
+
+```bash
+sudo journalctl -u pfd.service -n 100 | grep '\[audio\]'
+```
+
+The startup log lines tell you what the mixer ended up doing:
+
+- `[audio] SDL driver in use: alsa` — expected. The audio pipeline forces ALSA before pygame imports so the panel's `~/.asoundrc` redirect actually applies.
+- `[audio] mixer state: (frequency, size, channels)` — confirms `pygame.mixer.get_init()` returned a populated tuple.
+- `[audio] 6 callouts ready: bank, obstacle, obstacle_pull_up, sink_rate, terrain, terrain_pull_up` — every WAV cached successfully.
+- `[audio] startup self-test: chan=<Channel>  busy=1  length=1.30s` — the test ping actually reached the device. If `busy=0` you have the silent-callback bug — typically a stale `/etc/asoundrc` pointing at an unplugged HDMI sink.
+- `[audio] espeak not installed` — run `sudo apt install espeak`, then reboot to let the callouts regenerate.
+
+If audio is dead but visual alerts work, the master mute is the right fallback — set ALERT AUDIO to OFF until you can replug or repair the speaker, and the pipeline becomes a no-op without affecting the rest of the PFD.
+
+---
+
+## 20. Unusual-Attitude Recovery Cues
+
+At **|pitch| > 30°** or **|roll| > 60°** the PFD enters an unusual-attitude declutter mode. The SVT mesh, water mask, airport / runway / obstacle / direct-to overlays all come off so the pilot sees nothing but solid sky/ground + the pitch ladder + a pair of red recovery glyphs centred on the aircraft symbol. The same triggers that fire the visual cues also fire the bank-angle voice callout (§19).
+
+### Pitch-recovery chevron stack
+
+A short stack of three filled red chevrons centred on the ownship.
+
+- **Nose high (pitch > +30°)** — chevrons point **down**. Push to lower the nose; the chevrons disappear once pitch returns inside ±30°.
+- **Nose low (pitch < −30°)** — chevrons point **up**. Pull.
+
+The stack is sized to ~4.5 % of the AI's short dimension so it reads at a glance without occluding the pitch ladder behind it. The midline of the stack sits exactly on the ownship, so during a simultaneous pitch + bank recovery the pilot's eye doesn't have to leave the centre of the AI.
+
+### Roll-recovery curved arrow
+
+A curved arrow sweeps over the ownship indicating the rotational direction of needed roll input.
+
+- **Right wing low (roll > +60°)** — arc sweeps left (counter-clockwise) with the arrowhead pointing further along that direction. Roll left.
+- **Left wing low (roll < −60°)** — arc mirrors to the right.
+
+Arc radius is large enough that the arrow always reads as a frame around the pitch chevrons rather than colliding with them. Both glyphs can appear simultaneously when both pitch and bank are extreme.
+
+### Recovery exit
+
+The declutter ends — and the SVT, overlays, and direct-to trace come back — as soon as pitch returns inside ±30° AND roll inside ±60°. There is no hysteresis; the chevrons / arc disappear cleanly the moment the airplane is back inside the normal envelope.
+
+### Past-vertical handling
+
+When the AHRS reports pitch outside ±90° (over-the-top loop, split-S, aerobatic inverted flight), `normalize_attitude` in `pi4/pfd.py` re-expresses the pitch as `180° − pitch` and rotates roll by 180° before the renderer touches it. The physical attitude is unchanged; the Euler chart is just folded back into the range the AI math expects. Combined with the roll-aware horizon point (§4) the AI remains drawable end-to-end through inverted flight, with the recovery chevrons / arc continuing to point toward the correct corrective input.
+
+---
+
+## 21. AHRS PCB and Air-Data Hardware
+
+The AHRS sensor head is now a single PCB (rev A) that integrates the Pico W, IMU, GPS, baro and the new SDP31-500Pa differential-pressure sensor on one board. The bench-breakout build path is documented in the README appendix and remains supported — same firmware, same wiring map.
+
+### Block diagram
+
+```
++----------------------+   I²C1 (GP2 SDA / GP3 SCL)   +----------------+
+|                      |<------------------------------>|  BME280  0x76  |  ← static port + OAT
+|                      |<------------------------------>|  SDP31   0x21  |  ← pitot − static
+|     Pico W           |                                +----------------+
+|     RP2040 +         |
+|     CYW43439 WiFi    |   UART0 (GP0/GP1, 9600 baud)
+|                      |<------------------------------>|  WT901    9-DOF IMU
+|                      |   UART1 (GP4/GP5, 9600 baud)
+|                      |<------------------------------>|  NEO-6M   GPS
+|                      |
+|     USB-C (debug +   |   stdio / serial CDC to Pi 4
+|     5 V from         |
+|     aircraft bus)    |
++----------------------+
+```
+
+### Pin map (rev A)
+
+| Function | Pico pin | Pico GP | Direction |
+|----------|---------:|--------:|-----------|
+| WT901 RX (Pico → WT901) | 1 | GP0 | TX |
+| WT901 TX (Pico ← WT901) | 2 | GP1 | RX |
+| BME280 + SDP31 SDA | 4 | GP2 | I²C1 SDA |
+| BME280 + SDP31 SCL | 5 | GP3 | I²C1 SCL |
+| NEO-6M RX (Pico → GPS, UBX config only) | 6 | GP4 | TX |
+| NEO-6M TX (Pico ← GPS) | 7 | GP5 | RX |
+| LED (heartbeat) | onboard | LED | — |
+
+I²C1 is shared across the BME280 (`0x76`), the SDP31 (`0x21` by default), and the AOA-probe pad reserved for the next board spin (`0x22`; second SDP3x — see AOA-PROBE in `Docs/BUGS_AND_TODO.md`). Each device has a distinct 7-bit address so they coexist without arbitration logic.
+
+### SDP31-500Pa wiring + pneumatic plumbing
+
+Electrical:
+
+- **VDD** → 3V3(OUT), pin 36
+- **GND** → GND, pin 38
+- **SDA** → GP2 (shared with BME280), pin 4
+- **SCL** → GP3 (shared with BME280), pin 5
+- **ADDR** → floating (`0x21`); tied to VDD on the AOA twin (`0x22`)
+
+Pneumatic:
+
+- **`+` port** → pitot tube (ram pressure)
+- **`−` port** → static port. Tee the static reference into the BME280's open port so both sensors see the same static pressure.
+
+The SDP31 measures bidirectional differential pressure on the −500 … +500 Pa range. Normal-flight IAS at sea level is roughly:
+
+| IAS | dp (Pa) |
+|----:|--------:|
+| 30 kt | ~143 |
+| 60 kt | ~568 (just over full-scale) |
+| 80 kt | ~1010 (off-scale; saturates to ~500 → reads ~55 kt) |
+
+The 500 Pa range is well-matched for J-3 / S-21 / similar slow ultralight cruise. **For aircraft cruising above ~55 kt IAS at sea level the SDP31-500Pa will saturate**; an SDP31-2500Pa swap (same footprint, same driver) is the next-rev path for faster airframes. The firmware reports the raw `dp_pa` field on the SSE / USB packet, so a saturated reading is visible in the connectivity diagnostics row (§12) — `dp_pa` pinned at +500 with a non-zero IAS means the sensor is at top of scale.
+
+### Air-data outputs
+
+The firmware computes the full pitot-static set every sensor tick and broadcasts these fields on the `$AHRS` packet:
+
+| Field | Meaning | Units |
+|-------|---------|-------|
+| `dp_pa` | Raw differential pressure (pitot − static), zero-offset applied | Pa |
+| `ias_kt` | Indicated airspeed against ρ₀ = 1.225 kg/m³ | knots |
+| `tas_kt` | True airspeed (density-corrected via BME280 P + T) | knots |
+| `oat_c` | Outside air temperature from BME280 | °C |
+| `dens_alt_ft` | Density altitude (inverse ISA hypsometric) | feet |
+| `wind_dir` | Wind direction in meteorological convention (degrees *from*) | degrees |
+| `wind_kt` | Wind speed magnitude | knots |
+| `airdata_ok` | `True` while SDP31 + BME280 are both delivering fresh data (5 s window) | bool |
+
+`wind_dir` / `wind_kt` are computed by the wind triangle: with TAS + AHRS heading + GPS GS + GPS track, `wind = ground − air`. Result needs both an SDP31 reading and a GPS fix; when either drops, the firmware holds the last published wind value and the display surfaces the state via `airdata_ok` / `gps_ok`.
+
+### Zero-offset capture
+
+A small temperature-driven offset is normal at boot. The firmware captures a zero offset 2 s after start (`SDP31_AUTO_ZERO_AT_BOOT = True` in `firmware/config.py`) which assumes the aircraft is stationary. For an in-flight reboot or a long ground hold with a temperature swing, recapture the zero from the AHRS / Sensors screen (§11) — point the airplane into wind, cover the pitot, tap **SDP31 ZERO → CAPTURE**. The capture also has a firmware endpoint at `GET http://192.168.4.1/sdp_zero` for scripted bench cal.
+
+### Power budget
+
+Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pico W + WT901 + NEO-6M + BME280 + SDP31) and is powered through the Pico's USB-C from the aircraft bus. The SDP31 adds ~6 mA over the previous bench-breakout build; not measurable in normal operation.
+
+---
+
 ## Quick-Reference Card
 
 | Action | How |
@@ -869,6 +1089,9 @@ SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is co
 | Check WiFi the Pi is on | Setup → CONNECTIVITY (STATUS row shows SSID) |
 | Download nearest terrain | Setup → SYSTEM → TERRAIN → DOWNLOAD CURRENT AREA |
 | Brightness | Setup → Display → − / + |
+| **Mute / unmute audio** | Setup → DISPLAY → ALERT AUDIO OFF / ON |
+| **Set callout volume** | Setup → DISPLAY → ALERT VOLUME − / + |
+| **Recapture SDP31 zero** | Setup → AHRS / SENSORS → SDP31 ZERO → CAPTURE (aircraft stationary, pitot capped) |
 | Start sim | Setup → System → FLIGHT SIMULATOR → START |
 | SIM controls | Tap SIM watermark |
 | Exit sim | SIM controls → EXIT SIM |

@@ -233,10 +233,35 @@ mag cal also lands, the iPhone compass and the AHRS compass will both
 converge on the GPS track and stay aligned.
 
 ### SDP31-AIRDATA  SDP31-500Pa airspeed driver + air-data computer
-Status: **OPEN — board lays out the SDP31 alongside WT901, BME280, GPS**
+Status: **FIRMWARE LANDED — waiting on hardware install + in-flight calibration**
 Target: new `firmware/sdp31.py`, additions to `firmware/main.py`,
 new fields in the `$AHRS,{json}` packet consumed by `pi4/serial_link`
 and the iPhone SSE client.
+Resolution (firmware side): `firmware/sdp31.py` ships the Sensirion
+continuous-mode I²C driver (CRC-validated 9-byte frames, soft reset
+on init, manual + auto zero offset). `firmware/airdata.py` ships IAS
+(against ρ₀), TAS (density-corrected via BME280), density altitude
+(inverse ISA), and the wind-triangle solution. `firmware/main.py`
+inits the SDP31 from `SDP31_ENABLE` in `config.py`, populates the
+new `ias_kt` / `tas_kt` / `dp_pa` / `oat_c` / `dens_alt_ft` /
+`wind_dir` / `wind_kt` / `airdata_ok` fields in `state`, and
+broadcasts them on both the SSE event stream and the `$AHRS,…`
+USB serial line. `web_server.py` adds a `/sdp_zero` HTTP endpoint
+for in-flight zero re-capture. Documentation: REQUIREMENTS_AHRS
+gains §7B Air-Data Computer (REQ-AHRS-AIR-001 … 008); USER_MANUAL_PI4
+§21 covers wiring + plumbing + range; the speed-tape source switch
+is documented in §2 of both pilot manuals.
+Still open:
+  - **Hardware install + first-flight cal.** Bench the SDP31 with
+    a hand pump (0–500 Pa) to confirm `dp_pa → ias_kt` math; then
+    plumb pitot + static and validate IAS against GS at cruise in
+    near-zero wind.
+  - **SDP31-2500Pa swap path** for airframes that cruise above ~55 kt
+    IAS at sea level — same I²C address, same driver, same `dp_pa`
+    field, just trade off resolution for range.
+  - **Stall-warn enunciator** below configured Vs1 — visual + voice
+    callout to make the existing speed-tape colour band
+    authoritative. Pairs with REQ-DISP-PI4-AUD-001.
 Context: the new sensor board carries a Sensirion SDP31-500Pa
 differential-pressure sensor — pitot pressure on one port, static on
 the other.  With the existing BME280 (static pressure + OAT) we get

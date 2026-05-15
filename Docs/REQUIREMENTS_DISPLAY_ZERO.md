@@ -74,7 +74,7 @@ The airspeed tape occupies the left side of the PFD. It presents the current spe
 
 > **REQ-DISP-ZERO-SPD-006** The pilot shall be able to set the speed bug value by tapping the speed readout button at the top of the tape, which shall open a numpad entry overlay for direct numeric input.
 
-> **REQ-DISP-ZERO-SPD-007** The airspeed source — GPS groundspeed or IAS sensor — shall be selectable from within the AHRS / Sensors sub-menu of the setup interface.
+> **REQ-DISP-ZERO-SPD-007** The airspeed source — GPS groundspeed or IAS sensor — shall be selectable from within the AHRS / Sensors sub-menu of the setup interface. The default selection shall be `IAS SENSOR` (consuming the AHRS `ias_kt` field produced by the SDP31-500Pa air-data path), with automatic fallback to `GPS GS` when the AHRS reports `airdata_ok = False`. The tape, drum, and bug shall recolour from cyan (IAS) to magenta (GS) when the active source falls back.
 
 ---
 
@@ -151,6 +151,8 @@ The display unit implements a basic terrain awareness and warning function using
 > **REQ-DISP-ZERO-TAWS-004** SRTM terrain elevation tiles shall be downloadable by geographic region from within the PFD user interface, without requiring the use of any external computer tools or command-line utilities.
 
 > **REQ-DISP-ZERO-TAWS-005** FAA Digital Obstacle File data shall be downloadable from within the PFD user interface. Downloaded obstacle data shall be considered expired after 28 days from the download date, and the display shall indicate expired obstacle data via the `EXP OBS` status badge.
+
+> **REQ-DISP-ZERO-TAWS-006** Terrain and obstacle proximity alerting shall be inhibited when ground speed is below the pilot-configured VS0 stall speed, to silence false fires during taxi, takeoff roll, and landing rollout. The Pi Zero 2W variant does not implement the Pi 4 voice-callout pipeline, forward-wedge obstacle filtering, or ground-track look-ahead refinements — alert evaluation uses the spot terrain sample at the aircraft's current GPS position.
 
 ---
 

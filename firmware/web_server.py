@@ -243,6 +243,22 @@ async def _handle_magcal(writer, params, state):
     await writer.wait_closed()
 
 
+async def _handle_sdp_zero(writer, state):
+    """GET /sdp_zero → flag the sensor_loop to capture a new SDP31 zero
+    offset on the next tick.  Use this after installation, or after a
+    temperature swing during a long ground hold, to null out any drift
+    in the differential-pressure reading.  Aircraft must be stationary
+    with no airflow into the pitot tube."""
+    state['_sdp_zero'] = True
+    body = b'OK'
+    await _send_headers(writer, '200 OK', 'text/plain',
+                        f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+    writer.write(body)
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def _handle_404(writer):
     body = b'Not Found'
     await _send_headers(writer, '404 Not Found', 'text/plain',
@@ -323,6 +339,8 @@ async def _client_handler(reader, writer, state):
         await _handle_trim(writer, params, state)
     elif path == '/magcal':
         await _handle_magcal(writer, params, state)
+    elif path == '/sdp_zero':
+        await _handle_sdp_zero(writer, state)
     else:
         await _serve_static(writer, path.lstrip('/'))
 
