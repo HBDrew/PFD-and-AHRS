@@ -1731,13 +1731,15 @@ def _alert_radius_nm(speed_kt: float) -> float:
     return max(ALERT_RADIUS_MIN_NM, min(ALERT_RADIUS_MAX_NM, dyn))
 
 
-def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok):
+def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok, vso_kt=VS0):
     """
     Compute the current terrain/obstacle alert level and store it globally.
     Called once per render frame with current aircraft position and airspeed.
       0 — no alert
       1 — CAUTION  (clearance < TERRAIN_CAUTION_FT or obstacle < OBSTACLE_CAUTION_FT)
       2 — WARNING  (clearance < TERRAIN_WARNING_FT or obstacle < OBSTACLE_WARNING_FT)
+    vso_kt is the user-set stall speed (flaps down) from the flight profile;
+    alerts are inhibited below this groundspeed to silence taxi/rollout nuisance.
     """
     global _terrain_alert_level
     if not gps_ok:
@@ -1745,7 +1747,7 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok):
         return
 
     # Inhibit terrain/obstacle alerts below Vso (taxi, rollout, etc.)
-    if speed_kt < VS0:
+    if speed_kt < vso_kt:
         _terrain_alert_level = 0
         return
 
@@ -8138,7 +8140,8 @@ def render(surf, demo_mode, connected, data_stale=False):
             _SVT_GL_AVAILABLE = False
 
     # 0. Compute terrain/obstacle alert level for this frame
-    _update_terrain_alert(lat, lon, alt, speed, gps_ok)
+    _update_terrain_alert(lat, lon, alt, speed, gps_ok,
+                          vso_kt=fp.get("vs0", VS0))
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground.
     # Shared-GL composite path renders sky+terrain directly into the default

@@ -128,6 +128,27 @@
   .trim-lbl      { color:rgba(180,210,255,.85); font:bold 12px monospace; min-width:48px; }
   .trim-val      { color:#fff; font:bold 14px monospace; min-width:52px; text-align:right; }
 
+  /* ── V-speeds panel ── */
+  #vspeeds-panel {
+    display:none;
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,.92);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:20; font-family:monospace;
+    max-height:70vh; overflow-y:auto;
+  }
+  #vspeeds-panel p { color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px; }
+  .vspd-row    { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .vspd-lbl    { color:rgba(180,210,255,.85); font:bold 12px monospace; min-width:48px; }
+  .vspd-name   { color:rgba(200,220,255,.75); font:11px monospace; flex:1; }
+  .vspd-edit   {
+    background:#0a1a30; color:#fff; border:1px solid #3a6aaf;
+    border-radius:4px; padding:8px 12px; font:bold 14px monospace;
+    min-width:72px; text-align:right; cursor:pointer;
+    -webkit-user-select:none; user-select:none; touch-action:manipulation;
+  }
+  .vspd-edit:active { background:#1a4a80; }
+
   /* ── Heading-mode panel ── */
   #hdg-panel {
     display:none;
@@ -246,6 +267,7 @@
   <button class="setup-btn" onclick="openTerrainMenu()">⬇ TERRAIN</button>
   <button class="setup-btn" onclick="openBaroMenu()">📊 BAROMETER</button>
   <button class="setup-btn" onclick="openTrimMenu()">✈ TRIM</button>
+  <button class="setup-btn" onclick="openVspeedsMenu()">⚙ V-SPEEDS</button>
   <button class="setup-btn" onclick="openMagCalPanel()">🧲 MAG CAL</button>
   <button class="setup-btn" onclick="openHdgMenu()">🧭 HEADING</button>
   <button class="setup-btn" onclick="openSensorMenu()">📡 SENSORS</button>
@@ -358,6 +380,15 @@
     </button>
     <button class="trn-btn" onclick="resetAllTrims()">&#8635; Reset All</button>
     <button class="trn-btn" onclick="closeTrimPanel()">&#x2715; Close</button>
+  </div>
+</div>
+
+<div id="vspeeds-panel">
+  <p>V-speeds (always kt). Tap a value to edit. Terrain alerts inhibit below Vso.</p>
+  <div id="vspeeds-list"></div>
+  <div class="trn-btns" style="margin-top:6px">
+    <button class="trn-btn" onclick="resetVspeeds()">&#8635; Reset Defaults</button>
+    <button class="trn-btn" onclick="closeVspeedsPanel()">&#x2715; Close</button>
   </div>
 </div>
 
@@ -1194,31 +1225,63 @@ const bugPanel = document.getElementById('bug-panel');
 const bugInput = document.getElementById('bug-input');
 let bugEditTarget = null;  // 'spd_bug', 'alt_bug', or 'hdg_bug'
 
-function openBugPanel(target) {
-  bugEditTarget = target;
-  const titles = { spd_bug: 'Edit Speed Bug', alt_bug: 'Edit Altitude Bug', hdg_bug: 'Edit Heading Bug' };
-  const labels = { spd_bug: 'SPD', alt_bug: 'ALT', hdg_bug: 'HDG' };
+// V-speed metadata: label, descriptive name (for the v-speeds panel).
+const VSPD_META = [
+  { key: 'vs0', lbl: 'VS0', name: 'Stall, flaps down' },
+  { key: 'vs1', lbl: 'VS1', name: 'Stall, clean'      },
+  { key: 'vfe', lbl: 'VFE', name: 'Max flaps extended'},
+  { key: 'vno', lbl: 'VNO', name: 'Max structural cruise' },
+  { key: 'vne', lbl: 'VNE', name: 'Never exceed'      },
+  { key: 'va',  lbl: 'VA',  name: 'Maneuvering'       },
+  { key: 'vy',  lbl: 'VY',  name: 'Best rate of climb'},
+  { key: 'vx',  lbl: 'VX',  name: 'Best angle of climb' },
+];
+const VSPD_KEYS = VSPD_META.map(m => m.key);
 
-  document.getElementById('bug-panel-title').textContent = titles[target];
-  document.getElementById('bug-panel-label').textContent = labels[target];
-  const currentVal = B[target];
+function openBugPanel(target, returnTo) {
+  bugEditTarget = target;
+  bugReturnPanel = returnTo || null;
+  const bugTitles = { spd_bug: 'Edit Speed Bug', alt_bug: 'Edit Altitude Bug', hdg_bug: 'Edit Heading Bug' };
+  const bugLabels = { spd_bug: 'SPD', alt_bug: 'ALT', hdg_bug: 'HDG' };
+
+  let title, label, currentVal;
+  if (VSPD_KEYS.includes(target)) {
+    const meta = VSPD_META.find(m => m.key === target);
+    title = 'Edit ' + meta.lbl + ' (kt)';
+    label = meta.lbl;
+    currentVal = V[target];
+  } else {
+    title = bugTitles[target];
+    label = bugLabels[target];
+    currentVal = B[target];
+  }
+
+  document.getElementById('bug-panel-title').textContent = title;
+  document.getElementById('bug-panel-label').textContent = label;
   // Input starts empty so the first digit replaces the old value without
-  // needing a backspace. The current bug stays visible as the placeholder,
-  // and bugNumpadEnter on an empty buffer just closes without changing B.
+  // needing a backspace. The current value stays visible as the placeholder,
+  // and bugNumpadEnter on an empty buffer just closes without changing state.
   bugInput.value = '';
   bugInput.placeholder = currentVal != null ? Math.round(currentVal).toString() : '---';
   bugPanel.style.display = 'block';
   bugInput.focus();
 }
 
+// When set, closing the bug numpad (cancel or save) re-opens this panel.
+let bugReturnPanel = null;
+
 function closeBugPanel() {
   bugPanel.style.display = 'none';
   bugEditTarget = null;
   bugInput.value = '';
+  if (bugReturnPanel) {
+    bugReturnPanel.style.display = 'block';
+    bugReturnPanel = null;
+  }
 }
 
 function bugNumpadKey(digit) {
-  const maxChars = bugEditTarget === 'spd_bug' ? 3 : bugEditTarget === 'alt_bug' ? 5 : 3;
+  const maxChars = bugEditTarget === 'alt_bug' ? 5 : 3;
   if (bugInput.value.length < maxChars) {
     bugInput.value += digit;
   }
@@ -1250,11 +1313,56 @@ function bugNumpadEnter() {
     finalVal = Math.max(-1500, Math.min(60000, Math.round(numVal / 100) * 100));
   } else if (bugEditTarget === 'hdg_bug') {
     finalVal = ((numVal % 360) + 360) % 360;
+  } else if (VSPD_KEYS.includes(bugEditTarget)) {
+    finalVal = Math.max(1, Math.min(500, Math.round(numVal)));
   }
 
-  B[bugEditTarget] = finalVal;
-  localStorage.setItem('bugs', JSON.stringify(B));
+  if (VSPD_KEYS.includes(bugEditTarget)) {
+    V[bugEditTarget] = finalVal;
+    localStorage.setItem('vspeeds', JSON.stringify(V));
+    refreshVspeedsPanel();
+  } else {
+    B[bugEditTarget] = finalVal;
+    localStorage.setItem('bugs', JSON.stringify(B));
+  }
   closeBugPanel();
+}
+
+// ── V-speeds panel ────────────────────────────────────────────────────────
+const vspeedsPanel = document.getElementById('vspeeds-panel');
+
+function openVspeedsMenu() {
+  closeSetupMenu();
+  refreshVspeedsPanel();
+  vspeedsPanel.style.display = 'block';
+}
+
+function closeVspeedsPanel() {
+  vspeedsPanel.style.display = 'none';
+}
+
+function refreshVspeedsPanel() {
+  const list = document.getElementById('vspeeds-list');
+  list.innerHTML = VSPD_META.map(m =>
+    `<div class="vspd-row">
+       <span class="vspd-lbl">${m.lbl}</span>
+       <span class="vspd-name">${m.name}</span>
+       <button class="vspd-edit" onclick="openVspeedEdit('${m.key}')">${V[m.key]} kt</button>
+     </div>`
+  ).join('');
+}
+
+function openVspeedEdit(key) {
+  // Hide the v-speeds panel while the numpad is up so they don't overlap;
+  // closeBugPanel re-opens it via bugReturnPanel on close/save.
+  vspeedsPanel.style.display = 'none';
+  openBugPanel(key, vspeedsPanel);
+}
+
+function resetVspeeds() {
+  Object.assign(V, V_DEFAULTS);
+  localStorage.setItem('vspeeds', JSON.stringify(V));
+  refreshVspeedsPanel();
 }
 
 // ── Unit preferences (persist across sessions) ─────────────────────────────
@@ -1266,9 +1374,8 @@ let qnhUnit   = localStorage.getItem('qnhUnit')   || 'hpa'; // 'hpa' | 'inhg'
 function toDisplaySpd(kt)  { return speedUnit === 'mph' ? kt * 1.15078 : kt; }
 function toDisplayQNH(hpa) { return qnhUnit  === 'inhg' ? hpa * HPA_TO_INHG : hpa; }
 
-// V-speeds (kt, always).  Defaults match Cessna 172S POH.  Edits to these
-// will eventually come from a flight-profile UI; for now they can be
-// overridden via localStorage['vspeeds'] as a JSON blob.
+// V-speeds (kt, always).  Defaults match Cessna 172S POH.  Edited from the
+// SETUP → V-SPEEDS menu; persisted as JSON in localStorage['vspeeds'].
 const V_DEFAULTS = { vs0:48, vs1:55, vfe:85, vno:129, vne:163, va:105, vy:74, vx:62 };
 let V = Object.assign({}, V_DEFAULTS);
 try { Object.assign(V, JSON.parse(localStorage.getItem('vspeeds') || '{}')); }
@@ -1294,6 +1401,8 @@ function updateTerrainAlert() {
   if (now - TAWS.lastCheckMs < 200) return;
   TAWS.lastCheckMs = now;
   if (!D.fix || D.fix === 0) { TAWS.level = 0; return; }
+  // Inhibit alerts below user-set Vso (taxi, rollout, etc.)
+  if (D.speed < V.vs0) { TAWS.level = 0; return; }
   if (typeof Terrain === 'undefined' || !Terrain.elevationAt) return;
   const elevM = Terrain.elevationAt(D.lat, D.lon);
   if (elevM === null || elevM === undefined || !isFinite(elevM)) {
