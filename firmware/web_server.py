@@ -244,7 +244,7 @@ async def _handle_magcal(writer, params, state):
 
 
 async def _handle_sdp_zero(writer, state):
-    """GET /sdp_zero → flag the sensor_loop to capture a new SDP31 zero
+    """GET /sdp_zero → flag the sensor_loop to capture a new SDP33 zero
     offset on the next tick.  Use this after installation, or after a
     temperature swing during a long ground hold, to null out any drift
     in the differential-pressure reading.  Aircraft must be stationary

@@ -1,6 +1,6 @@
 # AHRS PFD — Pi 4 Pilot's User Manual
 
-**Software version 0.5 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP31-1500Pa) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
+**Software version 0.5 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP33-1500Pa) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
 
 *Full SVT version — OpenGL vector graphics with 3D terrain rendering*
 
@@ -89,8 +89,8 @@ A chevron marker tracks the speed bug. Tap the readout button at the **top** of 
 
 | Colour | Source |
 |--------|--------|
-| Cyan | IAS — SDP31-1500Pa differential-pressure sensor with BME280 density correction. Default when the air-data path reports `airdata_ok = True`. |
-| Magenta | GPS groundspeed (GS) — fallback when SDP31 is absent, has failed, or AIRSPEED SOURCE is forced to GPS GS in AHRS / Sensors. |
+| Cyan | IAS — SDP33-1500Pa differential-pressure sensor with BME280 density correction. Default when the air-data path reports `airdata_ok = True`. |
+| Magenta | GPS groundspeed (GS) — fallback when SDP33 is absent, has failed, or AIRSPEED SOURCE is forced to GPS GS in AHRS / Sensors. |
 
 The active source is also surfaced in the AIRSPEED SOURCE row of the AHRS / Sensors menu (§11) and on the speed tape itself as the bug colour. When pulling the IAS feed offline (cap on pitot, low altitude, sensor failure) the tape silently switches to GS — the bug + drum recolour from cyan to magenta so the change is unambiguous.
 
@@ -403,8 +403,8 @@ Seven rows on this screen, each independent:
 | **ORIENTATION** | FWD / LEFT / RIGHT / AFT | RIGHT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. |
 | **MOUNTING** | NORMAL / INVERTED | NORMAL | Whether the AHRS is right-side-up or upside-down. Independent of orientation. |
 | **HEADING SOURCE** | MAG / TRK / AUTO | AUTO | Magnetometer, GPS ground track (via complementary filter), or auto-select (TRK in motion, MAG when stationary). |
-| **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | IAS SENSOR | IAS from the SDP31-1500Pa differential-pressure sensor (default when `airdata_ok`). Forced fallback to GPS groundspeed when the sensor is unhealthy or the pilot pins it manually. |
-| **SDP31 ZERO** | CAPTURE button | (idle) | Capture the current differential-pressure reading as the in-flight zero offset. Aircraft must be stationary with no airflow over the pitot. Status row shows `LAST ZERO h:mm ago`. |
+| **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | IAS SENSOR | IAS from the SDP33-1500Pa differential-pressure sensor (default when `airdata_ok`). Forced fallback to GPS groundspeed when the sensor is unhealthy or the pilot pins it manually. |
+| **SDP ZERO** | CAPTURE button | (idle) | Capture the current differential-pressure reading as the in-flight zero offset. Aircraft must be stationary with no airflow over the pitot. Status row shows `LAST ZERO h:mm ago`. |
 
 ### Mounting and orientation
 
@@ -1019,14 +1019,14 @@ When the AHRS reports pitch outside ±90° (over-the-top loop, split-S, aerobati
 
 ## 21. AHRS PCB and Air-Data Hardware
 
-The AHRS sensor head is now a single PCB (rev A) that integrates the Pico W, IMU, GPS, baro and the new SDP31-1500Pa differential-pressure sensor on one board. The bench-breakout build path is documented in the README appendix and remains supported — same firmware, same wiring map.
+The AHRS sensor head is now a single PCB (rev A) that integrates the Pico W, IMU, GPS, baro and the new SDP33-1500Pa differential-pressure sensor on one board. The bench-breakout build path is documented in the README appendix and remains supported — same firmware, same wiring map.
 
 ### Block diagram
 
 ```
 +----------------------+   I²C1 (GP2 SDA / GP3 SCL)   +----------------+
 |                      |<------------------------------>|  BME280  0x76  |  ← static port + OAT
-|                      |<------------------------------>|  SDP31   0x21  |  ← pitot − static
+|                      |<------------------------------>|  SDP33   0x21  |  ← pitot − static
 |     Pico W           |                                +----------------+
 |     RP2040 +         |
 |     CYW43439 WiFi    |   UART0 (GP0/GP1, 9600 baud)
@@ -1046,15 +1046,15 @@ The AHRS sensor head is now a single PCB (rev A) that integrates the Pico W, IMU
 |----------|---------:|--------:|-----------|
 | WT901 RX (Pico → WT901) | 1 | GP0 | TX |
 | WT901 TX (Pico ← WT901) | 2 | GP1 | RX |
-| BME280 + SDP31 SDA | 4 | GP2 | I²C1 SDA |
-| BME280 + SDP31 SCL | 5 | GP3 | I²C1 SCL |
+| BME280 + SDP33 SDA | 4 | GP2 | I²C1 SDA |
+| BME280 + SDP33 SCL | 5 | GP3 | I²C1 SCL |
 | NEO-6M RX (Pico → GPS, UBX config only) | 6 | GP4 | TX |
 | NEO-6M TX (Pico ← GPS) | 7 | GP5 | RX |
 | LED (heartbeat) | onboard | LED | — |
 
-I²C1 is shared across the BME280 (`0x76`), the SDP31 (`0x21` by default), and the AOA-probe pad reserved for the next board spin (`0x22`; second SDP3x — see AOA-PROBE in `Docs/BUGS_AND_TODO.md`). Each device has a distinct 7-bit address so they coexist without arbitration logic.
+I²C1 is shared across the BME280 (`0x76`), the SDP33 (`0x21` by default), and the AOA-probe pad reserved for the next board spin (`0x22`; second SDP3x — see AOA-PROBE in `Docs/BUGS_AND_TODO.md`). Each device has a distinct 7-bit address so they coexist without arbitration logic.
 
-### SDP31-1500Pa wiring + pneumatic plumbing
+### SDP33-1500Pa wiring + pneumatic plumbing
 
 Electrical:
 
@@ -1069,7 +1069,7 @@ Pneumatic:
 - **`+` port** → pitot tube (ram pressure)
 - **`−` port** → static port. Tee the static reference into the BME280's open port so both sensors see the same static pressure.
 
-The SDP31 measures bidirectional differential pressure on the −1500 … +1500 Pa range. Normal-flight IAS at sea level is roughly:
+The SDP33 measures bidirectional differential pressure on the −1500 … +1500 Pa range. Normal-flight IAS at sea level is roughly:
 
 | IAS | dp (Pa) | Fraction of full-scale |
 |----:|--------:|----------------------:|
@@ -1094,17 +1094,17 @@ The firmware computes the full pitot-static set every sensor tick and broadcasts
 | `dens_alt_ft` | Density altitude (inverse ISA hypsometric) | feet |
 | `wind_dir` | Wind direction in meteorological convention (degrees *from*) | degrees |
 | `wind_kt` | Wind speed magnitude | knots |
-| `airdata_ok` | `True` while SDP31 + BME280 are both delivering fresh data (5 s window) | bool |
+| `airdata_ok` | `True` while SDP33 + BME280 are both delivering fresh data (5 s window) | bool |
 
-`wind_dir` / `wind_kt` are computed by the wind triangle: with TAS + AHRS heading + GPS GS + GPS track, `wind = ground − air`. Result needs both an SDP31 reading and a GPS fix; when either drops, the firmware holds the last published wind value and the display surfaces the state via `airdata_ok` / `gps_ok`.
+`wind_dir` / `wind_kt` are computed by the wind triangle: with TAS + AHRS heading + GPS GS + GPS track, `wind = ground − air`. Result needs both an SDP33 reading and a GPS fix; when either drops, the firmware holds the last published wind value and the display surfaces the state via `airdata_ok` / `gps_ok`.
 
 ### Zero-offset capture
 
-A small temperature-driven offset is normal at boot. The firmware captures a zero offset 2 s after start (`SDP31_AUTO_ZERO_AT_BOOT = True` in `firmware/config.py`) which assumes the aircraft is stationary. For an in-flight reboot or a long ground hold with a temperature swing, recapture the zero from the AHRS / Sensors screen (§11) — point the airplane into wind, cover the pitot, tap **SDP31 ZERO → CAPTURE**. The capture also has a firmware endpoint at `GET http://192.168.4.1/sdp_zero` for scripted bench cal.
+A small temperature-driven offset is normal at boot. The firmware captures a zero offset 2 s after start (`SDP31_AUTO_ZERO_AT_BOOT = True` in `firmware/config.py`) which assumes the aircraft is stationary. For an in-flight reboot or a long ground hold with a temperature swing, recapture the zero from the AHRS / Sensors screen (§11) — point the airplane into wind, cover the pitot, tap **SDP ZERO → CAPTURE**. The capture also has a firmware endpoint at `GET http://192.168.4.1/sdp_zero` for scripted bench cal.
 
 ### Power budget
 
-Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pico W + WT901 + NEO-6M + BME280 + SDP31) and is powered through the Pico's USB-C from the aircraft bus. The SDP31 adds ~6 mA over the previous bench-breakout build; not measurable in normal operation.
+Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pico W + WT901 + NEO-6M + BME280 + SDP33) and is powered through the Pico's USB-C from the aircraft bus. The SDP33 adds ~6 mA over the previous bench-breakout build; not measurable in normal operation.
 
 ---
 
@@ -1141,7 +1141,7 @@ Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pi
 | Brightness | Setup → Display → − / + |
 | **Mute / unmute audio** | Setup → DISPLAY → ALERT AUDIO OFF / ON |
 | **Set callout volume** | Setup → DISPLAY → ALERT VOLUME − / + |
-| **Recapture SDP31 zero** | Setup → AHRS / SENSORS → SDP31 ZERO → CAPTURE (aircraft stationary, pitot capped) |
+| **Recapture SDP zero** | Setup → AHRS / SENSORS → SDP ZERO → CAPTURE (aircraft stationary, pitot capped) |
 | Start sim | Setup → System → FLIGHT SIMULATOR → START |
 | SIM controls | Tap SIM watermark |
 | Exit sim | SIM controls → EXIT SIM |

@@ -157,7 +157,7 @@ state = {
     # AHRS orientation (reflects config.py values; broadcast for Pi4 info display)
     'orientation': AHRS_CONNECTOR,
     'mounting':    AHRS_MOUNTING,
-    # Air data (SDP31-1500Pa + BME280 density correction)
+    # Air data (SDP33-1500Pa + BME280 density correction)
     'ias_kt'     : 0.0,  # indicated airspeed (knots) — ρ₀ reference
     'tas_kt'     : 0.0,  # true airspeed (knots) — density-corrected
     'dp_pa'      : 0.0,  # raw differential pressure (Pa); diagnostic
@@ -165,7 +165,7 @@ state = {
     'dens_alt_ft': 0.0,  # density altitude (ft)
     'wind_dir'   : 0.0,  # wind direction (deg from); 0 = wind absent or unknown
     'wind_kt'    : 0.0,  # wind speed (knots)
-    'airdata_ok' : False, # True when SDP31 + BME280 both fresh
+    'airdata_ok' : False, # True when SDP33 + BME280 both fresh
     # Sensor health flags (set every sensor_loop tick)
     'ahrs_ok':   False,
     'gps_ok':    False,
@@ -209,7 +209,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp):
     tick = 0
     last_ahrs_ms = utime.ticks_ms()   # 5-second window before ahrs_ok goes False
     last_gps_nmea_ms = None           # last time a valid NMEA sentence arrived
-    last_sdp_ms = None                # last successful SDP31 read
+    last_sdp_ms = None                # last successful SDP33 read
     while True:
         # ── AHRS ──
         try:
@@ -310,9 +310,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp):
             state['vspeed']   = gps.vspeed_fpm
             state['baro_src'] = 'gps'
 
-        # ── Air data (SDP31 + BME280) ──
+        # ── Air data (SDP33 + BME280) ──
         # IAS / TAS / density-altitude / wind solution.  Runs whenever the
-        # SDP31 is present; outputs are valid even with no GPS (just no
+        # SDP33 is present; outputs are valid even with no GPS (just no
         # wind solution).  Pi4 / iPhone use ias_kt for the speed tape when
         # airdata_ok is True, falling back to GPS GS otherwise.
         if sdp is not None:
@@ -320,7 +320,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp):
                 if sdp.update():
                     last_sdp_ms = utime.ticks_ms()
             except Exception as e:
-                print(f'[AHRS] SDP31 read error: {e}')
+                print(f'[AHRS] SDP33 read error: {e}')
             state['dp_pa']      = sdp.dp_pa
             state['ias_kt']     = airdata.ias_kt(sdp.dp_pa)
             # Use BME280 absolute pressure (not QNH-corrected) for density.
@@ -356,9 +356,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp):
                     (SDP31_AUTO_ZERO_AT_BOOT and tick == 100)):
                 try:
                     sdp.zero()
-                    print(f'[AHRS] SDP31 zero captured (dp_offset cleared)')
+                    print(f'[AHRS] SDP33 zero captured (dp_offset cleared)')
                 except Exception as e:
-                    print(f'[AHRS] SDP31 zero failed: {e}')
+                    print(f'[AHRS] SDP33 zero failed: {e}')
                 state['_sdp_zero'] = False
         else:
             state['airdata_ok'] = False
@@ -521,12 +521,12 @@ async def main():
                 scl    = SDP31_SCL_PIN,
                 addr   = SDP31_I2C_ADDR,
             )
-            print(f'SDP31  I2C{SDP31_I2C_ID}'
+            print(f'SDP33  I2C{SDP31_I2C_ID}'
                   f' @ 0x{SDP31_I2C_ADDR:02x}'
                   f' (GP{SDP31_SDA_PIN} SDA, GP{SDP31_SCL_PIN} SCL)'
                   f'  scale={sdp.scale}  auto-zero={SDP31_AUTO_ZERO_AT_BOOT}')
         except Exception as e:
-            print(f'SDP31 not found ({e})  –  airspeed will fall back to GPS GS')
+            print(f'SDP33 not found ({e})  –  airspeed will fall back to GPS GS')
             sdp = None
 
     await asyncio.gather(

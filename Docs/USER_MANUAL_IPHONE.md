@@ -189,8 +189,8 @@ The speed bug chevron sits on the inner edge of the tape and tracks the stored b
 
 | Colour | Source | When |
 |--------|--------|------|
-| Cyan | IAS — SDP31-1500Pa + BME280 air-data path | `airdata_ok = True` in the AHRS frame |
-| Magenta | GPS groundspeed | Default fallback (no SDP31, sensor unhealthy, or sourced from the AHRS unit's groundspeed) |
+| Cyan | IAS — SDP33-1500Pa + BME280 air-data path | `airdata_ok = True` in the AHRS frame |
+| Magenta | GPS groundspeed | Default fallback (no SDP33, sensor unhealthy, or sourced from the AHRS unit's groundspeed) |
 
 The drum and tape colour ramp follow the same source — cyan in IAS mode, magenta in GS mode — so a glance at the tape tells you whether you're looking at airspeed or groundspeed. The bug value is stored in `localStorage['bugs'].spd_bug` and is unit-canonical in knots regardless of the displayed unit.
 

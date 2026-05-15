@@ -1,9 +1,16 @@
 # ---------------------------------------------------------------------------
-# sdp31.py  –  Sensirion SDP31-1500Pa differential-pressure driver
+# sdp31.py  –  Sensirion SDP3x differential-pressure driver
 # ---------------------------------------------------------------------------
 # Datasheet: Sensirion SDP3x_Sensors_Datasheet (rev. 1.0)
 #
-# The SDP31-1500Pa measures bidirectional differential pressure across a
+# Module file name is historical (the first board carried an SDP31).  The
+# code is protocol-compatible with the whole SDP3x family — SDP31 (500 Pa),
+# SDP32 (125 Pa), SDP33 (1500 Pa) — because the scale factor is read from
+# the device on every measurement frame.  Current install: SDP33-1500Pa,
+# saturating at ~96 kt IAS sea level.  A higher-range part (e.g. an
+# SDP810 variant) needs no firmware change beyond an `import` rename.
+#
+# The sensor measures bidirectional differential pressure across a
 # pitot/static pair (P_pitot − P_static).  Together with the BME280 it
 # completes the air-data computer:
 #   IAS_kt = sqrt(2·dp / ρ₀) · (m/s → kt)

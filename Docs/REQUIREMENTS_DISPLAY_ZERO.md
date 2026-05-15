@@ -74,7 +74,7 @@ The airspeed tape occupies the left side of the PFD. It presents the current spe
 
 > **REQ-DISP-ZERO-SPD-006** The pilot shall be able to set the speed bug value by tapping the speed readout button at the top of the tape, which shall open a numpad entry overlay for direct numeric input.
 
-> **REQ-DISP-ZERO-SPD-007** The airspeed source — GPS groundspeed or IAS sensor — shall be selectable from within the AHRS / Sensors sub-menu of the setup interface. The default selection shall be `IAS SENSOR` (consuming the AHRS `ias_kt` field produced by the SDP31-1500Pa air-data path), with automatic fallback to `GPS GS` when the AHRS reports `airdata_ok = False`. The tape, drum, and bug shall recolour from cyan (IAS) to magenta (GS) when the active source falls back.
+> **REQ-DISP-ZERO-SPD-007** The airspeed source — GPS groundspeed or IAS sensor — shall be selectable from within the AHRS / Sensors sub-menu of the setup interface. The default selection shall be `IAS SENSOR` (consuming the AHRS `ias_kt` field produced by the SDP33-1500Pa air-data path), with automatic fallback to `GPS GS` when the AHRS reports `airdata_ok = False`. The tape, drum, and bug shall recolour from cyan (IAS) to magenta (GS) when the active source falls back.
 
 ---
 

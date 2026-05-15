@@ -30,9 +30,9 @@ The following requirements define the minimum acceptable hardware configuration 
 
 > **REQ-AHRS-HW-005** The unit shall be powered from an aircraft 5 V USB supply or a regulated aircraft bus.
 
-> **REQ-AHRS-HW-006** A Sensirion SDP31-1500Pa differential-pressure sensor shall be connected to the Pico W via I²C at address 0x21, sharing the same SDA/SCL pair as the BME280. The sensor's `+` port shall be connected to the airframe pitot tube and the `−` port to the static reference (teed into the BME280's static port).
+> **REQ-AHRS-HW-006** A Sensirion SDP33-1500Pa differential-pressure sensor shall be connected to the Pico W via I²C at address 0x21, sharing the same SDA/SCL pair as the BME280. The sensor's `+` port shall be connected to the airframe pitot tube and the `−` port to the static reference (teed into the BME280's static port).
 
-> **REQ-AHRS-HW-007** The AHRS unit shall be implemented as a single integrated printed-circuit board (rev A or later) carrying the Pico W, IMU, GPS, BME280, and SDP31. The PCB shall reserve an additional I²C device footprint at address 0x22 for a future second differential-pressure sensor dedicated to angle-of-attack measurement (see AOA-PROBE in `Docs/BUGS_AND_TODO.md`). Backwards compatibility with the bench-breakout pinout shall be preserved so that the same firmware boots on either build path.
+> **REQ-AHRS-HW-007** The AHRS unit shall be implemented as a single integrated printed-circuit board (rev A or later) carrying the Pico W, IMU, GPS, BME280, and SDP33. The PCB shall reserve an additional I²C device footprint at address 0x22 for a future second differential-pressure sensor dedicated to angle-of-attack measurement (see AOA-PROBE in `Docs/BUGS_AND_TODO.md`). Backwards compatibility with the bench-breakout pinout shall be preserved so that the same firmware boots on either build path. The driver implementation (`firmware/sdp31.py`) is protocol-compatible with the entire Sensirion SDP3x family — the scale factor is read from the device at startup — so a future swap to a higher-range part requires only a part-number update in the documentation.
 
 ---
 
@@ -114,11 +114,11 @@ Because the AHRS unit may be installed in different physical orientations depend
 
 ## 7B. Air-Data Computer
 
-The combination of the SDP31-1500Pa differential-pressure sensor and the existing BME280 static-pressure / OAT sensor forms an air-data computer co-located with the AHRS. The firmware computes the standard pitot-static set every sensor tick and broadcasts the results on the SSE / USB stream alongside the inertial state.
+The combination of the SDP33-1500Pa differential-pressure sensor and the existing BME280 static-pressure / OAT sensor forms an air-data computer co-located with the AHRS. The firmware computes the standard pitot-static set every sensor tick and broadcasts the results on the SSE / USB stream alongside the inertial state.
 
-> **REQ-AHRS-AIR-001** The firmware shall read the SDP31-1500Pa differential-pressure sensor at a minimum effective rate of 20 Hz when present, and shall validate each 9-byte measurement frame against its three CRC-8 checksums before applying the value.
+> **REQ-AHRS-AIR-001** The firmware shall read the SDP33-1500Pa differential-pressure sensor at a minimum effective rate of 20 Hz when present, and shall validate each 9-byte measurement frame against its three CRC-8 checksums before applying the value.
 
-> **REQ-AHRS-AIR-002** Indicated airspeed (IAS) shall be computed from the SDP31 differential pressure against standard sea-level density ρ₀ = 1.225 kg/m³ using `V = sqrt(2·dp / ρ₀)`. The result shall be expressed in knots in the outbound `ias_kt` field. Negative differential pressure shall read as zero airspeed, and the readout shall apply a low-end deadband of 5 kt to suppress static noise during ground operations.
+> **REQ-AHRS-AIR-002** Indicated airspeed (IAS) shall be computed from the SDP33 differential pressure against standard sea-level density ρ₀ = 1.225 kg/m³ using `V = sqrt(2·dp / ρ₀)`. The result shall be expressed in knots in the outbound `ias_kt` field. Negative differential pressure shall read as zero airspeed, and the readout shall apply a low-end deadband of 5 kt to suppress static noise during ground operations.
 
 > **REQ-AHRS-AIR-003** True airspeed (TAS) shall be computed by density-correcting IAS using the BME280 absolute static pressure and temperature: `TAS = IAS · sqrt(ρ₀ / ρ)` where `ρ = P / (R_spec · (T + 273.15))`. The result shall be expressed in knots in the outbound `tas_kt` field. When the BME280 is absent or unhealthy, TAS shall equal IAS and the `baro_ok` flag shall communicate the degraded state.
 
@@ -126,11 +126,11 @@ The combination of the SDP31-1500Pa differential-pressure sensor and the existin
 
 > **REQ-AHRS-AIR-005** A wind-triangle solution shall be computed each sensor tick when TAS, AHRS heading, GPS ground speed, and GPS track are all valid. The result shall populate `wind_dir` (meteorological convention, degrees *from*) and `wind_kt` in the outbound stream. Wind speeds below 1 kt shall be reported as calm (`0°, 0 kt`) rather than as a directionally noisy value.
 
-> **REQ-AHRS-AIR-006** The firmware shall expose an `airdata_ok` boolean in the outbound stream, true when an SDP31 measurement has been successfully read within the last 5 seconds. The displays shall use this flag to switch the speed tape source between IAS (cyan) and GPS groundspeed (magenta).
+> **REQ-AHRS-AIR-006** The firmware shall expose an `airdata_ok` boolean in the outbound stream, true when an SDP33 measurement has been successfully read within the last 5 seconds. The displays shall use this flag to switch the speed tape source between IAS (cyan) and GPS groundspeed (magenta).
 
 > **REQ-AHRS-AIR-007** The firmware shall capture a zero-pressure offset automatically 2 seconds after boot (with `SDP31_AUTO_ZERO_AT_BOOT = True`, the default), assuming the aircraft is stationary with no airflow over the pitot. A `GET /sdp_zero` HTTP endpoint shall trigger a re-capture of the offset on demand for in-flight reboot or long-ground-hold scenarios.
 
-> **REQ-AHRS-AIR-008** When the SDP31 is absent, has failed, or `SDP31_ENABLE = False`, the firmware shall set `airdata_ok = False` and continue operating without the air-data fields. The displays shall fall back to GPS groundspeed for the speed tape and shall suppress wind, density-altitude, and TAS readouts when this fallback is active.
+> **REQ-AHRS-AIR-008** When the SDP33 is absent, has failed, or `SDP31_ENABLE = False`, the firmware shall set `airdata_ok = False` and continue operating without the air-data fields. The displays shall fall back to GPS groundspeed for the speed tape and shall suppress wind, density-altitude, and TAS readouts when this fallback is active.
 
 ---
 

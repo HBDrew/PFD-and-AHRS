@@ -232,7 +232,7 @@ Pairs with firmware item AHRS-MAGCAL below — when the firmware-side
 mag cal also lands, the iPhone compass and the AHRS compass will both
 converge on the GPS track and stay aligned.
 
-### SDP31-AIRDATA  SDP31-1500Pa airspeed driver + air-data computer
+### SDP31-AIRDATA  SDP33-1500Pa airspeed driver + air-data computer
 Status: **FIRMWARE LANDED — waiting on hardware install + in-flight calibration**
 Target: new `firmware/sdp31.py`, additions to `firmware/main.py`,
 new fields in the `$AHRS,{json}` packet consumed by `pi4/serial_link`
@@ -242,7 +242,7 @@ continuous-mode I²C driver (CRC-validated 9-byte frames, soft reset
 on init, manual + auto zero offset). `firmware/airdata.py` ships IAS
 (against ρ₀), TAS (density-corrected via BME280), density altitude
 (inverse ISA), and the wind-triangle solution. `firmware/main.py`
-inits the SDP31 from `SDP31_ENABLE` in `config.py`, populates the
+inits the SDP33 from `SDP31_ENABLE` in `config.py`, populates the
 new `ias_kt` / `tas_kt` / `dp_pa` / `oat_c` / `dens_alt_ft` /
 `wind_dir` / `wind_kt` / `airdata_ok` fields in `state`, and
 broadcasts them on both the SSE event stream and the `$AHRS,…`
@@ -252,7 +252,7 @@ gains §7B Air-Data Computer (REQ-AHRS-AIR-001 … 008); USER_MANUAL_PI4
 §21 covers wiring + plumbing + range; the speed-tape source switch
 is documented in §2 of both pilot manuals.
 Still open:
-  - **Hardware install + first-flight cal.** Bench the SDP31 with
+  - **Hardware install + first-flight cal.** Bench the SDP33 with
     a hand pump (0–1500 Pa) to confirm `dp_pa → ias_kt` math; then
     plumb pitot + static and validate IAS against GS at cruise in
     near-zero wind.
@@ -264,7 +264,7 @@ Still open:
   - **Stall-warn enunciator** below configured Vs1 — visual + voice
     callout to make the existing speed-tape colour band
     authoritative. Pairs with REQ-DISP-PI4-AUD-001.
-Context: the new sensor board carries a Sensirion SDP31-1500Pa
+Context: the new sensor board carries a Sensirion SDP33-1500Pa
 differential-pressure sensor — pitot pressure on one port, static on
 the other.  With the existing BME280 (static pressure + OAT) we get
 a complete pitot-static air-data set:
@@ -287,7 +287,7 @@ a complete pitot-static air-data set:
     profile.  Already a pi4 colour band on the speed tape; this
     just makes the audible/visual alert authoritative.
 Work items:
-  - I²C driver for the SDP31 — Sensirion's reference protocol is
+  - I²C driver for the SDP33 — Sensirion's reference protocol is
     short (start continuous mode, read 9-byte frames with CRC,
     handle the auto-zero offsets).  About 80 lines of MicroPython.
   - Air-data math in `firmware/main.py` (or a small `airdata.py`):
@@ -296,7 +296,7 @@ Work items:
   - `$AHRS` JSON gains `ias_kt`, `tas_kt`, `wind_dir`, `wind_kt`.
   - Pi 4 + iPhone speed tapes: switch the primary source to IAS
     when the air-data path is live (fall back to GS with a small
-    "GS" subscript when SDP31 reports unhealthy, mirroring the
+    "GS" subscript when SDP33 reports unhealthy, mirroring the
     existing GPS-fallback pattern on the heading tape).
   - V-speeds page: nothing changes structurally — the existing
     Vs0 / Vs1 / Vfe / Vno / Vne entries already drive the colour
@@ -472,13 +472,13 @@ This is why the leans-during-coordinated-turn artefact survives
 even a perfect mag cal.
 Architecture is straightforward because **all inputs already live
 on the Pico**: WT901 raw accel/gyro on UART, GPS speed/track from
-`firmware/gps.py`, and (on the laid-out hardware) an SDP31-1500Pa
+`firmware/gps.py`, and (on the laid-out hardware) an SDP33-1500Pa
 differential-pressure sensor for IAS/TAS plus a BME280 for static
 pressure + OAT.  No cross-device transport needed — the Pi 4 just
 consumes the fused result over USB CDC the same way it does today.
 **Use TAS, not GS, for centripetal correction**: the IMU's centripetal
 accel is `V_air × ω`, not `V_ground × ω`.  In any wind, GS-aiding
-introduces an error proportional to the wind component — the SDP31
+introduces an error proportional to the wind component — the SDP33
 makes the correction physically right instead of just close.  Pico
 2 W (RP2350) makes the path comfortable: hardware FPU collapses
 Madgwick/Mahony to free, 520 KB SRAM gives plenty of headroom, and

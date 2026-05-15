@@ -91,7 +91,7 @@ The AHRS sensor head is now a single integrated PCB carrying every sensor on one
 | WitMotion WT901 | UART0 (GP0/GP1, 9600 baud) | — | 9-DOF IMU, fused Euler output |
 | u-blox NEO-6M | UART1 (GP4/GP5, 9600 baud) | — | NMEA GPS (GGA + RMC) |
 | Bosch BME280 | I²C1 (GP2/GP3, 400 kHz) | `0x76` | Static pressure + OAT |
-| Sensirion SDP31-1500Pa | I²C1 (GP2/GP3) | `0x21` | Differential pressure (pitot − static) |
+| Sensirion SDP33-1500Pa | I²C1 (GP2/GP3) | `0x21` | Differential pressure (pitot − static) |
 | *(reserved)* SDP3x AOA twin | I²C1 (GP2/GP3) | `0x22` | Future AOA probe — see `Docs/BUGS_AND_TODO.md → AOA-PROBE` |
 | MAX3232 breakout | — | — | RS-232 driver for future TruTrak autopilot tie-in |
 
@@ -99,8 +99,8 @@ Power draw is ~130 mA at 5 V from the Pico's USB-C — typical wallwart / cigare
 
 Pneumatic plumbing for the air-data path:
 
-- SDP31 `+` port → pitot tube (ram pressure)
-- SDP31 `−` port → static reference (teed into the BME280's open port)
+- SDP33 `+` port → pitot tube (ram pressure)
+- SDP33 `−` port → static reference (teed into the BME280's open port)
 
 The combination produces the full pitot-static set — IAS, TAS, density altitude, and a wind solution from the AHRS heading + GPS track — broadcast on the same `$AHRS` SSE / USB JSON packet. See `Docs/REQUIREMENTS_AHRS.md §7B` for the field-level requirements and `Docs/USER_MANUAL_PI4.md §21` for the pilot-facing description.
 
@@ -214,7 +214,7 @@ firmware/
 ├── wt901.py
 ├── gps.py
 ├── bme280.py          ← BME280 (static pressure + OAT)
-├── sdp31.py           ← SDP31-1500Pa differential pressure (IAS)
+├── sdp31.py           ← SDP33-1500Pa differential pressure (IAS)
 └── airdata.py         ← IAS / TAS / density alt / wind triangle
 ```
 
@@ -301,7 +301,7 @@ Configure how the AHRS box is physically mounted in the aircraft, fine-trim resi
 | ORIENTATION | FWD / LEFT / RIGHT / AFT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. Default is RIGHT. Stored on the AHRS (`orient.json` on Pico flash) |
 | MOUNTING | NORMAL / INVERTED | Whether the AHRS is right-side-up or upside-down. Independent of orientation. Stored on the AHRS |
 | HEADING SOURCE | MAG / TRK / AUTO | Magnetometer, GPS ground track, or auto-select (TRK in motion, MAG when stationary) |
-| AIRSPEED SOURCE | GPS GS / IAS SENSOR | IAS SENSOR by default — SDP31-1500Pa with BME280 density correction; falls back to GPS groundspeed when the air-data path reports unhealthy |
+| AIRSPEED SOURCE | GPS GS / IAS SENSOR | IAS SENSOR by default — SDP33-1500Pa with BME280 density correction; falls back to GPS groundspeed when the air-data path reports unhealthy |
 
 Trim, orientation, mounting, and the compass cal all combine cleanly — orientation remaps pitch/roll axes for a non-RIGHT mounting, mounting flips for upside-down, the cal corrects the residual mag bias, and trim is the final fine-tuning. Sim and Demo modes bypass every AHRS-mounting compensation so a calibrated trim doesn't show up as wing-down on a level sim flight.
 
@@ -482,7 +482,7 @@ Shared work (firmware, `shared/` modules, docs touched by both) is generally app
 | ✅ V4.8 | Direct-to nav with on-screen keyboard, "Activate Direct to XXXX?" confirmation modal, NEAREST quick-button showing the resolved ident |
 | ✅ V4.9 | AHRS 4-way mounting orientation (FWD / LEFT / RIGHT / AFT) with magnetic offset, ENU→NED base correction, sim/demo bypass |
 | ✅ V5.0 | Compass calibration wizard — 8-point walk-through, 36-slot deviation table stored on the AHRS in flash so every display reads the same calibrated heading |
-| ✅ V5.1 | AHRS PCB rev A — single-board Pico W + WT901 + NEO-6M + BME280 + SDP31-1500Pa; full pitot-static air-data set (IAS / TAS / density alt / wind triangle) on the SSE / USB stream |
+| ✅ V5.1 | AHRS PCB rev A — single-board Pico W + WT901 + NEO-6M + BME280 + SDP33-1500Pa; full pitot-static air-data set (IAS / TAS / density alt / wind triangle) on the SSE / USB stream |
 | ✅ V5.2 | EGPWS-style voice callouts (TERRAIN / OBSTACLE / SINK RATE / PULL UP / BANK ANGLE), unusual-attitude recovery cues, look-ahead TAWS, ±25° forward-wedge obstacle filter |
 | V6 | TruTrak Vizion RS-232 autopilot interface |
 | V7 | Moving map / MFD (separate dedicated hardware unit) |
@@ -517,11 +517,11 @@ The original development build wired the Pico W to four separate breakout boards
 |--------|--------|-------|
 | VCC | 3V3 | |
 | GND | GND | |
-| SDA | GP2 (pin 4) | I²C1 (shared with SDP31) |
-| SCL | GP3 (pin 5) | I²C1 (shared with SDP31) |
+| SDA | GP2 (pin 4) | I²C1 (shared with SDP33) |
+| SCL | GP3 (pin 5) | I²C1 (shared with SDP33) |
 
-### SDP31-1500Pa → Pico W
-| SDP31 | Pico W | Notes |
+### SDP33-1500Pa → Pico W
+| SDP33 | Pico W | Notes |
 |-------|--------|-------|
 | VDD | 3V3 | |
 | GND | GND | |

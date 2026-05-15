@@ -2,7 +2,7 @@
 # airdata.py  –  IAS / TAS / density altitude / wind-triangle math
 # ---------------------------------------------------------------------------
 # Fed by:
-#   - SDP31-1500Pa  → differential pressure dp_pa  (pitot − static)
+#   - SDP33-1500Pa  → differential pressure dp_pa  (pitot − static)
 #   - BME280       → static pressure_pa + temperature_c
 #   - GPS          → groundspeed (kt) + track (deg true)
 #   - AHRS         → heading (deg magnetic / true, see HEADING_IS_TRUE)
@@ -13,7 +13,7 @@
 #   dens_alt_ft  — density altitude in feet
 #   wind_dir     — meteorological convention (deg from which the wind blows)
 #   wind_kt      — wind speed in knots
-#   airdata_ok   — True when SDP31 and BME280 are both delivering fresh data
+#   airdata_ok   — True when SDP33 and BME280 are both delivering fresh data
 #
 # Constants
 # ---------
