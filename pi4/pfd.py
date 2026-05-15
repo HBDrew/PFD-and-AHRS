@@ -512,18 +512,32 @@ def _push_magcal_clear_to_pico():
 
 def _push_orient_to_pico(connector, mounting):
     """Send orientation + mounting to the Pico via USB serial ($ORIENT, command).
-    Runs in a background thread so the UI stays responsive."""
+    Retries every 2 s (up to 6 attempts) until the Pico echoes back the new
+    orientation in its $AHRS broadcast, confirming receipt."""
+    import time as _time
     def _worker():
-        client = _sse_client
-        if client is not None and hasattr(client, 'write'):
+        for attempt in range(6):
+            client = _sse_client
+            if client is None or not hasattr(client, 'write'):
+                print("[PFD] orient push: no serial client available")
+                return
             try:
                 cmd = f"$ORIENT,{connector},{mounting}\n".encode()
                 client.write(cmd)
-                print(f"[PFD] orient sent via USB serial ({connector},{mounting})")
+                print(f"[PFD] orient sent (attempt {attempt + 1}) ({connector},{mounting})")
             except Exception as e:
                 print(f"[PFD] orient serial write failed: {e}")
-        else:
-            print("[PFD] orient push: no serial client available")
+                return
+            # Poll up to 2 s for the Pico to echo back via the $AHRS broadcast.
+            for _ in range(20):
+                _time.sleep(0.1)
+                with _state_lock:
+                    pico_ori = state.get("orientation")
+                    pico_mnt = state.get("mounting")
+                if pico_ori == connector and pico_mnt == mounting:
+                    print(f"[PFD] orient confirmed by Pico ({connector},{mounting})")
+                    return
+        print(f"[PFD] orient push gave up after 6 attempts ({connector},{mounting})")
     threading.Thread(target=_worker, daemon=True, name="OrientPush").start()
 
 
