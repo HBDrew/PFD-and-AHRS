@@ -509,8 +509,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                              (int(wpx) - d, int(wpy))])
 
     # ── Range ring ───────────────────────────────────────────────────────────
+    # Shrink the ring 2 px inside the inset's shorter axis so the frame
+    # border (drawn after clip release) and pygame's half-open clip rect
+    # don't nibble the top and bottom scanlines of the outline.
     pygame.draw.circle(surf, _RING, (int(cx), int(cy)),
-                       int(range_nm * px_per_nm), 1)
+                       max(1, int(range_nm * px_per_nm) - 2), 1)
 
     # ── Own-ship chevron ─────────────────────────────────────────────────────
     # Track-up: chevron always points up.  North-up: chevron rotates to
