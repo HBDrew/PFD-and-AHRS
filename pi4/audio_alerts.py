@@ -79,14 +79,36 @@ def init():
     if not HAS_PYGAME:
         _disabled = True
         return
+    # Quit any mixer that pygame.init() may have grabbed against the
+    # default device so we can re-init against the device the panel
+    # speakers actually live on. The Pi 4 advertises three cards
+    # (headphone jack + 2× HDMI); on the ROADOM the speakers are on
+    # HDMI 0 which lands as ALSA card 1. PFD_AUDIO_DEVICE overrides
+    # for setups where it's different.
+    device = os.environ.get("PFD_AUDIO_DEVICE", "plughw:1,0")
+    try:
+        pygame.mixer.quit()
+    except pygame.error:
+        pass
     try:
         # Small buffer keeps callout-to-speaker latency under ~30 ms,
         # which matters when the warning band fires.
-        pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
-    except pygame.error as e:
-        print(f"[audio] mixer init failed: {e}")
-        _disabled = True
-        return
+        pygame.mixer.init(frequency=22050, size=-16, channels=2,
+                          buffer=512, devicename=device)
+    except (TypeError, pygame.error) as e:
+        # Older pygame (no `devicename` kwarg) or device unavailable —
+        # fall back to whatever SDL picks as default rather than
+        # silently going mute.
+        print(f"[audio] init with device={device} failed ({e}); "
+              f"falling back to system default")
+        try:
+            pygame.mixer.init(frequency=22050, size=-16, channels=2,
+                              buffer=512)
+        except pygame.error as ee:
+            print(f"[audio] default mixer init also failed: {ee}")
+            _disabled = True
+            return
+    print(f"[audio] mixer running, init state {pygame.mixer.get_init()}")
 
     try:
         os.makedirs(_CACHE_DIR, exist_ok=True)
