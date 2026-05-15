@@ -265,6 +265,10 @@ disp["sim"] = {                     # flight simulator state
     #             down the 3° glideslope to the threshold once the
     #             aircraft has intercepted it.
     "follow_mode": "bugs",
+    # Pause flag — set from the sim_controls overlay's PAUSE button.
+    # When True, _sim_state.tick() is skipped in the main loop so the
+    # aircraft state holds steady while the rest of the UI stays live.
+    "paused": False,
 }
 disp["nav"] = {                     # rudimentary direct-to-airport navigation
     "ident":   "",      # ICAO/local ID of active waypoint, "" = none
@@ -2437,7 +2441,7 @@ _SIM_EXIT_Y = CY - 36 - _SIM_EXIT_H
 # ── Sim controls overlay ─────────────────────────────────────────────────────
 
 _SIMCTRL_W = 320
-_SIMCTRL_H = 320
+_SIMCTRL_H = 372
 _SIMCTRL_X = (DISPLAY_W - _SIMCTRL_W) // 2
 _SIMCTRL_Y = (DISPLAY_H - _SIMCTRL_H) // 2 - 10
 
@@ -2453,8 +2457,12 @@ def _simctrl_follow_y() -> int:
     return _SIMCTRL_ROW_Y0 + 3 * (_SIMCTRL_ROW_H + _SIMCTRL_ROW_GAP) + 8
 
 
-def _simctrl_exit_setup_y() -> int:
+def _simctrl_pause_y() -> int:
     return _simctrl_follow_y() + _SIMCTRL_ROW_H + 14
+
+
+def _simctrl_exit_setup_y() -> int:
+    return _simctrl_pause_y() + 44 + 8
 
 
 def _simctrl_exit_sim_y() -> int:
@@ -2522,6 +2530,16 @@ def draw_sim_controls(surf):
         _text(surf, lbl, 12, tc, bold=active,
               cx=bx + _SIMCTRL_FOLLOW_BW // 2, cy=fy + _SIMCTRL_ROW_H // 2)
 
+    # PAUSE / RESUME — freezes the sim's tick() while keeping the rest of
+    # the UI live. Amber when running ("PAUSE → stop"), green when paused
+    # ("RESUME → go") so the current state reads at a glance.
+    paused = sim.get("paused", False)
+    pz_y = _simctrl_pause_y()
+    _action_btn(surf, _SIMCTRL_X + 14, pz_y,
+                _SIMCTRL_W - 28, 44,
+                "RESUME" if paused else "PAUSE",
+                "ok"      if paused else "warn")
+
     # EXIT SETUP — closes the overlay, sim continues running.
     es_y = _simctrl_exit_setup_y()
     _action_btn(surf, _SIMCTRL_X + 14, es_y,
@@ -2560,6 +2578,12 @@ def sim_controls_hit(x, y):
             bx = fx_b + i * (_SIMCTRL_FOLLOW_BW + 6)
             if bx <= x <= bx + _SIMCTRL_FOLLOW_BW:
                 return f"follow:{val}"
+
+    # PAUSE / RESUME
+    pz_y = _simctrl_pause_y()
+    if (pz_y <= y <= pz_y + 44 and
+            _SIMCTRL_X + 14 <= x <= _SIMCTRL_X + _SIMCTRL_W - 14):
+        return "toggle_pause"
 
     # EXIT SETUP
     es_y = _simctrl_exit_setup_y()
@@ -3203,6 +3227,8 @@ def handle_event(event, demo_mode):
                 disp["sim"][sensor + "_fail"] = True
             elif action and action.startswith("follow:"):
                 disp["sim"]["follow_mode"] = action.split(":", 1)[1]
+            elif action == "toggle_pause":
+                disp["sim"]["paused"] = not disp["sim"].get("paused", False)
             # "noop" or None: consume the event either way
             return True
 
@@ -3533,11 +3559,24 @@ def handle_event(event, demo_mode):
         # half zooms IN (smaller range), left half zooms OUT.  Left-tap
         # at the largest standard step rolls into AUTO when a direct-to
         # is active so the pilot can reach AUTO without diving into the
-        # display-setup screen.
+        # display-setup screen.  The top-right corner (where the TRK↑ /
+        # N↑ label sits) is split off as its own hot-zone — tapping it
+        # toggles orientation without changing the range.
         if (mode == "pfd" and _last_map_rect is not None
                 and disp["ds"].get("map_enabled", False)):
             mrx, mry, mrw, mrh = _last_map_rect
             if mrx <= x <= mrx + mrw and mry <= y <= mry + mrh:
+                # Orient-toggle corner: top-right slab, sized to comfortably
+                # cover the TRK↑ / N↑ label without stealing usable area
+                # from the zoom-in half.
+                corner_w = max(46, mrw // 4)
+                corner_h = max(22, mrh // 5)
+                if (x >= mrx + mrw - corner_w and
+                        y <= mry + corner_h):
+                    cur_or = disp["ds"].get("map_orient", "trk")
+                    disp["ds"]["map_orient"] = "nrth" if cur_or == "trk" else "trk"
+                    _settings.mark_dirty()
+                    return True
                 cur = int(disp["ds"].get("map_zoom_nm", 5))
                 _has_d2 = bool((disp.get("nav") or {}).get("ident"))
                 if x >= mrx + mrw / 2:
@@ -9328,8 +9367,10 @@ def main():
         if demo_mode and demo:
             demo.tick()
 
-        # Update flight simulator state (mutually exclusive with demo)
-        if _sim_state is not None:
+        # Update flight simulator state (mutually exclusive with demo).
+        # Skip the tick while paused so the freeze-frame holds steady —
+        # taps, panels and the live UI still run normally.
+        if _sim_state is not None and not disp["sim"].get("paused", False):
             _sim_state.tick()
 
         # Smooth sensor values into display values
