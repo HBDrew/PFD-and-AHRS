@@ -8186,9 +8186,13 @@ def render(surf, demo_mode, connected, data_stale=False):
     # FRAGMENT_SHADER clearance_color() exactly so the gap and the
     # nearest mesh fragment never differ by more than the band edge.
     _clr = alt - _ground_elev_ft if gps_ok else 9999.0
-    if   _clr < 200:  _below_col = (0.86, 0.12, 0.12)
-    elif _clr < 300:  _below_col = (0.86, 0.31, 0.0)
-    elif _clr < 700:  _below_col = (0.78, 0.51, 0.0)
+    # Same Garmin-style ground inhibit applied in clearance_color() — when
+    # below Vso, skip the red/orange/amber bands so taxi rollout doesn't
+    # paint horizon gaps red.
+    _alert_on = speed >= fp.get("vs0", VS0)
+    if   _alert_on and _clr < 200:  _below_col = (0.86, 0.12, 0.12)
+    elif _alert_on and _clr < 300:  _below_col = (0.86, 0.31, 0.0)
+    elif _alert_on and _clr < 700:  _below_col = (0.78, 0.51, 0.0)
     elif _clr < 1200: _below_col = (0.55, 0.39, 0.16)
     elif _clr < 2200: _below_col = (0.39, 0.29, 0.14)
     else:             _below_col = (0.27, 0.22, 0.11)
@@ -8234,6 +8238,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             sun_el_deg=_sun_el,
             sun_intensity=_sun_int,
             below_horizon_color=_below_col,
+            alert_enable=(speed >= fp.get("vs0", VS0)),
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain and gps_ok:
