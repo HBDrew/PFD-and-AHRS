@@ -2682,11 +2682,16 @@ def draw_mag_cal(surf):
     _text(surf, instr, 13, WHITE, cx=bx + _MCAL_W // 2, cy=by + 56)
 
     raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
+    cal = float(disp.get("_yaw_cal",   disp.get("yaw", 0.0))) % 360.0
 
-    _text(surf, "AHRS HDG", 11, (170, 185, 210), bold=True,
-          x=bx + 30, y=by + 92)
-    _text(surf, f"{raw:6.1f}°", 22, CYAN, bold=True,
-          x=bx + 30, y=by + 108)
+    _text(surf, "RAW HDG", 11, (200, 190, 100), bold=True,
+          x=bx + 30, y=by + 88)
+    _text(surf, f"{raw:6.1f}°", 20, (240, 220, 80), bold=True,
+          x=bx + 30, y=by + 102)
+    _text(surf, "CAL HDG", 11, (100, 200, 130), bold=True,
+          x=bx + 150, y=by + 88)
+    _text(surf, f"{cal:6.1f}°", 20, (80, 230, 120), bold=True,
+          x=bx + 150, y=by + 102)
 
     # 8-point capture results — two rows of 4 (N NE E SE / S SW W NW)
     wiz_samples = wiz.get("samples", [])
@@ -8033,10 +8038,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         # Deviation correction is now applied on the Pico before
         # broadcasting — disp["yaw"] arrives pre-corrected.
         yaw_corr = yaw_corr_uncal
-    # Stash the uncalibrated yaw so the compass-cal wizard can read
-    # the current "what the AHRS sees right now" value when the
-    # pilot taps CAPTURE on each cardinal.
-    disp["_yaw_uncal"] = yaw_corr_uncal
+    # Stash pre- and post-magdev headings (with orientation) so the cal wizard
+    # can show both values and capture the true raw sensor reading.
+    _pico_yaw_raw = disp.get("yaw_raw", disp["yaw"])
+    disp["_yaw_uncal"] = (ahrs_sign * _pico_yaw_raw + hdg_offset) % 360.0
+    disp["_yaw_cal"]   = yaw_corr_uncal   # post-magdev with orientation
     if use_track:
         # Complementary filter: AHRS yaw rate propagates each frame, GPS
         # track slowly slaves the absolute reference.  Smoother than raw

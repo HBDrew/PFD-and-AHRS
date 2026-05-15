@@ -130,6 +130,8 @@ state = {
     'baro_ok':   False,
     # Magnetic deviation table (36 corrections at 10° steps; loaded from magdev.json)
     '_magdev'  : [],
+    # Pre-correction heading (post yaw_trim, pre magdev) — broadcast for cal panel
+    'yaw_raw'  : 0.0,
 }
 
 
@@ -167,12 +169,12 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
         # ── AHRS ──
         try:
             if ahrs.update():
-                state['roll']  = ahrs.roll  + state['roll_trim']
-                state['pitch'] = ahrs.pitch + state['pitch_trim']
-                state['yaw']   = apply_magdev(
-                    (ahrs.yaw + state['yaw_trim']) % 360,
-                    state['_magdev'])
-                state['ay']    = ahrs.ay * WT901_AY_SIGN
+                state['roll']    = ahrs.roll  + state['roll_trim']
+                state['pitch']   = ahrs.pitch + state['pitch_trim']
+                _raw             = (ahrs.yaw + state['yaw_trim']) % 360
+                state['yaw_raw'] = _raw
+                state['yaw']     = apply_magdev(_raw, state['_magdev'])
+                state['ay']      = ahrs.ay * WT901_AY_SIGN
                 last_ahrs_ms   = utime.ticks_ms()
         except Exception as e:
             print(f'[AHRS] WT901 read error: {e}')
@@ -246,7 +248,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro):
         if tick % usb_interval == 0:
             try:
                 _usb = {k: state[k] for k in (
-                    'roll','pitch','yaw','ay','lat','lon','speed','track',
+                    'roll','pitch','yaw','yaw_raw','ay','lat','lon','speed','track',
                     'fix','sats','alt','gps_alt','vspeed','baro_src','baro_hpa',
                     'ahrs_ok','gps_ok','gps_comm','baro_ok','pitch_trim','roll_trim','yaw_trim',
                 )}

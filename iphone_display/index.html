@@ -306,10 +306,12 @@
     Point NORTH (000°) then tap CAPTURE.
   </p>
   <div class="trim-row" style="margin-bottom:6px">
-    <span class="trim-lbl">AHRS HDG</span>
-    <span class="trim-val" id="mc-live-hdg" style="font-size:18px">—</span>
-    <span class="trim-lbl" style="margin-left:16px">STEP</span>
-    <span class="trim-val" id="mc-step">1 / 4</span>
+    <span class="trim-lbl">RAW HDG</span>
+    <span class="trim-val" id="mc-live-raw" style="font-size:18px;color:#f0c040">—</span>
+    <span class="trim-lbl" style="margin-left:10px">CAL HDG</span>
+    <span class="trim-val" id="mc-live-hdg" style="font-size:18px;color:#40e080">—</span>
+    <span class="trim-lbl" style="margin-left:10px">STEP</span>
+    <span class="trim-val" id="mc-step">1 / 8</span>
   </div>
   <div id="mc-sample-list" style="margin-bottom:4px"></div>
   <div class="trn-btns" style="margin-top:6px">
@@ -483,7 +485,7 @@
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────
-const TARGET = { roll:0, pitch:0, yaw:0, lat:0, lon:0, alt:0,
+const TARGET = { roll:0, pitch:0, yaw:0, yaw_raw:0, lat:0, lon:0, alt:0,
                  speed:0, track:0, vspeed:0, fix:0, sats:0,
                  ay:0, baro_hpa:1013.25, baro_src:'gps', gps_alt:0,
                  pitch_trim:0, roll_trim:0, yaw_trim:0,
@@ -2562,8 +2564,10 @@ function openMagCalPanel() {
   document.getElementById('magcal-panel').style.display = 'block';
   _mcRefreshUI();
   MC._timer = setInterval(() => {
-    const el = document.getElementById('mc-live-hdg');
-    if (el) el.textContent = TARGET.yaw.toFixed(1) + '°';
+    const rawEl = document.getElementById('mc-live-raw');
+    if (rawEl) rawEl.textContent = TARGET.yaw_raw.toFixed(1) + '°';
+    const calEl = document.getElementById('mc-live-hdg');
+    if (calEl) calEl.textContent = TARGET.yaw.toFixed(1) + '°';
   }, 250);
 }
 
@@ -2575,8 +2579,11 @@ function closeMagCalPanel() {
 
 function mcCapture() {
   const card = MC_CARDS[MC.step];
-  MC.samples.push({ m: TARGET.yaw, r: card.ref });
-  _mcStatus('Captured ' + card.name + ': AHRS ' + TARGET.yaw.toFixed(1) + '°');
+  // Capture yaw_raw (pre-magdev sensor reading) so the correction table is
+  // built from the true sensor output, not an already-corrected value.
+  const raw = TARGET.yaw_raw;
+  MC.samples.push({ m: raw, r: card.ref });
+  _mcStatus('Captured ' + card.name + ': RAW ' + raw.toFixed(1) + '°');
   MC.step += 1;
   if (MC.step >= MC_CARDS.length) {
     _mcSaveTable();
@@ -2621,6 +2628,8 @@ function _mcSaveTable() {
 }
 
 function _mcRefreshUI() {
+  const rawEl = document.getElementById('mc-live-raw');
+  if (rawEl) rawEl.textContent = TARGET.yaw_raw.toFixed(1) + '°';
   const el = document.getElementById('mc-live-hdg');
   if (el) el.textContent = TARGET.yaw.toFixed(1) + '°';
 
