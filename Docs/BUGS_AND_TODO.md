@@ -10,6 +10,33 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### BOARD-REV-B  Next AHRS PCB spin — index
+Status: **OPEN — queued, no schedule yet**
+Decisions captured (see linked entries for the full rationale):
+  - **Airspeed transducer**: swap SDP33-1500Pa → **TE MS4525DO ±1 psi**.
+    The SDP33 saturates at ~96 kt; S-21 cruise is 130 kt. See
+    SDP31-AIRDATA "Higher-range swap path".
+  - **AOA transducer**: a **second MS4525DO** on the same I²C bus at
+    the alternate address (single BOM line covers both). See AOA-PROBE.
+  - **AOA probe head**: AlphaSystems Eagle preferred; 2-hole DIY
+    flush probe as the cheap alternative.
+  - **Sensor footprint reservations**: keep the 0x22 SDP3x pad on rev
+    A's footprint plan; rev B replaces it with the second MS4525DO
+    footprint + a pair of silicone-hose nipples for the AOA probe lines.
+Bench plan before the spin: finish air-data validation on the SDP33
+(it'll read up to ~96 kt fine — enough to bench-prove the IAS/TAS/wind
+math against a hand pump and against GPS GS in zero-wind taxi), then
+queue the layout work.
+Firmware to write when rev B lands:
+  - `firmware/ms4525.py` — TE protocol (different from Sensirion), one
+    driver covers both units. ~70 lines.
+  - `main.py` instantiates the driver twice, address-strapped.
+  - `airdata.py` is unchanged — it consumes `dp_pa` regardless of
+    which transducer produced it.
+  - AOA math: linear calibration curve fit on first-flight data, then
+    persisted; `aoa_deg` + `aoa_src` already reserved in the `$AHRS`
+    JSON by the AOA-CALC entry, so the display side picks it up free.
+
 ### AHRS-GIMBAL-LOCK  WT901 Euler output is unusable near high bank
 Status: **OPEN — affects AI behaviour in aerobatic / unusual attitudes**
 Target: `firmware/wt901.py`, `firmware/main.py`, `shared/serial_client.py`,
@@ -256,11 +283,18 @@ Still open:
     a hand pump (0–1500 Pa) to confirm `dp_pa → ias_kt` math; then
     plumb pitot + static and validate IAS against GS at cruise in
     near-zero wind.
-  - **Higher-range swap path** (e.g. SDP31-2500Pa, SDP810-2500Pa) for
-    airframes that cruise above ~97 kt IAS at sea level — same I²C
-    address, same driver, same `dp_pa` field, just trade off
-    resolution for range. The current 1500 Pa unit covers S-21 cruise
-    end-to-end so no swap is queued for this build.
+  - **Higher-range swap path — decided as MS4525DO × 2 in rev B.** The
+    SDP33-1500Pa saturates at ~96 kt IAS sea level. With S-21 cruise
+    actually at ~130 kt (= 2740 Pa dp) the part on the rev-A board is
+    undersized for the real airframe — it pegs in cruise. Pilot
+    decision: **finish bench-validation on the current SDP33** (it'll
+    read up to 96 kt fine, plenty to prove the air-data math), then
+    swap to **TE MS4525DO at ±1 psi** on the next board spin. Same
+    pair gets used for AOA — see AOA-PROBE below for the rationale —
+    so the rev B BOM gains one part number that covers both
+    pitot/static and AOA. Driver work is a new ~70-line
+    `firmware/ms4525.py` (different protocol from Sensirion); the
+    rest of the air-data pipeline doesn't change.
   - **Stall-warn enunciator** below configured Vs1 — visual + voice
     callout to make the existing speed-tape colour band
     authoritative. Pairs with REQ-DISP-PI4-AUD-001.
@@ -412,10 +446,10 @@ and FPV is exactly AOA when the wind is along the flight path —
 a free in-flight calibration target for the airframe constants).
 
 ### AOA-PROBE  Add a second differential-pressure transducer for AOA
-Status: **OPEN — board-revision change for the next layout spin**
-Target: hardware (next board rev), `firmware/sdp31.py` (or sibling
-driver if a different pressure range is used), additions to the
-`$AHRS` packet, AOA indicator on `pi4/pfd.py` and the iPhone
+Status: **OPEN — bundled into the rev B board spin alongside the
+MS4525DO airspeed swap**
+Target: hardware (rev B board), new `firmware/ms4525.py`, additions
+to the `$AHRS` packet, AOA indicator on `pi4/pfd.py` and the iPhone
 display.
 Context: with one differential-pressure transducer doing pitot/static
 (SDP31-AIRDATA), a second sensor connected to a flush-port AOA probe
@@ -432,26 +466,51 @@ the normal envelope.  AOA buys things IAS-only can't:
     indexer / donut, not the airspeed.
   - **Energy management on approach** — particularly relevant
     behind a Rotax that responds slowly to throttle.
-Sensor selection: the AOA probe usually generates ΔP in the 0–2000 Pa
-range over the normal envelope.  Likely candidates: SDP3x-2000Pa
-(higher range than the airspeed unit) or Sensirion's specifically-
-ranged variants.  Pick the part once the probe geometry is fixed.
-Work items (next board rev):
-  - Pick the AOA probe (build a flush-port pair, or buy a probe
-    head — AlphaSystems and Dynon both sell heads that work with
-    a generic differential-pressure sensor).
-  - Add the second ΔP sensor to the board (I²C bus already up;
-    address-select on the SDP3x line lets us run two on one bus).
-  - Driver mirrors `firmware/sdp31.py`; AOA math = calibration curve
-    (linear over the cruising range, departs near the stall — fit
-    on first-flight data, persist coefficients to flash).
-  - AOA field added to `$AHRS` JSON.
+Sensor selection: **TE Connectivity MS4525DO at ±1 psi (±6 895 Pa)**.
+Same part as the rev B pitot/static transducer (see SDP31-AIRDATA
+"Higher-range swap path"), strapped to the alternate I²C address so
+both units share the bus. Rationale:
+  - **Single BOM line** covers pitot/static + AOA. One driver
+    (`firmware/ms4525.py`), one stock-keeping unit.
+  - **Range never saturates** in the S-21 envelope. At 130 kt cruise
+    pitot dp is ~2740 Pa, AOA ΔP at typical cruise AOA is ~100–300
+    Pa, AOA ΔP at stall AOA approaches 1500–2200 Pa. All comfortably
+    inside ±6 895 Pa.
+  - **PixHawk-grade** so there's a deep community calibration data
+    set, well-known temperature-compensation behaviour, and shipping
+    is cheap.
+Probe choice (decoupled from sensor — see USER_MANUAL_PI4 §21
+hardware notes for the longer discussion):
+  - **AlphaSystems Eagle AOA probe head** is the experimental
+    standard. Two ports, pre-calibrated geometry, mounts under the
+    wing on a riblet. Pair with the second MS4525DO. ~$150 for just
+    the head (no electronics).
+  - Cheap alternative: 2-hole DIY flush probe on a brass tube glued
+    into the leading-edge cap. ~$40, takes more in-flight calibration.
+  - Skip the Dynon AOA pitot unless heat is required — its
+    electronics aren't needed and you'd ignore them.
+Work items (rev B board):
+  - Drop a second MS4525DO footprint on the rev B board, address
+    strapped to the alternate slot (0x36 for the AOA twin if pitot
+    sits at 0x28, or vice versa). Same package, same 3V3/GND rails,
+    same I²C bus as the pitot transducer.
+  - Two silicone-hose nipples next to the AOA sensor for the probe
+    pair (upper / lower).
+  - Pick + mount the AOA probe head (AlphaSystems Eagle preferred).
+  - Build `firmware/ms4525.py` covering both units, instantiated
+    twice in `main.py`. AOA math = calibration curve (linear over
+    the cruising range, departs near the stall — fit on
+    first-flight data, persist coefficients to flash).
+  - `aoa_deg` and `aoa_src` fields added to `$AHRS` JSON. The
+    pre-probe AOA-CALC entry already reserves the same fields, so
+    the display path needs no rewrite — `aoa_src` flips from
+    `"calc"` to `"probe"` when the hardware lands.
   - Display: AOA indexer on the right side of the AI when not on
     approach (mutually exclusive with the VDI from the recent work
     — VDI takes priority during approach, AOA at all other times).
     Standard cue: green/yellow/red segments with a fast-erecting
     diamond, donut at on-speed.
-Pairs with SDP31-AIRDATA (same I²C bus + driver pattern) and with
+Pairs with SDP31-AIRDATA (same MS4525DO driver covers both) and with
 AHRS-GPS-AID (AOA-based stall warn is the safety-of-flight payoff
 once attitude is honest).
 
