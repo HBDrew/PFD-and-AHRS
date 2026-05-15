@@ -27,6 +27,12 @@ import socket
 import subprocess
 import urllib.request
 
+# SDL/pygame audio: force ALSA before pygame imports anything else so
+# SDL doesn't pre-pick PulseAudio/PipeWire (which ignore ~/.asoundrc
+# and bypass the panel-speaker redirect). Must precede `import pygame`
+# below — by the time pygame.init() runs SDL_Init reads this hint.
+os.environ.setdefault("SDL_AUDIODRIVER", "alsa")
+
 # Add shared modules to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared'))
 

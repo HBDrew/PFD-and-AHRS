@@ -141,6 +141,17 @@ def init():
     if _sounds:
         print(f"[audio] {len(_sounds)} callouts ready: "
               f"{', '.join(sorted(_sounds))}")
+        # Self-test ping: play one short callout on startup so the
+        # pilot hears that audio is wired and the speaker is alive.
+        # Skipped if master switch was muted via persisted setting.
+        if _enabled:
+            ping = _sounds.get("terrain")
+            if ping is not None:
+                try:
+                    ping.play()
+                    print("[audio] startup self-test played")
+                except pygame.error as e:
+                    print(f"[audio] startup self-test failed: {e}")
     else:
         print("[audio] no callouts loaded (espeak missing?)")
 
