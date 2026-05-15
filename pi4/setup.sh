@@ -33,8 +33,7 @@ apt-get install -y --no-install-recommends \
     libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libsdl2-mixer-2.0-0 \
     fonts-dejavu-core \
     espeak \
-    git curl \
-    2>/dev/null
+    git curl
 
 echo "[3/9] Installing OpenGL dependencies (for SVT renderer)…"
 apt-get install -y --no-install-recommends \
