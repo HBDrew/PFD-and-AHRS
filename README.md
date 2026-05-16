@@ -264,7 +264,7 @@ bash wifi_switch.sh status
 | Tap bottom-right of heading strip | Open baro setting numpad |
 | Two-finger hold (0.8 s) | Open setup menu |
 | Setup → System → AIRPORTS | Airport data screen (filters, runway/centerline toggles, UPDATE) |
-| Tap SIM watermark (during sim) | Open SIM CONTROLS overlay (failure injection + EXIT) |
+| Tap red SIM ✕ button at AI top-centre (during sim) | Open SIM CONTROLS overlay (sensor failures + FOLLOW mode + PAUSE/RESUME + EXIT SETUP / EXIT SIM) |
 | (keyboard) D | Toggle demo mode |
 | (keyboard) Esc | Quit |
 

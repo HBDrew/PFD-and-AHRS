@@ -206,11 +206,11 @@ A short white horizontal bar (16×4 px) sits below the roll pointer's doghouse b
 
 **TERRAIN CAUTION** (amber, steady) — terrain clearance below **500 ft** along the 45-second look-ahead, or an obstacle within the forward wedge below **500 ft** of the aircraft.
 
-![Amber TERRAIN CAUTION banner during a low pass into rising terrain](../pi4/previews/preview_terrain_caution.png)
+![Amber TERRAIN CAUTION banner during a descent into rising terrain](../pi4/previews/pfd_gl/preview_terrain_caution.png)
 
 **PULL UP TERRAIN** (red, 1 Hz flash) — terrain clearance below **100 ft** along the look-ahead, or an obstacle within the forward wedge below **100 ft**.
 
-![Red PULL UP TERRAIN at critical clearance — flashes at 1 Hz](../pi4/previews/preview_terrain_warning.png)
+![Red PULL UP TERRAIN at critical clearance — flashes at 1 Hz](../pi4/previews/pfd_gl/preview_terrain_warning.png)
 
 **TERRAIN look-ahead**: the alert isn't fired off your current ground point alone. Each render frame the PFD walks twelve samples along your current GPS ground track for 45 s of flight (≈ 1.2 NM at 100 kt), projects altitude forward at the current VSI, and trips the alert on the worst clearance encountered — same convention EGPWS / TAWS-B uses. The benefit is that you get the banner (and the voice callout) while there's still room to climb, not when you're already in the wall.
 
@@ -878,11 +878,20 @@ KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA — chose
 
 ### While the simulator is running
 
-![PFD inside a running sim — SIM watermark visible at AI centre, full instrumentation live](../pi4/previews/pfd_gl/preview_sim_running.png)
+![PFD inside a running sim — red SIM ✕ button at the top centre of the AI, full instrumentation live behind it](../pi4/previews/pfd_gl/preview_sim_running.png)
 
-- A small `SIM` watermark appears at the centre of the AI.
-- Tap the watermark to open **SIM CONTROLS** (overlay on top of the live PFD) — from here you can toggle GPS/BARO/AHRS failures mid-flight, switch the AP follow mode (see below), exit setup, or end the simulator.
-- All three bug controls (ALT / HDG / SPD) remain active — set a new bug and the autopilot will fly to it. This is how you explore heading changes, climbs, descents, and arrivals at other airports.
+- A small red **SIM ✕** button appears just above the AI centre. It serves a dual role: it tells you the simulator is active, and it's the tap target that opens the **SIM CONTROLS** overlay on top of the live PFD. (Without the button it's easy to forget the sim is running and end up killing the PFD process to escape it — the red ✕ is intentional.)
+- Tap the SIM ✕ button to open **SIM CONTROLS**:
+
+| Row / button | What it does |
+|--------------|--------------|
+| **GPS / BARO / AHRS** ON / FAIL pairs | Toggle individual sensor failures mid-flight. Effects mirror SIM SETUP — `NO GPS` / `GPS ALT` / `AHRS FAIL` badges appear, the affected instruments fall back the same way they would in the aircraft. Failures revert as soon as you toggle back to ON. |
+| **FOLLOW** — BUGS / FLT PLAN | AP source. BUGS = pure bug-tracker (heading bug + alt bug + speed bug). FLT PLAN = couples the AP to the active direct-to or synthetic approach with a 45° intercept; on an approach it slides down the GS once you're above it. See below for the full intercept logic. |
+| **PAUSE** (amber) / **RESUME** (green) | Freezes `_sim_state.tick()` while keeping the rest of the UI live — bugs, baro, units, menus all stay responsive. Useful when you want to set up a scenario without the aircraft drifting away from you. The button label flips to RESUME when paused so the next tap obviously starts time again. |
+| **EXIT SETUP** (neutral) | Closes the SIM CONTROLS overlay. **The simulator keeps running** — you're just dismissing the modal. |
+| **EXIT SIM** (red) | Kills the simulator and returns to the live AHRS source. If no AHRS unit is connected the display shows stale indications (`NO LINK`); if the Pico W is wired in, live data resumes immediately. |
+
+- All three bug controls (ALT / HDG / SPD) remain active behind the modal — set a new bug and the autopilot will fly to it. This is how you explore heading changes, climbs, descents, and arrivals at other airports.
 - Baro setting, display units, filters, and every other adjustment all take effect in real time just as they would in the aircraft.
 
 ### AP follow mode — FOLLOW BUGS vs FOLLOW FLT PLAN
@@ -1143,7 +1152,9 @@ Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pi
 | **Set callout volume** | Setup → DISPLAY → ALERT VOLUME − / + |
 | **Recapture SDP zero** | Setup → AHRS / SENSORS → SDP ZERO → CAPTURE (aircraft stationary, pitot capped) |
 | Start sim | Setup → System → FLIGHT SIMULATOR → START |
-| SIM controls | Tap SIM watermark |
+| SIM controls | Tap red SIM ✕ button at AI top-centre |
+| Pause / resume sim | SIM controls → PAUSE / RESUME |
+| Close SIM controls overlay (sim keeps running) | SIM controls → EXIT SETUP |
 | Exit sim | SIM controls → EXIT SIM |
 | Refresh autostart unit | `sudo bash tools/install_autostart.sh` |
 

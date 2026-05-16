@@ -200,8 +200,8 @@ def _setup_hits_boxes():
         "lat":     34.8634,    # RWY 03 threshold (LE)
         "lon":     -111.7934,
         "elev_ft": 4827.0,
-        "act_lat": 34.8420,
-        "act_lon": -111.8110,
+        "act_lat": 34.8578,
+        "act_lon": -111.7978,
     }
     pfd.disp["approach"] = {
         "active":         True,
@@ -217,13 +217,16 @@ def _setup_hits_boxes():
 
 
 def _setup_sim_running():
-    """Live-PFD scene with the SIM watermark visible.  Merge into the
-    existing disp["sim"] dict rather than replacing it — wiping out
-    preset_idx (and the other init_* / *_fail keys) crashes the later
-    sim_setup screen render that reads sim["preset_idx"]."""
+    """Live-PFD scene with the SIM ✕ button + watermark visible.  Need
+    BOTH disp["sim"]["enabled"] = True (in case any future code reads
+    it) AND a truthy pfd._sim_state, since the watermark / X button
+    render path checks `_sim_state is not None`.  A bare object()
+    sentinel is enough — the render path never calls methods on it
+    (only main()'s tick loop does, which doesn't run in offline mode)."""
     pfd.disp["sim"]["enabled"]     = True
     pfd.disp["sim"]["paused"]      = False
     pfd.disp["sim"]["follow_mode"] = "bugs"
+    pfd._sim_state = object()
     pfd.disp["ds"]["map_enabled"] = True
     pfd.disp["ds"]["map_zoom_nm"] = 10
 
@@ -246,15 +249,31 @@ def _force_terrain_alert(level):
     pfd._update_terrain_alert = _noop
 
 
+def _clear_approach_state():
+    """Wipe direct-to + approach state so a scene gets a clean PFD
+    without leftover KSEZ/03 readout, GS diamond, HITS boxes, or
+    cyan inset trace inherited from a previous approach scene."""
+    pfd.disp["nav"] = {
+        "ident": "", "lat": 0.0, "lon": 0.0, "elev_ft": 0.0,
+        "act_lat": 0.0, "act_lon": 0.0,
+    }
+    pfd.disp["approach"] = {"active": False}
+
+
 def _setup_terrain_caution():
-    # Clear the SIM watermark left over from the preceding sim_running
-    # scene so the TAWS shot doesn't render with SIM superimposed on it.
+    # Clear the SIM watermark + approach state left over from the
+    # preceding sim_running and synthetic_approach scenes so the TAWS
+    # shot renders a clean PFD with just the alert banner.
     pfd.disp["sim"]["enabled"] = False
+    pfd._sim_state = None
+    _clear_approach_state()
     _force_terrain_alert(1)
 
 
 def _setup_terrain_warning():
     pfd.disp["sim"]["enabled"] = False
+    pfd._sim_state = None
+    _clear_approach_state()
     _force_terrain_alert(2)
 
 
@@ -437,6 +456,7 @@ def main():
     pfd._update_terrain_alert = _REAL_UPDATE_TERRAIN_ALERT
     pfd._terrain_alert_level  = 0
     pfd.disp["sim"]["enabled"] = False
+    pfd._sim_state             = None
 
     # ── Setup screens (no GL needed) ─────────────────────────────────────────
     # Move output dir up one level so setup PNGs go alongside the existing
