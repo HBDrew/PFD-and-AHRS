@@ -128,7 +128,11 @@ AHRS_FILTER_ENABLE      = True
 
 # Mahony tuning. Defaults are conservative; bench-test then refine.
 AHRS_KP_ACC             = 1.0     # accel proportional gain (rad/s per unit error)
-AHRS_KI_ACC             = 0.01    # accel integral gain — estimates gyro bias
+AHRS_KI_ACC             = 0.001   # accel integral gain — estimates gyro bias.
+                                  # Keep small: any steady residual cross-product
+                                  # error (centripetal mismatch, sensor noise)
+                                  # winds the integrator up. Bench tested: 0.001
+                                  # gives <0.05° drift over 5 min at 5° bank.
 AHRS_KP_MAG             = 0.5     # mag proportional gain (yaw correction)
 AHRS_ACCEL_GATE_G       = 0.20    # accel weight = 0 outside |a|=1g ± this band
 

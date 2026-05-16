@@ -135,10 +135,15 @@ class Mahony:
         ey = self.kp_acc * a_w * ey_a + self.kp_mag * m_w * ey_m
         ez = self.kp_acc * a_w * ez_a + self.kp_mag * m_w * ez_m
 
-        if a_w > 0.0 or m_w > 0.0:
-            self.bx += self.ki_acc * (a_w*ex_a + m_w*ex_m) * dt
-            self.by += self.ki_acc * (a_w*ey_a + m_w*ey_m) * dt
-            self.bz += self.ki_acc * (a_w*ez_a + m_w*ez_m) * dt
+        if a_w > 0.0:
+            # Gyro-bias estimator: only consume accel-derived error. Mag
+            # error is fed into the proportional path but kept out of the
+            # integrator — a residual mag direction error (soft iron,
+            # magnetic-deviation table mismatch) would otherwise be
+            # interpreted as a gyro bias and wind up over time.
+            self.bx += self.ki_acc * a_w * ex_a * dt
+            self.by += self.ki_acc * a_w * ey_a * dt
+            self.bz += self.ki_acc * a_w * ez_a * dt
 
         # Apply correction to gyro and subtract estimated bias
         gx_c = gx + ex - self.bx
