@@ -397,10 +397,19 @@ _sky_vao      = None     # fullscreen quad VAO
 _terrain_vao  = None     # terrain mesh VAO
 _terrain_vbo_pos = None  # terrain vertex positions VBO
 _terrain_ibo     = None  # terrain triangle indices IBO
+# Polyline rendering (HITS boxes + direct-to course trace) in the
+# standalone-EGL path — separate from _SharedState's polyline buffers.
+_line_prog       = None  # shader program for depth-tested polylines
+_line_vbo        = None  # reusable VBO, grown on demand
+_line_vao        = None  # vertex array
+_line_capacity   = 0     # current VBO byte capacity
+_last_line_width = None  # last value pushed to ctx.line_width (cache to skip GL state changes)
 
 _fbo_size   = (0, 0)     # current FBO (w, h)
 _mesh_key   = None       # cache key (lat_q, lon_q, alt_q) — mesh rebuild trigger
 _mesh_radius_m = MESH_RADIUS_NM * NM_TO_M  # current mesh radius (for grid fade)
+_mesh_lat   = 0.0        # last-built mesh centre lat (= aircraft lat in standalone path)
+_mesh_lon   = 0.0        # last-built mesh centre lon
 
 
 def _init_gl(width: int, height: int) -> bool:
@@ -445,11 +454,14 @@ def _init_gl(width: int, height: int) -> bool:
     _fbo_size = (width, height)
 
     # Compile shaders once
+    global _line_prog, _line_vbo, _line_vao, _line_capacity
     if _terrain_prog is None:
         _terrain_prog = _ctx.program(vertex_shader=VERTEX_SHADER,
                                      fragment_shader=FRAGMENT_SHADER)
         _sky_prog = _ctx.program(vertex_shader=SKY_VERTEX_SHADER,
                                  fragment_shader=SKY_FRAGMENT_SHADER)
+        _line_prog = _ctx.program(vertex_shader=LINE_VERTEX_SHADER,
+                                  fragment_shader=LINE_FRAGMENT_SHADER)
 
     # Sky quad: fullscreen triangle pair in NDC
     if _sky_vao is None:
@@ -459,6 +471,15 @@ def _init_gl(width: int, height: int) -> bool:
         ], dtype=np.float32)
         sky_vbo = _ctx.buffer(sky_verts.tobytes())
         _sky_vao = _ctx.vertex_array(_sky_prog, [(sky_vbo, '2f', 'in_pos')])
+
+    # Polyline VBO+VAO — single reusable buffer, grown as needed in
+    # _render_standalone_polyline.  Same shader as the shared-context
+    # path so HITS / direct-to traces look identical between live PFD
+    # and offline preview captures.
+    if _line_vao is None:
+        _line_capacity = 4096   # ~340 vec3 vertices initial
+        _line_vbo = _ctx.buffer(reserve=_line_capacity)
+        _line_vao = _ctx.vertex_array(_line_prog, [(_line_vbo, '3f', 'in_pos')])
 
     return True
 
@@ -470,6 +491,14 @@ def _build_mesh(srtm_dir: str, lat: float, lon: float, alt_ft: float):
     Aircraft is at origin (0,0,0); +X=East, +Y=North, +Z=Up; alt is mesh-relative.
     """
     global _mesh_key, _mesh_radius_m, _terrain_vao, _terrain_vbo_pos, _terrain_ibo
+    global _mesh_lat, _mesh_lon
+
+    # In the standalone path the aircraft is the mesh origin so the
+    # polyline transform needs the aircraft lat/lon as its reference
+    # frame.  Stash on every call (cheap) so render_svt_gl()'s caller
+    # doesn't have to thread it through separately.
+    _mesh_lat = lat
+    _mesh_lon = lon
 
     # Cache key: quantize lat/lon/alt so we don't rebuild every frame
     # 0.005° ≈ 0.3 nm at mid-latitudes; 200 ft alt steps
@@ -644,6 +673,46 @@ def _horizon_y_ndc(pitch_deg: float, fov_y_deg: float) -> float:
 
 # ── Public render function ────────────────────────────────────────────────────
 
+def _render_standalone_polyline(mvp, vertices_latlonelev, rgba, line_width):
+    """Render one depth-tested polyline through the standalone-EGL path's
+    framebuffer.  Vertices are (lat_deg, lon_deg, elev_ft); they're
+    converted to the same mesh-local metric frame the terrain mesh uses
+    so the terrain's depth buffer occludes line segments hidden behind
+    ridges.  Mirrors _SharedState.render_polyline_latlonelev() — same
+    shader, same coordinate convention — but operates on the
+    module-level VBO/VAO instead of an instance attribute."""
+    global _line_capacity
+    if vertices_latlonelev is None or len(vertices_latlonelev) < 2:
+        return
+    v = np.asarray(vertices_latlonelev, dtype=np.float32)
+    cos_mlat = max(1e-6, math.cos(math.radians(_mesh_lat)))
+    east_m  = (v[:, 1] - _mesh_lon) * 60.0 * NM_TO_M * cos_mlat
+    north_m = (v[:, 0] - _mesh_lat) * 60.0 * NM_TO_M
+    up_m    = v[:, 2] * FT_TO_M
+    world = np.stack([east_m, north_m, up_m], axis=1).astype(np.float32)
+    data = world.tobytes()
+    # Grow buffer if this polyline outgrew the previous capacity.
+    if len(data) > _line_capacity:
+        _line_vbo.release()
+        _line_vao.release()
+        _line_capacity = max(len(data), _line_capacity * 2)
+        globals()['_line_vbo'] = _ctx.buffer(reserve=_line_capacity)
+        globals()['_line_vao'] = _ctx.vertex_array(
+            _line_prog, [(_line_vbo, '3f', 'in_pos')])
+    _line_vbo.write(data)
+    _line_prog['u_mvp'].write(mvp.T.tobytes())
+    _line_prog['u_color'].value = rgba
+    # Width support is driver-dependent; many GLES drivers cap at 1 px.
+    global _last_line_width
+    if _last_line_width != line_width:
+        try:
+            _ctx.line_width = float(line_width)
+        except Exception:
+            pass
+        _last_line_width = line_width
+    _line_vao.render(mode=moderngl.LINE_STRIP, vertices=len(world))
+
+
 def render_svt_gl(
     srtm_dir: str,
     ai_w: int,
@@ -659,9 +728,16 @@ def render_svt_gl(
     sun_el_deg: float | None = None,
     sun_intensity: float | None = None,
     below_horizon_color: tuple = (0.35, 0.27, 0.15),
+    polylines: list | None = None,
 ):
     """Render the SVT terrain background using OpenGL.
     Returns a pygame.Surface (ai_w × ai_h, RGBA) or None if GL failed.
+
+    ``polylines`` is the same list-of-(verts, rgba, line_width) tuples
+    the shared-GL path accepts — HITS boxes, direct-to course trace,
+    etc.  Each polyline is rendered AFTER the terrain pass so the depth
+    buffer occludes segments hidden behind ridges, then the FBO is read
+    back to a pygame.Surface as before.
     """
     if not _init_gl(ai_w, ai_h):
         return None
@@ -722,6 +798,13 @@ def render_svt_gl(
         _terrain_prog['u_sun_intensity'].value = _si
         _terrain_prog['u_ambient'].value       = SUN_AMBIENT
         _terrain_vao.render()
+
+    # 3D polylines (HITS boxes + direct-to course trace) — drawn AFTER
+    # the terrain pass so the terrain's depth buffer occludes segments
+    # hidden behind ridges.
+    if polylines:
+        for verts, rgba, width in polylines:
+            _render_standalone_polyline(mvp, verts, rgba, width)
 
     # Read pixels back into pygame Surface (flip Y: OpenGL origin is bottom-left)
     raw = _fbo.read(components=3, alignment=1)

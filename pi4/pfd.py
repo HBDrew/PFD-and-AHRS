@@ -1061,19 +1061,25 @@ _svt_frame = 0
 SVT_UPDATE_FRAMES = 3   # update terrain every N frames (~10 Hz at 30 fps)
 
 
-def get_svt_surface(ai_w, ai_h, pitch, roll, hdg, alt, lat, lon):
+def get_svt_surface(ai_w, ai_h, pitch, roll, hdg, alt, lat, lon, polylines=None):
     """Dispatch to OpenGL or pygame SVT renderer based on config + availability.
 
     With the OpenGL renderer, we render every frame (no caching) since the
     GPU update is essentially free at the Pi 4's frame rate.  The pygame
     fallback caches every SVT_UPDATE_FRAMES frames to keep up with 30 fps.
+
+    ``polylines`` (HITS boxes, direct-to trace) are rendered into the
+    standalone-EGL pass when SVT_RENDERER == "opengl"; pygame fallback
+    ignores them (the live Pi 4 always uses GL, so the pygame path only
+    runs on hardware without EGL).
     """
     global _svt_frame
     _svt_frame += 1
 
     use_gl = (SVT_RENDERER == "opengl") and _SVT_GL_AVAILABLE
     if use_gl:
-        surf = render_svt_gl(SRTM_DIR, ai_w, ai_h, pitch, roll, hdg, alt, lat, lon)
+        surf = render_svt_gl(SRTM_DIR, ai_w, ai_h, pitch, roll, hdg, alt,
+                             lat, lon, polylines=polylines)
         if surf is not None:
             return surf
         # Fall through to pygame on render failure
@@ -1087,10 +1093,16 @@ def get_svt_surface(ai_w, ai_h, pitch, roll, hdg, alt, lat, lon):
     return _svt_cache[key]
 
 
-def draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon):
-    """Draw SVT sky/terrain background into ai_rect region of surf."""
+def draw_ai_background(surf, ai_rect, pitch, roll, hdg, alt, lat, lon,
+                       polylines=None):
+    """Draw SVT sky/terrain background into ai_rect region of surf.
+
+    ``polylines`` flows through to the standalone-EGL path so HITS
+    boxes and the direct-to course trace render in the offline
+    preview captures, not just the live shared-GL path."""
     ax, ay, aw, ah = ai_rect
-    bg = get_svt_surface(aw, ah, pitch, roll, hdg, alt, lat, lon)
+    bg = get_svt_surface(aw, ah, pitch, roll, hdg, alt, lat, lon,
+                         polylines=polylines)
     surf.blit(bg, (ax, ay))
 
 
@@ -2027,6 +2039,89 @@ def _alert_radius_nm(speed_kt: float) -> float:
     return max(ALERT_RADIUS_MIN_NM, min(ALERT_RADIUS_MAX_NM, dyn))
 
 
+def _approach_corridor_inhibit(lat, lon, alt_ft):
+    """Return True when the aircraft is inside the published-approach
+    corridor and TAWS alerts should be silenced — same convention as
+    Honeywell MK V/VII and Garmin G3X.  Mode 2 / Mode 7 alerts
+    suppress when the aircraft is on a stabilised approach to a known
+    runway: within ~5 NM of the threshold, aligned within roughly the
+    CDI full-scale (±0.3 NM) of the centreline, and on a sensible
+    altitude band relative to the threshold.
+
+    The pilot deliberately descends into terrain proximity on every
+    final — keeping TAWS armed there spams the cockpit during normal
+    landings.  This gate only fires when an approach is loaded
+    (disp["approach"]["active"]), so en-route deviations into terrain
+    still trip alerts as normal.
+    """
+    ap = disp.get("approach") or {}
+    if not ap.get("active"):
+        return False
+    thr_lat  = ap.get("thresh_lat")
+    thr_lon  = ap.get("thresh_lon")
+    thr_elev = ap.get("thresh_elev_ft")
+    course   = ap.get("course_deg")
+    if thr_lat is None or thr_lon is None or thr_elev is None or course is None:
+        return False
+
+    cos_lat = max(0.05, math.cos(math.radians(thr_lat)))
+    # Vector from threshold to aircraft, in NM East/North.
+    n_nm = (lat - thr_lat) * 60.0
+    e_nm = (lon - thr_lon) * 60.0 * cos_lat
+    # Rotate into runway-aligned frame: +y = along reciprocal course
+    # (back toward the aircraft on final), +x = perpendicular right.
+    back_rad = math.radians((course + 180.0) % 360.0)
+    cos_b, sin_b = math.cos(back_rad), math.sin(back_rad)
+    along_nm =  n_nm * cos_b + e_nm * sin_b   # +ve = along final, -ve = past threshold
+    cross_nm = -n_nm * sin_b + e_nm * cos_b   # +ve = right of course
+
+    if along_nm < -0.5:        # past the threshold (rollout)
+        return False
+    if along_nm > 5.0:          # too far out to be on final
+        return False
+    if abs(cross_nm) > 0.3:    # outside the ±0.3 NM CDI full-scale
+        return False
+    # Altitude band: threshold elevation to threshold + 2500 ft.
+    # "Way too high" deviations come back out of inhibit so a botched
+    # missed approach into rising terrain still trips the alert.
+    if alt_ft < thr_elev - 100.0 or alt_ft > thr_elev + 2500.0:
+        return False
+    return True
+
+
+# Manual TERRAIN INHIBIT — pilot-controlled mute on the TAWS pipeline.
+# Tap the button on AHRS / SENSORS to silence terrain + obstacle +
+# pull-up callouts for _INHIBIT_DURATION_S; sink-rate stays armed
+# since "excessive descent rate" is the one alert that still matters
+# on a stabilised approach.  Inhibit auto-clears on timeout so a
+# forgotten toggle doesn't permanently mute the safety net.
+_INHIBIT_DURATION_S = 120.0
+_terrain_inhibit_until_ms = 0
+
+
+def is_terrain_inhibited():
+    """True while the pilot's manual TERRAIN INHIBIT is in effect."""
+    return pygame.time.get_ticks() < _terrain_inhibit_until_ms
+
+
+def inhibit_remaining_s():
+    """Seconds left on the manual TERRAIN INHIBIT (0 when not active)."""
+    rem_ms = _terrain_inhibit_until_ms - pygame.time.get_ticks()
+    return max(0.0, rem_ms / 1000.0)
+
+
+def toggle_terrain_inhibit():
+    """Tap-handler for the TERRAIN INHIBIT button.  Arms a fresh
+    _INHIBIT_DURATION_S window if currently inactive; clears the
+    inhibit immediately if active (so a second tap cancels)."""
+    global _terrain_inhibit_until_ms
+    if is_terrain_inhibited():
+        _terrain_inhibit_until_ms = 0
+    else:
+        _terrain_inhibit_until_ms = (pygame.time.get_ticks()
+                                     + int(_INHIBIT_DURATION_S * 1000))
+
+
 def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
                           track_deg=0.0, vsi_fpm=0.0, vso_kt=VS0):
     """
@@ -2042,6 +2137,14 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
     altitude projected by current VSI — mirrors how EGPWS / TAWS-B fire
     on a mountain *ahead* of the aircraft rather than waiting until it's
     directly under (or in) it.
+
+    Two additional inhibit gates layer on top of the Vso check:
+      • approach-corridor auto-inhibit (Mode 7 EGPWS convention)
+      • pilot-controlled manual TERRAIN INHIBIT (120 s timer)
+    Both silence terrain + obstacle + pull-up callouts.  Sink-rate
+    stays armed in both cases — the relevant alert during a real
+    descent is "you're going down too fast", which the pilot still
+    wants to hear.
     """
     global _terrain_alert_level
     if not gps_ok:
@@ -2051,6 +2154,25 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
     # Inhibit terrain/obstacle alerts below Vso (taxi, rollout, etc.)
     if speed_kt < vso_kt:
         _terrain_alert_level = 0
+        return
+
+    # Approach-corridor auto-inhibit + manual TERRAIN INHIBIT.  Both
+    # mute the alert pipeline without touching the sink-rate path
+    # (which fires its own audio callout below regardless).
+    if (_approach_corridor_inhibit(lat, lon, alt_ft)
+            or is_terrain_inhibited()):
+        _terrain_alert_level = 0
+        # Still run the sink-rate check below — it's the one cue that
+        # remains relevant on a stabilised approach.  Skip the rest
+        # of the look-ahead / obstacle work since the result is muted.
+        agl_ft = None
+        if _has_terrain:
+            elev_under = get_elevation_ft(SRTM_DIR, lat, lon)
+            agl_ft = alt_ft - elev_under
+        if agl_ft is not None and 0 < agl_ft < 2500.0 and vsi_fpm < 0:
+            sink_threshold_fpm = 1500.0 + agl_ft * 1.4
+            if -vsi_fpm > sink_threshold_fpm:
+                audio_alerts.play("sink_rate")
         return
 
     level = 0
@@ -2240,6 +2362,13 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats,
         badge_l("NO APT", _AMBER, (220, 180, 60))
     elif ad.get("expired", False):
         badge_l("EXP APT", (120, 55, 0), (255, 160, 40))
+
+    # TERRAIN INHIBIT — amber countdown badge while the pilot's manual
+    # mute is active.  Visible reminder that the TAWS safety net is
+    # off; auto-clears when the 120 s timer expires.
+    if is_terrain_inhibited():
+        badge_l(f"TER INH {int(inhibit_remaining_s())}s",
+                (120, 70, 0), (255, 180, 60))
 
     # ── Right badges: problems only ─────────────────────────────────────────
     rx = ALT_X - 4
@@ -3414,6 +3543,8 @@ def handle_event(event, demo_mode):
                 _settings.mark_dirty()
             elif action == "mag_cal_open":
                 _mag_cal_open("ahrs_setup")
+            elif action == "terrain_inhibit_toggle":
+                toggle_terrain_inhibit()
             elif action and action.startswith("set:"):
                 _, key, val = action.split(":", 2)
                 disp["ss"][key] = val
@@ -5016,6 +5147,27 @@ def draw_ahrs_setup(surf, ss):
         else:
             _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, active)
 
+    # Row 7: Terrain alert inhibit — pilot-controlled mute on the
+    # TAWS pipeline (terrain look-ahead + obstacle + pull-up callouts).
+    # Auto-clears after 120 s so a forgotten toggle doesn't permanently
+    # disable the safety net.  Sink-rate stays armed even while
+    # inhibited — that's the alert that still matters on a descent.
+    inh_rem = inhibit_remaining_s()
+    if inh_rem > 0:
+        inh_sub = f"TAWS callouts muted — {int(inh_rem)} s remaining (tap to clear)"
+    else:
+        inh_sub = "Mute TAWS callouts for 120 s (sink-rate stays armed)"
+    bx, by, bw, bh = _setting_row(surf, 7, "TERRAIN INHIBIT", inh_sub)
+    inh_w = 138
+    inh_bx = bx + bw - inh_w - 14
+    inh_by = by + (bh - _DSP_BTN_H) // 2
+    if inh_rem > 0:
+        _action_btn(surf, inh_bx, inh_by, inh_w, _DSP_BTN_H,
+                    f"INHIBIT  {int(inh_rem)}s", "warn")
+    else:
+        _action_btn(surf, inh_bx, inh_by, inh_w, _DSP_BTN_H,
+                    "INHIBIT", "normal")
+
 
 def ahrs_setup_hit(x, y, ss):
     if _back_hit(x, y):
@@ -5023,7 +5175,7 @@ def ahrs_setup_hit(x, y, ss):
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(7):
+    for ri in range(8):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
@@ -5077,6 +5229,13 @@ def ahrs_setup_hit(x, y, ss):
             if rx <= x <= rx+120:
                 if ry <= y <= ry+_DSP_BTN_H:
                     return "set:airspeed_src:gps"
+        elif ri == 7:
+            inh_w = 138
+            inh_bx = _SS_MX + bw - inh_w - 14
+            inh_by = by + (_SS_RH - _DSP_BTN_H) // 2
+            if (inh_bx <= x <= inh_bx + inh_w
+                    and inh_by <= y <= inh_by + _DSP_BTN_H):
+                return "terrain_inhibit_toggle"
     return None
 
 
@@ -8845,7 +9004,28 @@ def render(surf, demo_mode, connected, data_stale=False):
         )
         _shared_gl_ctx.viewport = (0, 0, DISPLAY_W, DISPLAY_H)
     elif _has_terrain and gps_ok:
-        draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt_render, lat, lon)
+        # Build the same HITS / direct-to polyline list the shared-GL
+        # path builds above so offline preview captures (which use the
+        # standalone-EGL renderer) show the cyan HITS boxes and the
+        # magenta D2 trace.  The shared-GL branch only runs on the
+        # live Pi 4; this branch covers everything else.
+        _gl_polylines = []
+        _ap = disp.get("approach") or {}
+        if not _ap.get("active"):
+            _trace_verts = build_direct_to_trace_vertices()
+            if _trace_verts is not None and len(_trace_verts) >= 2:
+                _gl_polylines.append((
+                    _trace_verts,
+                    (220 / 255.0, 0.0, 220 / 255.0, 1.0),
+                    3.0,
+                ))
+        if _ap.get("active"):
+            _gl_polylines.extend(_hits_mod.build_box_polylines(
+                _ap["thresh_lat"], _ap["thresh_lon"],
+                _ap["thresh_elev_ft"], _ap["course_deg"],
+            ))
+        draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt_render,
+                           lat, lon, polylines=_gl_polylines)
     else:
         draw_simple_ai_background(surf, _full_ai, pitch, roll)
 

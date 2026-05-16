@@ -176,6 +176,12 @@ The attitude indicator on the Pi 4 variant provides full 3D Synthetic Vision Ter
 
 > **REQ-DISP-PI4-TAWS-009** A SINK RATE caution (audio only; the banner band is owned by TERRAIN / OBSTACLE) shall fire when the aircraft is below 2 500 ft AGL and the descent rate exceeds an AGL-scaled threshold curve: 1 500 fpm at the surface, rising linearly to approximately 5 000 fpm at 2 500 ft AGL. This implements the GPWS Mode 1 (excessive descent rate) callout.
 
+> **REQ-DISP-PI4-TAWS-010** When a synthetic approach is active and the aircraft is inside the published-approach corridor, the terrain look-ahead, obstacle proximity, and pull-up alerts shall be auto-inhibited. The approach corridor shall be defined as: along-track within −0.5 NM to +5.0 NM of the threshold along the published course, cross-track within ±0.3 NM of the centreline, and altitude between threshold elevation and threshold elevation + 2 500 ft. The SINK RATE callout (REQ-DISP-PI4-TAWS-009) shall remain armed inside the corridor — sink rate is the one alert that stays relevant on a stabilised approach. Aircraft outside the corridor on any axis shall re-arm all alerts immediately.
+
+> **REQ-DISP-PI4-TAWS-011** The AHRS / Sensors setup screen shall provide a pilot-controlled TERRAIN INHIBIT button. When tapped, terrain look-ahead, obstacle, and pull-up callouts shall be muted for 120 seconds; SINK RATE shall remain armed. A second tap shall clear the inhibit immediately. The inhibit shall auto-clear when the 120 s timer expires, so a forgotten toggle cannot permanently disable the TAWS safety net.
+
+> **REQ-DISP-PI4-TAWS-012** While the manual TERRAIN INHIBIT (REQ-DISP-PI4-TAWS-011) is active, the status badge strip shall display `TER INH Xs` in amber, where X is the integer number of seconds remaining on the 120 s timer.
+
 ---
 
 ## 9A. Airport Display

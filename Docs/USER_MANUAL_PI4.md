@@ -218,6 +218,16 @@ A short white horizontal bar (16×4 px) sits below the roll pointer's doghouse b
 
 **Low-speed inhibit**: alerts (terrain and obstacle, both banners *and* the voice callouts) are silenced below **VS0** (default 48 kt). This kills the nuisance fire during taxi, takeoff roll, and landing rollout where the aircraft is in continuous "ground-impact territory" by design. Sink-rate / bank-angle callouts share the same inhibit.
 
+**Approach-corridor auto-inhibit**: when a synthetic approach is loaded (§16C) and the aircraft is inside the published-approach corridor, TAWS callouts auto-suppress — same Mode 7 convention Honeywell MK V/VII and Garmin G3X use. The corridor is defined as:
+
+- Within **5 NM** of the threshold along the approach course
+- Cross-track within **±0.3 NM** of the published centreline (matches the CDI full-scale on approach)
+- Altitude between threshold-elevation and threshold + **2 500 ft**
+
+While the aircraft is in the corridor the look-ahead terrain / obstacle / pull-up alerts go quiet — you don't get nagged during a normal descent into a known runway environment. **Sink-rate stays armed** because "you're going down too fast at the runway" is the one cue that's still relevant on a stabilised approach. The moment the aircraft drifts outside the corridor (high deviation, way off centreline, missed approach, sidestep manoeuvre) every alert comes back automatically.
+
+**Manual TERRAIN INHIBIT**: a pilot-controlled mute on the AHRS / Sensors screen (§11). Tap **INHIBIT** to silence terrain + obstacle + pull-up callouts for **120 seconds**, after which the safety net comes back on automatically. Use it at known false-positive locations (low passes, off-airport landings, charted approaches into airports surrounded by terrain where the auto-corridor doesn't catch it). The status badge `TER INH Xs` appears in the badge strip with the remaining countdown so you can never forget the inhibit is on. A second tap clears the inhibit immediately. Sink-rate also stays armed under manual inhibit.
+
 Requires GPS fix and SRTM tiles (terrain) or FAA obstacle data (obstacles) loaded.
 
 Voice callouts for the same conditions live in §19. The full alert pipeline (banner + voice + on-AI red recovery cues at extreme attitudes) is designed so the pilot gets the same information whether their eyes are on the instruments or on the windscreen.
@@ -265,6 +275,7 @@ Blank during normal flight. Appear only when attention required.
 | `EXP OBS` | Orange | Obstacle data > 28 days old |
 | `NO APT` | Amber | No airport data loaded |
 | `EXP APT` | Orange | Airport data older than expiry |
+| `TER INH` *N*`s` | Amber | TAWS callouts muted by the pilot, *N* seconds remain on the 120 s inhibit |
 | `GPS TRK` | Magenta | GPS TRK heading mode active |
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
 | `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites |
@@ -405,6 +416,7 @@ Seven rows on this screen, each independent:
 | **HEADING SOURCE** | MAG / TRK / AUTO | AUTO | Magnetometer, GPS ground track (via complementary filter), or auto-select (TRK in motion, MAG when stationary). |
 | **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | IAS SENSOR | IAS from the SDP33-1500Pa differential-pressure sensor (default when `airdata_ok`). Forced fallback to GPS groundspeed when the sensor is unhealthy or the pilot pins it manually. |
 | **SDP ZERO** | CAPTURE button | (idle) | Capture the current differential-pressure reading as the in-flight zero offset. Aircraft must be stationary with no airflow over the pitot. Status row shows `LAST ZERO h:mm ago`. |
+| **TERRAIN INHIBIT** | INHIBIT button | (off) | Mute all TAWS callouts (terrain look-ahead, obstacle, pull-up) for 120 s. Sink-rate stays armed — the descent-rate alert still applies even while inhibited. Status row shows the countdown while active; an amber `TER INH Xs` badge also appears in the badge strip. Second tap clears the inhibit early. Auto-clears on timeout. |
 
 ### Mounting and orientation
 
@@ -1151,6 +1163,7 @@ Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pi
 | **Mute / unmute audio** | Setup → DISPLAY → ALERT AUDIO OFF / ON |
 | **Set callout volume** | Setup → DISPLAY → ALERT VOLUME − / + |
 | **Recapture SDP zero** | Setup → AHRS / SENSORS → SDP ZERO → CAPTURE (aircraft stationary, pitot capped) |
+| **Mute TAWS callouts for 2 minutes** | Setup → AHRS / SENSORS → TERRAIN INHIBIT → INHIBIT (auto-clears after 120 s) |
 | Start sim | Setup → System → FLIGHT SIMULATOR → START |
 | SIM controls | Tap red SIM ✕ button at AI top-centre |
 | Pause / resume sim | SIM controls → PAUSE / RESUME |

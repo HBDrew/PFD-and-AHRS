@@ -194,31 +194,44 @@ def _setup_approach_picker():
 
 
 def _setup_hits_boxes():
-    """Tight short-final scene for the HITS-box documentation shot.
-    Pulls the real KSEZ RWY 03 threshold + course out of the loaded
-    runway cache, then puts the aircraft 0.5 NM back along the
-    reciprocal of the published course at threshold-elev + 150 ft
-    (just above the 3° glideslope so the VDI diamond deflects DOWN).
+    """Mid-final HITS-box documentation shot.  Aircraft sits 1.5 NM
+    back along the published course, on the 3° glideslope, lined up.
+    From 1.5 NM out the nearest 5–6 HITS boxes (every 1000 ft from
+    1000 ft to ~5 NM) all sit ahead of the aircraft and read at
+    legible sizes — the closest box is ~8000 ft ahead, ~14 px wide;
+    the boxes step up the centreline and visually stack toward the
+    threshold.
 
-    The SCENES tuple's lat/lon entry is overwritten here so the
-    aircraft is actually positioned ahead of the runway threshold —
-    the SCENES default was 34.842/-111.811 which only matched the
-    OLD synthetic threshold coordinates, not the real one."""
+    Pulls the real KSEZ RWY 03 threshold + course out of the loaded
+    runway cache so the boxes align with the actual airport label.
+    Falls back to the synthetic threshold (good enough for CI) when
+    no runway cache is on disk.
+
+    The SCENES tuple's seeded lat/lon/alt are overwritten here so the
+    aircraft is positioned correctly relative to the real threshold."""
+    import math
+
     thr_lat, thr_lon, thr_elev, course = _find_ksez_rwy_03()
 
-    # Aircraft 0.5 NM behind threshold along reciprocal course.
-    ac_lat, ac_lon = _back_along_course(thr_lat, thr_lon, course, 0.5)
-    # Activation point further back so the CDI has some history.
-    act_lat, act_lon = _back_along_course(thr_lat, thr_lon, course, 1.5)
+    final_nm = 1.5    # aircraft distance back from threshold along final
+    # Aircraft position 1.5 NM along the reciprocal of the published course.
+    ac_lat, ac_lon = _back_along_course(thr_lat, thr_lon, course, final_nm)
+    # Activation 2.5 NM further back so the CDI has history.
+    act_lat, act_lon = _back_along_course(thr_lat, thr_lon, course, 4.0)
 
-    # Overwrite the seeded aircraft position + altitude so the
-    # rendered viewpoint matches the real runway geometry.
+    # Glideslope altitude at 1.5 NM out — pilot's eye-line on the 3°
+    # path that the HITS boxes are centred on.  Add a small 30 ft
+    # offset above GS so the VDI diamond deflects DOWN modestly
+    # (half-scale or so), which matches the "slightly hot, on path"
+    # documentation framing.
+    nm_to_ft   = 6076.12
+    gs_height  = final_nm * nm_to_ft * math.tan(math.radians(3.0))
+    ac_alt_ft  = thr_elev + gs_height + 30.0
+
     snap = {
-        "lat":  ac_lat, "lon": ac_lon,
-        # Threshold + ~150 ft puts us about half-scale above GS at
-        # this range — the VDI diamond deflects DOWN to the threshold.
-        "alt":  thr_elev + 150.0, "gps_alt": thr_elev + 150.0,
-        "yaw":  course, "track": course,
+        "lat":  ac_lat,   "lon":     ac_lon,
+        "alt":  ac_alt_ft, "gps_alt": ac_alt_ft,
+        "yaw":  course,   "track":   course,
     }
     with pfd._state_lock:
         pfd.state.update(snap)
