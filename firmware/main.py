@@ -33,12 +33,19 @@ from config import (
     WT901_AY_SIGN,
     AHRS_PITCH_TRIM, AHRS_ROLL_TRIM, AHRS_YAW_TRIM,
     AHRS_CONNECTOR, AHRS_MOUNTING,
+    AHRS_FILTER_ENABLE, AHRS_KP_ACC, AHRS_KI_ACC, AHRS_KP_MAG,
+    AHRS_ACCEL_GATE_G, AHRS_USE_MAG,
+    AHRS_GPS_TRACK_ENABLE, AHRS_GPS_TRACK_MIN_KT,
+    AHRS_GPS_TRACK_INTERVAL_S, AHRS_GPS_TRACK_ALPHA,
+    AHRS_FWD_IN_SENSOR,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
-from wt901      import WT901
-from gps        import GPS
-from web_server import start_server
+from wt901        import WT901
+from gps          import GPS
+from web_server   import start_server
+from ahrs_filter  import Mahony
 import airdata
+import math
 
 TRIMS_FILE  = 'trims.json'
 MAGDEV_FILE = 'magdev.json'
@@ -166,6 +173,9 @@ state = {
     'wind_dir'   : 0.0,  # wind direction (deg from); 0 = wind absent or unknown
     'wind_kt'    : 0.0,  # wind speed (knots)
     'airdata_ok' : False, # True when SDP33 + BME280 both fresh
+    # On-Pico Mahony filter state (broadcast for display diagnostics)
+    'att_src'   : 'wt901', # 'mahony' when filter is active, else 'wt901'
+    'att_aid'   : 'basic', # 'tas' | 'gs' | 'basic' — centripetal speed source
     # Sensor health flags (set every sensor_loop tick)
     'ahrs_ok':   False,
     'gps_ok':    False,
@@ -197,52 +207,178 @@ def setup_ap():
     return ip
 
 
+_G_PER_M_S2 = 1.0 / 9.80665
+_KT_TO_M_S  = 0.514444
+
+
+def _hdg_offset_for(connector):
+    """Connector orientation → heading offset applied in the Euler remap."""
+    if connector == 'forward': return 90.0
+    if connector == 'left':    return 180.0
+    if connector == 'aft':     return 270.0
+    return 0.0   # 'right' (default)
+
+
+def _apply_remap(roll, pitch, yaw, connector, mounting):
+    """Map WT901 sensor-frame Euler (ENU-convention) → aircraft body NED.
+    Returns (body_roll, body_pitch, body_yaw_raw_unwrapped, hdg_off).
+    yaw return is pre-trim and pre-magdev; caller applies those."""
+    _r = -roll
+    _p = pitch
+    if connector == 'forward':
+        _p, _r = -_r, _p
+    elif connector == 'left':
+        _p, _r = -_p, -_r
+    elif connector == 'aft':
+        _p, _r = _r, -_p
+    # 'right' is no-op
+    if mounting == 'inverted':
+        _p = -_p
+        _r = -_r
+    return _r, _p, -yaw, _hdg_offset_for(connector)
+
+
+def _run_filter_step(ahrs, ahrs_filter, dt):
+    """Centripetal-corrected accel + gyro (+mag) → one Mahony step. Returns
+    ('tas'|'gs'|'basic', a_c_magnitude_g) for diagnostics."""
+    gx = math.radians(ahrs.wx)
+    gy = math.radians(ahrs.wy)
+    gz = math.radians(ahrs.wz)
+
+    # Speed source ladder: TAS (physically correct) → GS → none.
+    if state.get('airdata_ok') and state.get('tas_kt', 0.0) > 5.0:
+        v_kt    = state['tas_kt']
+        att_aid = 'tas'
+    elif state.get('gps_ok') and state.get('speed', 0.0) > 5.0:
+        v_kt    = state['speed']
+        att_aid = 'gs'
+    else:
+        v_kt    = 0.0
+        att_aid = 'basic'
+
+    # Centripetal accel in sensor frame: a_c = ω × V_fwd_sensor (m/s²)
+    v_ms = v_kt * _KT_TO_M_S
+    vx = AHRS_FWD_IN_SENSOR[0] * v_ms
+    vy = AHRS_FWD_IN_SENSOR[1] * v_ms
+    vz = AHRS_FWD_IN_SENSOR[2] * v_ms
+    acx = (gy*vz - gz*vy) * _G_PER_M_S2
+    acy = (gz*vx - gx*vz) * _G_PER_M_S2
+    acz = (gx*vy - gy*vx) * _G_PER_M_S2
+
+    # WT901 reads specific force (stationary level = +1g on Z): adding the
+    # inertial centripetal vector recovers the gravity direction.
+    ax = ahrs.ax + acx
+    ay = ahrs.ay + acy
+    az = ahrs.az + acz
+
+    if AHRS_USE_MAG and ahrs.new_mag:
+        mx, my, mz = ahrs.mx, ahrs.my, ahrs.mz
+        ahrs.new_mag = False
+    else:
+        mx = my = mz = None
+
+    ahrs_filter.update(gx, gy, gz, ax, ay, az, mx, my, mz, dt=dt)
+    a_c_mag = math.sqrt(acx*acx + acy*acy + acz*acz)
+    return att_aid, a_c_mag
+
+
 # ── Sensor loop ──────────────────────────────────────────────────────────────
-async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp):
+async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter):
     """
     Poll all sensors at ~50 Hz and push values into the shared state dict.
     The web server reads state independently at BROADCAST_HZ.
 
-    baro: BME280 instance or None (falls back to GPS altitude).
-    sdp:  SDP31  instance or None (no air-data, GPS GS used for speed).
+    baro:        BME280 instance or None (falls back to GPS altitude).
+    sdp:         SDP31  instance or None (no air-data, GPS GS used for speed).
+    ahrs_filter: Mahony instance, or None to fall back to WT901 PKT_ANGLE.
     """
     tick = 0
     last_ahrs_ms = utime.ticks_ms()   # 5-second window before ahrs_ok goes False
     last_gps_nmea_ms = None           # last time a valid NMEA sentence arrived
     last_sdp_ms = None                # last successful SDP33 read
+    filt_last_ms     = None           # for filter dt computation
+    filt_seeded      = False          # PKT_ANGLE-based seeding done?
+    gps_slave_last_ms = utime.ticks_ms()
     while True:
         # ── AHRS ──
         try:
-            if ahrs.update():
-                # ENU→NED base conversion (WT901 uses ENU: roll left-positive,
-                # yaw CCW-positive).  Orientation remaps axes so the display
-                # reads correctly regardless of how the sensor is mounted.
-                _r = -ahrs.roll
-                _p = ahrs.pitch
-                _conn = state['orientation']
-                if _conn == 'forward':
-                    _p, _r = -_r, _p
-                    _hdg_off = 90.0
-                elif _conn == 'left':
-                    _p, _r = -_p, -_r
-                    _hdg_off = 180.0
-                elif _conn == 'aft':
-                    _p, _r = _r, -_p
-                    _hdg_off = 270.0
-                else:    # 'right' — default, connector points to the right
-                    _hdg_off = 0.0
-                if state['mounting'] == 'inverted':
-                    _p = -_p
-                    _r = -_r
-                # Trim applied in NED frame (after axis remapping)
+            ahrs.update()   # drain UART; per-packet flags set on driver
+            _conn = state['orientation']
+            _mount = state['mounting']
+            _hdg_off = _hdg_offset_for(_conn)
+
+            if ahrs_filter is not None and ahrs.new_gyro:
+                # Filter dt from gyro packet arrival times (clamped 1–100 ms).
+                now_ms = utime.ticks_ms()
+                if filt_last_ms is None:
+                    dt = 0.02
+                else:
+                    dt_ms = utime.ticks_diff(now_ms, filt_last_ms)
+                    if dt_ms < 1:    dt_ms = 1
+                    elif dt_ms > 100: dt_ms = 100
+                    dt = dt_ms / 1000.0
+                filt_last_ms = now_ms
+
+                # First-run seed from PKT_ANGLE so we don't coast from
+                # identity through several seconds of accel-pull convergence.
+                if (not filt_seeded) and ahrs.new_angle:
+                    ahrs_filter.seed_from_euler_deg(
+                        ahrs.roll, ahrs.pitch, ahrs.yaw)
+                    filt_seeded = True
+
+                att_aid, a_c_mag = _run_filter_step(ahrs, ahrs_filter, dt)
+                state['att_aid']        = att_aid
+                state['_a_centri_g']    = a_c_mag
+                state['_accel_weight']  = ahrs_filter.last_accel_weight
+                ahrs.new_gyro  = False
+                ahrs.new_accel = False
+
+                # Filter Euler is in WT901 sensor frame; pass through the
+                # existing remap so trim/magdev semantics are preserved.
+                f_roll, f_pitch, f_yaw = ahrs_filter.euler_deg()
+                if f_yaw < 0:
+                    f_yaw += 360.0
+                _r, _p, _y, _ = _apply_remap(
+                    f_roll, f_pitch, f_yaw, _conn, _mount)
                 state['roll']    = _r + state['roll_trim']
                 state['pitch']   = _p + state['pitch_trim']
-                # Yaw: negate ENU→NED, apply orientation offset, then trim
-                _raw             = (-ahrs.yaw - state['yaw_trim'] + _hdg_off) % 360
+                _raw             = (_y - state['yaw_trim'] + _hdg_off) % 360
                 state['yaw_raw'] = _raw
                 state['yaw']     = apply_magdev(_raw, state['_magdev'])
                 state['ay']      = ahrs.ay * WT901_AY_SIGN
-                last_ahrs_ms   = utime.ticks_ms()
+                state['att_src'] = 'mahony'
+                last_ahrs_ms     = utime.ticks_ms()
+
+                # GPS-track yaw slaving — low-rate nudge so short-term gyro
+                # dynamics still dominate. Target is in the filter's sensor
+                # frame so we invert the remap: state_yaw_raw = -f_yaw + off
+                # → target_f_yaw = off - state_track - yaw_trim (mod 360).
+                if (AHRS_GPS_TRACK_ENABLE
+                        and state['gps_ok']
+                        and state['speed'] >= AHRS_GPS_TRACK_MIN_KT
+                        and utime.ticks_diff(utime.ticks_ms(),
+                                             gps_slave_last_ms)
+                            >= int(AHRS_GPS_TRACK_INTERVAL_S * 1000)):
+                    target_sensor_yaw = (
+                        _hdg_off - state['track'] - state['yaw_trim']) % 360
+                    ahrs_filter.nudge_yaw_toward_deg(
+                        target_sensor_yaw, AHRS_GPS_TRACK_ALPHA)
+                    gps_slave_last_ms = utime.ticks_ms()
+
+            elif ahrs_filter is None and ahrs.new_angle:
+                # Fallback path: use WT901's internal Euler (pre-filter behaviour).
+                _r, _p, _y, _ = _apply_remap(
+                    ahrs.roll, ahrs.pitch, ahrs.yaw, _conn, _mount)
+                state['roll']    = _r + state['roll_trim']
+                state['pitch']   = _p + state['pitch_trim']
+                _raw             = (_y - state['yaw_trim'] + _hdg_off) % 360
+                state['yaw_raw'] = _raw
+                state['yaw']     = apply_magdev(_raw, state['_magdev'])
+                state['ay']      = ahrs.ay * WT901_AY_SIGN
+                state['att_src'] = 'wt901'
+                state['att_aid'] = 'basic'
+                ahrs.new_angle   = False
+                last_ahrs_ms     = utime.ticks_ms()
         except Exception as e:
             print(f'[AHRS] WT901 read error: {e}')
         state['ahrs_ok'] = utime.ticks_diff(utime.ticks_ms(), last_ahrs_ms) < 5000
@@ -377,6 +513,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp):
                     'orientation','mounting',
                     'ias_kt','tas_kt','dp_pa','oat_c','dens_alt_ft',
                     'wind_dir','wind_kt','airdata_ok',
+                    'att_src','att_aid',
                 )}
                 print('$AHRS,' + ujson.dumps(_usb))
             except Exception:
@@ -529,8 +666,22 @@ async def main():
             print(f'SDP33 not found ({e})  –  airspeed will fall back to GPS GS')
             sdp = None
 
+    ahrs_filter = None
+    if AHRS_FILTER_ENABLE:
+        ahrs_filter = Mahony(
+            kp_acc       = AHRS_KP_ACC,
+            ki_acc       = AHRS_KI_ACC,
+            kp_mag       = AHRS_KP_MAG,
+            accel_gate_g = AHRS_ACCEL_GATE_G,
+        )
+        print(f'Mahony AHRS filter enabled  Kp_acc={AHRS_KP_ACC} '
+              f'Ki_acc={AHRS_KI_ACC} Kp_mag={AHRS_KP_MAG}'
+              f'  use_mag={AHRS_USE_MAG}  gps_track_aid={AHRS_GPS_TRACK_ENABLE}')
+    else:
+        print('Mahony filter disabled — using WT901 PKT_ANGLE Euler output')
+
     await asyncio.gather(
-        sensor_loop(ahrs, gps, baro, sdp),
+        sensor_loop(ahrs, gps, baro, sdp, ahrs_filter),
         start_server(state, port=HTTP_PORT),
         stdin_cmd_loop(),
     )

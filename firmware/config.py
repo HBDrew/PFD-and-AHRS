@@ -112,5 +112,49 @@ AHRS_CONNECTOR = 'right'
 # Applies an additional pitch/roll sign flip, independent of AHRS_CONNECTOR.
 AHRS_MOUNTING  = 'normal'
 
+# ── On-Pico Mahony AHRS filter ──────────────────────────────────────────────
+# When True, the firmware runs a Mahony filter on raw WT901 accel + gyro
+# (+mag when available) and uses its output as roll/pitch/yaw. When False,
+# the WT901's internal Euler output (PKT_ANGLE 0x53) is used unchanged — the
+# pre-filter behaviour.
+#
+# The filter accepts a velocity-aided centripetal-acceleration correction
+# (the dominant source of "leans" in coordinated turns). Speed source order:
+#   1. IAS (SDP33 + airdata_ok)   — physically correct (air-relative ω × V)
+#   2. GS  (GPS, gps_ok)          — close in still air, off by wind component
+#   3. none                       — no centripetal correction; gyro/accel only
+# The active source is broadcast as state['att_aid'] = 'tas' | 'gs' | 'basic'.
+AHRS_FILTER_ENABLE      = True
+
+# Mahony tuning. Defaults are conservative; bench-test then refine.
+AHRS_KP_ACC             = 1.0     # accel proportional gain (rad/s per unit error)
+AHRS_KI_ACC             = 0.01    # accel integral gain — estimates gyro bias
+AHRS_KP_MAG             = 0.5     # mag proportional gain (yaw correction)
+AHRS_ACCEL_GATE_G       = 0.20    # accel weight = 0 outside |a|=1g ± this band
+
+# Use the WT901 magnetometer (PKT_MAG 0x54) in the Mahony correction. If the
+# WT901 isn't outputting mag packets the filter falls back to gyro-only yaw,
+# corrected slowly by GPS track (see AHRS_GPS_TRACK_*).
+AHRS_USE_MAG            = True
+
+# GPS-track yaw slaving. Once per AHRS_GPS_TRACK_INTERVAL_S, when the GPS
+# fix is valid and groundspeed exceeds AHRS_GPS_TRACK_MIN_KT, nudge the
+# filter yaw toward GPS track by AHRS_GPS_TRACK_ALPHA. Small values keep
+# the short-term gyro response intact.
+AHRS_GPS_TRACK_ENABLE     = True
+AHRS_GPS_TRACK_MIN_KT     = 20.0   # GS below this → no yaw slaving
+AHRS_GPS_TRACK_INTERVAL_S = 1.0    # seconds between corrections
+AHRS_GPS_TRACK_ALPHA      = 0.02   # fraction of yaw error closed per call
+
+# Aircraft "forward" unit vector expressed in the WT901 sensor frame.
+# Used only for centripetal correction: a_c = ω_sensor × (V * fwd_sensor).
+# Default assumes 'right' connector + 'normal' mounting: WT901 mounted
+# label-up with the connector pointing to the right of the aircraft, so
+# the sensor's +Y axis points along the aircraft's forward direction.
+# If the centripetal correction makes turn behaviour WORSE rather than
+# better, the sign or axis here is wrong — flip empirically (same workflow
+# as WT901_AY_SIGN). Vector should be unit-magnitude.
+AHRS_FWD_IN_SENSOR        = (0.0, 1.0, 0.0)
+
 # ── Data broadcast rate ──────────────────────────────────────────────────────
 BROADCAST_HZ = 10   # SSE events per second sent to the phone display
