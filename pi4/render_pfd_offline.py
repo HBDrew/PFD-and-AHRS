@@ -149,25 +149,29 @@ def _setup_direct_to_ksez():
 
 def _setup_synthetic_approach():
     """KSEZ RWY 03 short final — sets disp["approach"] so HITS, VDI,
-    ±0.3 nm CDI and the cyan inset trace all render.  Uses the
-    threshold + course of the LE end of RWY 03/21 from the synthetic
-    runway record injected by _inject_synthetic_runways."""
+    ±0.3 nm CDI and the cyan inset trace all render.  Pulls the
+    threshold + course out of the loaded runway cache so the HITS
+    boxes and runway polygon align with the actual airport label.
+    Activation point computed 3 NM back along the reciprocal of the
+    real published course."""
+    thr_lat, thr_lon, thr_elev, course = _find_ksez_rwy_03()
+    act_lat, act_lon = _back_along_course(thr_lat, thr_lon, course, 3.0)
     pfd.disp["nav"] = {
         "ident":   "KSEZ",
-        "lat":     34.8634,    # RWY 03 threshold (LE)
-        "lon":     -111.7934,
-        "elev_ft": 4827.0,
-        "act_lat": 34.8090,
-        "act_lon": -111.8230,
+        "lat":     thr_lat,
+        "lon":     thr_lon,
+        "elev_ft": thr_elev,
+        "act_lat": act_lat,
+        "act_lon": act_lon,
     }
     pfd.disp["approach"] = {
         "active":         True,
         "airport":        "KSEZ",
         "runway":         "03",
-        "thresh_lat":     34.8634,
-        "thresh_lon":     -111.7934,
-        "thresh_elev_ft": 4827.0,
-        "course_deg":     33.0,
+        "thresh_lat":     thr_lat,
+        "thresh_lon":     thr_lon,
+        "thresh_elev_ft": thr_elev,
+        "course_deg":     course,
     }
     pfd.disp["ds"]["map_enabled"] = True
     pfd.disp["ds"]["map_zoom_nm"] = 5
@@ -191,28 +195,53 @@ def _setup_approach_picker():
 
 def _setup_hits_boxes():
     """Tight short-final scene for the HITS-box documentation shot.
-    Aircraft sits ~1.3 NM SSW of the RWY 03 threshold, ~270 ft above
-    threshold elevation — close enough that the cyan HITS boxes occupy
-    the centre of the AI rather than being lost behind extended
-    centreline dashes at the 3-NM scene."""
+    Pulls the real KSEZ RWY 03 threshold + course out of the loaded
+    runway cache, then puts the aircraft 0.5 NM back along the
+    reciprocal of the published course at threshold-elev + 150 ft
+    (just above the 3° glideslope so the VDI diamond deflects DOWN).
+
+    The SCENES tuple's lat/lon entry is overwritten here so the
+    aircraft is actually positioned ahead of the runway threshold —
+    the SCENES default was 34.842/-111.811 which only matched the
+    OLD synthetic threshold coordinates, not the real one."""
+    thr_lat, thr_lon, thr_elev, course = _find_ksez_rwy_03()
+
+    # Aircraft 0.5 NM behind threshold along reciprocal course.
+    ac_lat, ac_lon = _back_along_course(thr_lat, thr_lon, course, 0.5)
+    # Activation point further back so the CDI has some history.
+    act_lat, act_lon = _back_along_course(thr_lat, thr_lon, course, 1.5)
+
+    # Overwrite the seeded aircraft position + altitude so the
+    # rendered viewpoint matches the real runway geometry.
+    snap = {
+        "lat":  ac_lat, "lon": ac_lon,
+        # Threshold + ~150 ft puts us about half-scale above GS at
+        # this range — the VDI diamond deflects DOWN to the threshold.
+        "alt":  thr_elev + 150.0, "gps_alt": thr_elev + 150.0,
+        "yaw":  course, "track": course,
+    }
+    with pfd._state_lock:
+        pfd.state.update(snap)
+    pfd.disp.update(snap)
+
     pfd.disp["nav"] = {
         "ident":   "KSEZ",
-        "lat":     34.8634,    # RWY 03 threshold (LE)
-        "lon":     -111.7934,
-        "elev_ft": 4827.0,
-        "act_lat": 34.8578,
-        "act_lon": -111.7978,
+        "lat":     thr_lat,
+        "lon":     thr_lon,
+        "elev_ft": thr_elev,
+        "act_lat": act_lat,
+        "act_lon": act_lon,
     }
     pfd.disp["approach"] = {
         "active":         True,
         "airport":        "KSEZ",
         "runway":         "03",
-        "thresh_lat":     34.8634,
-        "thresh_lon":     -111.7934,
-        "thresh_elev_ft": 4827.0,
-        "course_deg":     33.0,
+        "thresh_lat":     thr_lat,
+        "thresh_lon":     thr_lon,
+        "thresh_elev_ft": thr_elev,
+        "course_deg":     course,
     }
-    # Inset hidden for this shot so the boxes own the frame
+    # Inset hidden for this shot so the boxes own the frame.
     pfd.disp["ds"]["map_enabled"] = False
 
 
@@ -288,11 +317,17 @@ SCENE_EXTRA_SETUP = {
 
 
 def _inject_synthetic_runways():
-    """Synthesise the KSEZ runway record so the approach-picker modal,
+    """Synthesise a KSEZ runway record so the approach-picker modal,
     the runway centreline overlays, and the active-approach scene all
-    have something to read.  Real runway data ships in airports.npy
-    (gitignored, downloaded at install time); a single airport's
-    geometry is enough for the preview generator."""
+    have something to read **when no real runway data is on disk**.
+    On a host with the OurAirports runway cache loaded (pfd._runways is
+    populated), this is a no-op: the real data already has KSEZ
+    RWY 03/21 at its actual threshold coordinates and overriding it
+    with a synthetic record would mis-align the runway polygon
+    relative to the airport label."""
+    if getattr(pfd, "_runways", None) is not None and len(pfd._runways) > 0:
+        return  # real runway data is loaded — don't clobber it
+
     try:
         import numpy as np
     except ImportError:
@@ -310,9 +345,10 @@ def _inject_synthetic_runways():
         ("he_lat",    "f4"), ("he_lon", "f4"),
         ("he_elev_ft","f4"), ("he_hdg", "f4"),
     ])
-    # KSEZ RWY 03/21 — single physical runway, two ends (per the
-    # picker convention).  Approximate magnetic-true offset baked into
-    # the published headings (33° / 213° true ≈ 03/21 magnetic in AZ).
+    # KSEZ RWY 03/21 — placeholder geometry used only when no real
+    # runway cache is on disk (CI environments, fresh installs).  The
+    # coordinates here are intentionally approximate; the live render
+    # uses the OurAirports cache via _ad_load_airports() and is exact.
     records = [
         ("KSEZ", 5132.0, 100.0, "ASPH", True,
          "03", "21",
@@ -320,6 +356,47 @@ def _inject_synthetic_runways():
          34.8763, -111.7818, 4827.0, 213.0),
     ]
     pfd._runways = np.array(records, dtype=dtype)
+
+
+def _find_ksez_rwy_03():
+    """Pull the real KSEZ RWY 03 LE threshold (lat, lon, elev_ft) and
+    true course out of the loaded runway cache.  Falls back to the
+    synthetic placeholder coords if (a) there's no runway data, or
+    (b) KSEZ isn't in the cache.  Returns (thresh_lat, thresh_lon,
+    thresh_elev_ft, course_deg)."""
+    runways = getattr(pfd, "_runways", None)
+    if runways is None or len(runways) == 0:
+        return 34.8634, -111.7934, 4827.0, 33.0   # synthetic fallback
+
+    # Find the KSEZ RWY 03 record — case-insensitive on the ident.
+    for rec in runways:
+        if str(rec["airport"]).upper() != "KSEZ":
+            continue
+        # Look for the end that identifies as "03" (or "3"); the LE/HE
+        # naming convention is independent of which numeric end "03"
+        # lives on, so we check both pairs and pick whichever matches.
+        for end_prefix in ("le", "he"):
+            ident = str(rec[f"{end_prefix}_ident"]).strip().lstrip("0")
+            if ident == "3":
+                return (float(rec[f"{end_prefix}_lat"]),
+                        float(rec[f"{end_prefix}_lon"]),
+                        float(rec[f"{end_prefix}_elev_ft"]),
+                        float(rec[f"{end_prefix}_hdg"]))
+    # KSEZ not in cache; fall back to synthetic
+    return 34.8634, -111.7934, 4827.0, 33.0
+
+
+def _back_along_course(thr_lat, thr_lon, course_deg, dist_nm):
+    """Compute a lat/lon `dist_nm` behind the threshold along the
+    reciprocal of `course_deg` — i.e. the upwind point a final-
+    approach aircraft would be at relative to a given threshold."""
+    import math
+    back_brg = (course_deg + 180.0) % 360.0
+    br = math.radians(back_brg)
+    cos_lat = max(0.05, math.cos(math.radians(thr_lat)))
+    d_lat = (dist_nm / 60.0) * math.cos(br)
+    d_lon = (dist_nm / 60.0) * math.sin(br) / cos_lat
+    return thr_lat + d_lat, thr_lon + d_lon
 
 
 def _inject_synthetic_obstacles():
