@@ -182,6 +182,8 @@ The attitude indicator on the Pi 4 variant provides full 3D Synthetic Vision Ter
 
 > **REQ-DISP-PI4-TAWS-012** While the manual TERRAIN INHIBIT (REQ-DISP-PI4-TAWS-011) is active, the status badge strip shall display `TER INH Xs` in amber, where X is the integer number of seconds remaining on the 120 s timer.
 
+> **REQ-DISP-PI4-TAWS-013** While the approach-corridor auto-inhibit (REQ-DISP-PI4-TAWS-010) is gating TAWS callouts, the status badge strip shall display `TER INH APR` in amber, so the pilot can see at a glance that the safety net is off and that the cause is the active approach (not a stuck manual inhibit). When both inhibits are active simultaneously the manual `TER INH Xs` countdown shall take precedence on the badge label, since the countdown is the more actionable cue.
+
 ---
 
 ## 9A. Airport Display

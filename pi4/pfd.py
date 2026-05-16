@@ -2098,10 +2098,23 @@ def _approach_corridor_inhibit(lat, lon, alt_ft):
 _INHIBIT_DURATION_S = 120.0
 _terrain_inhibit_until_ms = 0
 
+# True for the duration of one render frame whenever the
+# approach-corridor auto-inhibit (REQ-DISP-PI4-TAWS-010) is gating the
+# alert pipeline.  Set in _update_terrain_alert; read by the status
+# badges so the cockpit shows the safety net is off.  No timer — the
+# auto-inhibit follows the aircraft position frame-to-frame.
+_approach_inhibit_active = False
+
 
 def is_terrain_inhibited():
     """True while the pilot's manual TERRAIN INHIBIT is in effect."""
     return pygame.time.get_ticks() < _terrain_inhibit_until_ms
+
+
+def is_approach_inhibit_active():
+    """True while the synthetic-approach corridor is gating TAWS
+    callouts (set fresh on every _update_terrain_alert tick)."""
+    return _approach_inhibit_active
 
 
 def inhibit_remaining_s():
@@ -2146,7 +2159,11 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
     descent is "you're going down too fast", which the pilot still
     wants to hear.
     """
-    global _terrain_alert_level
+    global _terrain_alert_level, _approach_inhibit_active
+    # Clear the auto-inhibit flag every frame BEFORE any early returns
+    # so the badge doesn't stick on a stale True when GPS drops out or
+    # the aircraft taxis below Vso.
+    _approach_inhibit_active = False
     if not gps_ok:
         _terrain_alert_level = 0
         return
@@ -2158,9 +2175,12 @@ def _update_terrain_alert(lat, lon, alt_ft, speed_kt, gps_ok,
 
     # Approach-corridor auto-inhibit + manual TERRAIN INHIBIT.  Both
     # mute the alert pipeline without touching the sink-rate path
-    # (which fires its own audio callout below regardless).
-    if (_approach_corridor_inhibit(lat, lon, alt_ft)
-            or is_terrain_inhibited()):
+    # (which fires its own audio callout below regardless).  The
+    # auto-corridor state is published to a module-level flag so the
+    # status-badge code can surface the `TER INH APR` cue without
+    # re-computing the corridor geometry.
+    _approach_inhibit_active = _approach_corridor_inhibit(lat, lon, alt_ft)
+    if _approach_inhibit_active or is_terrain_inhibited():
         _terrain_alert_level = 0
         # Still run the sink-rate check below — it's the one cue that
         # remains relevant on a stabilised approach.  Skip the rest
@@ -2363,12 +2383,19 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats,
     elif ad.get("expired", False):
         badge_l("EXP APT", (120, 55, 0), (255, 160, 40))
 
-    # TERRAIN INHIBIT — amber countdown badge while the pilot's manual
-    # mute is active.  Visible reminder that the TAWS safety net is
-    # off; auto-clears when the 120 s timer expires.
+    # TERRAIN INHIBIT — amber badge whenever the TAWS safety net is
+    # gated.  Two reasons that can happen, with different labels so
+    # the pilot can tell why:
+    #   `TER INH Xs`    pilot's manual mute is active (countdown)
+    #   `TER INH APR`   approach-corridor auto-inhibit (on stabilised
+    #                   final to a loaded synthetic approach)
+    # Manual wins the label when both are active — the countdown is
+    # the more actionable cue (it tells the pilot when alerts return).
     if is_terrain_inhibited():
         badge_l(f"TER INH {int(inhibit_remaining_s())}s",
                 (120, 70, 0), (255, 180, 60))
+    elif is_approach_inhibit_active():
+        badge_l("TER INH APR", (120, 70, 0), (255, 180, 60))
 
     # ── Right badges: problems only ─────────────────────────────────────────
     rx = ALT_X - 4

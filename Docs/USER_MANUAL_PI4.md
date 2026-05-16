@@ -226,6 +226,8 @@ A short white horizontal bar (16×4 px) sits below the roll pointer's doghouse b
 
 While the aircraft is in the corridor the look-ahead terrain / obstacle / pull-up alerts go quiet — you don't get nagged during a normal descent into a known runway environment. **Sink-rate stays armed** because "you're going down too fast at the runway" is the one cue that's still relevant on a stabilised approach. The moment the aircraft drifts outside the corridor (high deviation, way off centreline, missed approach, sidestep manoeuvre) every alert comes back automatically.
 
+A `TER INH APR` amber badge appears in the status strip whenever the auto-corridor is gating callouts, so you can see at a glance that the TAWS safety net is currently off and that it's the approach that turned it off (not a stuck manual inhibit). The badge clears the instant the aircraft leaves the corridor or the approach is cancelled.
+
 **Manual TERRAIN INHIBIT**: a pilot-controlled mute on the AHRS / Sensors screen (§11). Tap **INHIBIT** to silence terrain + obstacle + pull-up callouts for **120 seconds**, after which the safety net comes back on automatically. Use it at known false-positive locations (low passes, off-airport landings, charted approaches into airports surrounded by terrain where the auto-corridor doesn't catch it). The status badge `TER INH Xs` appears in the badge strip with the remaining countdown so you can never forget the inhibit is on. A second tap clears the inhibit immediately. Sink-rate also stays armed under manual inhibit.
 
 Requires GPS fix and SRTM tiles (terrain) or FAA obstacle data (obstacles) loaded.
@@ -276,6 +278,7 @@ Blank during normal flight. Appear only when attention required.
 | `NO APT` | Amber | No airport data loaded |
 | `EXP APT` | Orange | Airport data older than expiry |
 | `TER INH` *N*`s` | Amber | TAWS callouts muted by the pilot, *N* seconds remain on the 120 s inhibit |
+| `TER INH APR` | Amber | TAWS callouts auto-inhibited because the aircraft is inside the approach corridor of an active synthetic approach (§16C). Clears automatically when you leave the corridor or cancel the approach. |
 | `GPS TRK` | Magenta | GPS TRK heading mode active |
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
 | `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites |
