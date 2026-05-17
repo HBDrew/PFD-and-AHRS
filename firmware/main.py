@@ -39,7 +39,7 @@ from config import (
     AHRS_ACCEL_GATE_G, AHRS_USE_MAG,
     AHRS_GPS_TRACK_ENABLE, AHRS_GPS_TRACK_MIN_KT,
     AHRS_GPS_TRACK_INTERVAL_S, AHRS_GPS_TRACK_ALPHA,
-    AHRS_FWD_IN_SENSOR, AHRS_ALIGN_DURATION_S,
+    AHRS_FWD_IN_SENSOR, AHRS_ALIGN_DURATION_S, FW_VERSION,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
 from wt901        import WT901
@@ -207,6 +207,7 @@ state = {
                            # filter starts receiving gyro data — display shows
                            # an "AHRS ALIGN" banner so the pilot knows the
                            # attitude is still settling.
+    'fw_ver'    : FW_VERSION, # Firmware date code (broadcast to display)
     # Sensor health flags (set every sensor_loop tick)
     'ahrs_ok':   False,
     'gps_ok':    False,
@@ -582,7 +583,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                     'ias_kt','tas_kt','dp_pa','oat_c','dens_alt_ft',
                     'wind_dir','wind_kt','airdata_ok',
                     'att_src','att_aid','ahrs_aligning',
-                    'mx','my','mz',
+                    'mx','my','mz','fw_ver',
                 )}
                 print('$AHRS,' + ujson.dumps(_usb))
             except Exception:

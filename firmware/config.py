@@ -189,6 +189,11 @@ AHRS_GPS_TRACK_ALPHA      = 0.02   # fraction of yaw error closed per call
 # and gives the pilot time to notice the indicator.
 AHRS_ALIGN_DURATION_S     = 10.0
 
+# Firmware version date code — broadcast to the display so the pilot can
+# verify which build is running on the AHRS. Bump manually on each
+# meaningful release. YYYY-MM-DD format keeps it sortable and obvious.
+FW_VERSION                = "2026-05-17"
+
 # Aircraft "forward" unit vector expressed in the WT901 sensor frame.
 # Used only for centripetal correction: a_c = ω_sensor × (V * fwd_sensor).
 # Default assumes 'right' connector + 'normal' mounting: WT901 mounted

@@ -892,7 +892,7 @@ def smooth_state():
               "ahrs_aligning",
               "pitch_trim", "roll_trim", "yaw_trim",
               "orientation", "mounting", "yaw_raw",
-              "mx", "my", "mz"):
+              "mx", "my", "mz", "fw_ver"):
         if k in snap:
             disp[k] = snap[k]
 
@@ -5674,12 +5674,12 @@ def connectivity_setup_hit(x, y, cs):
 # ── System screen ─────────────────────────────────────────────────────────────
 
 _SYS_VERSION = "0.1.0"
-_SYS_BUILD   = "2026-04-10"
+_SYS_BUILD   = "2026-05-17"   # bump on each meaningful PFD release
 _SYS_INFO_Y  = 56
-_SYS_INFO_LH = 28
+_SYS_INFO_LH = 26
 
 
-_SYS_N_LINES = 6
+_SYS_N_LINES = 7
 _SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
 _SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # DISPLAY MODE row top
 _SYS_TERRAIN_Y = _SYS_MODE_Y + _SS_RH + 8         # TERRAIN DATA row top
@@ -5721,11 +5721,15 @@ def draw_system_setup(surf):
         _gps_status = "no fix \u00b7 acquiring"
     else:
         _gps_status = "no signal"
+    _ahrs_fw = disp.get("fw_ver", "\u2014")
+    if not _ahrs_fw or _ahrs_fw == "\u2014":
+        _ahrs_fw = "unknown" if disp.get("ahrs_ok") else "no link"
     lines = [
-        ("Firmware version",  _SYS_VERSION),
-        ("Build date",        _SYS_BUILD),
+        ("PFD version",       _SYS_VERSION),
+        ("PFD build date",    _SYS_BUILD),
+        ("AHRS firmware",     str(_ahrs_fw)),
         ("Display",           f"{DISPLAY_W}\u00d7{DISPLAY_H}  HDMI"),
-        ("Hardware",          "Pi 4 + Pico W  (OpenGL SVT)"),
+        ("Hardware",          "Pi 4 + Pico 2W  (OpenGL SVT)"),
         ("GPS",               _gps_status),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
