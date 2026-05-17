@@ -85,6 +85,33 @@ SDP31_I2C_ADDR = 0x21       # 0x21 default; 0x22 when ADDR pin tied to VDD
 # restart).  The display also exposes a manual /sdp_zero endpoint.
 SDP31_AUTO_ZERO_AT_BOOT = True
 
+# ── MS4525DO Differential Pressure (alternative pitot transducer) ──────────
+# TE Connectivity MS4525DO — drop-in alternative to the SDP3x family.
+# Different protocol (4-byte register read, no CRC) but the on-Pico driver
+# (firmware/ms4525.py) exposes the same dp_pa / update() / zero() interface
+# so main.py treats them interchangeably.  When both are enabled the MS4525
+# wins (it's first in the init ladder) — useful when the SDP33 has died on
+# the bench but you still want to fly.
+#
+# Wiring (I²C1, shared with BME280):
+#   VDD → 3V3(OUT)  GND → GND
+#   SDA → GP2       SCL → GP3
+#   Address: 0x28 (A-cal, factory default) or 0x36 (B-cal variant)
+#
+# Pneumatic plumbing on the airframe (same as SDP33):
+#   "+" port  → pitot   (ram pressure)
+#   "−" port  → static  (cabin/airframe static reference, tee'd into BME280)
+MS4525_ENABLE            = False     # flip to True once the part is mounted
+MS4525_I2C_ID            = 1
+MS4525_SDA_PIN           = 2         # shared with BME280 (I2C1 SDA)
+MS4525_SCL_PIN           = 3         # shared with BME280 (I2C1 SCL)
+MS4525_I2C_ADDR          = 0x28      # 0x28 = A-cal; 0x36 = B-cal
+MS4525_PSI_RANGE         = 1.0       # full-scale ±psi: 1.0 for -001D, 2.0 for
+                                     # -002D, 5.0 for -005D variants. Check the
+                                     # part marking — ±1 psi covers up to ~96 kt
+                                     # IAS at sea level, ±2 psi up to ~135 kt.
+MS4525_AUTO_ZERO_AT_BOOT = True      # same semantics as SDP31_AUTO_ZERO_AT_BOOT
+
 # ── WT901 lateral-acceleration sign ──────────────────────────────────────────
 # The WT901's ay axis drives the slip/skid ball.  If the ball deflects the
 # wrong way after installation, flip this to -1 (sensor mounted 180° about yaw).

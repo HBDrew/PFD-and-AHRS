@@ -30,6 +30,8 @@ from config import (
     BME280_I2C_ADDR, BME280_QNH_DEFAULT,
     SDP31_ENABLE, SDP31_I2C_ID, SDP31_SDA_PIN, SDP31_SCL_PIN,
     SDP31_I2C_ADDR, SDP31_AUTO_ZERO_AT_BOOT,
+    MS4525_ENABLE, MS4525_I2C_ID, MS4525_SDA_PIN, MS4525_SCL_PIN,
+    MS4525_I2C_ADDR, MS4525_PSI_RANGE, MS4525_AUTO_ZERO_AT_BOOT,
     WT901_AY_SIGN,
     AHRS_PITCH_TRIM, AHRS_ROLL_TRIM, AHRS_YAW_TRIM,
     AHRS_CONNECTOR, AHRS_MOUNTING,
@@ -283,7 +285,8 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
 
 
 # ── Sensor loop ──────────────────────────────────────────────────────────────
-async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter):
+async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
+                      sdp_auto_zero=False):
     """
     Poll all sensors at ~50 Hz and push values into the shared state dict.
     The web server reads state independently at BROADCAST_HZ.
@@ -489,7 +492,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter):
             # internal averaging has a few hundred ms transient before
             # readings stabilise.
             if (state.get('_sdp_zero') or
-                    (SDP31_AUTO_ZERO_AT_BOOT and tick == 100)):
+                    (sdp_auto_zero and tick == 100)):
                 try:
                     sdp.zero()
                     print(f'[AHRS] SDP33 zero captured (dp_offset cleared)')
@@ -648,8 +651,30 @@ async def main():
             print(f'BME280 not found ({e})  –  using GPS altitude')
             baro = None
 
+    # Air-data transducer: MS4525DO preferred when enabled, else SDP3x.
+    # Both expose the same dp_pa / update() / zero() surface, so the rest of
+    # the air-data path (airdata.py, sensor_loop) doesn't care which one ran.
     sdp = None
-    if SDP31_ENABLE:
+    sdp_auto_zero = False
+    if MS4525_ENABLE:
+        try:
+            from ms4525 import MS4525
+            sdp = MS4525(
+                i2c_id    = MS4525_I2C_ID,
+                sda       = MS4525_SDA_PIN,
+                scl       = MS4525_SCL_PIN,
+                addr      = MS4525_I2C_ADDR,
+                psi_range = MS4525_PSI_RANGE,
+            )
+            sdp_auto_zero = MS4525_AUTO_ZERO_AT_BOOT
+            print(f'MS4525  I2C{MS4525_I2C_ID}'
+                  f' @ 0x{MS4525_I2C_ADDR:02x}'
+                  f' (GP{MS4525_SDA_PIN} SDA, GP{MS4525_SCL_PIN} SCL)'
+                  f'  ±{MS4525_PSI_RANGE} psi  auto-zero={MS4525_AUTO_ZERO_AT_BOOT}')
+        except Exception as e:
+            print(f'MS4525 not found ({e})')
+            sdp = None
+    if sdp is None and SDP31_ENABLE:
         try:
             from sdp31 import SDP31
             sdp = SDP31(
@@ -658,6 +683,7 @@ async def main():
                 scl    = SDP31_SCL_PIN,
                 addr   = SDP31_I2C_ADDR,
             )
+            sdp_auto_zero = SDP31_AUTO_ZERO_AT_BOOT
             print(f'SDP33  I2C{SDP31_I2C_ID}'
                   f' @ 0x{SDP31_I2C_ADDR:02x}'
                   f' (GP{SDP31_SDA_PIN} SDA, GP{SDP31_SCL_PIN} SCL)'
@@ -665,6 +691,9 @@ async def main():
         except Exception as e:
             print(f'SDP33 not found ({e})  –  airspeed will fall back to GPS GS')
             sdp = None
+    if sdp is None:
+        print('No air-data transducer present — IAS/TAS unavailable, '
+              'speed tape falls back to GPS GS')
 
     ahrs_filter = None
     if AHRS_FILTER_ENABLE:
@@ -681,7 +710,7 @@ async def main():
         print('Mahony filter disabled — using WT901 PKT_ANGLE Euler output')
 
     await asyncio.gather(
-        sensor_loop(ahrs, gps, baro, sdp, ahrs_filter),
+        sensor_loop(ahrs, gps, baro, sdp, ahrs_filter, sdp_auto_zero),
         start_server(state, port=HTTP_PORT),
         stdin_cmd_loop(),
     )
