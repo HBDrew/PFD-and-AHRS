@@ -9135,7 +9135,13 @@ def render(surf, demo_mode, connected, data_stale=False):
         # heading source uses) suppress track and let the inset fall
         # back to mag heading so yawing the nose visibly rotates the
         # map in TRK↑ mode.
-        _map_track = track if speed >= 3.0 else None
+        #
+        # Gate on GPS groundspeed specifically (NOT the user-selected
+        # airspeed source). GS reads sub-knot when stationary, while IAS
+        # has the MS4525/SDP noise floor — picking IAS here would let
+        # sensor noise dither the map between TRK↑ and N↑ on the ramp.
+        _gs_kt = disp.get("speed", 0.0)
+        _map_track = track if _gs_kt >= 3.0 else None
         # Translate the main-PFD airport-type filters (managed on the
         # AIRPORT DATA screen) into the set of atype letters the inset
         # should draw.  Sharing the flags with the main PFD means the
