@@ -8878,6 +8878,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     if _user_src == "ias" and disp.get("airdata_ok"):
         airspeed_src = "ias"
         speed = disp.get("ias_kt", speed)
+        # Display-side IAS deadband. The firmware already gates ias_kt at the
+        # same threshold, but the IIR smoothing in smooth_state() leaks brief
+        # firmware-side noise spikes into the display as a bouncing 2–6 kt
+        # readout. Re-clamping here gives a clean steady 0 on the ramp.
+        if speed < 10.0:
+            speed = 0.0
     else:
         airspeed_src = "gps"
 
@@ -9197,7 +9203,10 @@ def render(surf, demo_mode, connected, data_stale=False):
             direct_to=d2 if d2.get("ident") else None,
             font=_get_font(11, bold=True),
             airport_types_visible=_types_vis,
-            gs_kt=speed,
+            # GS specifically — NEVER the user-selected speed source. The map
+            # is a ground-motion display, so range/ETE/track decisions must
+            # come from GPS groundspeed even when the speed tape is showing IAS.
+            gs_kt=_gs_kt,
             vso_kt=fp.get("vs0", VS0),
             range_label=_eff_label,
             state_lines=_state_lines,
