@@ -316,7 +316,9 @@ disp["approach"] = {
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 
 # Heading-source resolution thresholds — match the iPhone display.
-HDG_TRK_MIN_KT = 3.0   # below this speed, GPS track is unreliable
+# 7 kt sits comfortably above GPS GS noise floor and below typical taxi
+# speeds; below it AUTO mode stays on MAG and TRK mode reports "G?" amber.
+HDG_TRK_MIN_KT = 7.0   # GPS groundspeed below this → track is unreliable
 
 
 def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
@@ -8838,8 +8840,11 @@ def render(surf, demo_mode, connected, data_stale=False):
     # turns that into the actual source given runtime conditions and
     # produces the label + colour that the heading box / setup show.
     hdg_pref = ss.get("hdg_src", "auto")
+    # GS specifically — NEVER the user-selected airspeed source. Whether GPS
+    # track is usable is a ground-motion question; passing IAS here would
+    # let MS4525 noise dither the heading box between MAG and TRK on the ramp.
     use_track, hdg_label, hdg_color = _resolve_hdg_source(
-        hdg_pref, gps_ok, ahrs_ok, speed)
+        hdg_pref, gps_ok, ahrs_ok, disp.get("speed", 0.0))
     # Raw NED heading pre-magdev.  Pico firmware (sensor_loop) already applied
     # ENU→NED, connector-orientation axis mapping, and mounting flip before
     # broadcasting.  Sim / demo generate NED headings directly.  In TRK mode
