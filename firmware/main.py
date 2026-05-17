@@ -39,7 +39,7 @@ from config import (
     AHRS_ACCEL_GATE_G, AHRS_USE_MAG,
     AHRS_GPS_TRACK_ENABLE, AHRS_GPS_TRACK_MIN_KT,
     AHRS_GPS_TRACK_INTERVAL_S, AHRS_GPS_TRACK_ALPHA,
-    AHRS_FWD_IN_SENSOR,
+    AHRS_FWD_IN_SENSOR, AHRS_ALIGN_DURATION_S,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
 from wt901        import WT901
@@ -178,6 +178,10 @@ state = {
     # On-Pico Mahony filter state (broadcast for display diagnostics)
     'att_src'   : 'wt901', # 'mahony' when filter is active, else 'wt901'
     'att_aid'   : 'basic', # 'tas' | 'gs' | 'basic' — centripetal speed source
+    'ahrs_aligning': True, # True for the first AHRS_ALIGN_DURATION_S after the
+                           # filter starts receiving gyro data — display shows
+                           # an "AHRS ALIGN" banner so the pilot knows the
+                           # attitude is still settling.
     # Sensor health flags (set every sensor_loop tick)
     'ahrs_ok':   False,
     'gps_ok':    False,
@@ -302,6 +306,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
     filt_last_ms     = None           # for filter dt computation
     filt_seeded      = False          # PKT_ANGLE-based seeding done?
     gps_slave_last_ms = utime.ticks_ms()
+    align_start_ms   = None           # first gyro packet timestamp; gates
+                                      # the AHRS_ALIGN_DURATION_S align banner
+    _align_ms        = int(AHRS_ALIGN_DURATION_S * 1000)
     while True:
         # ── AHRS ──
         try:
@@ -321,6 +328,14 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                     elif dt_ms > 100: dt_ms = 100
                     dt = dt_ms / 1000.0
                 filt_last_ms = now_ms
+
+                # Align window: track elapsed time since first gyro packet
+                # and broadcast ahrs_aligning so the display can show the
+                # AHRS ALIGN banner during the filter's settling window.
+                if align_start_ms is None:
+                    align_start_ms = now_ms
+                state['ahrs_aligning'] = (
+                    utime.ticks_diff(now_ms, align_start_ms) < _align_ms)
 
                 # First-run seed from PKT_ANGLE so we don't coast from
                 # identity through several seconds of accel-pull convergence.
@@ -370,6 +385,11 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
 
             elif ahrs_filter is None and ahrs.new_angle:
                 # Fallback path: use WT901's internal Euler (pre-filter behaviour).
+                now_ms = utime.ticks_ms()
+                if align_start_ms is None:
+                    align_start_ms = now_ms
+                state['ahrs_aligning'] = (
+                    utime.ticks_diff(now_ms, align_start_ms) < _align_ms)
                 _r, _p, _y, _ = _apply_remap(
                     ahrs.roll, ahrs.pitch, ahrs.yaw, _conn, _mount)
                 state['roll']    = _r + state['roll_trim']
@@ -381,7 +401,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                 state['att_src'] = 'wt901'
                 state['att_aid'] = 'basic'
                 ahrs.new_angle   = False
-                last_ahrs_ms     = utime.ticks_ms()
+                last_ahrs_ms     = now_ms
         except Exception as e:
             print(f'[AHRS] WT901 read error: {e}')
         state['ahrs_ok'] = utime.ticks_diff(utime.ticks_ms(), last_ahrs_ms) < 5000
@@ -516,7 +536,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                     'orientation','mounting',
                     'ias_kt','tas_kt','dp_pa','oat_c','dens_alt_ft',
                     'wind_dir','wind_kt','airdata_ok',
-                    'att_src','att_aid',
+                    'att_src','att_aid','ahrs_aligning',
                 )}
                 print('$AHRS,' + ujson.dumps(_usb))
             except Exception:

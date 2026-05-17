@@ -838,6 +838,7 @@ def smooth_state():
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
               "ahrs_ok", "gps_ok", "gps_comm", "baro_ok", "airdata_ok",
+              "ahrs_aligning",
               "pitch_trim", "roll_trim", "yaw_trim",
               "orientation", "mounting", "yaw_raw"):
         if k in snap:
@@ -2345,7 +2346,7 @@ def draw_terrain_alert(surf):
 
 # ── Status badges ─────────────────────────────────────────────────────────────
 def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats, connected,
-                       use_track=False):
+                       use_track=False, ahrs_aligning=False):
     """
     Badges are shown only when something requires pilot attention.
     Nominal state = clean strip.  Problem state = badge appears.
@@ -2367,6 +2368,10 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats,
 
     if not ahrs_ok:
         badge_l("AHRS FAIL", (150, 0, 0))
+    elif ahrs_aligning:
+        # Amber caution: filter still settling — attitude not yet trustworthy.
+        # Mutually exclusive with AHRS FAIL (no data = can't be aligning).
+        badge_l("AHRS ALIGN", (140, 95, 0), (255, 200, 70))
     if not connected:
         badge_l("NO LINK", (130, 0, 0))
 
@@ -2442,7 +2447,22 @@ def draw_red_x(surf, x, y, w, h, label):
         _text(surf, "FAIL", 14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 + 8)
 
 
-def draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok):
+def draw_align_overlay(surf, x, y, w, h):
+    """Semi-transparent amber overlay shown while the AHRS filter is still
+    settling. Unlike draw_red_x (which means 'data is invalid'), this keeps
+    the attitude visible behind the wash — the filter is producing usable
+    values, the pilot just shouldn't fully trust them yet."""
+    ov = pygame.Surface((w, h), pygame.SRCALPHA)
+    ov.fill((30, 20, 0, 100))   # warm dark backdrop, see-through
+    surf.blit(ov, (x, y))
+    _text(surf, "AHRS ALIGN", 22, (255, 200, 70), bold=True,
+          cx=x + w // 2, cy=y + h // 2 - 12)
+    _text(surf, "KEEP WINGS LEVEL", 12, (255, 200, 70), bold=False,
+          cx=x + w // 2, cy=y + h // 2 + 10)
+
+
+def draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok,
+                          ahrs_aligning=False):
     ai_h_used = TAPE_H
     ai_y = TAPE_TOP
     ai_w = ALT_X - SPD_W
@@ -2450,6 +2470,11 @@ def draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok):
         # Cover AI center + heading strip
         draw_red_x(surf, SPD_W, ai_y, ai_w, ai_h_used, "ATTITUDE")
         draw_red_x(surf, 0, HDG_Y, DISPLAY_W, HDG_H, "HDG")
+    elif ahrs_aligning:
+        # Amber caution overlay during filter settling window. Attitude
+        # remains drawn underneath so the pilot can verify it's reasonable
+        # before the banner clears.
+        draw_align_overlay(surf, SPD_W, ai_y, ai_w, ai_h_used)
     # Red X on speed tape only when GPS has no signal at all.
     # While communicating but no fix, the amber badge is sufficient warning.
     if not gps_ok and not gps_comm:
@@ -9267,13 +9292,15 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 9. Status badges
     draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats, connected,
-                       use_track=use_track)
+                       use_track=use_track,
+                       ahrs_aligning=bool(disp.get("ahrs_aligning", False)))
 
     # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
     draw_terrain_alert(surf)
 
     # 10. Failure overlays
-    draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok)
+    draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok,
+                          ahrs_aligning=bool(disp.get("ahrs_aligning", False)))
 
     # 11. Tap-buttons for heading bug, baro, and alt bug (color = data source)
     draw_tap_buttons(surf, hdg, active_bug, baro_hpa, baro_src, alt_bug,

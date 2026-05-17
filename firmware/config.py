@@ -180,6 +180,14 @@ AHRS_GPS_TRACK_MIN_KT     = 20.0   # GS below this → no yaw slaving
 AHRS_GPS_TRACK_INTERVAL_S = 1.0    # seconds between corrections
 AHRS_GPS_TRACK_ALPHA      = 0.02   # fraction of yaw error closed per call
 
+# AHRS align banner — display shows "AHRS ALIGN" for this long after the
+# filter first starts receiving gyro packets. Sized to cover the practical
+# worst-case for the Mahony to converge from a poor PKT_ANGLE seed during
+# a moving-on-power-up scenario. Filter typically settles in 2–3 s when
+# stationary, but the conservative 10 s window matches G5/G3X conventions
+# and gives the pilot time to notice the indicator.
+AHRS_ALIGN_DURATION_S     = 10.0
+
 # Aircraft "forward" unit vector expressed in the WT901 sensor frame.
 # Used only for centripetal correction: a_c = ω_sensor × (V * fwd_sensor).
 # Default assumes 'right' connector + 'normal' mounting: WT901 mounted
