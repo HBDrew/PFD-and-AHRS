@@ -51,6 +51,7 @@ import math
 
 TRIMS_FILE  = 'trims.json'
 MAGDEV_FILE = 'magdev.json'
+MAGCAL_FILE = 'magcal.json'   # hard-iron offsets (mx_off, my_off, mz_off)
 ORIENT_FILE = 'orient.json'
 
 
@@ -93,6 +94,30 @@ def save_magdev(table):
             f.write(ujson.dumps({'corrections': table}))
     except Exception as e:
         print(f'save_magdev failed: {e}')
+
+
+def load_magcal():
+    """Hard-iron offsets (mx_off, my_off, mz_off) — subtracted from raw mag
+    before it's handed to the Mahony filter. Captured at install time by
+    the 8-cardinal cal wizard. Default (0,0,0) = no correction."""
+    try:
+        with open(MAGCAL_FILE, 'r') as f:
+            d = ujson.loads(f.read())
+        return (float(d.get('mx_off', 0.0)),
+                float(d.get('my_off', 0.0)),
+                float(d.get('mz_off', 0.0)))
+    except Exception:
+        return (0.0, 0.0, 0.0)
+
+
+def save_magcal(offset):
+    try:
+        with open(MAGCAL_FILE, 'w') as f:
+            f.write(ujson.dumps({'mx_off': offset[0],
+                                  'my_off': offset[1],
+                                  'mz_off': offset[2]}))
+    except Exception as e:
+        print(f'save_magcal failed: {e}')
 
 
 def load_orient():
@@ -189,6 +214,13 @@ state = {
     'baro_ok':   False,
     # Magnetic deviation table (36 corrections at 10° steps; loaded from magdev.json)
     '_magdev'  : [],
+    # Hard-iron offsets (mx_off, my_off, mz_off) — subtracted from raw mag
+    # in _run_filter_step before mag is handed to the Mahony filter. Captured
+    # by the 8-cardinal cal wizard from the display. Loaded from magcal.json.
+    '_mag_offset': (0.0, 0.0, 0.0),
+    # Raw mag readings (unscaled int counts) — broadcast for the cal wizard
+    # to compute fresh hard-iron offsets each calibration run.
+    'mx': 0.0, 'my': 0.0, 'mz': 0.0,
     # Pre-correction heading (post yaw_trim, pre magdev) — broadcast for cal panel
     'yaw_raw'  : 0.0,
 }
@@ -278,7 +310,17 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     az = ahrs.az + acz
 
     if AHRS_USE_MAG and ahrs.new_mag:
-        mx, my, mz = ahrs.mx, ahrs.my, ahrs.mz
+        # Subtract hard-iron offsets before the filter sees mag. Without this
+        # the filter's mag-correction term fights the gyro in a biased
+        # magnetic environment — see Docs/REQUIREMENTS_AHRS.md REQ-AHRS-CAL-003.
+        off = state['_mag_offset']
+        mx = ahrs.mx - off[0]
+        my = ahrs.my - off[1]
+        mz = ahrs.mz - off[2]
+        # Also publish raw mag so the cal wizard can compute fresh offsets.
+        state['mx'] = ahrs.mx
+        state['my'] = ahrs.my
+        state['mz'] = ahrs.mz
         ahrs.new_mag = False
     else:
         mx = my = mz = None
@@ -414,6 +456,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
         if state.get('_save_magdev'):
             save_magdev(state['_magdev'])
             state['_save_magdev'] = False
+        if state.get('_save_magcal'):
+            save_magcal(state['_mag_offset'])
+            state['_save_magcal'] = False
         if state.get('_save_orient'):
             save_orient(state)
             state['_save_orient'] = False
@@ -537,6 +582,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                     'ias_kt','tas_kt','dp_pa','oat_c','dens_alt_ft',
                     'wind_dir','wind_kt','airdata_ok',
                     'att_src','att_aid','ahrs_aligning',
+                    'mx','my','mz',
                 )}
                 print('$AHRS,' + ujson.dumps(_usb))
             except Exception:
@@ -569,6 +615,23 @@ def _process_stdin_line(line):
                     print(f'$MAGDEV_ACK,0,ERR got {len(vals)}')
             except Exception as e:
                 print(f'$MAGDEV_ACK,0,ERR {e}')
+    elif line.startswith('$MAGOFF,'):
+        payload = line[8:]
+        if payload == 'CLEAR':
+            state['_mag_offset'] = (0.0, 0.0, 0.0)
+            state['_save_magcal'] = True
+            print('$MAGOFF_ACK,CLEARED')
+        else:
+            try:
+                vals = [float(x) for x in payload.split(',') if x.strip()]
+                if len(vals) == 3:
+                    state['_mag_offset'] = (vals[0], vals[1], vals[2])
+                    state['_save_magcal'] = True
+                    print(f'$MAGOFF_ACK,OK,{vals[0]:.1f},{vals[1]:.1f},{vals[2]:.1f}')
+                else:
+                    print(f'$MAGOFF_ACK,ERR got {len(vals)}')
+            except Exception as e:
+                print(f'$MAGOFF_ACK,ERR {e}')
     elif line.startswith('$ORIENT,'):
         parts = line[8:].split(',')
         if len(parts) == 2:
@@ -650,6 +713,14 @@ async def main():
         print(f'Magdev table loaded: {len(state["_magdev"])} corrections')
     else:
         print('Magdev: no calibration file — heading uncorrected')
+    state['_mag_offset'] = load_magcal()
+    if any(abs(v) > 1e-6 for v in state['_mag_offset']):
+        print(f'Hard-iron offsets loaded: '
+              f'mx={state["_mag_offset"][0]:.1f} '
+              f'my={state["_mag_offset"][1]:.1f} '
+              f'mz={state["_mag_offset"][2]:.1f}')
+    else:
+        print('Hard-iron offsets: none stored — raw mag fed to filter')
 
     baro = None
     if BME280_ENABLE:

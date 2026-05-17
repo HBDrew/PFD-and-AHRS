@@ -243,6 +243,53 @@ async def _handle_magcal(writer, params, state):
     await writer.wait_closed()
 
 
+async def _handle_magoff(writer, params, state):
+    """
+    GET /magoff?action=get               → JSON {mx_off, my_off, mz_off, active}
+    GET /magoff?action=set&v=mx,my,mz    → store hard-iron offsets (3 floats)
+    GET /magoff?action=clear             → zero the offsets
+    """
+    action = params.get('action', 'get')
+
+    if action == 'set':
+        try:
+            v_str = params.get('v', '')
+            vals = [float(x) for x in v_str.split(',') if x.strip()]
+            if len(vals) == 3:
+                state['_mag_offset'] = (vals[0], vals[1], vals[2])
+                state['_save_magcal'] = True
+                print(f'magoff: stored {vals[0]:.1f},{vals[1]:.1f},{vals[2]:.1f}')
+            else:
+                print(f'magoff: REJECTED — need 3, got {len(vals)}')
+        except Exception as e:
+            print(f'magoff set error: {e}')
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    elif action == 'clear':
+        state['_mag_offset'] = (0.0, 0.0, 0.0)
+        state['_save_magcal'] = True
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    else:  # 'get'
+        o = state.get('_mag_offset', (0.0, 0.0, 0.0))
+        active = any(abs(v) > 1e-6 for v in o)
+        body = ujson.dumps({'mx_off': o[0], 'my_off': o[1], 'mz_off': o[2],
+                             'active': active}).encode()
+        await _send_headers(writer, '200 OK', 'application/json',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def _handle_sdp_zero(writer, state):
     """GET /sdp_zero → flag the sensor_loop to capture a new SDP33 zero
     offset on the next tick.  Use this after installation, or after a
@@ -339,6 +386,8 @@ async def _client_handler(reader, writer, state):
         await _handle_trim(writer, params, state)
     elif path == '/magcal':
         await _handle_magcal(writer, params, state)
+    elif path == '/magoff':
+        await _handle_magoff(writer, params, state)
     elif path == '/sdp_zero':
         await _handle_sdp_zero(writer, state)
     else:

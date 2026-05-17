@@ -512,6 +512,57 @@ def _push_magcal_to_pico(table):
     threading.Thread(target=_worker, daemon=True, name="MagCalPush").start()
 
 
+def _push_magoff_to_pico(offset):
+    """Send hard-iron offsets (mx_off, my_off, mz_off) to the Pico. Serial
+    first ($MAGOFF,...), HTTP fallback (/magoff?action=set&v=...). Background."""
+    v_str = f"{offset[0]:.2f},{offset[1]:.2f},{offset[2]:.2f}"
+
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                client.write(f"$MAGOFF,{v_str}\n".encode())
+                print(f"[PFD] magoff sent via USB serial ({v_str})")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff serial write failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action=set&v={v_str}"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print(f"[PFD] magoff sent via HTTP ({v_str})")
+        except Exception as e:
+            print(f"[PFD] magoff HTTP push failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagOffPush").start()
+
+
+def _push_magoff_clear_to_pico():
+    """Clear hard-iron offsets on the Pico."""
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                client.write(b"$MAGOFF,CLEAR\n")
+                print("[PFD] magoff cleared via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff serial clear failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action=clear"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print("[PFD] magoff cleared via HTTP")
+        except Exception as e:
+            print(f"[PFD] magoff HTTP clear failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagOffClear").start()
+
+
 def _push_magcal_clear_to_pico():
     """Clear the Pico's deviation table via serial then HTTP.  Background thread."""
     def _worker():
@@ -840,7 +891,8 @@ def smooth_state():
               "ahrs_ok", "gps_ok", "gps_comm", "baro_ok", "airdata_ok",
               "ahrs_aligning",
               "pitch_trim", "roll_trim", "yaw_trim",
-              "orientation", "mounting", "yaw_raw"):
+              "orientation", "mounting", "yaw_raw",
+              "mx", "my", "mz"):
         if k in snap:
             disp[k] = snap[k]
 
@@ -3272,36 +3324,64 @@ def _mag_cal_capture():
     raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0)))
     expected = _MAG_CAL_CARDINALS[step][1]
     wiz.setdefault("samples", []).append((expected, raw))
+    # Also capture raw mag vector at this cardinal for hard-iron offset
+    # computation. (mx,my,mz) come from the AHRS broadcast via smooth_state.
+    mx = float(disp.get("mx", 0.0))
+    my = float(disp.get("my", 0.0))
+    mz = float(disp.get("mz", 0.0))
+    wiz.setdefault("mag_samples", []).append((mx, my, mz))
     wiz["step"] = step + 1
     wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
     if wiz["step"] >= len(_MAG_CAL_CARDINALS):
-        # Build 36-point table and push to Pico so both displays
-        # see the same pre-corrected heading from the AHRS broadcast.
+        # Build 36-point deviation table (residual output correction)
         table = _build_magdev_table(wiz["samples"])
+        # Compute hard-iron offsets from the captured raw mag vectors:
+        # offset_axis = (max_axis + min_axis) / 2 — center of the ellipse
+        # the rotating sensor traces in mag space. Subtracting this from
+        # raw mag before the Mahony eats it stops the mag-correction term
+        # from fighting the gyro in a biased environment.
+        mag_samples = wiz.get("mag_samples", [])
+        if len(mag_samples) >= 2:
+            mxs = [s[0] for s in mag_samples]
+            mys = [s[1] for s in mag_samples]
+            mzs = [s[2] for s in mag_samples]
+            offset = (0.5 * (max(mxs) + min(mxs)),
+                      0.5 * (max(mys) + min(mys)),
+                      0.5 * (max(mzs) + min(mzs)))
+        else:
+            offset = (0.0, 0.0, 0.0)
         # Store locally so Pi4 always shows calibrated heading,
         # even when the HTTP push to the Pico can't reach it.
         disp["ss"]["pi4_magdev"] = table
+        disp["ss"]["pi4_mag_offset"] = list(offset)
         disp["ss"]["mag_cal_deltas"] = [0.0] * 4
         disp["ss"].pop("mag_cal_offset", None)
         disp["ss"]["mag_cal"] = "done"
         _settings.mark_dirty()
-        _push_magcal_to_pico(table)   # also sends to Pico (serial → HTTP fallback)
-        wiz["msg"] = "Saved locally — sending to AHRS…"
+        _push_magcal_to_pico(table)   # 36-pt deviation table
+        _push_magoff_to_pico(offset)  # hard-iron offsets
+        wiz["msg"] = (f"Saved locally — sending to AHRS… "
+                      f"(hard-iron: {offset[0]:+.0f},{offset[1]:+.0f},{offset[2]:+.0f})")
         wiz["step"]    = 0
         wiz["samples"] = []
+        wiz["mag_samples"] = []
 
 
 def _mag_cal_restart():
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
     wiz["samples"] = []
+    wiz["mag_samples"] = []
     wiz["msg"] = "Restarted."
 
 
 def _mag_cal_reset():
-    """Wipe the stored cal on Pico and locally."""
+    """Wipe the stored cal on Pico and locally — both the deviation table
+    and the hard-iron offsets."""
     _push_magcal_clear_to_pico()
+    _push_magoff_clear_to_pico()
     disp["ss"].pop("pi4_magdev", None)
+    disp["ss"].pop("pi4_mag_offset", None)
     disp["ss"]["mag_cal_deltas"] = [0.0, 0.0, 0.0, 0.0]
     disp["ss"].pop("mag_cal_offset", None)
     disp["ss"]["mag_cal"] = "idle"
@@ -3309,6 +3389,7 @@ def _mag_cal_reset():
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
     wiz["samples"] = []
+    wiz["mag_samples"] = []
     wiz["msg"] = "Calibration cleared."
 
 
