@@ -891,7 +891,7 @@ def smooth_state():
               "ahrs_ok", "gps_ok", "gps_comm", "baro_ok", "airdata_ok",
               "ahrs_aligning",
               "pitch_trim", "roll_trim", "yaw_trim",
-              "orientation", "mounting", "yaw_raw",
+              "orientation", "mounting", "yaw_raw", "yaw_wt901",
               "mx", "my", "mz", "fw_ver"):
         if k in snap:
             disp[k] = snap[k]
@@ -3311,35 +3311,25 @@ def _apply_mag_cal(raw_hdg, deltas):
 
 
 def _instant_mag_heading_deg():
-    """Compute heading directly from the latest raw mag broadcast, with any
-    stored hard-iron offsets applied. Used by the cal wizard so the displayed
-    RAW HDG snaps immediately to the new heading when the aircraft is
-    rotated — the Mahony's gyro-integrated yaw is too slow to settle for a
-    capture procedure, especially in a biased magnetic environment.
+    """Return the WT901's PKT_ANGLE yaw (post-remap), broadcast by the AHRS
+    each tick as state['yaw_wt901']. Used by the cal wizard for RAW HDG.
 
-    Assumes level mounting (no tilt compensation). For cal the aircraft is
-    on the ground with wings level, so this is acceptable; a few degrees of
-    mounting tilt translates to a few degrees of heading error, which the
-    36-point deviation table absorbs."""
-    mx = float(disp.get("mx", 0.0))
-    my = float(disp.get("my", 0.0))
-    # Apply any stored hard-iron offsets so a re-cal shows a sensible
-    # starting heading (a virgin cal will show possibly-biased reading).
-    off = disp["ss"].get("pi4_mag_offset", [0.0, 0.0, 0.0])
-    mx -= float(off[0])
-    my -= float(off[1])
-    if abs(mx) < 1e-6 and abs(my) < 1e-6:
-        return float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
-    # ENU sensor-frame yaw: CCW from east → degrees
-    sensor_yaw_deg = math.degrees(math.atan2(my, mx))
-    # Apply the same remap the Mahony output goes through (see _apply_remap
-    # in firmware/main.py): displayed = (-sensor_yaw + hdg_off - yaw_trim) % 360
-    ss = disp.get("ss", {})
-    conn = ss.get("orientation", "right")
-    yaw_trim = float(ss.get("yaw_trim", 0.0))
-    hdg_off = {"right": 0.0, "forward": 90.0,
-               "left": 180.0, "aft": 270.0}.get(conn, 0.0)
-    return (-sensor_yaw_deg + hdg_off - yaw_trim) % 360.0
+    Why not compute from raw mx/my here? Convention. The WT901's mag axis
+    sign/order isn't documented in a way that matches a clean
+    atan2(my, mx) -> heading; an empirical attempt produced wrong rotation
+    direction. The Pico-side PKT_ANGLE goes through the existing remap
+    that's been working for the WT901 fallback path all along — the
+    convention is already right.
+
+    PKT_ANGLE has some internal Kalman dynamics on the WT901 chip, but
+    it's vastly more responsive than our Mahony when the mag is biased
+    (Mahony's mag-correction term fights the gyro). Good enough for cal
+    capture timing.
+
+    Fallback chain handles older AHRS firmware without yaw_wt901."""
+    return float(disp.get("yaw_wt901",
+                          disp.get("_yaw_uncal",
+                                   disp.get("yaw", 0.0)))) % 360.0
 
 
 def _mag_cal_open(prev_mode: str):

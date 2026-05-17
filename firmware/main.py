@@ -224,6 +224,9 @@ state = {
     'mx': 0.0, 'my': 0.0, 'mz': 0.0,
     # Pre-correction heading (post yaw_trim, pre magdev) — broadcast for cal panel
     'yaw_raw'  : 0.0,
+    # WT901's PKT_ANGLE yaw (post-remap) — broadcast for the cal wizard's
+    # RAW HDG display. Fast response, no Mahony filter dynamics in the way.
+    'yaw_wt901': 0.0,
 }
 
 
@@ -359,6 +362,16 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
             _conn = state['orientation']
             _mount = state['mounting']
             _hdg_off = _hdg_offset_for(_conn)
+
+            # Always publish the WT901's internal PKT_ANGLE yaw, post-remap,
+            # so the cal wizard's RAW HDG display can show a responsive
+            # heading regardless of whether the Mahony filter is also running.
+            # The WT901's internal Kalman is much faster than our Mahony in a
+            # biased-mag environment, so this gives the pilot a snappy display
+            # for capture timing during the 8-cardinal cal procedure.
+            _r_wt, _p_wt, _y_wt, _ = _apply_remap(
+                ahrs.roll, ahrs.pitch, ahrs.yaw, _conn, _mount)
+            state['yaw_wt901'] = (_y_wt - state['yaw_trim'] + _hdg_off) % 360
 
             if ahrs_filter is not None and ahrs.new_gyro:
                 # Filter dt from gyro packet arrival times (clamped 1–100 ms).
@@ -583,7 +596,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                     'ias_kt','tas_kt','dp_pa','oat_c','dens_alt_ft',
                     'wind_dir','wind_kt','airdata_ok',
                     'att_src','att_aid','ahrs_aligning',
-                    'mx','my','mz','fw_ver',
+                    'mx','my','mz','fw_ver','yaw_wt901',
                 )}
                 print('$AHRS,' + ujson.dumps(_usb))
             except Exception:
