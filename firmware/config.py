@@ -107,9 +107,12 @@ MS4525_SDA_PIN           = 2         # shared with BME280 (I2C1 SDA)
 MS4525_SCL_PIN           = 3         # shared with BME280 (I2C1 SCL)
 MS4525_I2C_ADDR          = 0x28      # 0x28 = A-cal; 0x36 = B-cal
 MS4525_PSI_RANGE         = 1.0       # full-scale ±psi: 1.0 for -001D, 2.0 for
-                                     # -002D, 5.0 for -005D variants. Check the
-                                     # part marking — ±1 psi covers up to ~96 kt
-                                     # IAS at sea level, ±2 psi up to ~135 kt.
+                                     # -002D, 5.0 for -005D. Max IAS at sea-
+                                     # level standard density (ρ₀=1.225 kg/m³):
+                                     #   ±1 psi → 206 kt   (-001D)
+                                     #   ±2 psi → 291 kt   (-002D)
+                                     #   ±5 psi → 461 kt   (-005D)
+                                     # ±1 psi covers any single piston / most twins.
 MS4525_AUTO_ZERO_AT_BOOT = True      # same semantics as SDP31_AUTO_ZERO_AT_BOOT
 
 # ── WT901 lateral-acceleration sign ──────────────────────────────────────────
