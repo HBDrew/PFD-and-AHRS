@@ -101,7 +101,8 @@ SDP31_AUTO_ZERO_AT_BOOT = True
 # Pneumatic plumbing on the airframe (same as SDP33):
 #   "+" port  → pitot   (ram pressure)
 #   "−" port  → static  (cabin/airframe static reference, tee'd into BME280)
-MS4525_ENABLE            = False     # flip to True once the part is mounted
+MS4525_ENABLE            = True      # MS4525 is now the production transducer;
+                                     # set False on bench builds without the part
 MS4525_I2C_ID            = 1
 MS4525_SDA_PIN           = 2         # shared with BME280 (I2C1 SDA)
 MS4525_SCL_PIN           = 3         # shared with BME280 (I2C1 SCL)
