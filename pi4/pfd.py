@@ -10272,7 +10272,20 @@ def main():
             render_ms = (_t1 - _t0) * 1000
             flip_ms   = (_t2 - _t1) * 1000
             fps       = clock.get_fps()
-            print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  flip={flip_ms:.1f}ms")
+            # Track process memory each ~2 s along with fps so we can spot
+            # leak rates against rendering load. /proc/self/status VmRSS is
+            # cheap and doesn't require psutil.
+            _mem_kb = 0
+            try:
+                with open("/proc/self/status", "r") as _f:
+                    for _ln in _f:
+                        if _ln.startswith("VmRSS:"):
+                            _mem_kb = int(_ln.split()[1])
+                            break
+            except OSError:
+                pass
+            print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  "
+                  f"flip={flip_ms:.1f}ms  rss={_mem_kb/1024:.1f}MB")
 
     if _sse_client:
         _sse_client.stop()
