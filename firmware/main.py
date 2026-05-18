@@ -26,6 +26,7 @@ from machine import Pin, WDT
 
 from config import (
     WT901_UART_ID, WT901_TX_PIN, WT901_RX_PIN, WT901_BAUD,
+    WT901_FORCE_DEFAULT_OUTPUT,
     GPS_UART_ID,  GPS_TX_PIN,  GPS_RX_PIN,  GPS_BAUD,
     BME280_ENABLE, BME280_I2C_ID, BME280_SDA_PIN, BME280_SCL_PIN,
     BME280_I2C_ADDR, BME280_QNH_DEFAULT,
@@ -840,6 +841,15 @@ async def main():
     gps  = GPS(GPS_UART_ID, GPS_TX_PIN, GPS_RX_PIN, GPS_BAUD)
     print(f'WT901  UART{WT901_UART_ID} @ {WT901_BAUD} baud  (GP{WT901_RX_PIN} RX)')
     print(f'NEO-6M UART{GPS_UART_ID}  @ {GPS_BAUD} baud  (GP{GPS_RX_PIN} RX)')
+
+    # Re-assert WT901 Return-Data-Switch in case the chip's config got
+    # zeroed out (we lost PKT_ANGLE during bench testing; this restores it).
+    if WT901_FORCE_DEFAULT_OUTPUT:
+        try:
+            ahrs.configure_default_output()
+            print('WT901  RSW reconfigured (ACC + GYRO + ANGLE + MAG)')
+        except Exception as e:
+            print(f'WT901  RSW reconfigure failed: {e}')
 
     state.update(load_trims())
     print(f'Trims loaded: pitch={state["pitch_trim"]}° roll={state["roll_trim"]}° yaw={state["yaw_trim"]}°')

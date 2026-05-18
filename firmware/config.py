@@ -28,6 +28,15 @@ WT901_TX_PIN  = 0   # GP0  – Pico TX → WT901 RX  (for sending config, option
 WT901_RX_PIN  = 1   # GP1  – Pico RX ← WT901 TX
 WT901_BAUD    = 9600  # WT901 factory default; increase to 115200 after config
 
+# Force the WT901's Return-Data-Switch back to the factory default
+# (ACC + GYRO + ANGLE + MAG) at every firmware boot. Recovers from a chip
+# whose config has somehow been corrupted — we hit this with PKT_ANGLE
+# (0x53) silently disappearing after many bench reboots. The reconfigure
+# is idempotent (writes the same value) so leaving this True forever is
+# safe. Set False only if you have a deliberately customised WT901 config
+# you don't want overwritten.
+WT901_FORCE_DEFAULT_OUTPUT = True
+
 # ── GPS (GY-NEO6MV2 / u-blox NEO-6M) ───────────────────────────────────────
 GPS_UART_ID = 1
 GPS_TX_PIN  = 4   # GP4  – Pico TX → GPS RX  (for UBX config, optional)
