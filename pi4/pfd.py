@@ -9664,7 +9664,22 @@ def main():
                         help="Screenshot groundspeed kt")
     parser.add_argument("--ss-vspeed", type=float, default=0.0,      metavar="FPM",
                         help="Screenshot vertical speed fpm")
+    parser.add_argument("--trace-mem", action="store_true",
+                        help="Enable tracemalloc; log top growing allocators "
+                             "every 60 s so we can identify memory leaks.")
     args = parser.parse_args()
+
+    # Optional memory tracing for leak hunts. Captures a baseline snapshot
+    # after the first 30 s (so steady-state caches are populated), then every
+    # 60 s diffs against the baseline and logs the top 10 growing allocators.
+    # Tracemalloc costs roughly 2x memory overhead — only enable when chasing
+    # a leak.
+    global _tm_baseline
+    _tm_baseline = None
+    if args.trace_mem:
+        import tracemalloc
+        tracemalloc.start()
+        print("[PFD] tracemalloc enabled — baseline will snapshot at 30 s")
 
     if args.sim or not FULLSCREEN:
         # Desktop / windowed mode — let SDL auto-detect the display server
@@ -10286,6 +10301,25 @@ def main():
                 pass
             print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  "
                   f"flip={flip_ms:.1f}ms  rss={_mem_kb/1024:.1f}MB")
+            # Tracemalloc diff against baseline — only when --trace-mem.
+            # Skip the first ~30 s so steady-state caches don't pollute
+            # the "growing" picture.
+            try:
+                import tracemalloc
+                if tracemalloc.is_tracing():
+                    if main._frame_n >= 900 and _tm_baseline is None:
+                        globals()['_tm_baseline'] = tracemalloc.take_snapshot()
+                        print("[PFD][mem] baseline snapshot captured")
+                    elif _tm_baseline is not None and main._frame_n % 1800 == 0:
+                        _snap = tracemalloc.take_snapshot()
+                        _diff = _snap.compare_to(_tm_baseline, 'lineno')
+                        print("[PFD][mem] top 10 growing since baseline:")
+                        for _stat in _diff[:10]:
+                            print(f"  +{_stat.size_diff/1024:7.1f} KB "
+                                  f"({_stat.count_diff:+5d} blocks)  "
+                                  f"{_stat.traceback}")
+            except Exception:
+                pass
 
     if _sse_client:
         _sse_client.stop()
