@@ -130,29 +130,78 @@ async def _handle_baro(writer, params, state):
     await writer.wait_closed()
 
 
+# SSE client tracking. The iPhone WiFi handoffs / page refreshes /
+# background-suspends leave Pico-side connections orphaned — writer.drain()
+# then blocks indefinitely waiting for ACKs from a peer that's gone, the
+# socket pool fills, and new connections silently fail (iPhone sees "no
+# link"). We cap concurrent SSE clients and time-out drain() to kill dead
+# connections fast enough that the pool stays available for the live client.
+_SSE_MAX_CLIENTS     = 2
+_SSE_DRAIN_TIMEOUT_S = 2.0
+_sse_client_count    = 0
+
+
 async def _handle_sse(writer, state):
     """Keep the connection open and stream JSON state as SSE events."""
-    await _send_headers(
-        writer, '200 OK', 'text/event-stream',
-        'Cache-Control: no-cache\r\nConnection: keep-alive\r\n'
-    )
-    interval_ms = 1000 // state.get('_broadcast_hz', 10)
+    global _sse_client_count
+
+    # Refuse new connections when the pool is saturated rather than letting
+    # them quietly hang. iPhone gets a clean 503 it can retry against once
+    # the existing zombies drain out.
+    if _sse_client_count >= _SSE_MAX_CLIENTS:
+        body = b'SSE busy'
+        try:
+            await _send_headers(writer, '503 Service Unavailable', 'text/plain',
+                                f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+            writer.write(body)
+            try:
+                await asyncio.wait_for(writer.drain(), 1.0)
+            except Exception:
+                pass
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+        print(f'[SSE] refused — {_sse_client_count}/{_SSE_MAX_CLIENTS} clients active')
+        return
+
+    _sse_client_count += 1
+    print(f'[SSE] client connected ({_sse_client_count}/{_SSE_MAX_CLIENTS} active)')
     try:
+        await _send_headers(
+            writer, '200 OK', 'text/event-stream',
+            'Cache-Control: no-cache\r\nConnection: keep-alive\r\n'
+        )
+        interval_ms = 1000 // state.get('_broadcast_hz', 10)
         while True:
             # Build a shallow copy, skipping internal (_-prefixed) keys
             payload = {k: v for k, v in state.items() if not k.startswith('_')}
             event = 'data: ' + ujson.dumps(payload) + '\n\n'
             writer.write(event.encode())
-            await writer.drain()
+            try:
+                # Bounded drain so dead peers don't pin the task. Without
+                # this, a backgrounded iPhone or dropped WiFi leaves the
+                # task in a permanent wait — sockets accumulate, pool fills.
+                await asyncio.wait_for(writer.drain(), _SSE_DRAIN_TIMEOUT_S)
+            except Exception:
+                # Any failure (timeout, broken pipe, reset) → peer is gone.
+                # Break the loop and let the finally block release the slot.
+                break
             await asyncio.sleep_ms(interval_ms)
-    except Exception:
-        pass
+    except Exception as e:
+        # Most likely a normal client disconnect — keep the log quiet.
+        if 'ECONNRESET' not in str(e) and 'BROKEN' not in str(e).upper():
+            print(f'[SSE] client error: {e}')
     finally:
+        _sse_client_count = max(0, _sse_client_count - 1)
         try:
             writer.close()
             await writer.wait_closed()
         except Exception:
             pass
+        print(f'[SSE] client closed ({_sse_client_count}/{_SSE_MAX_CLIENTS} active)')
 
 
 async def _handle_trim(writer, params, state):
