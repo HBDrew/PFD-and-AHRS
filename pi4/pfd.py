@@ -10307,10 +10307,14 @@ def main():
             try:
                 import tracemalloc
                 if tracemalloc.is_tracing():
-                    if main._frame_n >= 900 and _tm_baseline is None:
+                    # Use frame counts that work even when tracemalloc tanks
+                    # the framerate from 30 fps → 5 fps. Baseline after 60
+                    # frames (~12 s at 5 fps, ~2 s at 30 fps), diff every
+                    # 120 frames after that.
+                    if main._frame_n >= 60 and _tm_baseline is None:
                         globals()['_tm_baseline'] = tracemalloc.take_snapshot()
                         print("[PFD][mem] baseline snapshot captured")
-                    elif _tm_baseline is not None and main._frame_n % 1800 == 0:
+                    elif _tm_baseline is not None and main._frame_n % 120 == 0:
                         _snap = tracemalloc.take_snapshot()
                         _diff = _snap.compare_to(_tm_baseline, 'lineno')
                         print("[PFD][mem] top 10 growing since baseline:")
