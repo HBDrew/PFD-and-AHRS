@@ -220,8 +220,13 @@ state = {
     '_magdev'  : [],
     # Hard-iron offsets (mx_off, my_off, mz_off) — subtracted from raw mag
     # in _run_filter_step before mag is handed to the Mahony filter. Captured
-    # by the 8-cardinal cal wizard from the display. Loaded from magcal.json.
+    # by the tumble-cal wizard from the display. Loaded from magcal.json.
     '_mag_offset': (0.0, 0.0, 0.0),
+    # Tumble-cal state: when active, accumulate min/max of each mag axis
+    # for offset computation on $MAGOFF,FINISH.
+    '_magtumble_active': False,
+    '_magtumble_min'   : [None, None, None],
+    '_magtumble_max'   : [None, None, None],
     # Raw mag readings (unscaled int counts) — broadcast for the cal wizard
     # to compute fresh hard-iron offsets each calibration run.
     'mx': 0.0, 'my': 0.0, 'mz': 0.0,
@@ -386,6 +391,15 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
         state['mx'] = ahrs.mx
         state['my'] = ahrs.my
         state['mz'] = ahrs.mz
+        # Tumble-cal: while $MAGOFF,START is active, track min/max of raw
+        # mag on every axis. Many samples → good ellipse-center estimate
+        # on FINISH.
+        if state.get('_magtumble_active'):
+            mn = state['_magtumble_min']
+            mx_arr = state['_magtumble_max']
+            for i, v in enumerate((ahrs.mx, ahrs.my, ahrs.mz)):
+                if mn[i] is None or v < mn[i]: mn[i] = v
+                if mx_arr[i] is None or v > mx_arr[i]: mx_arr[i] = v
         ahrs.new_mag = False
     else:
         mx = my = mz = None
@@ -695,7 +709,33 @@ def _process_stdin_line(line):
         if payload == 'CLEAR':
             state['_mag_offset'] = (0.0, 0.0, 0.0)
             state['_save_magcal'] = True
+            state['_magtumble_active'] = False
             print('$MAGOFF_ACK,CLEARED')
+        elif payload == 'START':
+            # Begin tumble-cal min/max tracking. Sensor loop accumulates
+            # the min and max of every raw mag axis until FINISH lands.
+            state['_magtumble_active'] = True
+            state['_magtumble_min'] = [None, None, None]
+            state['_magtumble_max'] = [None, None, None]
+            print('$MAGOFF_ACK,START_OK')
+        elif payload == 'FINISH':
+            if state.get('_magtumble_active') and all(v is not None
+                    for v in state.get('_magtumble_min', [None]*3)):
+                mn = state['_magtumble_min']
+                mx = state['_magtumble_max']
+                off = (0.5 * (mn[0] + mx[0]),
+                       0.5 * (mn[1] + mx[1]),
+                       0.5 * (mn[2] + mx[2]))
+                spread = (mx[0]-mn[0], mx[1]-mn[1], mx[2]-mn[2])
+                state['_mag_offset'] = off
+                state['_save_magcal'] = True
+                state['_magtumble_active'] = False
+                print(f'$MAGOFF_ACK,FINISH_OK,'
+                      f'{off[0]:.1f},{off[1]:.1f},{off[2]:.1f},'
+                      f'spread={spread[0]:.0f},{spread[1]:.0f},{spread[2]:.0f}')
+            else:
+                state['_magtumble_active'] = False
+                print('$MAGOFF_ACK,FINISH_ERR no samples')
         else:
             try:
                 vals = [float(x) for x in payload.split(',') if x.strip()]

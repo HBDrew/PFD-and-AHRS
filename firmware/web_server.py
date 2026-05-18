@@ -271,6 +271,29 @@ async def _handle_magoff(writer, params, state):
     elif action == 'clear':
         state['_mag_offset'] = (0.0, 0.0, 0.0)
         state['_save_magcal'] = True
+        state['_magtumble_active'] = False
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    elif action == 'tumble_start':
+        state['_magtumble_active'] = True
+        state['_magtumble_min'] = [None, None, None]
+        state['_magtumble_max'] = [None, None, None]
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    elif action == 'tumble_finish':
+        mn = state.get('_magtumble_min', [None]*3)
+        mx = state.get('_magtumble_max', [None]*3)
+        if state.get('_magtumble_active') and all(v is not None for v in mn):
+            off = (0.5*(mn[0]+mx[0]), 0.5*(mn[1]+mx[1]), 0.5*(mn[2]+mx[2]))
+            state['_mag_offset'] = off
+            state['_save_magcal'] = True
+        state['_magtumble_active'] = False
         body = b'OK'
         await _send_headers(writer, '200 OK', 'text/plain',
                             f'Content-Length: {len(body)}\r\nConnection: close\r\n')

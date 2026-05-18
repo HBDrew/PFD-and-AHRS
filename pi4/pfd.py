@@ -512,6 +512,36 @@ def _push_magcal_to_pico(table):
     threading.Thread(target=_worker, daemon=True, name="MagCalPush").start()
 
 
+def _push_magoff_tumble(action):
+    """Send $MAGOFF,START or $MAGOFF,FINISH to the Pico to bracket a tumble-
+    cal session. Serial primary, HTTP fallback, background thread.
+    action must be 'START' or 'FINISH'."""
+    payload = f"$MAGOFF,{action}\n".encode()
+    http_action = "tumble_start" if action == "START" else "tumble_finish"
+
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                client.write(payload)
+                print(f"[PFD] magoff {action} sent via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff {action} serial failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action={http_action}"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print(f"[PFD] magoff {action} sent via HTTP")
+        except Exception as e:
+            print(f"[PFD] magoff {action} HTTP failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True,
+                     name=f"MagOff{action}").start()
+
+
 def _push_magoff_to_pico(offset):
     """Send hard-iron offsets (mx_off, my_off, mz_off) to the Pico. Serial
     first ($MAGOFF,...), HTTP fallback (/magoff?action=set&v=...). Background."""
@@ -3393,6 +3423,46 @@ def _mag_cal_capture():
         wiz["mag_samples"] = []
 
 
+def _mag_cal_tumble_toggle():
+    """First press → start tumble cal (Pico tracks mag min/max).
+    Second press → finish, Pico computes (min+max)/2 per axis and stores."""
+    wiz = disp.get("mag_cal_wiz") or {}
+    if wiz.get("tumble_active"):
+        # Stop
+        _push_magoff_tumble("FINISH")
+        wiz["tumble_active"] = False
+        wiz["msg"] = "Tumble cal finished — offsets sent to AHRS."
+        wiz["tumble_started_ms"] = None
+    else:
+        # Start — also reset the tumble extents we track locally for display
+        _push_magoff_tumble("START")
+        wiz["tumble_active"] = True
+        wiz["tumble_started_ms"] = pygame.time.get_ticks()
+        wiz["tumble_min"] = [None, None, None]
+        wiz["tumble_max"] = [None, None, None]
+        wiz["msg"] = ("Rotate AHRS slowly through ALL orientations — "
+                      "pitch, roll, yaw — for ~30 s. Press STOP TUMBLE when done.")
+
+
+def _mag_cal_tumble_tick():
+    """Called each frame while the cal modal is open. When a tumble session
+    is active, mirror the Pico's min/max tracking locally so the display
+    can show the pilot how much "ground" they've covered."""
+    wiz = disp.get("mag_cal_wiz") or {}
+    if not wiz.get("tumble_active"):
+        return
+    mx = float(disp.get("mx", 0.0))
+    my = float(disp.get("my", 0.0))
+    mz = float(disp.get("mz", 0.0))
+    mn = wiz.get("tumble_min") or [None, None, None]
+    mx_arr = wiz.get("tumble_max") or [None, None, None]
+    for i, v in enumerate((mx, my, mz)):
+        if mn[i] is None or v < mn[i]: mn[i] = v
+        if mx_arr[i] is None or v > mx_arr[i]: mx_arr[i] = v
+    wiz["tumble_min"] = mn
+    wiz["tumble_max"] = mx_arr
+
+
 def _mag_cal_restart():
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
@@ -3493,6 +3563,21 @@ def draw_mag_cal(surf):
               else (60, 220, 80)
         _text(surf, msg, 12, col, cx=bx + _MCAL_W // 2, cy=by + 178)
 
+    # When tumble cal is active, surface live progress so the pilot can tell
+    # whether they've covered enough of the mag ellipse to compute a good
+    # ellipse-center estimate. "Spread" is max-min per axis — a tight
+    # number means they haven't covered enough orientations yet.
+    if wiz.get("tumble_active"):
+        _mag_cal_tumble_tick()
+        mn = wiz.get("tumble_min") or [None, None, None]
+        mx_arr = wiz.get("tumble_max") or [None, None, None]
+        spread = [(mx_arr[i] - mn[i]) if (mx_arr[i] is not None and mn[i] is not None) else 0
+                  for i in range(3)]
+        elapsed_ms = pygame.time.get_ticks() - (wiz.get("tumble_started_ms") or 0)
+        _text(surf, f"TUMBLE  {elapsed_ms/1000:.0f}s  "
+                    f"spread X:{int(spread[0])}  Y:{int(spread[1])}  Z:{int(spread[2])}",
+              11, (255, 200, 80), cx=bx + _MCAL_W // 2, cy=by + 198)
+
     # Left button reads CANCEL only when there's something to cancel —
     # i.e. partial captures haven't been committed yet.  Once the
     # 4-cardinal walk completes, the offset is already persisted and
@@ -3500,9 +3585,12 @@ def draw_mag_cal(surf):
     in_progress = step > 0 and step < len(_MAG_CAL_CARDINALS)
     left_lbl   = "CANCEL" if in_progress else "EXIT"
     left_style = "danger" if in_progress else "ok"
+    tumble_active = bool(wiz.get("tumble_active"))
+    tumble_lbl = "STOP TUMBLE" if tumble_active else "TUMBLE"
+    tumble_style = "danger" if tumble_active else "warn"
     _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, left_lbl, left_style)
     _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",    "warn")
-    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, "RESTART",  "warn")
+    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, tumble_lbl, tumble_style)
     _action_btn(surf, btn_xs[3], btn_y, btn_w, _MCAL_BTN_H,
                 f"⊕ CAPTURE {card_name}", "ok")
 
@@ -3512,7 +3600,7 @@ def mag_cal_hit(x, y):
     if not (bx <= x <= bx + _MCAL_W and by <= y <= by + _MCAL_H):
         return None
     if btn_y <= y <= btn_y + _MCAL_BTN_H:
-        for i, action in enumerate(("cancel", "reset", "restart", "capture")):
+        for i, action in enumerate(("cancel", "reset", "tumble", "capture")):
             if btn_xs[i] <= x <= btn_xs[i] + btn_w:
                 return action
     return "noop"
@@ -3899,8 +3987,8 @@ def handle_event(event, demo_mode):
             action = mag_cal_hit(x, y)
             if action == "capture":
                 _mag_cal_capture()
-            elif action == "restart":
-                _mag_cal_restart()
+            elif action == "tumble":
+                _mag_cal_tumble_toggle()
             elif action == "reset":
                 _mag_cal_reset()
             elif action == "cancel":
