@@ -66,7 +66,7 @@ class Mahony:
 
     # ----------------------------------------------------------------------
     def update(self, gx, gy, gz, ax, ay, az,
-               mx=None, my=None, mz=None, dt=0.02):
+               mx=None, my=None, mz=None, dt=0.02, freeze_bias=False):
         """
         Single filter step.
           gx, gy, gz : gyro rate (rad/s) in sensor frame
@@ -76,6 +76,11 @@ class Mahony:
           mx, my, mz : optional magnetometer (any units) in sensor frame.
                        Pass None to skip mag correction (yaw drifts on gyro).
           dt         : integration timestep (s)
+          freeze_bias: when True, skip the integral bias-estimator update
+                       this tick. Used during ZUPT — there's no real motion
+                       so any non-zero accel cross-product error is noise,
+                       and continuing to integrate it walks the bias estimate
+                       up to its clamp over long stationary periods.
         """
         q0, q1, q2, q3 = self.q0, self.q1, self.q2, self.q3
 
@@ -141,7 +146,7 @@ class Mahony:
         ey = self.kp_acc * a_w * ey_a + self.kp_mag * m_w * ey_m
         ez = self.kp_acc * a_w * ez_a + self.kp_mag * m_w * ez_m
 
-        if a_w > 0.0:
+        if a_w > 0.0 and not freeze_bias:
             # Gyro-bias estimator: only consume accel-derived error. Mag
             # error is fed into the proportional path but kept out of the
             # integrator — a residual mag direction error (soft iron,

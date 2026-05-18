@@ -406,7 +406,12 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     else:
         mx = my = mz = None
 
-    ahrs_filter.update(gx, gy, gz, ax, ay, az, mx, my, mz, dt=dt)
+    # Pass ZUPT state into the filter so it can freeze the bias integrator
+    # while stationary. Otherwise the integrator winds up to its clamp over
+    # hours and the clamped bias produces a persistent attitude offset that
+    # the accel correction can't pull back from.
+    ahrs_filter.update(gx, gy, gz, ax, ay, az, mx, my, mz,
+                       dt=dt, freeze_bias=zupt)
     a_c_mag = math.sqrt(acx*acx + acy*acy + acz*acz)
     return att_aid, a_c_mag
 
