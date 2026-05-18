@@ -390,6 +390,31 @@ def _hdg_offset_for(connector):
     return 0.0   # 'right' (default)
 
 
+def _fwd_in_sensor_for(connector):
+    """Aircraft +forward unit vector expressed in the WT901 sensor frame,
+    derived from the connector orientation. Used by both the centripetal
+    correction (a_c = ω × V_fwd_sensor) and the linear-acceleration aid
+    (a_lin · fwd_sensor) — both need to subtract inertial acceleration along
+    the *actual* aircraft forward direction, which depends on how the chip
+    is rotated in the airframe.
+
+    Reference: in 'right' mode (connector points right of aircraft), the
+    WT901's +Y axis points along aircraft forward. Each 90° change in
+    connector orientation rotates the chip by 90° about its +Z axis, so
+    the aircraft-forward direction in chip frame rotates correspondingly.
+
+    Returns a 3-tuple (x, y, z) unit vector. Caller may also use the
+    AHRS_FWD_IN_SENSOR config constant as a manual override for installations
+    that don't match the standard connector geometry."""
+    if connector == 'forward':
+        return (1.0, 0.0, 0.0)
+    if connector == 'left':
+        return (0.0, -1.0, 0.0)
+    if connector == 'aft':
+        return (-1.0, 0.0, 0.0)
+    return (0.0, 1.0, 0.0)   # 'right' (default)
+
+
 def _apply_remap(roll, pitch, yaw, connector, mounting):
     """Map WT901 sensor-frame Euler (ENU-convention) → aircraft body NED.
     Returns (body_roll, body_pitch, body_yaw_raw_unwrapped, hdg_off).
@@ -437,11 +462,20 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
         v_kt    = 0.0
         att_aid = 'basic'
 
+    # Aircraft-forward unit vector in chip frame — depends on connector
+    # orientation. Both centripetal (ω × V) and linear-accel (dV/dt) use it
+    # to project the speed-source-derived inertial acceleration onto the
+    # right chip axis. Hardcoding it to (0,1,0) was correct only for the
+    # 'right' connector default; in 'aft' (or any rotated mounting), this
+    # silently sent corrections along the wrong axis and pitch ended up off
+    # by 8-10° during straight-line braking.
+    fwd = _fwd_in_sensor_for(state['orientation'])
+
     # Centripetal accel in sensor frame: a_c = ω × V_fwd_sensor (m/s²)
     v_ms = v_kt * _KT_TO_M_S
-    vx = AHRS_FWD_IN_SENSOR[0] * v_ms
-    vy = AHRS_FWD_IN_SENSOR[1] * v_ms
-    vz = AHRS_FWD_IN_SENSOR[2] * v_ms
+    vx = fwd[0] * v_ms
+    vy = fwd[1] * v_ms
+    vz = fwd[2] * v_ms
     acx = (gy*vz - gz*vy) * _G_PER_M_S2
     acy = (gz*vx - gx*vz) * _G_PER_M_S2
     acz = (gx*vy - gy*vx) * _G_PER_M_S2
@@ -452,9 +486,9 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     # as centripetal — added to ahrs.ax/y/z to recover gravity.
     a_lin_ms2 = _update_linear_accel()
     state['_a_lin_ms2'] = a_lin_ms2   # diagnostic
-    acx += AHRS_FWD_IN_SENSOR[0] * a_lin_ms2 * _G_PER_M_S2
-    acy += AHRS_FWD_IN_SENSOR[1] * a_lin_ms2 * _G_PER_M_S2
-    acz += AHRS_FWD_IN_SENSOR[2] * a_lin_ms2 * _G_PER_M_S2
+    acx += fwd[0] * a_lin_ms2 * _G_PER_M_S2
+    acy += fwd[1] * a_lin_ms2 * _G_PER_M_S2
+    acz += fwd[2] * a_lin_ms2 * _G_PER_M_S2
 
     # WT901 reads specific force (stationary level = +1g on Z): adding the
     # inertial centripetal+linear vector recovers the gravity direction.
