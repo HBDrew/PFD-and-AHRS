@@ -2517,8 +2517,11 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats,
 
 
 # ── Red-X failure overlays ────────────────────────────────────────────────────
-def draw_red_x(surf, x, y, w, h, label):
-    """Semi-transparent dark overlay with red X and label."""
+def draw_red_x(surf, x, y, w, h, label, sub="FAIL"):
+    """Semi-transparent dark overlay with red X and two-line label.
+    Default sub-label is "FAIL"; pass sub="ALIGN" during AHRS settling so
+    the same untrustworthy-data signal is used but the pilot understands
+    the system is settling rather than broken."""
     ov = pygame.Surface((w, h), pygame.SRCALPHA)
     ov.fill((20, 0, 0, 160))
     surf.blit(ov, (x, y))
@@ -2526,21 +2529,7 @@ def draw_red_x(surf, x, y, w, h, label):
     pygame.draw.line(surf, RED, (x + w - 4, y + 4), (x + 4, y + h - 4), 3)
     if label:
         _text(surf, label, 14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 - 8)
-        _text(surf, "FAIL", 14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 + 8)
-
-
-def draw_align_overlay(surf, x, y, w, h):
-    """Semi-transparent amber overlay shown while the AHRS filter is still
-    settling. Unlike draw_red_x (which means 'data is invalid'), this keeps
-    the attitude visible behind the wash — the filter is producing usable
-    values, the pilot just shouldn't fully trust them yet."""
-    ov = pygame.Surface((w, h), pygame.SRCALPHA)
-    ov.fill((30, 20, 0, 100))   # warm dark backdrop, see-through
-    surf.blit(ov, (x, y))
-    _text(surf, "AHRS ALIGN", 22, (255, 200, 70), bold=True,
-          cx=x + w // 2, cy=y + h // 2 - 12)
-    _text(surf, "KEEP WINGS LEVEL", 12, (255, 200, 70), bold=False,
-          cx=x + w // 2, cy=y + h // 2 + 10)
+        _text(surf, sub,   14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 + 8)
 
 
 def draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok,
@@ -2549,14 +2538,16 @@ def draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok,
     ai_y = TAPE_TOP
     ai_w = ALT_X - SPD_W
     if not ahrs_ok:
-        # Cover AI center + heading strip
+        # Cover AI center + heading strip — no valid data at all.
         draw_red_x(surf, SPD_W, ai_y, ai_w, ai_h_used, "ATTITUDE")
         draw_red_x(surf, 0, HDG_Y, DISPLAY_W, HDG_H, "HDG")
     elif ahrs_aligning:
-        # Amber caution overlay during filter settling window. Attitude
-        # remains drawn underneath so the pilot can verify it's reasonable
-        # before the banner clears.
-        draw_align_overlay(surf, SPD_W, ai_y, ai_w, ai_h_used)
+        # Filter still settling — attitude is technically being computed
+        # but isn't yet trustworthy. Use the same red-X overlay as FAIL
+        # (don't trust this), with "ALIGN" sub-label so the pilot knows
+        # the system is settling rather than broken.
+        draw_red_x(surf, SPD_W, ai_y, ai_w, ai_h_used, "AHRS",  sub="ALIGN")
+        draw_red_x(surf, 0, HDG_Y, DISPLAY_W, HDG_H, "HDG",   sub="ALIGN")
     # Red X on speed tape only when GPS has no signal at all.
     # While communicating but no fix, the amber badge is sufficient warning.
     if not gps_ok and not gps_comm:
