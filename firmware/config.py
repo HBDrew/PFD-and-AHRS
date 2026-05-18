@@ -184,10 +184,9 @@ AHRS_GPS_TRACK_ALPHA      = 0.02   # fraction of yaw error closed per call
 # AHRS align banner — display shows "AHRS ALIGN" for this long after the
 # filter first starts receiving gyro packets. Sized to cover the practical
 # worst-case for the Mahony to converge from a poor PKT_ANGLE seed during
-# a moving-on-power-up scenario. Filter typically settles in 2–3 s when
-# stationary, but the conservative 10 s window matches G5/G3X conventions
-# and gives the pilot time to notice the indicator.
-AHRS_ALIGN_DURATION_S     = 10.0
+# a moving-on-power-up scenario. 20 s matches what we've seen in real
+# bench/flight startup — filter is visibly still settling at 10 s.
+AHRS_ALIGN_DURATION_S     = 20.0
 
 # Firmware version date code — broadcast to the display so the pilot can
 # verify which build is running on the AHRS. Bump manually on each
