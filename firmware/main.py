@@ -262,6 +262,77 @@ def setup_ap():
 _G_PER_M_S2 = 1.0 / 9.80665
 _KT_TO_M_S  = 0.514444
 
+# ── Linear-acceleration aid for the filter ──────────────────────────────────
+# Without this, forward acceleration / braking show up as pitch changes —
+# the accelerometer measures (gravity − dV/dt), so an accelerating airframe
+# looks like nose-up to the filter and a braking one looks like nose-down.
+# We differentiate the active speed source (TAS preferred, GS fallback),
+# low-pass-filter the result, and add it as a body-forward component to the
+# existing centripetal-correction subtraction.
+_LIN_ACCEL_ALPHA       = 0.1     # IIR α for smoothing dV/dt — τ ≈ 200 ms at 50 Hz
+_LIN_ACCEL_MIN_DT_S    = 0.05    # minimum dt before computing a new sample
+_LIN_ACCEL_DV_SPIKE_MS = 5.0     # m/s — guards against fix loss / source switch
+_lin_v_ms     = 0.0
+_lin_v_t_ms   = 0
+_lin_a_filt   = 0.0     # filtered linear accel (m/s²), forward = positive
+_lin_v_valid  = False   # only differentiate once we've seen two consecutive valid samples
+
+
+def _update_linear_accel():
+    """Compute forward linear acceleration from rate of change of the active
+    speed source. Returns m/s² along aircraft +forward (matches the sign
+    convention of AHRS_FWD_IN_SENSOR — a positive value = accelerating).
+    Smoothed with a 200 ms time constant to suppress GPS-rate jitter and
+    SDP/MS4525 noise."""
+    global _lin_v_ms, _lin_v_t_ms, _lin_a_filt, _lin_v_valid
+
+    # Same source ladder as the centripetal correction: TAS preferred → GS.
+    if state.get('airdata_ok') and state.get('tas_kt', 0.0) > 5.0:
+        v_kt = state['tas_kt']
+        v_ok = True
+    elif state.get('gps_ok') and state.get('speed', 0.0) > 1.0:
+        v_kt = state['speed']
+        v_ok = True
+    else:
+        v_kt = 0.0
+        v_ok = False
+
+    now_ms = utime.ticks_ms()
+    v_ms = v_kt * _KT_TO_M_S
+
+    if not v_ok:
+        # Lost the source — decay the filtered value toward zero and reset
+        # the differentiator state so the next valid sample doesn't compute
+        # a huge bogus dV/dt against a stale prior value.
+        _lin_a_filt *= 0.5
+        _lin_v_valid = False
+        return _lin_a_filt
+
+    if not _lin_v_valid:
+        # First valid sample after a gap — prime the differentiator.
+        _lin_v_ms = v_ms
+        _lin_v_t_ms = now_ms
+        _lin_v_valid = True
+        return _lin_a_filt
+
+    dt_s = utime.ticks_diff(now_ms, _lin_v_t_ms) / 1000.0
+    if dt_s < _LIN_ACCEL_MIN_DT_S:
+        return _lin_a_filt   # too soon — hold last filtered value
+
+    dv_ms = v_ms - _lin_v_ms
+    # Reject obviously bogus jumps (GPS reacquisition, source switch).
+    if abs(dv_ms) > _LIN_ACCEL_DV_SPIKE_MS:
+        _lin_v_ms = v_ms
+        _lin_v_t_ms = now_ms
+        return _lin_a_filt
+
+    raw_a = dv_ms / dt_s
+    _lin_a_filt = (1.0 - _LIN_ACCEL_ALPHA) * _lin_a_filt + _LIN_ACCEL_ALPHA * raw_a
+    _lin_v_ms = v_ms
+    _lin_v_t_ms = now_ms
+    return _lin_a_filt
+
+
 # ── Zero-Velocity Update (ZUPT) ──────────────────────────────────────────────
 # When we're confident the airframe is stationary, force gyro input to the
 # Mahony to zero. This eliminates any drift from gyro bias (temperature,
@@ -375,8 +446,18 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     acy = (gz*vx - gx*vz) * _G_PER_M_S2
     acz = (gx*vy - gy*vx) * _G_PER_M_S2
 
+    # Linear-acceleration aid: forward-axis a = dV/dt projected onto sensor
+    # forward direction. Without this, braking and accelerating in
+    # straight-line flight produce false pitch changes. Same sign convention
+    # as centripetal — added to ahrs.ax/y/z to recover gravity.
+    a_lin_ms2 = _update_linear_accel()
+    state['_a_lin_ms2'] = a_lin_ms2   # diagnostic
+    acx += AHRS_FWD_IN_SENSOR[0] * a_lin_ms2 * _G_PER_M_S2
+    acy += AHRS_FWD_IN_SENSOR[1] * a_lin_ms2 * _G_PER_M_S2
+    acz += AHRS_FWD_IN_SENSOR[2] * a_lin_ms2 * _G_PER_M_S2
+
     # WT901 reads specific force (stationary level = +1g on Z): adding the
-    # inertial centripetal vector recovers the gravity direction.
+    # inertial centripetal+linear vector recovers the gravity direction.
     ax = ahrs.ax + acx
     ay = ahrs.ay + acy
     az = ahrs.az + acz
