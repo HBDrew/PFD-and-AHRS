@@ -694,6 +694,17 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
         if tick % 100 == 0:
             led.toggle()
 
+        # WT901 packet-type counters every 10 s. Lets us diagnose situations
+        # where individual packet types stop arriving (e.g., PKT_ANGLE 0x53
+        # disappearing while ACC/GYRO/MAG keep flowing). If cnt_angle is
+        # stuck at the same value across reports, the chip isn't sending
+        # PKT_ANGLE regardless of our RSW reconfigure attempts.
+        if tick % 500 == 0:
+            print(f'[WT901] pkt counts  acc={ahrs.cnt_accel} '
+                  f'gyro={ahrs.cnt_gyro} angle={ahrs.cnt_angle} '
+                  f'mag={ahrs.cnt_mag} quat={ahrs.cnt_quat} '
+                  f'bad_cksum={ahrs.cnt_bad_cksum}')
+
         # Feed the watchdog every tick so a hung asyncio loop / blocking
         # print() / unhandled exception triggers a reboot within 8 s.
         if _wdt is not None:

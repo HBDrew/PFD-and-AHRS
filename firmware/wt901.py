@@ -74,6 +74,15 @@ class WT901:
         self.new_angle = False
         self.new_quat  = False
 
+        # Cumulative parse counters — useful for diagnosing missing packet
+        # types (e.g., PKT_ANGLE silently disabled by a chip config glitch).
+        self.cnt_accel = 0
+        self.cnt_gyro  = 0
+        self.cnt_mag   = 0
+        self.cnt_angle = 0
+        self.cnt_quat  = 0
+        self.cnt_bad_cksum = 0
+
     # ------------------------------------------------------------------
     def update(self):
         """
@@ -102,6 +111,7 @@ class WT901:
             if self._checksum(pkt) != pkt[10]:
                 # Bad packet – drop the header byte and re-sync
                 self._buf = self._buf[1:]
+                self.cnt_bad_cksum += 1
                 continue
 
             ptype = pkt[1]
@@ -116,6 +126,7 @@ class WT901:
                 if self.yaw < 0:
                     self.yaw += 360.0
                 self.new_angle = True
+                self.cnt_angle += 1
                 updated = True
 
             elif ptype == self.PKT_ACCEL:
@@ -123,6 +134,7 @@ class WT901:
                 self.ay = struct.unpack_from('<h', pkt, 4)[0] / 32768.0 * 16.0
                 self.az = struct.unpack_from('<h', pkt, 6)[0] / 32768.0 * 16.0
                 self.new_accel = True
+                self.cnt_accel += 1
                 updated = True
 
             elif ptype == self.PKT_GYRO:
@@ -131,6 +143,7 @@ class WT901:
                 self.wy = struct.unpack_from('<h', pkt, 4)[0] / 32768.0 * 2000.0
                 self.wz = struct.unpack_from('<h', pkt, 6)[0] / 32768.0 * 2000.0
                 self.new_gyro = True
+                self.cnt_gyro += 1
                 updated = True
 
             elif ptype == self.PKT_MAG:
@@ -140,6 +153,7 @@ class WT901:
                 self.my = float(struct.unpack_from('<h', pkt, 4)[0])
                 self.mz = float(struct.unpack_from('<h', pkt, 6)[0])
                 self.new_mag = True
+                self.cnt_mag += 1
                 updated = True
 
             elif ptype == self.PKT_QUAT:
@@ -149,6 +163,7 @@ class WT901:
                 self.q2 = struct.unpack_from('<h', pkt, 6)[0] / 32768.0
                 self.q3 = struct.unpack_from('<h', pkt, 8)[0] / 32768.0
                 self.new_quat = True
+                self.cnt_quat += 1
                 updated = True
 
             self._buf = self._buf[self.PKT_LEN:]
