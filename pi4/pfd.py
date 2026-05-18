@@ -3332,25 +3332,24 @@ def _apply_mag_cal(raw_hdg, deltas):
 
 
 def _instant_mag_heading_deg():
-    """Return the WT901's PKT_ANGLE yaw (post-remap), broadcast by the AHRS
-    each tick as state['yaw_wt901']. Used by the cal wizard for RAW HDG.
+    """Return the Mahony's yaw output (post-remap, pre-magdev) for the cal
+    wizard's RAW HDG display.
 
-    Why not compute from raw mx/my here? Convention. The WT901's mag axis
-    sign/order isn't documented in a way that matches a clean
-    atan2(my, mx) -> heading; an empirical attempt produced wrong rotation
-    direction. The Pico-side PKT_ANGLE goes through the existing remap
-    that's been working for the WT901 fallback path all along — the
-    convention is already right.
+    We previously preferred state['yaw_wt901'] (the WT901's own PKT_ANGLE
+    routed through the same remap) but in practice that chip has had
+    PKT_ANGLE intermittently disabled — its RSW register sometimes
+    refuses our reconfigure attempt and 0x53 silently goes dark. yaw_wt901
+    then freezes at whatever value it last had and the cal screen reads a
+    constant heading regardless of physical rotation.
 
-    PKT_ANGLE has some internal Kalman dynamics on the WT901 chip, but
-    it's vastly more responsive than our Mahony when the mag is biased
-    (Mahony's mag-correction term fights the gyro). Good enough for cal
-    capture timing.
-
-    Fallback chain handles older AHRS firmware without yaw_wt901."""
-    return float(disp.get("yaw_wt901",
-                          disp.get("_yaw_uncal",
-                                   disp.get("yaw", 0.0)))) % 360.0
+    The Mahony's yaw is responsive at gyro rate (every gyro packet
+    advances the quaternion). The original "lag" complaint was the
+    mag-correction term opposing the gyro in a biased magnetic
+    environment — that goes away after running the tumble (hard-iron)
+    cal once. So for cal purposes, _yaw_uncal is the right signal:
+    snappy when nothing is fighting it, and the tumble cal makes sure
+    nothing is."""
+    return float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
 
 
 def _mag_cal_open(prev_mode: str):
