@@ -21,7 +21,8 @@ import network
 import utime
 import ujson
 import sys
-from machine import Pin
+import gc
+from machine import Pin, WDT
 
 from config import (
     WT901_UART_ID, WT901_TX_PIN, WT901_RX_PIN, WT901_BAUD,
@@ -429,6 +430,17 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
     gps_slave_last_ms = utime.ticks_ms()
     align_start_ms   = None           # first gyro packet timestamp; gates
                                       # the AHRS_ALIGN_DURATION_S align banner
+    # Hardware watchdog. Auto-reboots the Pico if sensor_loop fails to feed
+    # within the timeout — recovers from MicroPython lock-ups that would
+    # otherwise leave the AHRS dark (e.g., asyncio stall, USB CDC backpressure
+    # blocking a print(), unhandled exception in an async task). The 8 s
+    # window is well above any legitimate loop latency but well below pilot
+    # patience after a stall.
+    try:
+        _wdt = WDT(timeout=8000)
+    except Exception as e:
+        print(f'[AHRS] WDT init failed ({e}) — running without watchdog')
+        _wdt = None
     _align_ms        = int(AHRS_ALIGN_DURATION_S * 1000)
     while True:
         # ── AHRS ──
@@ -680,6 +692,18 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
         # Heartbeat LED: blink every 2 s (100 × 20 ms)
         if tick % 100 == 0:
             led.toggle()
+
+        # Feed the watchdog every tick so a hung asyncio loop / blocking
+        # print() / unhandled exception triggers a reboot within 8 s.
+        if _wdt is not None:
+            _wdt.feed()
+
+        # Periodic explicit GC. MicroPython's incremental GC can starve when
+        # the loop allocates heavily (JSON encoding at BROADCAST_HZ, the WT901
+        # driver's bytearray slicing). Forcing a collect every ~2 s keeps the
+        # heap from fragmenting into the slow path. Cheap on the RP2350.
+        if tick % 100 == 0:
+            gc.collect()
 
         await asyncio.sleep_ms(20)   # 50 Hz poll
 
