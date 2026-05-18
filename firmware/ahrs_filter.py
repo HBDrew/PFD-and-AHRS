@@ -32,6 +32,12 @@ import math
 
 
 class Mahony:
+    # Hard bound on the gyro-bias integrator (rad/s ≈ 5°/s). Well above any
+    # real MEMS bias; if the integrator ever winds up to this value, the
+    # filter is misbehaving and we'd rather clamp it than let it diverge
+    # over hours of operation.
+    _BIAS_CLAMP_RAD_S = 0.0873
+
     def __init__(self,
                  kp_acc=1.0,
                  ki_acc=0.01,
@@ -144,6 +150,17 @@ class Mahony:
             self.bx += self.ki_acc * a_w * ex_a * dt
             self.by += self.ki_acc * a_w * ey_a * dt
             self.bz += self.ki_acc * a_w * ez_a * dt
+            # Bound the integrator. Real MEMS bias is well under 1°/s;
+            # if we ever hit the clamp something else has gone wrong (bad
+            # mounting, accel transients during a long maneuver) and we'd
+            # rather have a stable wrong attitude than a diverging filter.
+            c = self._BIAS_CLAMP_RAD_S
+            if self.bx >  c: self.bx =  c
+            elif self.bx < -c: self.bx = -c
+            if self.by >  c: self.by =  c
+            elif self.by < -c: self.by = -c
+            if self.bz >  c: self.bz =  c
+            elif self.bz < -c: self.bz = -c
 
         # Apply correction to gyro and subtract estimated bias
         gx_c = gx + ex - self.bx

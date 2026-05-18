@@ -207,6 +207,9 @@ state = {
                            # filter starts receiving gyro data — display shows
                            # an "AHRS ALIGN" banner so the pilot knows the
                            # attitude is still settling.
+    'ahrs_zupt' : False,   # True when Zero-Velocity Update is engaged (gyro
+                           # input forced to zero because the airframe is
+                           # confirmed stationary — prevents long-term drift).
     'fw_ver'    : FW_VERSION, # Firmware date code (broadcast to display)
     # Sensor health flags (set every sensor_loop tick)
     'ahrs_ok':   False,
@@ -252,6 +255,54 @@ def setup_ap():
 _G_PER_M_S2 = 1.0 / 9.80665
 _KT_TO_M_S  = 0.514444
 
+# ── Zero-Velocity Update (ZUPT) ──────────────────────────────────────────────
+# When we're confident the airframe is stationary, force gyro input to the
+# Mahony to zero. This eliminates any drift from gyro bias (temperature,
+# component aging) over long stationary periods — the user left the system
+# powered overnight and saw the attitude indicator slowly walk in roll/pitch.
+# The accel correction stays active so roll/pitch lock to the gravity vector;
+# yaw freezes at its last estimate (mag aiding still allowed if enabled).
+_ZUPT_GS_THRESHOLD_KT     = 1.0     # GPS GS below this counts as still
+_ZUPT_IAS_THRESHOLD_KT    = 5.0     # IAS below this counts as still
+_ZUPT_GYRO_THRESHOLD_DPS  = 1.0     # gyro magnitude below this (deg/s)
+_ZUPT_ACCEL_GATE_G        = 0.05    # |a|-1g| below this (tighter than filter)
+_ZUPT_QUIET_DURATION_MS   = 3000    # all conditions sustained this long → engage
+
+_zupt_quiet_since_ms = None         # monotonic ms when conditions first held
+
+
+def _detect_stationary(ahrs, now_ms):
+    """Conservative stationary detector. Returns True only after every
+    condition has held continuously for _ZUPT_QUIET_DURATION_MS:
+      - GPS groundspeed below threshold (or no fix at all)
+      - Air-data unavailable OR IAS below threshold
+      - Gyro magnitude below threshold (no rotation)
+      - Accel magnitude within tight band of 1g (no linear motion)
+    All four must hold so we don't accidentally ZUPT during a hover, a
+    coordinated zero-G push-over, or any other "GPS is zero but the
+    aircraft is moving" edge case."""
+    global _zupt_quiet_since_ms
+
+    gs = state.get('speed', 0.0) or 0.0
+    gps_quiet = (not state.get('gps_ok')) or gs < _ZUPT_GS_THRESHOLD_KT
+    ias = state.get('ias_kt', 0.0) or 0.0
+    air_quiet = (not state.get('airdata_ok')) or ias < _ZUPT_IAS_THRESHOLD_KT
+
+    gyro_mag = math.sqrt(ahrs.wx*ahrs.wx + ahrs.wy*ahrs.wy + ahrs.wz*ahrs.wz)
+    gyro_quiet = gyro_mag < _ZUPT_GYRO_THRESHOLD_DPS
+
+    accel_mag = math.sqrt(ahrs.ax*ahrs.ax + ahrs.ay*ahrs.ay + ahrs.az*ahrs.az)
+    accel_quiet = abs(accel_mag - 1.0) < _ZUPT_ACCEL_GATE_G
+
+    if gps_quiet and air_quiet and gyro_quiet and accel_quiet:
+        if _zupt_quiet_since_ms is None:
+            _zupt_quiet_since_ms = now_ms
+        elif utime.ticks_diff(now_ms, _zupt_quiet_since_ms) >= _ZUPT_QUIET_DURATION_MS:
+            return True
+    else:
+        _zupt_quiet_since_ms = None
+    return False
+
 
 def _hdg_offset_for(connector):
     """Connector orientation → heading offset applied in the Euler remap."""
@@ -286,6 +337,16 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     gx = math.radians(ahrs.wx)
     gy = math.radians(ahrs.wy)
     gz = math.radians(ahrs.wz)
+
+    # ZUPT: when we're sure the airframe is stationary, zero the gyro input
+    # so the filter doesn't integrate any drift from temperature-induced
+    # gyro bias. Accel correction stays active → roll/pitch lock to gravity.
+    zupt = _detect_stationary(ahrs, utime.ticks_ms())
+    state['ahrs_zupt'] = zupt
+    if zupt:
+        gx = 0.0
+        gy = 0.0
+        gz = 0.0
 
     # Speed source ladder: TAS (physically correct) → GS → none.
     if state.get('airdata_ok') and state.get('tas_kt', 0.0) > 5.0:
@@ -595,7 +656,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                     'orientation','mounting',
                     'ias_kt','tas_kt','dp_pa','oat_c','dens_alt_ft',
                     'wind_dir','wind_kt','airdata_ok',
-                    'att_src','att_aid','ahrs_aligning',
+                    'att_src','att_aid','ahrs_aligning','ahrs_zupt',
                     'mx','my','mz','fw_ver','yaw_wt901',
                 )}
                 print('$AHRS,' + ujson.dumps(_usb))
