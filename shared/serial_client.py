@@ -27,6 +27,13 @@ import os
 class SerialClient(threading.Thread):
     PREFIX = "$AHRS,"
 
+    # If we go this long without a valid $AHRS line, assume the USB endpoint
+    # has gone silent (Pico re-enumerated, hub glitch, mpremote raced the
+    # port) and force a close+reopen. pyserial's readline() will sit in
+    # read() forever on a quiet-but-open fd, so we need an upper bound on
+    # "looks alive" silence.
+    STALE_DATA_TIMEOUT_S = 5.0
+
     def __init__(self, port: str, state: dict, lock: threading.Lock,
                  baud: int = 115200, reconnect_delay: float = 3.0):
         super().__init__(daemon=True, name="SerialClient")
@@ -40,6 +47,7 @@ class SerialClient(threading.Thread):
         self.rx_count        = 0     # $AHRS, lines parsed OK
         self.err_count       = 0     # JSON/IO errors
         self.last_err        = ""    # most recent error message
+        self.stale_resets    = 0     # count of stale-data forced reconnects
         self._stop_event     = threading.Event()
         self._ser            = None  # set while port is open; used by write()
 
@@ -66,6 +74,13 @@ class SerialClient(threading.Thread):
 
     def run(self):
         while not self._stop_event.is_set():
+            # Re-resolve the port on each reconnect — if the Pico
+            # re-enumerated as ttyACM1 we want to follow it rather than
+            # block forever on the now-dead ttyACM0.
+            resolved = self.find_port() or self.port
+            if resolved != self.port:
+                print(f"[Serial] Port changed: {self.port} → {resolved}")
+                self.port = resolved
             try:
                 self._read_loop()
             except Exception as e:
@@ -82,9 +97,21 @@ class SerialClient(threading.Thread):
         print(f"[Serial] Opening {self.port} @ {self.baud}")
         ser = serial.Serial(self.port, self.baud, timeout=2)
         self._ser = ser
+        last_rx = time.monotonic()
         try:
             while not self._stop_event.is_set():
                 raw = ser.readline()
+                # Stale-data watchdog: pyserial's readline() returns b""
+                # after the read timeout when no bytes arrive, so a quiet
+                # but still-open fd shows up as a tight empty-string loop
+                # here. If we go STALE_DATA_TIMEOUT_S without a valid
+                # $AHRS line, raise to trigger the outer reconnect path.
+                if time.monotonic() - last_rx > self.STALE_DATA_TIMEOUT_S:
+                    self.stale_resets += 1
+                    raise IOError(
+                        f"no $AHRS data for "
+                        f"{self.STALE_DATA_TIMEOUT_S:.0f}s — forcing reconnect"
+                    )
                 if not raw:
                     continue
                 line = raw.decode("utf-8", errors="ignore").strip()
@@ -103,6 +130,7 @@ class SerialClient(threading.Thread):
                             self.state.update(update)
                     self.connected = True
                     self.rx_count += 1
+                    last_rx = time.monotonic()
                 except json.JSONDecodeError as e:
                     self.err_count += 1
                     self.last_err = f"JSON: {e.msg} @ col {e.colno}"
