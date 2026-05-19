@@ -730,8 +730,9 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 # look up the SRTM peak along each ray, and draw a single silhouette
 # polygon for any terrain rising above the visual horizon. ~3-5 ms/frame
 # on a Pi Zero 2W.
-_AHT_N_RAYS         = 31
-_AHT_HALF_FOV_DEG   = 24.0                    # ±24° keeps ray rays inside the 484 px AI at 10 px/deg
+_AHT_N_RAYS         = 41
+_AHT_HALF_FOV_DEG   = 33.0                    # ±33° covers the full 640 px display width at
+                                              # 10 px/deg with margin for roll-induced edge growth
 _AHT_DIST_NM        = (0.5, 1.0, 2.0, 4.0, 7.0, 12.0, 20.0)
 _AHT_PX_PER_DEG     = 10.0                    # match draw_simple_ai_background + draw_pitch_ladder
                                               # (NOT the 8.0 obstacles use — caused a 20 px gap
@@ -4412,7 +4413,10 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
     cx = ax + aw // 2
     cy = ay_r + ah // 2
 
-    PX_PER_DEG = 8.0
+    # 10 px/deg matches draw_simple_ai_background / draw_pitch_ladder /
+    # draw_airport_symbols / above-horizon silhouette. The earlier 8.0
+    # left obstacle towers floating 20% off the horizon scale.
+    PX_PER_DEG = 10.0
 
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
@@ -4538,8 +4542,12 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
     cx = ax + aw // 2
     cy = ay_r + ah // 2
 
-    # Match pitch-ladder scale for consistency with the attitude indicator
-    PX_PER_DEG = ah / 48.0
+    # Match draw_simple_ai_background / draw_pitch_ladder / above-horizon
+    # silhouette so airport symbols sit at the same per-degree scale as the
+    # horizon line they reference. Previously ah/48 ≈ 9.08 px/deg disagreed
+    # with the horizon's hardcoded 10 px/deg — airports drifted relative
+    # to the horizon by ~10% per degree of pitch.
+    PX_PER_DEG = 10.0
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
     cos_r = math.cos(math.radians(roll_deg))
@@ -4567,10 +4575,18 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
         alt_diff_ft = apt.elev_ft - alt_ft
         vert_deg = math.degrees(math.atan2(alt_diff_ft, dist_ft))
 
+        # Skip airports above the visual horizon — vert_deg > 0 means the
+        # field elevation is above the aircraft (looking up at it), which
+        # for normal cruise means the airport is sitting in the "sky"
+        # region of the AI and would visually drift into terrain features
+        # / pitch ladder territory. The old cull (screen_y_raw < 0) was
+        # off-centre instead of off-horizon, so at nose-up pitch airports
+        # with even slightly-positive vert_deg painted above the horizon.
+        if vert_deg > 0:
+            continue
+
         screen_x_raw = rel_brg * PX_PER_DEG
         screen_y_raw = (pitch_deg - vert_deg) * PX_PER_DEG
-        if screen_y_raw < 0:
-            continue
         sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
         sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
 
