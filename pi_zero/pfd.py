@@ -809,10 +809,13 @@ def draw_above_horizon_terrain(surf, ai_rect, lat, lon, alt_ft,
     syr_top = (pitch_deg - _np.maximum(peak_deg, 0.0)) * _AHT_PX_PER_DEG
     syr_hor = pitch_deg * _AHT_PX_PER_DEG
 
-    sx_top = (cx + sxr * cos_r - syr_top * sin_r).astype(_np.int32)
-    sy_top = (cy + sxr * sin_r + syr_top * cos_r).astype(_np.int32)
-    sx_hor = (cx + sxr * cos_r - syr_hor * sin_r).astype(_np.int32)
-    sy_hor = (cy + sxr * sin_r + syr_hor * cos_r).astype(_np.int32)
+    # Rotation must match draw_pitch_ladder._rv() so the silhouette
+    # rotates with the horizon line (not against it). Body coord (x, y)
+    # → screen (cx + x*cos_r + y*sin_r, cy - x*sin_r + y*cos_r).
+    sx_top = (cx + sxr * cos_r + syr_top * sin_r).astype(_np.int32)
+    sy_top = (cy - sxr * sin_r + syr_top * cos_r).astype(_np.int32)
+    sx_hor = (cx + sxr * cos_r + syr_hor * sin_r).astype(_np.int32)
+    sy_hor = (cy - sxr * sin_r + syr_hor * cos_r).astype(_np.int32)
 
     # Polygon: silhouette curve left→right, then horizon line right→left
     polygon = list(zip(sx_top.tolist(), sy_top.tolist())) \
