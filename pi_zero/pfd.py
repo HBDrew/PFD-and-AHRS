@@ -4332,11 +4332,11 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
     if baro_ok and baro_src != "gps":
         baro_unit = disp["ds"].get("baro_unit", "inhg")
         if baro_unit == "hpa":
-            baro_lbl = f"{baro_hpa:.0f} hPa"
-            baro_fsz = 20
+            baro_lbl = f"{baro_hpa:.0f}"
+            baro_fsz = 24
         else:
-            baro_lbl = f"{baro_hpa / 33.8639:.2f} IN"
-            baro_fsz = 18    # "29.92 IN" is the widest string, font tuned to fit ALT_W-1
+            baro_lbl = f"{baro_hpa / 33.8639:.2f}"
+            baro_fsz = 24    # cyan box border + display-setup choice tells the pilot the unit
         baro_col = CYAN
     else:
         baro_lbl = "GPS ALT"
