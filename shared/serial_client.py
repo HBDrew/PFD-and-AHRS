@@ -118,6 +118,12 @@ class SerialClient(threading.Thread):
                 if line.startswith("$ORIENT_ACK,"):
                     print(f"[Serial] {line}")
                 if not line.startswith(self.PREFIX):
+                    # Non-$AHRS line — Pico boot output, exception traceback,
+                    # or other diagnostic print. Relay to journalctl so we
+                    # can see WHY the Pico reset / what it logged at boot.
+                    # Skip pure-empty lines and the visual divider banners.
+                    if line and not line.startswith("─"):
+                        print(f"[Pico] {line}")
                     continue
                 payload = line[len(self.PREFIX):]
                 try:
