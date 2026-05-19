@@ -441,15 +441,45 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     gy = math.radians(ahrs.wy)
     gz = math.radians(ahrs.wz)
 
-    # ZUPT: when we're sure the airframe is stationary, zero the gyro input
-    # so the filter doesn't integrate any drift from temperature-induced
-    # gyro bias. Accel correction stays active → roll/pitch lock to gravity.
+    # ZUPT: when we're sure the airframe is stationary, two things happen.
+    #
+    # 1. The filter's bias estimate is actively TRACKED from the raw gyro
+    #    readings. Stationary by definition means true_rate=0, so the gyro
+    #    reading equals the bias. Seed the estimate from the current gyro
+    #    sample on the rising edge of ZUPT (single-sample MEMS gyro noise
+    #    < 0.05°/s, far better than a stale value), then LPF it with
+    #    α=0.001 (τ ≈ 20 s at 50 Hz) so the estimate tracks slow temperature
+    #    drift in the chip without chasing single-sample noise.
+    # 2. freeze_bias=True is passed to the filter so its own
+    #    accel-cross-product integrator doesn't compete with our
+    #    gyro-derived tracking.
+    #
+    # Why this beats the previous "just freeze bias" approach: a frozen
+    # estimate stays put while the chip's real bias slowly drifts. The
+    # filter then sees an apparent rate of (real_bias − frozen_estimate)
+    # which it integrates as rotation. Over hours, that walks the attitude
+    # by several degrees on a stationary bench. Tracking the bias from
+    # raw gyro instead keeps the estimate aligned with the real bias.
     zupt = _detect_stationary(ahrs, utime.ticks_ms())
     state['ahrs_zupt'] = zupt
+    _was_zupt = state.get('_zupt_prev', False)
+    state['_zupt_prev'] = zupt
     if zupt:
-        gx = 0.0
-        gy = 0.0
-        gz = 0.0
+        if not _was_zupt:
+            # ZUPT just engaged — seed bias from the current gyro reading.
+            ahrs_filter.bx = gx
+            ahrs_filter.by = gy
+            ahrs_filter.bz = gz
+        else:
+            # Slow-track real bias drift via gyro readings.
+            _bias_alpha = 0.001
+            ahrs_filter.bx = (1.0 - _bias_alpha) * ahrs_filter.bx + _bias_alpha * gx
+            ahrs_filter.by = (1.0 - _bias_alpha) * ahrs_filter.by + _bias_alpha * gy
+            ahrs_filter.bz = (1.0 - _bias_alpha) * ahrs_filter.bz + _bias_alpha * gz
+        # Don't zero the gyro here — the filter's internal "gyro − bias"
+        # correction yields ≈0 because bias now accurately tracks the
+        # gyro reading. Zeroing gyro AND keeping a stale bias is what
+        # caused the drift bug in the first place.
 
     # Speed source ladder: TAS (physically correct) → GS → none.
     if state.get('airdata_ok') and state.get('tas_kt', 0.0) > 5.0:
