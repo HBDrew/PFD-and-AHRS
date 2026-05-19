@@ -2082,6 +2082,44 @@ def handle_event(event, demo_mode):
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
 
+    # ── Drag-to-scroll on setup screens ──────────────────────────────────────
+    # We defer the tap-fire on BUTTONDOWN inside a drag-capable setup
+    # screen, watch MOTION to detect a scroll-drag, and on BUTTONUP either
+    # consume the drag (no action fires) or replay the tap at the up
+    # position so the underlying row-hit code runs as if nothing happened.
+    global _ss_drag, _dispatch_replay
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        x, y = pos
+        dy = y - _ss_drag["down_y"]
+        if not _ss_drag["is_drag"] and abs(dy) > _SS_DRAG_THRESHOLD:
+            _ss_drag["is_drag"] = True
+        if _ss_drag["is_drag"]:
+            mode = _ss_drag["mode"]
+            n_rows = _SS_DRAG_MODES.get(mode, 5)
+            max_s = _ss_max_scroll(n_rows)
+            new_scroll = _ss_drag["scroll_at_down"] - dy
+            _ss_scroll[mode] = max(0, min(max_s, new_scroll))
+        _ss_drag["pos"] = (x, y)
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _ss_drag is not None:
+        d = _ss_drag
+        _ss_drag = None
+        if not d["is_drag"]:
+            # Replay the tap at the UP position as a synthetic
+            # MOUSEBUTTONDOWN so the existing dispatch logic runs once.
+            _dispatch_replay = True
+            try:
+                fake = pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN,
+                    {"pos": d["pos"], "button": 1})
+                handle_event(fake, demo_mode)
+            finally:
+                _dispatch_replay = False
+        return True
+
     # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
         # Skip if this is part of a multi-touch gesture
@@ -2093,6 +2131,22 @@ def handle_event(event, demo_mode):
         x, y = pos
 
         mode = disp["mode"]
+
+        # Defer this tap on drag-capable setup screens — except taps inside
+        # the title bar (back button), which still fire immediately so the
+        # user can always escape.
+        if (not _dispatch_replay
+                and mode in _SS_DRAG_MODES
+                and y >= _SS_TITLE_BAR_H):
+            _ss_drag = {
+                "mode":           mode,
+                "down_x":         x,
+                "down_y":         y,
+                "pos":            (x, y),
+                "scroll_at_down": _ss_scroll.get(mode, 0),
+                "is_drag":        False,
+            }
+            return True
 
         # ── Setup screen taps ─────────────────────────────────────────────
         if mode == "setup":
@@ -2893,16 +2947,26 @@ _SS_GAP = 6      # gap between rows
 
 # Per-setup-screen scroll offsets (in pixels). Keyed by disp["mode"].
 # Used when a screen's content exceeds the 436 px of vertical area below
-# the title bar — see _draw_scroll_arrows / _ss_scroll_hit.
+# the title bar.
 _ss_scroll = {}
 
-# Scroll-arrow button geometry (right edge, vertically anchored).
-_SS_ARROW_W   = 30
-_SS_ARROW_H   = 40
-_SS_ARROW_X   = DISPLAY_W - _SS_ARROW_W - 2
-_SS_ARROW_UP_Y   = 50
-_SS_ARROW_DN_Y   = DISPLAY_H - _SS_ARROW_H - 4
-_SS_TITLE_BAR_H  = 44   # taps in this band belong to the header, not rows
+_SS_TITLE_BAR_H = 44     # taps in this band belong to the header, not rows
+
+# Drag-to-scroll state. Set on MOUSEBUTTONDOWN/FINGERDOWN inside a drag-
+# capable setup screen, cleared on UP. Motion exceeding _SS_DRAG_THRESHOLD
+# converts the touch from "tap" to "drag" — taps still fire (replayed at
+# UP), drags scroll without firing.
+_ss_drag = None
+_SS_DRAG_THRESHOLD = 8     # px before tap becomes drag
+_SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
+    "ahrs_setup":         7,
+    "display_setup":      5,
+    "system_setup":       8,
+    "connectivity_setup": 6,
+    "flight_profile":     8,
+}
+_dispatch_replay = False   # guard against infinite recursion in the
+                           # deferred-tap replay path
 
 
 def _ss_row_y(i):
@@ -2931,57 +2995,6 @@ def _ss_clip_to_content(surf):
     surf.set_clip(pygame.Rect(0, _SS_TITLE_BAR_H,
                               DISPLAY_W, DISPLAY_H - _SS_TITLE_BAR_H))
     return prev
-
-
-def _draw_scroll_arrows(surf, mode, n_rows):
-    """Draw up/down scroll buttons on the right edge IF the screen
-    overflows.  No-op when n_rows fits comfortably."""
-    max_s = _ss_max_scroll(n_rows)
-    if max_s <= 0:
-        return
-    cur = _ss_scroll.get(mode, 0)
-    up_active = cur > 0
-    dn_active = cur < max_s
-    for arrow_y, direction, active in (
-        (_SS_ARROW_UP_Y, "up",   up_active),
-        (_SS_ARROW_DN_Y, "down", dn_active),
-    ):
-        bg = (0, 30, 50) if active else (10, 14, 22)
-        fg = CYAN        if active else (60, 72, 92)
-        pygame.draw.rect(surf, bg,
-                         (_SS_ARROW_X, arrow_y, _SS_ARROW_W, _SS_ARROW_H),
-                         border_radius=4)
-        pygame.draw.rect(surf, fg,
-                         (_SS_ARROW_X, arrow_y, _SS_ARROW_W, _SS_ARROW_H),
-                         width=2, border_radius=4)
-        cx = _SS_ARROW_X + _SS_ARROW_W // 2
-        cy = arrow_y + _SS_ARROW_H // 2
-        s  = 9
-        if direction == "up":
-            pts = [(cx, cy - s), (cx - s, cy + s), (cx + s, cy + s)]
-        else:
-            pts = [(cx, cy + s), (cx - s, cy - s), (cx + s, cy - s)]
-        pygame.draw.polygon(surf, fg, pts)
-
-
-def _ss_scroll_hit(x, y, mode, n_rows):
-    """If (x, y) hits a scroll-arrow button, update _ss_scroll[mode] and
-    return True (caller should NOT fire any row-level action this tap).
-    Returns False otherwise."""
-    max_s = _ss_max_scroll(n_rows)
-    if max_s <= 0:
-        return False
-    if not (_SS_ARROW_X <= x <= _SS_ARROW_X + _SS_ARROW_W):
-        return False
-    cur = _ss_scroll.get(mode, 0)
-    step = _SS_RH + _SS_GAP   # exactly one row per tap
-    if _SS_ARROW_UP_Y <= y <= _SS_ARROW_UP_Y + _SS_ARROW_H:
-        _ss_scroll[mode] = max(0, cur - step)
-        return True
-    if _SS_ARROW_DN_Y <= y <= _SS_ARROW_DN_Y + _SS_ARROW_H:
-        _ss_scroll[mode] = min(max_s, cur + step)
-        return True
-    return False
 
 
 def _ss_reset_scroll(mode):
@@ -3288,15 +3301,11 @@ def draw_ahrs_setup(surf, ss):
             _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, active)
 
     surf.set_clip(_prev_clip)
-    _draw_scroll_arrows(surf, "ahrs_setup", 7)
 
 
 def ahrs_setup_hit(x, y, ss):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
-    # Scroll-arrow taps consume the event before any row hit-test.
-    if _ss_scroll_hit(x, y, "ahrs_setup", 7):
-        return None
     # Don't let scrolled-up rows whose y now falls inside the title bar
     # absorb taps that the user meant for the header.
     if y < _SS_TITLE_BAR_H:
