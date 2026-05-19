@@ -2135,16 +2135,41 @@ def handle_event(event, demo_mode):
                 disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
                 _settings.mark_dirty()
             elif action == "mag_cal_open":
-                # Phase A stub — flips state so the pilot can see the
-                # button responds. Phase B replaces this with the full
-                # 8-point walk-through modal + $MAGDEV push to the Pico.
-                cur = disp["ss"].get("mag_cal", "idle")
-                disp["ss"]["mag_cal"] = "running" if cur != "running" else "idle"
+                _mag_cal_open("ahrs_setup")
+            elif action and action.startswith("set:orientation:"):
+                new_ori = action.split(":", 2)[2]
+                disp["ss"]["orientation"] = new_ori
+                _push_orient_to_pico(new_ori,
+                                     disp["ss"].get("mounting",
+                                                    state.get("mounting", "normal")))
                 _settings.mark_dirty()
+                return True
+            elif action and action.startswith("set:mounting:"):
+                new_mnt = action.split(":", 2)[2]
+                disp["ss"]["mounting"] = new_mnt
+                _push_orient_to_pico(
+                    disp["ss"].get("orientation",
+                                   state.get("orientation", "right")),
+                    new_mnt)
+                _settings.mark_dirty()
+                return True
             elif action and action.startswith("set:"):
                 _, key, val = action.split(":", 2)
                 disp["ss"][key] = val
                 _settings.mark_dirty()
+            return True
+
+        # ── Mag-cal modal taps ────────────────────────────────────────────
+        if mode == "mag_cal":
+            action = mag_cal_hit(x, y)
+            if action == "capture":
+                _mag_cal_capture()
+            elif action == "restart":
+                _mag_cal_restart()
+            elif action == "reset":
+                _mag_cal_reset()
+            elif action == "cancel":
+                _mag_cal_close()
             return True
 
         # ── Connectivity taps ─────────────────────────────────────────────
@@ -3227,6 +3252,288 @@ def ahrs_setup_hit(x, y, ss):
                 if ry <= y <= ry+_DSP_BTN_H:
                     return "set:airspeed_src:gps"
     return None
+
+
+# ── Magnetometer calibration wizard ──────────────────────────────────────────
+# 8-point walk-through (N / NE / E / SE / S / SW / W / NW) builds a 36-slot
+# deviation table that we push to the Pico over the same transport the
+# display is using (USB serial preferred, HTTP fallback) so every display
+# reads the same calibrated heading from the AHRS broadcast.  Pi4 carries
+# the canonical implementation; this is a verbatim port sized for the
+# 640×480 panel.
+
+_MAG_CAL_CARDINALS = [("N",   0.0), ("NE",  45.0),
+                      ("E",  90.0), ("SE", 135.0),
+                      ("S", 180.0), ("SW", 225.0),
+                      ("W", 270.0), ("NW", 315.0)]
+
+_MCAL_W     = 600         # modal width  (640 px panel, 20 px chrome each side)
+_MCAL_H     = 430         # modal height (480 px panel — leaves 25 px chrome)
+_MCAL_BTN_H = 56
+
+
+def _mcal_geom():
+    bx = (DISPLAY_W - _MCAL_W) // 2
+    by = (DISPLAY_H - _MCAL_H) // 2
+    btn_y = by + _MCAL_H - _MCAL_BTN_H - 14
+    btn_w = (_MCAL_W - 14 - 14 - 3 * 8) // 4
+    btn_xs = [bx + 14 + i * (btn_w + 8) for i in range(4)]
+    return bx, by, btn_y, btn_w, btn_xs
+
+
+def _mag_cal_open(prev_mode: str):
+    disp["mag_cal_wiz"] = {"step": 0, "samples": [], "msg": "",
+                           "prev": prev_mode}
+    disp["mode"] = "mag_cal"
+
+
+def _mag_cal_capture():
+    wiz = disp.get("mag_cal_wiz") or {}
+    step = wiz.get("step", 0)
+    if step >= len(_MAG_CAL_CARDINALS):
+        return
+    raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0)))
+    expected = _MAG_CAL_CARDINALS[step][1]
+    wiz.setdefault("samples", []).append((expected, raw))
+    wiz["step"] = step + 1
+    wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
+    if wiz["step"] >= len(_MAG_CAL_CARDINALS):
+        table = _build_magdev_table(wiz["samples"])
+        disp["ss"]["pi_zero_magdev"] = table
+        disp["ss"]["mag_cal_deltas"] = [
+            ((e - r + 540) % 360) - 180 for e, r in wiz["samples"]
+        ]
+        disp["ss"].pop("mag_cal_offset", None)
+        disp["ss"]["mag_cal"] = "done"
+        _settings.mark_dirty()
+        _push_magcal_to_pico(table)
+        wiz["msg"] = "Saved locally — sending to AHRS…"
+        wiz["step"]    = 0
+        wiz["samples"] = []
+
+
+def _mag_cal_restart():
+    wiz = disp.get("mag_cal_wiz") or {}
+    wiz["step"] = 0
+    wiz["samples"] = []
+    wiz["msg"] = "Restarted."
+
+
+def _mag_cal_reset():
+    _push_magcal_clear_to_pico()
+    disp["ss"].pop("pi_zero_magdev", None)
+    disp["ss"]["mag_cal_deltas"] = [0.0] * 4
+    disp["ss"].pop("mag_cal_offset", None)
+    disp["ss"]["mag_cal"] = "idle"
+    _settings.mark_dirty()
+    wiz = disp.get("mag_cal_wiz") or {}
+    wiz["step"] = 0
+    wiz["samples"] = []
+    wiz["msg"] = "Calibration cleared."
+
+
+def _mag_cal_close():
+    wiz = disp.get("mag_cal_wiz") or {}
+    disp["mode"] = wiz.get("prev", "ahrs_setup")
+
+
+def _build_magdev_table(samples):
+    """Build a 36-point (10°/slot) deviation table from (expected, raw) pairs."""
+    pts = sorted(
+        [{"a": r % 360.0, "c": ((e - r + 180 + 360) % 360) - 180}
+         for e, r in samples],
+        key=lambda p: p["a"],
+    )
+    return [_magdev_interp(i * 10.0, pts) for i in range(36)]
+
+
+def _magdev_interp(target, pts):
+    if not pts:
+        return 0.0
+    if len(pts) == 1:
+        return pts[0]["c"]
+    lo, hi = pts[-1], pts[0]
+    for p in pts:
+        if p["a"] <= target:
+            lo = p
+        else:
+            hi = p
+            break
+    hi_a = hi["a"] + (360.0 if hi["a"] <= lo["a"] else 0.0)
+    span = hi_a - lo["a"] or 360.0
+    tgt  = target + 360.0 if target < lo["a"] else target
+    dc   = hi["c"] - lo["c"]
+    if dc > 180:   dc -= 360
+    elif dc < -180: dc += 360
+    return lo["c"] + (tgt - lo["a"]) / span * dc
+
+
+def _push_magcal_to_pico(table):
+    """Send the 36-point deviation table to the Pico.  USB serial preferred,
+    HTTP fallback. Background thread; updates the modal status line."""
+    t_str = ",".join(f"{v:.3f}" for v in table)
+
+    def _worker():
+        sent_ok = False
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(f"$MAGDEV,{t_str}\n".encode())
+                print(f"[PFD] magcal sent via USB serial ({len(table)} pts)")
+                sent_ok = True
+            except Exception as e:
+                print(f"[PFD] magcal serial write failed: {e}")
+        if not sent_ok:
+            base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+            url = f"{base}/magcal?action=set&t={t_str}"
+            try:
+                import urllib.request
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    resp.read()
+                print(f"[PFD] magcal sent via HTTP ({len(table)} pts)")
+                sent_ok = True
+            except Exception as e:
+                print(f"[PFD] magcal HTTP push failed: {e}")
+        wiz = disp.get("mag_cal_wiz") or {}
+        wiz["msg"] = ("Saved locally + sent to AHRS ✓" if sent_ok
+                      else "Saved locally only (AHRS unreachable)")
+
+    threading.Thread(target=_worker, daemon=True, name="MagCalPush").start()
+
+
+def _push_magcal_clear_to_pico():
+    """Clear the Pico's deviation table.  USB serial preferred, HTTP fallback."""
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(b"$MAGDEV,CLEAR\n")
+                print("[PFD] magcal cleared via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magcal serial clear failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magcal?action=clear"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print("[PFD] magcal cleared via HTTP")
+        except Exception as e:
+            print(f"[PFD] magcal HTTP clear failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagCalClear").start()
+
+
+def _push_orient_to_pico(connector, mounting):
+    """Send orientation + mounting to the Pico via USB serial.
+    Retries every 2 s (up to 6 attempts) until the Pico echoes the new
+    orientation back in $AHRS, confirming receipt."""
+    import time as _time
+    def _worker():
+        for attempt in range(6):
+            client = _sse_client
+            if client is None or not hasattr(client, "write"):
+                print("[PFD] orient push: no serial client available")
+                return
+            try:
+                client.write(f"$ORIENT,{connector},{mounting}\n".encode())
+                print(f"[PFD] orient sent (attempt {attempt + 1}) ({connector},{mounting})")
+            except Exception as e:
+                print(f"[PFD] orient serial write failed: {e}")
+                return
+            for _ in range(20):
+                _time.sleep(0.1)
+                with _state_lock:
+                    pico_ori = state.get("orientation")
+                    pico_mnt = state.get("mounting")
+                if pico_ori == connector and pico_mnt == mounting:
+                    print(f"[PFD] orient confirmed by Pico ({connector},{mounting})")
+                    return
+        print(f"[PFD] orient push gave up after 6 attempts ({connector},{mounting})")
+
+    threading.Thread(target=_worker, daemon=True, name="OrientPush").start()
+
+
+def draw_mag_cal(surf):
+    """Compass-calibration modal — cardinal walk-through."""
+    wiz = disp.get("mag_cal_wiz") or {"step": 0, "samples": [], "msg": ""}
+    step = wiz.get("step", 0)
+    card_name, card_exp = _MAG_CAL_CARDINALS[min(step,
+                                                  len(_MAG_CAL_CARDINALS) - 1)]
+    bx, by, btn_y, btn_w, btn_xs = _mcal_geom()
+
+    _draw_veil(surf)
+    panel = pygame.Surface((_MCAL_W, _MCAL_H), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _MCAL_W, _MCAL_H),
+                     width=2, border_radius=10)
+
+    _text(surf, "COMPASS CAL", 18, (160, 200, 230), bold=True,
+          cx=bx + _MCAL_W // 2, cy=by + 28)
+
+    instr = (f"Step {step + 1} of {len(_MAG_CAL_CARDINALS)} — "
+             f"point aircraft {card_name} ({int(card_exp):03d}°)")
+    _text(surf, instr, 15, WHITE, cx=bx + _MCAL_W // 2, cy=by + 70)
+
+    raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
+    cal = float(disp.get("_yaw_cal",   disp.get("yaw", 0.0))) % 360.0
+
+    _text(surf, "RAW HDG", 12, (200, 190, 100), bold=True,
+          x=bx + 40, y=by + 108)
+    _text(surf, f"{raw:6.1f}°", 22, (240, 220, 80), bold=True,
+          x=bx + 40, y=by + 124)
+    _text(surf, "CAL HDG", 12, (100, 200, 130), bold=True,
+          x=bx + 200, y=by + 108)
+    _text(surf, f"{cal:6.1f}°", 22, (80, 230, 120), bold=True,
+          x=bx + 200, y=by + 124)
+
+    # 8-point capture results — two rows of 4 (N NE E SE / S SW W NW)
+    wiz_samples = wiz.get("samples", [])
+    col_xs = [bx + 60 + c * (_MCAL_W - 120) // 3 for c in range(4)]
+    for row in range(2):
+        row_y = by + 188 + row * 36
+        for col in range(4):
+            i = row * 4 + col
+            name, exp = _MAG_CAL_CARDINALS[i]
+            cx_card = col_xs[col]
+            lbl_col = (170, 185, 210) if i >= len(wiz_samples) else (100, 200, 255)
+            _text(surf, name, 12, lbl_col, bold=True, cx=cx_card, cy=row_y)
+            if i < len(wiz_samples):
+                _exp, rawv = wiz_samples[i]
+                d = ((_exp - rawv + 540) % 360) - 180
+                _text(surf, f"{d:+.1f}°", 14, WHITE, bold=True,
+                      cx=cx_card, cy=row_y + 18)
+            else:
+                _text(surf, "—", 14, (110, 120, 140), bold=True,
+                      cx=cx_card, cy=row_y + 18)
+
+    msg = wiz.get("msg", "") or ""
+    if msg:
+        col = (255, 180, 60) if ("WARNING" in msg or "FAILED" in msg or "failed" in msg) \
+              else (60, 220, 80)
+        _text(surf, msg, 14, col, cx=bx + _MCAL_W // 2, cy=by + 270)
+
+    in_progress = step > 0 and step < len(_MAG_CAL_CARDINALS)
+    left_lbl   = "CANCEL" if in_progress else "EXIT"
+    left_style = "danger" if in_progress else "ok"
+    _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, left_lbl, left_style)
+    _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",    "warn")
+    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, "RESTART",  "warn")
+    _action_btn(surf, btn_xs[3], btn_y, btn_w, _MCAL_BTN_H,
+                f"⊕ CAPTURE {card_name}", "ok")
+
+
+def mag_cal_hit(x, y):
+    bx, by, btn_y, btn_w, btn_xs = _mcal_geom()
+    if not (bx <= x <= bx + _MCAL_W and by <= y <= by + _MCAL_H):
+        return None
+    if btn_y <= y <= btn_y + _MCAL_BTN_H:
+        for i, action in enumerate(("cancel", "reset", "restart", "capture")):
+            if btn_xs[i] <= x <= btn_xs[i] + btn_w:
+                return action
+    return "noop"
 
 
 # ── WiFi network scan ─────────────────────────────────────────────────────────
@@ -4885,6 +5192,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_display_setup(surf, disp["ds"]); return
     if mode == "ahrs_setup":
         draw_ahrs_setup(surf, disp["ss"]); return
+    if mode == "mag_cal":
+        # Draw AHRS setup behind so the modal sits on top of the screen
+        # it was launched from.
+        draw_ahrs_setup(surf, disp["ss"])
+        draw_mag_cal(surf); return
     if mode == "wifi_scan":
         draw_wifi_scan(surf, disp["cs"]); return
     if mode == "connectivity_setup":
