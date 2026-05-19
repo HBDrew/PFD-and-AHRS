@@ -28,13 +28,22 @@ class SerialClient(threading.Thread):
     PREFIX = "$AHRS,"
 
     def __init__(self, port: str, state: dict, lock: threading.Lock,
-                 baud: int = 115200, reconnect_delay: float = 3.0):
+                 baud: int = 115200, reconnect_delay: float = 3.0,
+                 heartbeat_timeout: float = 5.0, auto_rescan: bool = True):
         super().__init__(daemon=True, name="SerialClient")
         self.port            = port
         self.baud            = baud
         self.state           = state
         self.lock            = lock
         self.reconnect_delay = reconnect_delay
+        # If no valid $AHRS packet arrives for heartbeat_timeout seconds
+        # we assume the cable was unplugged (or the Pico hung) and recycle
+        # the connection. Catches the case where pyserial keeps returning
+        # b'' on a dead port instead of raising.
+        self.heartbeat_timeout = heartbeat_timeout
+        # On each reconnect, re-run find_port() so we follow the Pico if it
+        # comes back at a different /dev/ttyACM* than where we opened it.
+        self.auto_rescan     = auto_rescan
         self.connected       = False
         self.paused          = False # when True, skip state.update so sim/demo win
         self.rx_count        = 0     # $AHRS, lines parsed OK
@@ -66,6 +75,21 @@ class SerialClient(threading.Thread):
 
     def run(self):
         while not self._stop_event.is_set():
+            # Pick the current device path each retry so the client
+            # follows the Pico if it re-enumerates at a different
+            # /dev/ttyACM* on hotplug.
+            if self.auto_rescan:
+                detected = SerialClient.find_port()
+                if detected is None:
+                    # No device present at all — wait quietly without
+                    # filling the log with open() failures every 3 s.
+                    self.connected = False
+                    self.last_err  = "no device"
+                    time.sleep(self.reconnect_delay)
+                    continue
+                if detected != self.port:
+                    print(f"[Serial] Device path changed {self.port} → {detected}")
+                    self.port = detected
             try:
                 self._read_loop()
             except Exception as e:
@@ -82,10 +106,23 @@ class SerialClient(threading.Thread):
         print(f"[Serial] Opening {self.port} @ {self.baud}")
         ser = serial.Serial(self.port, self.baud, timeout=2)
         self._ser = ser
+        last_rx_t = time.monotonic()
         try:
             while not self._stop_event.is_set():
                 raw = ser.readline()
                 if not raw:
+                    # Empty read = readline timed out. On a clean unplug,
+                    # pyserial would raise — but on a "soft" disconnect
+                    # (or a Pico hang) it just keeps returning b''.
+                    # Bail out and let run() recycle if we've gone too
+                    # long without a real packet.
+                    if time.monotonic() - last_rx_t > self.heartbeat_timeout:
+                        self.connected = False
+                        self.last_err  = (
+                            f"heartbeat: no $AHRS for "
+                            f"{self.heartbeat_timeout:.0f}s")
+                        print(f"[Serial] {self.last_err}")
+                        return
                     continue
                 line = raw.decode("utf-8", errors="ignore").strip()
                 if line.startswith("$ORIENT_ACK,"):
@@ -103,9 +140,13 @@ class SerialClient(threading.Thread):
                             self.state.update(update)
                     self.connected = True
                     self.rx_count += 1
+                    last_rx_t = time.monotonic()
                 except json.JSONDecodeError as e:
                     self.err_count += 1
                     self.last_err = f"JSON: {e.msg} @ col {e.colno}"
         finally:
             self._ser = None
-            ser.close()
+            try:
+                ser.close()
+            except Exception:
+                pass
