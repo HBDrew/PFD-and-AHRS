@@ -76,14 +76,20 @@ After=network.target
 
 [Service]
 User=$RUN_USER
+SupplementaryGroups=video render input dialout
 WorkingDirectory=$ZERO_DIR
-Environment="SDL_FBDEV=/dev/fb0"
-Environment="SDL_VIDEODRIVER=fbcon"
+# kmsdrm is required when the panel is driven via vc4-kms-DPI-35inch
+# (the new Waveshare 3.5" DPI overlay).  fbcon was correct only for
+# legacy framebuffer-console mode, which the KMS overlay disables —
+# SDL would silently fail to init video and the PFD would crash on
+# the first pygame call.
+Environment="SDL_VIDEODRIVER=kmsdrm"
 Environment="DISPLAY="
 Environment="PYTHONPATH=$SHARED_DIR"
 ExecStart=/usr/bin/python3 $ZERO_DIR/pfd.py
 Restart=always
 RestartSec=5
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
