@@ -200,13 +200,16 @@ def make_lid():
             .circle(LID_POST_BORE_DIA / 2)
             .extrude(LID_POST_LEN + LID_T + 1)
         )
-        # Countersink for the screw head, recessed into the lid top
-        cs = (
+        # Counterbore for the socket head cap screw (DIN912 M3 × 30).
+        # Head OD 5.5, height 3.0 — we sink it 1.5 mm so the head ends
+        # up half in / half above the lid. Going deeper would leave too
+        # little lid material under the head for clamping load.
+        cb = (
             cq.Workplane("XY", origin=(hx, hy, LID_T))
-            .circle(6.2 / 2)        # M3 head clearance
-            .extrude(-1.6)
+            .circle(6.0 / 2)        # M3 socket-head clearance (5.5 + 0.5)
+            .extrude(-1.5)
         )
-        lid = lid.union(post).cut(bore).cut(cs)
+        lid = lid.union(post).cut(bore).cut(cb)
 
     # Pneumatic ports (simple through-holes for now — tubes pass through
     # the lid and plug directly into the MS4525 inside)
