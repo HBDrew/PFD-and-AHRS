@@ -77,12 +77,19 @@ def interp_colour(palette, value):
 
 # ── SRTM tile cache ────────────────────────────────────────────────────────────
 # LRU-capped to bound RSS on a Pi 4: each SRTM3 tile is ~5.7 MB in memory
-# (1201² float32) and SRTM1 tiles are ~52 MB (3601² float32).  Without a cap
+# (1201² int16) and SRTM1 tiles are ~26 MB (3601² int16).  Without a cap
 # the cache grew unbounded as the user visited new sim airports across CONUS,
-# eventually OOM-killing the process.  32 entries is enough for the inner +
-# outer mesh extents (~50 nm radius → ~9 tiles) plus comfortable hysteresis.
+# eventually OOM-killing the process.
+#
+# Tiles are stored as int16 in feet (Earth's elevation range -1411..+29032 ft
+# fits comfortably in int16's -32768..+32767), halving the memory footprint
+# vs the previous float32 representation. Bilinear interpolation in
+# get_elevation_ft auto-promotes to float during arithmetic.
+#
+# Cap of 12 covers the inner + outer mesh extents (~50 nm radius → ~9 tiles)
+# plus comfortable hysteresis. Previously 32 — too generous on a 2 GB Pi.
 import collections as _collections
-_TILE_CACHE_MAX = 32
+_TILE_CACHE_MAX = 12
 _tile_cache: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
 
 
@@ -127,10 +134,15 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
         n_samples = SRTM3_SAMPLES  # default / fallback
 
     if HAS_NUMPY:
-        data = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
-        data = data.astype(np.float32)
-        data[data == VOID_ELEV] = 0
-        data *= 3.28084   # metres → feet
+        # Load raw int16 (metres). Convert metres→feet and replace voids,
+        # then store as int16 to halve cache memory. Bilinear interpolation
+        # in get_elevation_ft auto-promotes to float on read.
+        data_raw = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
+        # The float intermediate (size = n_samples² × 4 bytes) is transient
+        # — only the final int16 array enters the cache.
+        data = (np.where(data_raw == VOID_ELEV, 0, data_raw).astype(np.float32)
+                * 3.28084).astype(np.int16)
+        del data_raw
     else:
         # Pure-Python fallback (slow, 2-byte big-endian signed int)
         with open(path, 'rb') as f:

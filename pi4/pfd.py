@@ -316,7 +316,9 @@ disp["approach"] = {
 SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 
 # Heading-source resolution thresholds — match the iPhone display.
-HDG_TRK_MIN_KT = 3.0   # below this speed, GPS track is unreliable
+# 7 kt sits comfortably above GPS GS noise floor and below typical taxi
+# speeds; below it AUTO mode stays on MAG and TRK mode reports "G?" amber.
+HDG_TRK_MIN_KT = 7.0   # GPS groundspeed below this → track is unreliable
 
 
 def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
@@ -508,6 +510,87 @@ def _push_magcal_to_pico(table):
             wiz["msg"] = "Saved locally only (AHRS unreachable)"
 
     threading.Thread(target=_worker, daemon=True, name="MagCalPush").start()
+
+
+def _push_magoff_tumble(action):
+    """Send $MAGOFF,START or $MAGOFF,FINISH to the Pico to bracket a tumble-
+    cal session. Serial primary, HTTP fallback, background thread.
+    action must be 'START' or 'FINISH'."""
+    payload = f"$MAGOFF,{action}\n".encode()
+    http_action = "tumble_start" if action == "START" else "tumble_finish"
+
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                client.write(payload)
+                print(f"[PFD] magoff {action} sent via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff {action} serial failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action={http_action}"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print(f"[PFD] magoff {action} sent via HTTP")
+        except Exception as e:
+            print(f"[PFD] magoff {action} HTTP failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True,
+                     name=f"MagOff{action}").start()
+
+
+def _push_magoff_to_pico(offset):
+    """Send hard-iron offsets (mx_off, my_off, mz_off) to the Pico. Serial
+    first ($MAGOFF,...), HTTP fallback (/magoff?action=set&v=...). Background."""
+    v_str = f"{offset[0]:.2f},{offset[1]:.2f},{offset[2]:.2f}"
+
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                client.write(f"$MAGOFF,{v_str}\n".encode())
+                print(f"[PFD] magoff sent via USB serial ({v_str})")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff serial write failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action=set&v={v_str}"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print(f"[PFD] magoff sent via HTTP ({v_str})")
+        except Exception as e:
+            print(f"[PFD] magoff HTTP push failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagOffPush").start()
+
+
+def _push_magoff_clear_to_pico():
+    """Clear hard-iron offsets on the Pico."""
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, 'write'):
+            try:
+                client.write(b"$MAGOFF,CLEAR\n")
+                print("[PFD] magoff cleared via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff serial clear failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action=clear"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print("[PFD] magoff cleared via HTTP")
+        except Exception as e:
+            print(f"[PFD] magoff HTTP clear failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagOffClear").start()
 
 
 def _push_magcal_clear_to_pico():
@@ -821,8 +904,10 @@ def smooth_state():
     """Copy live state → display values with IIR smoothing for analogue fields."""
     with _state_lock:
         snap = dict(state)
-    for k in ("roll", "pitch", "ay", "speed", "alt", "vspeed"):
-        disp[k] = disp[k] * (1 - SMOOTH_K) + snap[k] * SMOOTH_K
+    for k in ("roll", "pitch", "ay", "speed", "alt", "vspeed",
+              "ias_kt", "tas_kt"):
+        if k in snap:
+            disp[k] = disp.get(k, 0.0) * (1 - SMOOTH_K) + snap[k] * SMOOTH_K
     # Heading: handle 0/360 wraparound
     dh = ((snap["yaw"] - disp["yaw"] + 180) % 360) - 180
     disp["yaw"] = (disp["yaw"] + dh * SMOOTH_K) % 360
@@ -833,9 +918,11 @@ def smooth_state():
     # whenever the SSE stream carried a stale QNH echo back from the firmware.
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
-              "ahrs_ok", "gps_ok", "gps_comm", "baro_ok",
+              "ahrs_ok", "gps_ok", "gps_comm", "baro_ok", "airdata_ok",
+              "ahrs_aligning",
               "pitch_trim", "roll_trim", "yaw_trim",
-              "orientation", "mounting", "yaw_raw"):
+              "orientation", "mounting", "yaw_raw", "yaw_wt901",
+              "mx", "my", "mz", "fw_ver"):
         if k in snap:
             disp[k] = snap[k]
 
@@ -2341,7 +2428,7 @@ def draw_terrain_alert(surf):
 
 # ── Status badges ─────────────────────────────────────────────────────────────
 def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats, connected,
-                       use_track=False):
+                       use_track=False, ahrs_aligning=False):
     """
     Badges are shown only when something requires pilot attention.
     Nominal state = clean strip.  Problem state = badge appears.
@@ -2363,6 +2450,10 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats,
 
     if not ahrs_ok:
         badge_l("AHRS FAIL", (150, 0, 0))
+    elif ahrs_aligning:
+        # Amber caution: filter still settling — attitude not yet trustworthy.
+        # Mutually exclusive with AHRS FAIL (no data = can't be aligning).
+        badge_l("AHRS ALIGN", (140, 95, 0), (255, 200, 70))
     if not connected:
         badge_l("NO LINK", (130, 0, 0))
 
@@ -2426,8 +2517,11 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats,
 
 
 # ── Red-X failure overlays ────────────────────────────────────────────────────
-def draw_red_x(surf, x, y, w, h, label):
-    """Semi-transparent dark overlay with red X and label."""
+def draw_red_x(surf, x, y, w, h, label, sub="FAIL"):
+    """Semi-transparent dark overlay with red X and two-line label.
+    Default sub-label is "FAIL"; pass sub="ALIGN" during AHRS settling so
+    the same untrustworthy-data signal is used but the pilot understands
+    the system is settling rather than broken."""
     ov = pygame.Surface((w, h), pygame.SRCALPHA)
     ov.fill((20, 0, 0, 160))
     surf.blit(ov, (x, y))
@@ -2435,17 +2529,25 @@ def draw_red_x(surf, x, y, w, h, label):
     pygame.draw.line(surf, RED, (x + w - 4, y + 4), (x + 4, y + h - 4), 3)
     if label:
         _text(surf, label, 14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 - 8)
-        _text(surf, "FAIL", 14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 + 8)
+        _text(surf, sub,   14, RED, bold=True, cx=x + w // 2, cy=y + h // 2 + 8)
 
 
-def draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok):
+def draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok,
+                          ahrs_aligning=False):
     ai_h_used = TAPE_H
     ai_y = TAPE_TOP
     ai_w = ALT_X - SPD_W
     if not ahrs_ok:
-        # Cover AI center + heading strip
+        # Cover AI center + heading strip — no valid data at all.
         draw_red_x(surf, SPD_W, ai_y, ai_w, ai_h_used, "ATTITUDE")
         draw_red_x(surf, 0, HDG_Y, DISPLAY_W, HDG_H, "HDG")
+    elif ahrs_aligning:
+        # Filter still settling — attitude is technically being computed
+        # but isn't yet trustworthy. Use the same red-X overlay as FAIL
+        # (don't trust this), with "ALIGN" sub-label so the pilot knows
+        # the system is settling rather than broken.
+        draw_red_x(surf, SPD_W, ai_y, ai_w, ai_h_used, "AHRS",  sub="ALIGN")
+        draw_red_x(surf, 0, HDG_Y, DISPLAY_W, HDG_H, "HDG",   sub="ALIGN")
     # Red X on speed tape only when GPS has no signal at all.
     # While communicating but no fix, the amber badge is sufficient warning.
     if not gps_ok and not gps_comm:
@@ -3229,6 +3331,27 @@ def _apply_mag_cal(raw_hdg, deltas):
     return (h + delta) % 360.0
 
 
+def _instant_mag_heading_deg():
+    """Return the Mahony's yaw output (post-remap, pre-magdev) for the cal
+    wizard's RAW HDG display.
+
+    We previously preferred state['yaw_wt901'] (the WT901's own PKT_ANGLE
+    routed through the same remap) but in practice that chip has had
+    PKT_ANGLE intermittently disabled — its RSW register sometimes
+    refuses our reconfigure attempt and 0x53 silently goes dark. yaw_wt901
+    then freezes at whatever value it last had and the cal screen reads a
+    constant heading regardless of physical rotation.
+
+    The Mahony's yaw is responsive at gyro rate (every gyro packet
+    advances the quaternion). The original "lag" complaint was the
+    mag-correction term opposing the gyro in a biased magnetic
+    environment — that goes away after running the tumble (hard-iron)
+    cal once. So for cal purposes, _yaw_uncal is the right signal:
+    snappy when nothing is fighting it, and the tumble cal makes sure
+    nothing is."""
+    return float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
+
+
 def _mag_cal_open(prev_mode: str):
     disp["mag_cal_wiz"] = {"step": 0, "samples": [], "msg": "",
                            "prev": prev_mode}
@@ -3240,39 +3363,111 @@ def _mag_cal_capture():
     step = wiz.get("step", 0)
     if step >= len(_MAG_CAL_CARDINALS):
         return
-    raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0)))
+    # Use instantaneous mag-derived heading (not the filter's gyro-integrated
+    # output) so the captured value reflects what the pilot was looking at
+    # the moment they pressed CAPTURE. The filter's yaw lags behind the
+    # actual rotation; capturing on it would record stale headings.
+    raw = _instant_mag_heading_deg()
     expected = _MAG_CAL_CARDINALS[step][1]
     wiz.setdefault("samples", []).append((expected, raw))
+    # Also capture raw mag vector at this cardinal for hard-iron offset
+    # computation. (mx,my,mz) come from the AHRS broadcast via smooth_state.
+    mx = float(disp.get("mx", 0.0))
+    my = float(disp.get("my", 0.0))
+    mz = float(disp.get("mz", 0.0))
+    wiz.setdefault("mag_samples", []).append((mx, my, mz))
     wiz["step"] = step + 1
     wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
     if wiz["step"] >= len(_MAG_CAL_CARDINALS):
-        # Build 36-point table and push to Pico so both displays
-        # see the same pre-corrected heading from the AHRS broadcast.
+        # Build 36-point deviation table (residual output correction)
         table = _build_magdev_table(wiz["samples"])
+        # Compute hard-iron offsets from the captured raw mag vectors:
+        # offset_axis = (max_axis + min_axis) / 2 — center of the ellipse
+        # the rotating sensor traces in mag space. Subtracting this from
+        # raw mag before the Mahony eats it stops the mag-correction term
+        # from fighting the gyro in a biased environment.
+        mag_samples = wiz.get("mag_samples", [])
+        if len(mag_samples) >= 2:
+            mxs = [s[0] for s in mag_samples]
+            mys = [s[1] for s in mag_samples]
+            mzs = [s[2] for s in mag_samples]
+            offset = (0.5 * (max(mxs) + min(mxs)),
+                      0.5 * (max(mys) + min(mys)),
+                      0.5 * (max(mzs) + min(mzs)))
+        else:
+            offset = (0.0, 0.0, 0.0)
         # Store locally so Pi4 always shows calibrated heading,
         # even when the HTTP push to the Pico can't reach it.
         disp["ss"]["pi4_magdev"] = table
+        disp["ss"]["pi4_mag_offset"] = list(offset)
         disp["ss"]["mag_cal_deltas"] = [0.0] * 4
         disp["ss"].pop("mag_cal_offset", None)
         disp["ss"]["mag_cal"] = "done"
         _settings.mark_dirty()
-        _push_magcal_to_pico(table)   # also sends to Pico (serial → HTTP fallback)
-        wiz["msg"] = "Saved locally — sending to AHRS…"
+        _push_magcal_to_pico(table)   # 36-pt deviation table
+        _push_magoff_to_pico(offset)  # hard-iron offsets
+        wiz["msg"] = (f"Saved locally — sending to AHRS… "
+                      f"(hard-iron: {offset[0]:+.0f},{offset[1]:+.0f},{offset[2]:+.0f})")
         wiz["step"]    = 0
         wiz["samples"] = []
+        wiz["mag_samples"] = []
+
+
+def _mag_cal_tumble_toggle():
+    """First press → start tumble cal (Pico tracks mag min/max).
+    Second press → finish, Pico computes (min+max)/2 per axis and stores."""
+    wiz = disp.get("mag_cal_wiz") or {}
+    if wiz.get("tumble_active"):
+        # Stop
+        _push_magoff_tumble("FINISH")
+        wiz["tumble_active"] = False
+        wiz["msg"] = "Tumble cal finished — offsets sent to AHRS."
+        wiz["tumble_started_ms"] = None
+    else:
+        # Start — also reset the tumble extents we track locally for display
+        _push_magoff_tumble("START")
+        wiz["tumble_active"] = True
+        wiz["tumble_started_ms"] = pygame.time.get_ticks()
+        wiz["tumble_min"] = [None, None, None]
+        wiz["tumble_max"] = [None, None, None]
+        wiz["msg"] = ("Rotate AHRS slowly through ALL orientations — "
+                      "pitch, roll, yaw — for ~30 s. Press STOP TUMBLE when done.")
+
+
+def _mag_cal_tumble_tick():
+    """Called each frame while the cal modal is open. When a tumble session
+    is active, mirror the Pico's min/max tracking locally so the display
+    can show the pilot how much "ground" they've covered."""
+    wiz = disp.get("mag_cal_wiz") or {}
+    if not wiz.get("tumble_active"):
+        return
+    mx = float(disp.get("mx", 0.0))
+    my = float(disp.get("my", 0.0))
+    mz = float(disp.get("mz", 0.0))
+    mn = wiz.get("tumble_min") or [None, None, None]
+    mx_arr = wiz.get("tumble_max") or [None, None, None]
+    for i, v in enumerate((mx, my, mz)):
+        if mn[i] is None or v < mn[i]: mn[i] = v
+        if mx_arr[i] is None or v > mx_arr[i]: mx_arr[i] = v
+    wiz["tumble_min"] = mn
+    wiz["tumble_max"] = mx_arr
 
 
 def _mag_cal_restart():
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
     wiz["samples"] = []
+    wiz["mag_samples"] = []
     wiz["msg"] = "Restarted."
 
 
 def _mag_cal_reset():
-    """Wipe the stored cal on Pico and locally."""
+    """Wipe the stored cal on Pico and locally — both the deviation table
+    and the hard-iron offsets."""
     _push_magcal_clear_to_pico()
+    _push_magoff_clear_to_pico()
     disp["ss"].pop("pi4_magdev", None)
+    disp["ss"].pop("pi4_mag_offset", None)
     disp["ss"]["mag_cal_deltas"] = [0.0, 0.0, 0.0, 0.0]
     disp["ss"].pop("mag_cal_offset", None)
     disp["ss"]["mag_cal"] = "idle"
@@ -3280,6 +3475,7 @@ def _mag_cal_reset():
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
     wiz["samples"] = []
+    wiz["mag_samples"] = []
     wiz["msg"] = "Calibration cleared."
 
 
@@ -3319,7 +3515,7 @@ def draw_mag_cal(surf):
              f"point aircraft {card_name} ({int(card_exp):03d}°)")
     _text(surf, instr, 13, WHITE, cx=bx + _MCAL_W // 2, cy=by + 56)
 
-    raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
+    raw = _instant_mag_heading_deg()
     cal = float(disp.get("_yaw_cal",   disp.get("yaw", 0.0))) % 360.0
 
     _text(surf, "RAW HDG", 11, (200, 190, 100), bold=True,
@@ -3357,6 +3553,21 @@ def draw_mag_cal(surf):
               else (60, 220, 80)
         _text(surf, msg, 12, col, cx=bx + _MCAL_W // 2, cy=by + 178)
 
+    # When tumble cal is active, surface live progress so the pilot can tell
+    # whether they've covered enough of the mag ellipse to compute a good
+    # ellipse-center estimate. "Spread" is max-min per axis — a tight
+    # number means they haven't covered enough orientations yet.
+    if wiz.get("tumble_active"):
+        _mag_cal_tumble_tick()
+        mn = wiz.get("tumble_min") or [None, None, None]
+        mx_arr = wiz.get("tumble_max") or [None, None, None]
+        spread = [(mx_arr[i] - mn[i]) if (mx_arr[i] is not None and mn[i] is not None) else 0
+                  for i in range(3)]
+        elapsed_ms = pygame.time.get_ticks() - (wiz.get("tumble_started_ms") or 0)
+        _text(surf, f"TUMBLE  {elapsed_ms/1000:.0f}s  "
+                    f"spread X:{int(spread[0])}  Y:{int(spread[1])}  Z:{int(spread[2])}",
+              11, (255, 200, 80), cx=bx + _MCAL_W // 2, cy=by + 198)
+
     # Left button reads CANCEL only when there's something to cancel —
     # i.e. partial captures haven't been committed yet.  Once the
     # 4-cardinal walk completes, the offset is already persisted and
@@ -3364,9 +3575,12 @@ def draw_mag_cal(surf):
     in_progress = step > 0 and step < len(_MAG_CAL_CARDINALS)
     left_lbl   = "CANCEL" if in_progress else "EXIT"
     left_style = "danger" if in_progress else "ok"
+    tumble_active = bool(wiz.get("tumble_active"))
+    tumble_lbl = "STOP TUMBLE" if tumble_active else "TUMBLE"
+    tumble_style = "danger" if tumble_active else "warn"
     _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, left_lbl, left_style)
     _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",    "warn")
-    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, "RESTART",  "warn")
+    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, tumble_lbl, tumble_style)
     _action_btn(surf, btn_xs[3], btn_y, btn_w, _MCAL_BTN_H,
                 f"⊕ CAPTURE {card_name}", "ok")
 
@@ -3376,7 +3590,7 @@ def mag_cal_hit(x, y):
     if not (bx <= x <= bx + _MCAL_W and by <= y <= by + _MCAL_H):
         return None
     if btn_y <= y <= btn_y + _MCAL_BTN_H:
-        for i, action in enumerate(("cancel", "reset", "restart", "capture")):
+        for i, action in enumerate(("cancel", "reset", "tumble", "capture")):
             if btn_xs[i] <= x <= btn_xs[i] + btn_w:
                 return action
     return "noop"
@@ -3763,8 +3977,8 @@ def handle_event(event, demo_mode):
             action = mag_cal_hit(x, y)
             if action == "capture":
                 _mag_cal_capture()
-            elif action == "restart":
-                _mag_cal_restart()
+            elif action == "tumble":
+                _mag_cal_tumble_toggle()
             elif action == "reset":
                 _mag_cal_reset()
             elif action == "cancel":
@@ -5151,28 +5365,18 @@ def draw_ahrs_setup(surf, ss):
         _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
                  lbl, v == cur_src)
 
-    # Row 6: Airspeed source (GPS groundspeed vs dedicated IAS sensor)
+    # Row 6: Airspeed source (GPS groundspeed vs dedicated IAS sensor).
+    # When IAS is selected but airdata_ok is False (sensor missing or stale),
+    # the speed tape auto-falls-back to GPS GS so the display never goes blank.
     bx, by, bw, bh = _setting_row(surf, 6, "AIRSPEED SOURCE",
-                                   "GPS groundspeed or IAS sensor")
+                                   "GPS groundspeed or IAS sensor (auto-falls back to GS without air data)")
     cur_as = ss.get("airspeed_src", "gps")
     opts_as = [("gps", "GPS GS"), ("ias", "IAS SENSOR")]
     total_as = 2*120 + _DSP_BTN_G
     rx = bx + bw - total_as - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts_as):
-        active = v == cur_as
-        if v == "ias":
-            # IAS sensor not yet wired — show as future/disabled
-            pygame.draw.rect(surf, (18, 18, 20),
-                             (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), border_radius=6)
-            pygame.draw.rect(surf, (55, 55, 65),
-                             (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), width=2, border_radius=6)
-            _text(surf, lbl, 13, (75, 75, 88), bold=False,
-                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2-7)
-            _text(surf, "future", 9, (60, 60, 72),
-                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2+8)
-        else:
-            _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, active)
+        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v == cur_as)
 
     # Row 7: Terrain alert inhibit — pilot-controlled mute on the
     # TAWS pipeline (terrain look-ahead + obstacle + pull-up callouts).
@@ -5252,10 +5456,10 @@ def ahrs_setup_hit(x, y, ss):
             total_as = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_as - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            # Only GPS GS (index 0) is active; IAS SENSOR (index 1) is future/disabled
-            if rx <= x <= rx+120:
-                if ry <= y <= ry+_DSP_BTN_H:
-                    return "set:airspeed_src:gps"
+            for i, v in enumerate(("gps", "ias")):
+                xi = rx + i * (120 + _DSP_BTN_G)
+                if xi <= x <= xi + 120 and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:airspeed_src:{v}"
         elif ri == 7:
             inh_w = 138
             inh_bx = _SS_MX + bw - inh_w - 14
@@ -5538,12 +5742,12 @@ def connectivity_setup_hit(x, y, cs):
 # ── System screen ─────────────────────────────────────────────────────────────
 
 _SYS_VERSION = "0.1.0"
-_SYS_BUILD   = "2026-04-10"
+_SYS_BUILD   = "2026-05-17"   # bump on each meaningful PFD release
 _SYS_INFO_Y  = 56
-_SYS_INFO_LH = 28
+_SYS_INFO_LH = 26
 
 
-_SYS_N_LINES = 6
+_SYS_N_LINES = 7
 _SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
 _SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # DISPLAY MODE row top
 _SYS_TERRAIN_Y = _SYS_MODE_Y + _SS_RH + 8         # TERRAIN DATA row top
@@ -5585,11 +5789,15 @@ def draw_system_setup(surf):
         _gps_status = "no fix \u00b7 acquiring"
     else:
         _gps_status = "no signal"
+    _ahrs_fw = disp.get("fw_ver", "\u2014")
+    if not _ahrs_fw or _ahrs_fw == "\u2014":
+        _ahrs_fw = "unknown" if disp.get("ahrs_ok") else "no link"
     lines = [
-        ("Firmware version",  _SYS_VERSION),
-        ("Build date",        _SYS_BUILD),
+        ("PFD version",       _SYS_VERSION),
+        ("PFD build date",    _SYS_BUILD),
+        ("AHRS firmware",     str(_ahrs_fw)),
         ("Display",           f"{DISPLAY_W}\u00d7{DISPLAY_H}  HDMI"),
-        ("Hardware",          "Pi 4 + Pico W  (OpenGL SVT)"),
+        ("Hardware",          "Pi 4 + Pico 2W  (OpenGL SVT)"),
         ("GPS",               _gps_status),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
@@ -8846,8 +9054,11 @@ def render(surf, demo_mode, connected, data_stale=False):
     # turns that into the actual source given runtime conditions and
     # produces the label + colour that the heading box / setup show.
     hdg_pref = ss.get("hdg_src", "auto")
+    # GS specifically — NEVER the user-selected airspeed source. Whether GPS
+    # track is usable is a ground-motion question; passing IAS here would
+    # let MS4525 noise dither the heading box between MAG and TRK on the ramp.
     use_track, hdg_label, hdg_color = _resolve_hdg_source(
-        hdg_pref, gps_ok, ahrs_ok, speed)
+        hdg_pref, gps_ok, ahrs_ok, disp.get("speed", 0.0))
     # Raw NED heading pre-magdev.  Pico firmware (sensor_loop) already applied
     # ENU→NED, connector-orientation axis mapping, and mounting flip before
     # broadcasting.  Sim / demo generate NED headings directly.  In TRK mode
@@ -8877,9 +9088,23 @@ def render(surf, demo_mode, connected, data_stale=False):
         hdg = yaw_corr
 
     # ── Airspeed source selection ─────────────────────────────────────────────
-    # "gps" (default): GPS groundspeed  → bug triangle is magenta
-    # "ias":           IAS sensor        → bug triangle is cyan (future)
-    airspeed_src = ss.get("airspeed_src", "gps")
+    # "gps" : GPS groundspeed         → bug triangle / tape source label is magenta
+    # "ias" : SDP/MS4525 airspeed     → bug triangle / tape source label is cyan
+    # Effective source resolves to "ias" only when the pilot has selected it AND
+    # the air-data sensor is currently fresh (airdata_ok). Auto-falls-back to GPS
+    # GS otherwise so a transient MS4525/SDP3x dropout doesn't blank the tape.
+    _user_src = ss.get("airspeed_src", "gps")
+    if _user_src == "ias" and disp.get("airdata_ok"):
+        airspeed_src = "ias"
+        speed = disp.get("ias_kt", speed)
+        # Display-side IAS deadband. The firmware already gates ias_kt at the
+        # same threshold, but the IIR smoothing in smooth_state() leaks brief
+        # firmware-side noise spikes into the display as a bouncing 2–6 kt
+        # readout. Re-clamping here gives a clean steady 0 on the ramp.
+        if speed < 10.0:
+            speed = 0.0
+    else:
+        airspeed_src = "gps"
 
     # ── Unit conversions ──────────────────────────────────────────────────────
     ds = disp["ds"]
@@ -9135,7 +9360,13 @@ def render(surf, demo_mode, connected, data_stale=False):
         # heading source uses) suppress track and let the inset fall
         # back to mag heading so yawing the nose visibly rotates the
         # map in TRK↑ mode.
-        _map_track = track if speed >= 3.0 else None
+        #
+        # Gate on GPS groundspeed specifically (NOT the user-selected
+        # airspeed source). GS reads sub-knot when stationary, while IAS
+        # has the MS4525/SDP noise floor — picking IAS here would let
+        # sensor noise dither the map between TRK↑ and N↑ on the ramp.
+        _gs_kt = disp.get("speed", 0.0)
+        _map_track = track if _gs_kt >= 3.0 else None
         # Translate the main-PFD airport-type filters (managed on the
         # AIRPORT DATA screen) into the set of atype letters the inset
         # should draw.  Sharing the flags with the main PFD means the
@@ -9191,7 +9422,10 @@ def render(surf, demo_mode, connected, data_stale=False):
             direct_to=d2 if d2.get("ident") else None,
             font=_get_font(11, bold=True),
             airport_types_visible=_types_vis,
-            gs_kt=speed,
+            # GS specifically — NEVER the user-selected speed source. The map
+            # is a ground-motion display, so range/ETE/track decisions must
+            # come from GPS groundspeed even when the speed tape is showing IAS.
+            gs_kt=_gs_kt,
             vso_kt=fp.get("vs0", VS0),
             range_label=_eff_label,
             state_lines=_state_lines,
@@ -9247,13 +9481,15 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 9. Status badges
     draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats, connected,
-                       use_track=use_track)
+                       use_track=use_track,
+                       ahrs_aligning=bool(disp.get("ahrs_aligning", False)))
 
     # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
     draw_terrain_alert(surf)
 
     # 10. Failure overlays
-    draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok)
+    draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok,
+                          ahrs_aligning=bool(disp.get("ahrs_aligning", False)))
 
     # 11. Tap-buttons for heading bug, baro, and alt bug (color = data source)
     draw_tap_buttons(surf, hdg, active_bug, baro_hpa, baro_src, alt_bug,
@@ -9427,7 +9663,22 @@ def main():
                         help="Screenshot groundspeed kt")
     parser.add_argument("--ss-vspeed", type=float, default=0.0,      metavar="FPM",
                         help="Screenshot vertical speed fpm")
+    parser.add_argument("--trace-mem", action="store_true",
+                        help="Enable tracemalloc; log top growing allocators "
+                             "every 60 s so we can identify memory leaks.")
     args = parser.parse_args()
+
+    # Optional memory tracing for leak hunts. Captures a baseline snapshot
+    # after the first 30 s (so steady-state caches are populated), then every
+    # 60 s diffs against the baseline and logs the top 10 growing allocators.
+    # Tracemalloc costs roughly 2x memory overhead — only enable when chasing
+    # a leak.
+    global _tm_baseline
+    _tm_baseline = None
+    if args.trace_mem:
+        import tracemalloc
+        tracemalloc.start()
+        print("[PFD] tracemalloc enabled — baseline will snapshot at 30 s")
 
     if args.sim or not FULLSCREEN:
         # Desktop / windowed mode — let SDL auto-detect the display server
@@ -10035,7 +10286,47 @@ def main():
             render_ms = (_t1 - _t0) * 1000
             flip_ms   = (_t2 - _t1) * 1000
             fps       = clock.get_fps()
-            print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  flip={flip_ms:.1f}ms")
+            # Track process memory each ~2 s along with fps so we can spot
+            # leak rates against rendering load. /proc/self/status VmRSS is
+            # cheap and doesn't require psutil.
+            _mem_kb = 0
+            try:
+                with open("/proc/self/status", "r") as _f:
+                    for _ln in _f:
+                        if _ln.startswith("VmRSS:"):
+                            _mem_kb = int(_ln.split()[1])
+                            break
+            except OSError:
+                pass
+            print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  "
+                  f"flip={flip_ms:.1f}ms  rss={_mem_kb/1024:.1f}MB  "
+                  f"roll={disp.get('roll', 0.0):+.2f} "
+                  f"pitch={disp.get('pitch', 0.0):+.2f} "
+                  f"yaw={disp.get('yaw', 0.0):+.2f} "
+                  f"zupt={int(bool(disp.get('ahrs_zupt', False)))}")
+            # Tracemalloc diff against baseline — only when --trace-mem.
+            # Skip the first ~30 s so steady-state caches don't pollute
+            # the "growing" picture.
+            try:
+                import tracemalloc
+                if tracemalloc.is_tracing():
+                    # Use frame counts that work even when tracemalloc tanks
+                    # the framerate from 30 fps → 5 fps. Baseline after 60
+                    # frames (~12 s at 5 fps, ~2 s at 30 fps), diff every
+                    # 120 frames after that.
+                    if main._frame_n >= 60 and _tm_baseline is None:
+                        globals()['_tm_baseline'] = tracemalloc.take_snapshot()
+                        print("[PFD][mem] baseline snapshot captured")
+                    elif _tm_baseline is not None and main._frame_n % 120 == 0:
+                        _snap = tracemalloc.take_snapshot()
+                        _diff = _snap.compare_to(_tm_baseline, 'lineno')
+                        print("[PFD][mem] top 10 growing since baseline:")
+                        for _stat in _diff[:10]:
+                            print(f"  +{_stat.size_diff/1024:7.1f} KB "
+                                  f"({_stat.count_diff:+5d} blocks)  "
+                                  f"{_stat.traceback}")
+            except Exception:
+                pass
 
     if _sse_client:
         _sse_client.stop()

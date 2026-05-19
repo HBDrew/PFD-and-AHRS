@@ -27,8 +27,9 @@
 # Bernoulli: dp = ½·ρ₀·v²  →  v_ms = sqrt(2·|dp| / ρ₀)
 # The sign of dp matters for the slip/reverse-flight cases but we just
 # clamp negative dp to zero for the IAS readout — there is no useful
-# negative-airspeed indication.  Below ~5 kt the math gets noise-dominated;
-# return 0 there so the speed tape doesn't dither during taxi/parking.
+# negative-airspeed indication.  Below the deadband (IAS_DEADBAND_KT) the
+# math is noise-dominated; return 0 there so the speed tape, wind-triangle,
+# and moving-map orientation don't dither during taxi/parking.
 #
 # TAS math
 # --------
@@ -58,7 +59,12 @@ import math
 RHO_ZERO_KGM3   = 1.225
 R_SPEC_AIR      = 287.05      # J / (kg·K)
 MS_PER_KNOT     = 0.514444
-IAS_DEADBAND_KT = 5.0          # below this read 0 to suppress static noise
+# Below this read 0 to suppress static noise. Sized for the MS4525DO's
+# ~6 Pa peak noise floor (→ ~6 kt apparent IAS) with ~3x margin; the SDP33
+# is quieter so still comfortably below the threshold. Set high enough that
+# the speed tape doesn't dither during taxi/parking AND the wind-triangle
+# / moving-map orientation aren't driven by sensor noise when stationary.
+IAS_DEADBAND_KT = 10.0
 
 
 def density_kgm3(static_pa: float, temp_c: float) -> float:

@@ -28,6 +28,15 @@ WT901_TX_PIN  = 0   # GP0  – Pico TX → WT901 RX  (for sending config, option
 WT901_RX_PIN  = 1   # GP1  – Pico RX ← WT901 TX
 WT901_BAUD    = 9600  # WT901 factory default; increase to 115200 after config
 
+# Force the WT901's Return-Data-Switch back to the factory default
+# (ACC + GYRO + ANGLE + MAG) at every firmware boot. Recovers from a chip
+# whose config has somehow been corrupted — we hit this with PKT_ANGLE
+# (0x53) silently disappearing after many bench reboots. The reconfigure
+# is idempotent (writes the same value) so leaving this True forever is
+# safe. Set False only if you have a deliberately customised WT901 config
+# you don't want overwritten.
+WT901_FORCE_DEFAULT_OUTPUT = True
+
 # ── GPS (GY-NEO6MV2 / u-blox NEO-6M) ───────────────────────────────────────
 GPS_UART_ID = 1
 GPS_TX_PIN  = 4   # GP4  – Pico TX → GPS RX  (for UBX config, optional)
@@ -85,6 +94,37 @@ SDP31_I2C_ADDR = 0x21       # 0x21 default; 0x22 when ADDR pin tied to VDD
 # restart).  The display also exposes a manual /sdp_zero endpoint.
 SDP31_AUTO_ZERO_AT_BOOT = True
 
+# ── MS4525DO Differential Pressure (alternative pitot transducer) ──────────
+# TE Connectivity MS4525DO — drop-in alternative to the SDP3x family.
+# Different protocol (4-byte register read, no CRC) but the on-Pico driver
+# (firmware/ms4525.py) exposes the same dp_pa / update() / zero() interface
+# so main.py treats them interchangeably.  When both are enabled the MS4525
+# wins (it's first in the init ladder) — useful when the SDP33 has died on
+# the bench but you still want to fly.
+#
+# Wiring (I²C1, shared with BME280):
+#   VDD → 3V3(OUT)  GND → GND
+#   SDA → GP2       SCL → GP3
+#   Address: 0x28 (A-cal, factory default) or 0x36 (B-cal variant)
+#
+# Pneumatic plumbing on the airframe (same as SDP33):
+#   "+" port  → pitot   (ram pressure)
+#   "−" port  → static  (cabin/airframe static reference, tee'd into BME280)
+MS4525_ENABLE            = True      # MS4525 is now the production transducer;
+                                     # set False on bench builds without the part
+MS4525_I2C_ID            = 1
+MS4525_SDA_PIN           = 2         # shared with BME280 (I2C1 SDA)
+MS4525_SCL_PIN           = 3         # shared with BME280 (I2C1 SCL)
+MS4525_I2C_ADDR          = 0x28      # 0x28 = A-cal; 0x36 = B-cal
+MS4525_PSI_RANGE         = 1.0       # full-scale ±psi: 1.0 for -001D, 2.0 for
+                                     # -002D, 5.0 for -005D. Max IAS at sea-
+                                     # level standard density (ρ₀=1.225 kg/m³):
+                                     #   ±1 psi → 206 kt   (-001D)
+                                     #   ±2 psi → 291 kt   (-002D)
+                                     #   ±5 psi → 461 kt   (-005D)
+                                     # ±1 psi covers any single piston / most twins.
+MS4525_AUTO_ZERO_AT_BOOT = True      # same semantics as SDP31_AUTO_ZERO_AT_BOOT
+
 # ── WT901 lateral-acceleration sign ──────────────────────────────────────────
 # The WT901's ay axis drives the slip/skid ball.  If the ball deflects the
 # wrong way after installation, flip this to -1 (sensor mounted 180° about yaw).
@@ -111,6 +151,66 @@ AHRS_CONNECTOR = 'right'
 # AHRS_MOUNTING: 'normal' = component-side up, 'inverted' = component-side down.
 # Applies an additional pitch/roll sign flip, independent of AHRS_CONNECTOR.
 AHRS_MOUNTING  = 'normal'
+
+# ── On-Pico Mahony AHRS filter ──────────────────────────────────────────────
+# When True, the firmware runs a Mahony filter on raw WT901 accel + gyro
+# (+mag when available) and uses its output as roll/pitch/yaw. When False,
+# the WT901's internal Euler output (PKT_ANGLE 0x53) is used unchanged — the
+# pre-filter behaviour.
+#
+# The filter accepts a velocity-aided centripetal-acceleration correction
+# (the dominant source of "leans" in coordinated turns). Speed source order:
+#   1. IAS (SDP33 + airdata_ok)   — physically correct (air-relative ω × V)
+#   2. GS  (GPS, gps_ok)          — close in still air, off by wind component
+#   3. none                       — no centripetal correction; gyro/accel only
+# The active source is broadcast as state['att_aid'] = 'tas' | 'gs' | 'basic'.
+AHRS_FILTER_ENABLE      = True
+
+# Mahony tuning. Defaults are conservative; bench-test then refine.
+AHRS_KP_ACC             = 1.0     # accel proportional gain (rad/s per unit error)
+AHRS_KI_ACC             = 0.001   # accel integral gain — estimates gyro bias.
+                                  # Keep small: any steady residual cross-product
+                                  # error (centripetal mismatch, sensor noise)
+                                  # winds the integrator up. Bench tested: 0.001
+                                  # gives <0.05° drift over 5 min at 5° bank.
+AHRS_KP_MAG             = 0.5     # mag proportional gain (yaw correction)
+AHRS_ACCEL_GATE_G       = 0.20    # accel weight = 0 outside |a|=1g ± this band
+
+# Use the WT901 magnetometer (PKT_MAG 0x54) in the Mahony correction. If the
+# WT901 isn't outputting mag packets the filter falls back to gyro-only yaw,
+# corrected slowly by GPS track (see AHRS_GPS_TRACK_*).
+AHRS_USE_MAG            = True
+
+# GPS-track yaw slaving. Once per AHRS_GPS_TRACK_INTERVAL_S, when the GPS
+# fix is valid and groundspeed exceeds AHRS_GPS_TRACK_MIN_KT, nudge the
+# filter yaw toward GPS track by AHRS_GPS_TRACK_ALPHA. Small values keep
+# the short-term gyro response intact.
+AHRS_GPS_TRACK_ENABLE     = True
+AHRS_GPS_TRACK_MIN_KT     = 20.0   # GS below this → no yaw slaving
+AHRS_GPS_TRACK_INTERVAL_S = 1.0    # seconds between corrections
+AHRS_GPS_TRACK_ALPHA      = 0.02   # fraction of yaw error closed per call
+
+# AHRS align banner — display shows "AHRS ALIGN" for this long after the
+# filter first starts receiving gyro packets. Sized to cover the practical
+# worst-case for the Mahony to converge from a poor PKT_ANGLE seed during
+# a moving-on-power-up scenario. 20 s matches what we've seen in real
+# bench/flight startup — filter is visibly still settling at 10 s.
+AHRS_ALIGN_DURATION_S     = 20.0
+
+# Firmware version date code — broadcast to the display so the pilot can
+# verify which build is running on the AHRS. Bump manually on each
+# meaningful release. YYYY-MM-DD format keeps it sortable and obvious.
+FW_VERSION                = "2026-05-17"
+
+# Aircraft "forward" unit vector expressed in the WT901 sensor frame.
+# Used only for centripetal correction: a_c = ω_sensor × (V * fwd_sensor).
+# Default assumes 'right' connector + 'normal' mounting: WT901 mounted
+# label-up with the connector pointing to the right of the aircraft, so
+# the sensor's +Y axis points along the aircraft's forward direction.
+# If the centripetal correction makes turn behaviour WORSE rather than
+# better, the sign or axis here is wrong — flip empirically (same workflow
+# as WT901_AY_SIGN). Vector should be unit-magnitude.
+AHRS_FWD_IN_SENSOR        = (0.0, 1.0, 0.0)
 
 # ── Data broadcast rate ──────────────────────────────────────────────────────
 BROADCAST_HZ = 10   # SSE events per second sent to the phone display
