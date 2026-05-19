@@ -199,7 +199,9 @@ def query_nearby(airports, lat: float, lon: float, radius_nm: float = 20.0):
             # for picking the nearest in nav_set_nearest.
             order = np.argsort(dist_sq)
             candidates = candidates[order]
-        return candidates
+        # Return as recarray so callers can use either row.field or
+        # row["field"]; the render path uses attribute access.
+        return candidates.view(np.recarray)
 
     results = []
     for rec in airports:
