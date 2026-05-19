@@ -731,9 +731,11 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 # polygon for any terrain rising above the visual horizon. ~3-5 ms/frame
 # on a Pi Zero 2W.
 _AHT_N_RAYS         = 31
-_AHT_HALF_FOV_DEG   = 30.0                    # ±30°, matches AI horizontal extent at 8 px/deg
+_AHT_HALF_FOV_DEG   = 24.0                    # ±24° keeps ray rays inside the 484 px AI at 10 px/deg
 _AHT_DIST_NM        = (0.5, 1.0, 2.0, 4.0, 7.0, 12.0, 20.0)
-_AHT_PX_PER_DEG     = 8.0                     # match draw_obstacle_symbols / draw_airport_symbols
+_AHT_PX_PER_DEG     = 10.0                    # match draw_simple_ai_background + draw_pitch_ladder
+                                              # (NOT the 8.0 obstacles use — caused a 20 px gap
+                                              # between the silhouette base and the horizon line)
 
 # Silhouette fill colour by worst-case clearance (terrain above us is red,
 # borderline-above is orange, comfortably-below would be brown but the
