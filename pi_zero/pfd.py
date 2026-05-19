@@ -723,6 +723,117 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     surf.set_clip(old_clip)
 
 
+# ── Above-horizon terrain silhouette ──────────────────────────────────────────
+# Pi Zero 2W can't afford the full SVT mesh that pi4 runs through OpenGL —
+# the per-quad math + draw cost over ~200 polygons leaves no frame budget
+# at 30 fps. Instead we ray-cast forward across the AI's horizontal FOV,
+# look up the SRTM peak along each ray, and draw a single silhouette
+# polygon for any terrain rising above the visual horizon. ~3-5 ms/frame
+# on a Pi Zero 2W.
+_AHT_N_RAYS         = 31
+_AHT_HALF_FOV_DEG   = 30.0                    # ±30°, matches AI horizontal extent at 8 px/deg
+_AHT_DIST_NM        = (0.5, 1.0, 2.0, 4.0, 7.0, 12.0, 20.0)
+_AHT_PX_PER_DEG     = 8.0                     # match draw_obstacle_symbols / draw_airport_symbols
+
+# Silhouette fill colour by worst-case clearance (terrain above us is red,
+# borderline-above is orange, comfortably-below would be brown but the
+# polygon only renders when peaks exceed the eye-level horizon).
+def _aht_fill_colour(min_clearance_ft):
+    if min_clearance_ft < TERRAIN_WARNING_FT:
+        return (170,  35,  30)   # red — peak at or above aircraft alt
+    if min_clearance_ft < TERRAIN_CAUTION_FT:
+        return (180, 100,  30)   # orange — peak within 700 ft
+    return (140,  85,  35)       # dark brown — peak comfortably below
+
+
+def draw_above_horizon_terrain(surf, ai_rect, lat, lon, alt_ft,
+                               hdg_deg, pitch_deg, roll_deg):
+    """Ray-cast forward across the AI's FOV, find each ray's max SRTM
+    elevation, and draw the resulting peak silhouette as a single
+    polygon between the silhouette curve and the visual horizon line.
+
+    No-op when SRTM tiles aren't loaded (TAWS banner covers that case).
+    Colour reflects the worst clearance across the visible peaks.
+    """
+    import numpy as _np
+
+    if not _has_terrain:
+        return
+
+    ax, ay_r, aw, ah = ai_rect
+    cx = ax + aw // 2
+    cy = ay_r + ah // 2
+
+    nm_per_deg_lat = 60.0
+    nm_per_deg_lon = max(1.0, 60.0 * math.cos(math.radians(lat)))
+
+    # Ray bearings, relative to nose
+    rays_rel_brg = _np.linspace(-_AHT_HALF_FOV_DEG, _AHT_HALF_FOV_DEG, _AHT_N_RAYS)
+    abs_brg_rad  = _np.radians((hdg_deg + rays_rel_brg) % 360.0)
+
+    # Per-ray peak elevation (ft, MSL) — start at "no peak"
+    peak_elev = _np.full(_AHT_N_RAYS, -9999.0, dtype=_np.float64)
+    peak_dist = _np.full(_AHT_N_RAYS,    0.0,  dtype=_np.float64)
+
+    for d_nm in _AHT_DIST_NM:
+        sample_lats = lat + d_nm * _np.cos(abs_brg_rad) / nm_per_deg_lat
+        sample_lons = lon + d_nm * _np.sin(abs_brg_rad) / nm_per_deg_lon
+        for i in range(_AHT_N_RAYS):
+            elev = get_elevation_ft(SRTM_DIR,
+                                    float(sample_lats[i]),
+                                    float(sample_lons[i]))
+            if elev > peak_elev[i]:
+                peak_elev[i] = elev
+                peak_dist[i] = d_nm
+
+    # Visual elevation angle of each peak from the aircraft (positive =
+    # peak rises above eye level).  Use the per-ray distance the peak
+    # was sampled at — closer peaks loom larger for the same elevation.
+    dist_ft  = peak_dist * 6076.0
+    dist_ft  = _np.maximum(dist_ft, 1.0)
+    peak_deg = _np.degrees(_np.arctan2(peak_elev - alt_ft, dist_ft))
+
+    # Cull when no ray has terrain rising above horizon
+    if not (peak_deg > 0.1).any():
+        return
+
+    # Project to screen in the same convention as draw_pitch_ladder (the
+    # silhouette polygon then rotates with roll exactly like the
+    # horizon line and the obstacle symbols).
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
+
+    sxr     = rays_rel_brg * _AHT_PX_PER_DEG
+    # peak_deg clamped at 0 so non-visible rays sit flush on the
+    # horizon — they contribute zero polygon height at that bearing.
+    syr_top = (pitch_deg - _np.maximum(peak_deg, 0.0)) * _AHT_PX_PER_DEG
+    syr_hor = pitch_deg * _AHT_PX_PER_DEG
+
+    sx_top = (cx + sxr * cos_r - syr_top * sin_r).astype(_np.int32)
+    sy_top = (cy + sxr * sin_r + syr_top * cos_r).astype(_np.int32)
+    sx_hor = (cx + sxr * cos_r - syr_hor * sin_r).astype(_np.int32)
+    sy_hor = (cy + sxr * sin_r + syr_hor * cos_r).astype(_np.int32)
+
+    # Polygon: silhouette curve left→right, then horizon line right→left
+    polygon = list(zip(sx_top.tolist(), sy_top.tolist())) \
+            + list(zip(sx_hor[::-1].tolist(), sy_hor[::-1].tolist()))
+
+    # Colour by worst clearance among visible peaks
+    visible = peak_deg > 0.1
+    worst_clearance = float((alt_ft - peak_elev[visible]).min())
+    fill = _aht_fill_colour(worst_clearance)
+
+    old_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
+    pygame.draw.polygon(surf, fill, polygon)
+    # Ridge line (slightly lighter) for visual depth
+    ridge_col = tuple(min(255, c + 35) for c in fill)
+    ridge_pts = list(zip(sx_top.tolist(), sy_top.tolist()))
+    if len(ridge_pts) >= 2:
+        pygame.draw.lines(surf, ridge_col, False, ridge_pts, 1)
+    surf.set_clip(old_clip)
+
+
 # ── Pitch ladder ──────────────────────────────────────────────────────────────
 def draw_pitch_ladder(surf, ai_rect, pitch, roll):
     """
@@ -4784,6 +4895,13 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 1. AI background — draw full-width so tapes are transparent over sky/ground
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
     draw_simple_ai_background(surf, _full_ai, pitch, roll)
+
+    # 1a. Above-horizon terrain silhouette (mountain peaks rising above
+    # the eye-level horizon).  Only renders when SRTM tiles are loaded
+    # and at least one ray's peak exceeds aircraft altitude.
+    if gps_ok:
+        draw_above_horizon_terrain(surf, _full_ai, lat, lon, alt,
+                                   hdg, pitch, roll)
 
     # 1b. Symbol overlays painted in the TERRAIN coordinate frame
     # (heading + pitch only, no roll), then the entire overlay is
