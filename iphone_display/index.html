@@ -270,6 +270,7 @@
   <button class="setup-btn" onclick="openVspeedsMenu()">⚙ V-SPEEDS</button>
   <button class="setup-btn" onclick="openMagCalPanel()">🧲 MAG CAL</button>
   <button class="setup-btn" onclick="openHdgMenu()">🧭 HEADING</button>
+  <button class="setup-btn" onclick="openAsMenu()">💨 AIRSPEED</button>
   <button class="setup-btn" onclick="openSensorMenu()">📡 SENSORS</button>
   <button class="setup-btn" id="btn-keepon" onclick="keepOnTap()">🔆 SCREEN ON</button>
   <button id="setup-close" onclick="closeSetupMenu()">✕ CLOSE</button>
@@ -412,6 +413,31 @@
   </div>
 </div>
 
+<!-- Airspeed source: GPS groundspeed vs MS4525/SDP33 indicated airspeed.
+     Mirrors the Pi 4 AHRS-setup row exactly. Falls back to GPS GS
+     automatically whenever airdata_ok is false. -->
+<div id="as-panel" style="display:none; position:fixed; top:50%; left:50%;
+     transform:translate(-50%,-50%); background:rgba(0,16,40,.96);
+     border:1px solid rgba(120,160,220,.35); border-radius:10px;
+     padding:18px 20px; min-width:280px; z-index:1000;
+     box-shadow:0 6px 24px rgba(0,0,0,.5);">
+  <p style="color:rgba(200,220,255,.9); font-size:12px; margin-bottom:8px;">Airspeed source</p>
+  <div class="hdg-mode-row">
+    <button class="hdg-mode-btn" id="as-mode-gps" onclick="setAsMode('GPS')">GPS GS</button>
+    <button class="hdg-mode-btn" id="as-mode-ias" onclick="setAsMode('IAS')">IAS SENSOR</button>
+  </div>
+  <p class="hdg-hint">
+    <strong>GPS GS</strong> — groundspeed from GPS (magenta bug). Always
+    available, but off by the wind component.<br>
+    <strong>IAS SENSOR</strong> — air-data computer (cyan bug). Truer
+    measure of how the wing sees the air. Falls back to GPS GS
+    automatically when no air-data sensor is responding.
+  </p>
+  <div class="trn-btns">
+    <button class="trn-btn" onclick="closeAsPanel()">✕ Close</button>
+  </div>
+</div>
+
 <div id="compass-cal-panel">
   <p>Compass calibration  <small id="compass-cal-status" style="color:rgba(180,200,255,.6); margin-left:6px"></small></p>
   <p class="hdg-hint" id="compass-cal-instr">
@@ -520,7 +546,11 @@ const TARGET = { roll:0, pitch:0, yaw:0, yaw_raw:0, lat:0, lon:0, alt:0,
                  speed:0, track:0, vspeed:0, fix:0, sats:0,
                  ay:0, baro_hpa:1013.25, baro_src:'gps', gps_alt:0,
                  pitch_trim:0, roll_trim:0, yaw_trim:0,
-                 ahrs_ok:false, gps_ok:false, baro_ok:false };
+                 ahrs_ok:false, gps_ok:false, baro_ok:false,
+                 // Air-data fields from SDP33 / MS4525. Default airdata_ok=false
+                 // so the AIRSPEED source defaults to GPS GS until the Pico
+                 // actually broadcasts air-data values.
+                 ias_kt:0, tas_kt:0, airdata_ok:false };
 const D = Object.assign({}, TARGET);
 
 // ── SSE ────────────────────────────────────────────────────────────────────
@@ -920,6 +950,46 @@ function _updateHdgModeUI() {
     const btn = document.getElementById('hdg-mode-' + m.toLowerCase());
     if (btn) btn.classList.toggle('active', HDG_MODE === m);
   }
+}
+
+// ── Airspeed source preference (GPS groundspeed vs IAS sensor) ──────────
+// Mirrors the Pi 4 PFD's AIRSPEED SOURCE setup row. Stored in localStorage
+// so it survives reloads. Falls back to GPS GS at runtime whenever
+// airdata_ok is false — see activeSpeed() below.
+let AS_MODE = (localStorage.getItem('as_mode') || 'GPS').toUpperCase();
+if (!['GPS', 'IAS'].includes(AS_MODE)) AS_MODE = 'GPS';
+const AS_DISPLAY_DEADBAND_KT = 10;   // suppress IAS noise on the tape, like Pi 4
+
+function openAsMenu() {
+  closeSetupMenu();
+  document.getElementById('as-panel').style.display = 'block';
+  _updateAsModeUI();
+}
+function closeAsPanel() {
+  document.getElementById('as-panel').style.display = 'none';
+}
+function setAsMode(m) {
+  if (!['GPS', 'IAS'].includes(m)) return;
+  AS_MODE = m;
+  localStorage.setItem('as_mode', m);
+  _updateAsModeUI();
+}
+function _updateAsModeUI() {
+  document.getElementById('as-mode-gps').classList.toggle('active', AS_MODE === 'GPS');
+  document.getElementById('as-mode-ias').classList.toggle('active', AS_MODE === 'IAS');
+}
+
+// Effective speed for the display: returns IAS when the pilot has selected
+// it AND the air-data sensor is currently fresh, else GPS groundspeed. The
+// display deadband suppresses MS4525 noise leaking through the firmware-
+// side deadband — same trick the Pi 4 PFD uses, keeps the tape stable on
+// the ramp regardless of which source is selected.
+function activeSpeed() {
+  if (AS_MODE === 'IAS' && D.airdata_ok) {
+    const v = D.ias_kt || 0;
+    return v < AS_DISPLAY_DEADBAND_KT ? 0 : v;
+  }
+  return D.speed;
 }
 
 // ── Compass calibration (cardinal walk-through) ────────────────────────────
@@ -2000,7 +2070,9 @@ function _handleSpdTap(x, y) {
     if (B.spd_bug != null) {
       const spdRange = speedUnit === 'mph' ? 140 : 120;
       const pxPerSpd = L.tapeH / spdRange;
-      const spd = toDisplaySpd(D.speed);
+      // Hit test uses the same effective speed as the visible tape so the
+      // bug stays tappable regardless of which airspeed source is selected.
+      const spd = toDisplaySpd(activeSpeed());
       const bugY = L.tapeMidY - (toDisplaySpd(B.spd_bug) - spd) * pxPerSpd;
       const clampedBugY = Math.max(L.tapeTopY, Math.min(L.tapeTopY + L.tapeH, bugY));
       if (Math.abs(y - clampedBugY) < 30) {
@@ -2057,6 +2129,9 @@ function smooth(dtMs) {
   D.yaw    = lerpAngle(D.yaw,   TARGET.yaw,   _alpha(dtMs, SMOOTH_TAU.yaw));
   D.alt    = lerp(D.alt,   TARGET.alt,   _alpha(dtMs, SMOOTH_TAU.alt));
   D.speed  = lerp(D.speed, TARGET.speed, _alpha(dtMs, SMOOTH_TAU.speed));
+  // ias_kt smoothed at the same rate so the speed tape reads cleanly when
+  // the airspeed source is set to IAS. tas_kt unsmoothed (rarely visible).
+  D.ias_kt = lerp(D.ias_kt || 0, TARGET.ias_kt || 0, _alpha(dtMs, SMOOTH_TAU.speed));
   D.vspeed = lerp(D.vspeed,TARGET.vspeed,_alpha(dtMs, SMOOTH_TAU.vspeed));
   D.track  = lerpAngle(D.track, TARGET.track, _alpha(dtMs, SMOOTH_TAU.track));
   D.ay     = lerp(D.ay,    TARGET.ay,    _alpha(dtMs, SMOOTH_TAU.ay));
@@ -2066,6 +2141,8 @@ function smooth(dtMs) {
   D.baro_hpa=TARGET.baro_hpa; D.baro_src=TARGET.baro_src;
   D.pitch_trim=TARGET.pitch_trim; D.roll_trim=TARGET.roll_trim; D.yaw_trim=TARGET.yaw_trim;
   D.ahrs_ok=TARGET.ahrs_ok; D.gps_ok=TARGET.gps_ok; D.baro_ok=TARGET.baro_ok;
+  D.airdata_ok = TARGET.airdata_ok;
+  D.tas_kt = TARGET.tas_kt;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -2267,7 +2344,10 @@ function drawAircraftSymbol() {
 // ── Speed tape ─────────────────────────────────────────────────────────────
 function drawSpeedTape() {
   const { spdX, spdW, tapeTopY, tapeH, tapeMidY } = L;
-  const spd      = toDisplaySpd(D.speed);
+  // Effective speed: GPS GS or IAS depending on the AIRSPEED source the
+  // pilot picked in setup. Falls back to GPS GS automatically when
+  // airdata_ok is false (sensor missing / stale).
+  const spd      = toDisplaySpd(activeSpeed());
   // Visible tape range matches pi4 (PX_PER_KT = TAPE_H / 120).
   const spdRange = speedUnit === 'mph' ? 140 : 120;
   const pxPerSpd = tapeH / spdRange;
@@ -2350,11 +2430,14 @@ function drawSpeedTape() {
 
   // Speed bug — drawn BEFORE the readout box so the box covers the bug
   // when it's near current speed (matches pi4 layer order).
+  // Colour matches the active airspeed source: magenta for GPS GS,
+  // cyan for IAS — same convention as the Pi 4 PFD.
   if (B.spd_bug != null) {
     const bugY = Math.max(tapeTopY, Math.min(tapeTopY+tapeH,
                    tapeMidY-(toDisplaySpd(B.spd_bug)-spd)*pxPerSpd));
     const x = spdX, w = 14, h = 17;
-    ctx.fillStyle = BUG_MAGENTA;
+    const _iasActive = (AS_MODE === 'IAS' && D.airdata_ok);
+    ctx.fillStyle = _iasActive ? BUG_CYAN : BUG_MAGENTA;
     ctx.beginPath();
     ctx.moveTo(x,   bugY-h); ctx.lineTo(x+w, bugY-h); ctx.lineTo(x+w, bugY-5);
     ctx.lineTo(x+7, bugY);   ctx.lineTo(x+w, bugY+5); ctx.lineTo(x+w, bugY+h);
@@ -2387,8 +2470,11 @@ function drawSpeedTape() {
   ctx.fillStyle='#000a1e'; ctx.fill();
   ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.lineJoin='miter'; ctx.stroke();
 
-  const drumCol = D.speed > V.vne ? V_COL.red
-                : D.speed > V.vno ? V_COL.yellow : '#fff';
+  // V-speed colour against the effective displayed speed (not raw GPS GS),
+  // so the colour bands look right when IAS is the selected source.
+  const _spdEff = activeSpeed();
+  const drumCol = _spdEff > V.vne ? V_COL.red
+                : _spdEff > V.vno ? V_COL.yellow : '#fff';
   drawDrum(sp + ptrR + 1, mid - halfIn + 1, innW - 2, halfIn * 2 - 2,
            spd, 2, drumCol, drumFs,
            {suppressLeading: true, powerOffset: 1});
