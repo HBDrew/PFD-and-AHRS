@@ -74,11 +74,11 @@ VENT_DIA = 4.0
 VENT_X   = -10.0            # near aft-ish, well shielded from ram pressure
 VENT_Z   = STANDOFF_H + BOARD_T + 4.0
 
-# Pneumatic ports through the lid (4 mm OD tube)
-TUBE_OD          = 4.0
-PORT_BORE_DIA    = TUBE_OD + 0.4    # sliding fit
-PORT_NIPPLE_OD   = TUBE_OD + 2.6    # printed nipple OD
-PORT_NIPPLE_H    = 6.0              # sticks up above lid for tube retention
+# Pneumatic ports through the lid (4 mm OD tube — just through-holes for
+# now; long-term we'll move to bulkhead fittings that split static / pitot /
+# AOA, but for v1 the MS4525 floats inside and tubes poke through directly.)
+TUBE_OD       = 4.0
+PORT_BORE_DIA = TUBE_OD + 1.0       # 5 mm hole — slack so tube slides through
 # Place both ports aft of the GPS antenna, side-by-side on Y:
 PORT_X        = -20.0       # aft of center
 PORT_Y_OFFSET = 8.0         # half-spacing between the two ports
@@ -207,27 +207,15 @@ def make_lid():
         )
         lid = lid.cut(hole).cut(cs)
 
-    # Pneumatic ports (two nipples sticking up, bored through)
+    # Pneumatic ports (simple through-holes for now — tubes pass through
+    # the lid and plug directly into the MS4525 inside)
     for sy in (-PORT_Y_OFFSET, +PORT_Y_OFFSET):
-        nipple = (
-            cq.Workplane("XY", origin=(PORT_X, sy, LID_T))
-            .circle(PORT_NIPPLE_OD / 2)
-            .extrude(PORT_NIPPLE_H)
-        )
-        # Small retention barb halfway up
-        barb_h = 0.8
-        barb = (
-            cq.Workplane("XY",
-                         origin=(PORT_X, sy, LID_T + PORT_NIPPLE_H * 0.55))
-            .circle(PORT_NIPPLE_OD / 2 + 0.6)
-            .extrude(barb_h)
-        )
         bore = (
             cq.Workplane("XY", origin=(PORT_X, sy, -lip_t - 0.5))
             .circle(PORT_BORE_DIA / 2)
-            .extrude(LID_T + lip_t + PORT_NIPPLE_H + 1)
+            .extrude(LID_T + lip_t + 1)
         )
-        lid = lid.union(nipple).union(barb).cut(bore)
+        lid = lid.cut(bore)
 
     # Orientation cue: embossed arrow pointing +X (forward) on the lid top.
     # A simple isoceles triangle, raised 0.6 mm. Skip if cadquery's text-style
