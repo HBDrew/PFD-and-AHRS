@@ -2134,8 +2134,13 @@ def handle_event(event, demo_mode):
                 _, key, delta_str = action.split(":")
                 disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
                 _settings.mark_dirty()
-            elif action == "mag_cal":
-                disp["ss"]["mag_cal"] = "running"
+            elif action == "mag_cal_open":
+                # Phase A stub — flips state so the pilot can see the
+                # button responds. Phase B replaces this with the full
+                # 8-point walk-through modal + $MAGDEV push to the Pico.
+                cur = disp["ss"].get("mag_cal", "idle")
+                disp["ss"]["mag_cal"] = "running" if cur != "running" else "idle"
+                _settings.mark_dirty()
             elif action and action.startswith("set:"):
                 _, key, val = action.split(":", 2)
                 disp["ss"][key] = val
@@ -2862,7 +2867,7 @@ def _screen_header(surf, title):
     pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
     _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
-    _text(surf, title, 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+    _text(surf, title, 24, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
 
 
 def _setting_row(surf, row_i, label, sub="", _y_override=None):
@@ -2876,9 +2881,9 @@ def _setting_row(surf, row_i, label, sub="", _y_override=None):
         gc = (int(15+t*25), int(20+t*40), int(40+t*65))
         pygame.draw.line(surf, gc, (bx+6, by+1+i), (bx+bw-6, by+1+i))
     pygame.draw.rect(surf, (55, 75, 105), (bx, by, bw, bh), width=1, border_radius=6)
-    _text(surf, label, 14, WHITE, bold=True, x=bx+14, y=by+10)
+    _text(surf, label, 18, WHITE, bold=True, x=bx+14, y=by+8)
     if sub:
-        _text(surf, sub, 10, (120, 135, 155), x=bx+14, y=by+32)
+        _text(surf, sub, 12, (140, 155, 175), x=bx+14, y=by+34)
     return bx, by, bw, bh
 
 
@@ -2895,7 +2900,7 @@ def _seg_btn(surf, bx, by, bw, bh, label, active, r=5):
             gc = (int(t*20), int(60+t*40), int(70+t*50))
             pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
     pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=2, border_radius=r)
-    _text(surf, label, 14, tc, bold=active, cx=bx+bw//2, cy=by+bh//2)
+    _text(surf, label, 18, tc, bold=active, cx=bx+bw//2, cy=by+bh//2)
 
 
 def _step_btn(surf, bx, by, bw, bh, label):
@@ -3056,49 +3061,82 @@ def _trim_stepper(surf, bx, by, bw, bh, val, key):
 def draw_ahrs_setup(surf, ss):
     _screen_header(surf, "AHRS / SENSORS")
 
-    # Row 0: Pitch trim
-    bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction")
+    # Row 0: Pitch trim — 0.1° per step (was 0.5°)
+    bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction (0.1° / tap)")
     _trim_stepper(surf, bx, by, bw, bh, ss.get("pitch_trim", 0.0), "pitch_trim")
 
-    # Row 1: Roll trim
-    bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction")
+    # Row 1: Roll trim — 0.1° per step
+    bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction (0.1° / tap)")
     _trim_stepper(surf, bx, by, bw, bh, ss.get("roll_trim", 0.0), "roll_trim")
 
-    # Row 2: Magnetometer calibration (greyed out — not yet implemented)
+    # Row 2: Magnetometer calibration — CALIBRATE button opens the
+    # 8-point walk-through wizard.  Active button (was greyed out).
     bx, by, bw, bh = _setting_row(surf, 2, "MAGNETOMETER", "Compass calibration")
     cal = ss.get("mag_cal", "idle")
     state_lbl, state_col = _SS_MAG_LABELS.get(cal, ("?", WHITE))
-    _text(surf, state_lbl, 13, state_col, bold=True, x=bx+220, y=by+(bh-18)//2)
-    # Draw disabled button (dim, no interaction)
-    cbx = bx+bw-138-14; cby = by+(bh-36)//2
-    pygame.draw.rect(surf, (18,18,20), (cbx, cby, 138, 36), border_radius=6)
-    pygame.draw.rect(surf, (55,55,65), (cbx, cby, 138, 36), width=2, border_radius=6)
-    _text(surf, "CALIBRATE", 15, (75,75,88), bold=False, cx=cbx+69, cy=cby+18)
-    _text(surf, "future", 9, (60,60,72), cx=cbx+69, cy=cby+29)
+    _text(surf, state_lbl, 14, state_col, bold=True, x=bx+260, y=by+(bh-18)//2)
+    cur_deltas = ss.get("mag_cal_deltas") or []
+    if cur_deltas and any(abs(d) > 0.05 for d in cur_deltas):
+        peak = max(abs(d) for d in cur_deltas)
+        _text(surf, f"max |Δ| {peak:.1f}°", 12, (140, 160, 190),
+              x=bx+260, y=by+(bh-18)//2 + 22)
+    cbx = bx+bw-138-14; cby = by+(bh-_DSP_BTN_H)//2
+    _action_btn(surf, cbx, cby, 138, _DSP_BTN_H, "CALIBRATE", "ok")
 
-    # Row 3: Mounting orientation
-    bx, by, bw, bh = _setting_row(surf, 3, "MOUNTING", "Board orientation")
-    cur = ss.get("mounting", "normal")
+    # Row 3: Connector orientation (FWD / LEFT / RIGHT / AFT) — defines
+    # which side of the AHRS board the connector points toward when
+    # viewed from the pilot's seat.  The Pico applies the correct
+    # body-axis swap before broadcasting orientation, so changing this
+    # remaps pitch and roll axes correctly without per-display tuning.
+    pico_ori = state.get("orientation", "right")
+    sel_ori  = ss.get("orientation", pico_ori)
+    if sel_ori != pico_ori:
+        ori_sub = f"Connector direction  (AHRS: {pico_ori} — sending…)"
+    else:
+        ori_sub = f"Connector direction  (AHRS: {pico_ori})"
+    bx, by, bw, bh = _setting_row(surf, 3, "ORIENTATION", ori_sub)
+    opts_ori = [("forward", "FWD"), ("left", "LEFT"),
+                ("right",   "RIGHT"), ("aft", "AFT")]
+    seg_w = 88
+    total_ori = 4 * seg_w + 3 * _DSP_BTN_G
+    rx = bx + bw - total_ori - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    for i, (v, lbl) in enumerate(opts_ori):
+        _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
+                 lbl, v == pico_ori)   # highlight = Pico-confirmed value
+
+    # Row 4: Mounting (right-side-up vs inverted)
+    pico_mnt = state.get("mounting", "normal")
+    sel_mnt  = ss.get("mounting", pico_mnt)
+    if sel_mnt != pico_mnt:
+        mnt_sub = f"Right-side-up or inverted  (AHRS: {pico_mnt} — sending…)"
+    else:
+        mnt_sub = f"Right-side-up or inverted  (AHRS: {pico_mnt})"
+    bx, by, bw, bh = _setting_row(surf, 4, "MOUNTING", mnt_sub)
     opts = [("normal","NORMAL"),("inverted","INVERTED")]
     total = 2*120 + _DSP_BTN_G
     rx = bx + bw - total - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts):
-        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
+        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==pico_mnt)
 
-    # Row 4: Heading source (MAG compass vs GPS track)
-    bx, by, bw, bh = _setting_row(surf, 4, "HEADING SOURCE",
-                                   "Primary heading reference")
+    # Row 5: Heading source (MAG / TRK / AUTO)
+    # AUTO uses TRK in motion (groundspeed > threshold) and MAG when stationary.
+    bx, by, bw, bh = _setting_row(
+        surf, 5, "HEADING SOURCE",
+        "MAG=compass  TRK=GPS track  AUTO=TRK in motion / MAG stationary")
     cur_src = ss.get("hdg_src", "mag")
-    opts_src = [("mag", "MAG"), ("gps", "GPS TRK")]
-    total_src = 2*120 + _DSP_BTN_G
+    opts_src = [("mag", "MAG"), ("trk", "TRK"), ("auto", "AUTO")]
+    seg_w = 96
+    total_src = 3 * seg_w + 2 * _DSP_BTN_G
     rx = bx + bw - total_src - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts_src):
-        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur_src)
+        _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
+                 lbl, v == cur_src)
 
-    # Row 5: Airspeed source (GPS groundspeed vs dedicated IAS sensor)
-    bx, by, bw, bh = _setting_row(surf, 5, "AIRSPEED SOURCE",
+    # Row 6: Airspeed source (GPS GS vs IAS sensor)
+    bx, by, bw, bh = _setting_row(surf, 6, "AIRSPEED SOURCE",
                                    "GPS groundspeed or IAS sensor")
     cur_as = ss.get("airspeed_src", "gps")
     opts_as = [("gps", "GPS GS"), ("ias", "IAS SENSOR")]
@@ -3108,15 +3146,15 @@ def draw_ahrs_setup(surf, ss):
     for i, (v, lbl) in enumerate(opts_as):
         active = v == cur_as
         if v == "ias":
-            # IAS sensor not yet wired — show as future/disabled
+            # IAS sensor not yet wired in pi_zero — keep greyed-out stub
             pygame.draw.rect(surf, (18, 18, 20),
                              (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), border_radius=6)
             pygame.draw.rect(surf, (55, 55, 65),
                              (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), width=2, border_radius=6)
-            _text(surf, lbl, 13, (75, 75, 88), bold=False,
-                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2-7)
-            _text(surf, "future", 9, (60, 60, 72),
-                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2+8)
+            _text(surf, lbl, 14, (75, 75, 88), bold=False,
+                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2-8)
+            _text(surf, "future", 10, (60, 60, 72),
+                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2+9)
         else:
             _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, active)
 
@@ -3127,24 +3165,41 @@ def ahrs_setup_hit(x, y, ss):
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(5):
+    for ri in range(7):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
         bx = _SS_MX
         if ri in (0, 1):
+            # Trim: ±0.1° per tap (was ±0.5° — pi4 convention)
             key = "pitch_trim" if ri == 0 else "roll_trim"
             ry = by + (_SS_RH - _SS_TRIM_H) // 2
             if not (ry <= y <= ry+_SS_TRIM_H):
                 continue
             if rx_trim <= x <= rx_trim+_SS_TRIM_SW:
-                return f"trim:{key}:-0.5"
+                return f"trim:{key}:-0.1"
             plus_x = rx_trim + _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G
             if plus_x <= x <= plus_x+_SS_TRIM_SW:
-                return f"trim:{key}:+0.5"
+                return f"trim:{key}:+0.1"
         elif ri == 2:
-            pass  # CALIBRATE is greyed out (future feature)
+            # CALIBRATE button — opens mag_cal wizard (stub in phase A;
+            # phase B wires the full 8-point walkthrough)
+            cbx = _SS_MX + bw - 138 - 14
+            cby = by + (_SS_RH - _DSP_BTN_H) // 2
+            if cbx <= x <= cbx + 138 and cby <= y <= cby + _DSP_BTN_H:
+                return "mag_cal_open"
         elif ri == 3:
+            # ORIENTATION: FWD / LEFT / RIGHT / AFT
+            seg_w = 88
+            total_o = 4 * seg_w + 3 * _DSP_BTN_G
+            rx = bx + bw - total_o - 14
+            ry = by + (_SS_RH - _DSP_BTN_H) // 2
+            for i, v in enumerate(("forward", "left", "right", "aft")):
+                xi = rx + i * (seg_w + _DSP_BTN_G)
+                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:orientation:{v}"
+        elif ri == 4:
+            # MOUNTING: NORMAL / INVERTED
             total_m = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_m - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
@@ -3152,15 +3207,18 @@ def ahrs_setup_hit(x, y, ss):
                 if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
                     if ry <= y <= ry+_DSP_BTN_H:
                         return f"set:mounting:{v}"
-        elif ri == 4:
-            total_src = 2*120 + _DSP_BTN_G
+        elif ri == 5:
+            # HEADING SOURCE: MAG / TRK / AUTO
+            seg_w = 96
+            total_src = 3 * seg_w + 2 * _DSP_BTN_G
             rx = bx + bw - total_src - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            for i, v in enumerate(("mag", "gps")):
-                if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
-                    if ry <= y <= ry+_DSP_BTN_H:
-                        return f"set:hdg_src:{v}"
-        elif ri == 5:
+            for i, v in enumerate(("mag", "trk", "auto")):
+                xi = rx + i * (seg_w + _DSP_BTN_G)
+                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:hdg_src:{v}"
+        elif ri == 6:
+            # AIRSPEED SOURCE: GPS GS / IAS SENSOR (IAS still greyed out)
             total_as = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_as - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
