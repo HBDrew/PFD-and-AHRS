@@ -1135,8 +1135,12 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                   x=SPD_X + tl + 2, y=vy - 9)
 
     # GS/IAS bug — color reflects source: magenta=GPS groundspeed, cyan=IAS sensor.
+    # Park bound: bug chevron sits BELOW the top bug-readout box (h=HDG_H tall
+    # starting at y=2) rather than at TAPE_TOP — otherwise the chevron drew
+    # inside the (now-bigger) bug box at the top.
     if gs_bug is not None:
-        gby = max(TAPE_TOP, min(TAPE_BOT, spd_y(gs_bug, speed)))
+        _spd_bug_park_top = HDG_H + 20   # bug box bottom (46) + chevron half + gap
+        gby = max(_spd_bug_park_top, min(TAPE_BOT, spd_y(gs_bug, speed)))
         gb = [(SPD_X,      gby - 17),
               (SPD_X + 14, gby - 17), (SPD_X + 14, gby - 5), (SPD_X + 7, gby),
               (SPD_X + 14, gby + 5),  (SPD_X + 14, gby + 17), (SPD_X, gby + 17)]
@@ -1145,23 +1149,25 @@ def draw_speed_tape(surf, speed, gs_bug=None,
         pygame.draw.polygon(surf, spd_bug_col, gb)
         surf.set_clip(None)
 
-    # Speed readout box — stepped Veeder-Root style (from SVG spec)
-    # Layout: pointer(15) → inner section(32) → drum section(19) = 66px total
+    # Speed readout box — Veeder-Root style.  Geometry scaled 1.5× from the
+    # original SVG spec so the digits are legible at arm's length on the
+    # 3.5" Waveshare panel.  Total width 99 px (was 66), height ±44 (was ±29).
+    # Layout: pointer(22) → inner section(48) → drum section(29) = 99 px total.
     pts_s = _chamfer([(SPD_X,      TAPE_MID),
-                      (SPD_X + 15, TAPE_MID - 15), (SPD_X + 47, TAPE_MID - 15),
-                      (SPD_X + 47, TAPE_MID - 29), (SPD_X + 66, TAPE_MID - 29),
-                      (SPD_X + 66, TAPE_MID + 29),
-                      (SPD_X + 47, TAPE_MID + 29), (SPD_X + 47, TAPE_MID + 15),
-                      (SPD_X + 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7})
+                      (SPD_X + 22, TAPE_MID - 22), (SPD_X + 70, TAPE_MID - 22),
+                      (SPD_X + 70, TAPE_MID - 44), (SPD_X + 99, TAPE_MID - 44),
+                      (SPD_X + 99, TAPE_MID + 44),
+                      (SPD_X + 70, TAPE_MID + 44), (SPD_X + 70, TAPE_MID + 22),
+                      (SPD_X + 22, TAPE_MID + 22)], {2, 3, 4, 5, 6, 7})
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
-    # Inner: hundreds + tens at same font as drum, cascade-rolling
-    _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 24,
+    # Inner: hundreds + tens, cascade-rolling
+    _rolling_drum(surf, SPD_X + 24, TAPE_MID - 21, 45, 42, speed, 2, spd_col, 36,
                   power_offset=1, suppress_leading=True)
     # Drum: units digit, adjacent digits ~50% visible
-    _rolling_drum(surf, SPD_X + 48, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 24,
-                  show_adjacent=True, adj_slot_h=23)
-    _drum_shade(surf,   SPD_X + 48, TAPE_MID - 28, 17, 56)
+    _rolling_drum(surf, SPD_X + 72, TAPE_MID - 42, 25, 84, speed, 1, spd_col, 36,
+                  show_adjacent=True, adj_slot_h=34)
+    _drum_shade(surf,   SPD_X + 72, TAPE_MID - 42, 25, 84)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
     pygame.draw.polygon(surf, WHITE, pts_s, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
@@ -1235,8 +1241,11 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         pygame.draw.rect(surf, MAGENTA, (ALT_X + ALT_W - 5, _vsy1, 5, _vsy2 - _vsy1))
 
     # Altitude bug — color reflects source: cyan=baro/pressure transducer, magenta=GPS alt (baro failed).
+    # Park bound at HDG_H + 20 so the chevron sits BELOW the top alt-bug
+    # readout box rather than inside it.
     if alt_bug is not None:
-        aby = max(TAPE_TOP, min(TAPE_BOT, ay2(alt_bug)))
+        _alt_bug_park_top = HDG_H + 20
+        aby = max(_alt_bug_park_top, min(TAPE_BOT, ay2(alt_bug)))
         bug = [(ALT_X + ALT_W,      aby - 17),
                (ALT_X + ALT_W - 14, aby - 17), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
                (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 17), (ALT_X + ALT_W, aby + 17)]
@@ -1245,24 +1254,25 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         pygame.draw.polygon(surf, alt_bug_col, bug)
         surf.set_clip(None)
 
-    # Altitude readout box — stepped Veeder-Root style (from SVG spec)
-    # Layout: inner section(42) → drum section(24) → pointer(15) = 81px total
+    # Altitude readout box — Veeder-Root style scaled 1.5× from the SVG spec.
+    # Layout: inner section(63) → drum section(36) → pointer(22) = 121px total.
     R = ALT_X + ALT_W   # right edge = 640
     pts_a = _chamfer([(R,      TAPE_MID),
-                      (R - 15, TAPE_MID - 15), (R - 15, TAPE_MID - 29),
-                      (R - 39, TAPE_MID - 29), (R - 39, TAPE_MID - 15),
-                      (R - 81, TAPE_MID - 15),
-                      (R - 81, TAPE_MID + 15),
-                      (R - 39, TAPE_MID + 15), (R - 39, TAPE_MID + 29),
-                      (R - 15, TAPE_MID + 29), (R - 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7, 8, 9})
+                      (R - 22, TAPE_MID - 22), (R - 22, TAPE_MID - 44),
+                      (R - 58, TAPE_MID - 44), (R - 58, TAPE_MID - 22),
+                      (R - 121, TAPE_MID - 22),
+                      (R - 121, TAPE_MID + 22),
+                      (R - 58, TAPE_MID + 22), (R - 58, TAPE_MID + 44),
+                      (R - 22, TAPE_MID + 44), (R - 22, TAPE_MID + 22)],
+                     {2, 3, 4, 5, 6, 7, 8, 9})
     pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
 
     # VSI readout — drawn BEFORE the outline so the 2px white line frames shared edges
-    _R39  = ALT_X + ALT_W - 39    # 601 = left edge of drum section
-    _nx   = ALT_X                  # 566 — flush with tape left edge
-    _ny   = TAPE_MID + 15          # 244 — flush with inner-box bottom path
-    _nw   = _R39 - ALT_X          # 35  — flush with drum-section left path
-    _nh   = 22                     # extends 7px below outer box bottom for readability
+    _R58  = ALT_X + ALT_W - 58    # left edge of drum section
+    _nx   = ALT_X                  # flush with tape left edge
+    _ny   = TAPE_MID + 22          # flush with inner-box bottom path
+    _nw   = _R58 - ALT_X          # flush with drum-section left path
+    _nh   = 22                     # readability strip below outer box
     if abs(vspeed) > 30:
         _varr = "▲" if vspeed > 0 else "▼"
         _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
@@ -1275,25 +1285,24 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
 
     # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
+    # Geometry scaled 1.5× from the SVG spec to match the new outer box.
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
-    # round() (not int()) so IIR-smoothed alt of e.g. 9999.99 still
-    # picks the 3-drum branch that renders the leading "1" at 10000.
     inner_int  = round(alt_inner)
     if inner_int < 10:                      # alt < 1,000 ft — hundreds only
-        _rolling_drum(surf, R - 80, TAPE_MID - 14, 41, 28, alt_inner, 1, WHITE, 24)
-    elif inner_int < 100:                   # 1,000–9,999 ft — thousands (24pt) + hundreds (22pt)
-        _rolling_drum(surf, R - 66, TAPE_MID - 14, 14, 28, alt_inner, 1, WHITE, 24,
+        _rolling_drum(surf, R - 120, TAPE_MID - 21, 62, 42, alt_inner, 1, WHITE, 36)
+    elif inner_int < 100:                   # 1,000–9,999 ft — thousands + hundreds
+        _rolling_drum(surf, R - 99, TAPE_MID - 21, 21, 42, alt_inner, 1, WHITE, 36,
                       power_offset=1)
-        _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
+        _rolling_drum(surf, R - 78, TAPE_MID - 21, 18, 42, alt_inner, 1, WHITE, 33)
     else:                                   # alt ≥ 10,000 ft
-        _rolling_drum(surf, R - 80, TAPE_MID - 14, 28, 28, alt_inner, 2, WHITE, 22,
+        _rolling_drum(surf, R - 120, TAPE_MID - 21, 42, 42, alt_inner, 2, WHITE, 33,
                       suppress_leading=True, power_offset=1)
-        _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
+        _rolling_drum(surf, R - 78, TAPE_MID - 21, 18, 42, alt_inner, 1, WHITE, 33)
     # Drum: 20-ft labels scroll together, adjacent labels half-visible
-    _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 18,
-                        show_adjacent=True, adj_slot_h=18)
-    _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)
+    _rolling_drum_alt20(surf, R - 57, TAPE_MID - 42, 33, 84, alt, WHITE, 27,
+                        show_adjacent=True, adj_slot_h=27)
+    _drum_shade(surf,   R - 57, TAPE_MID - 42, 33, 84)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
     pygame.draw.polygon(surf, WHITE, pts_a, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
@@ -1357,13 +1366,13 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                 pygame.draw.polygon(surf, (220, 60, 220),
                     [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
-    # Heading box — 66×28px: wider to give G/M outboard room to the right of °.
-    # GPS TRK mode → magenta (matches track-pointer colour). MAG mode → white.
+    # Heading box — 99×42 (scaled 1.5x from 66×28). Triangle pointer
+    # also scaled. GPS TRK mode → magenta. MAG mode → white.
     hdg_col = MAGENTA if hdg_src == "gps" else WHITE
-    bw, bh = 66, 28
+    bw, bh = 99, 42
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
-    th = bw // 3           # triangle base width ≈ 22px
-    td = 14                # fixed triangle depth
+    th = bw // 3           # triangle base width ≈ 33px
+    td = 21                # triangle depth (was 14)
     tx = CX - th // 2      # triangle left base x
     pts_h = _chamfer([(bx,      by2),
                       (bx + bw, by2),
@@ -1378,13 +1387,13 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
     # Three-digit readout — perfectly centred in the box
     num_str  = f"{round(hdg) % 360:03d}"
     full_str = num_str + "\u00b0"
-    f17      = _get_font(17)
-    _text(surf, full_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)
+    f_hdg    = _get_font(26)
+    _text(surf, full_str, 26, hdg_col, cx=CX, cy=by2 + bh // 2)
     # G/M subscript — outboard of the ° glyph, lower-right area of box
-    full_w   = f17.size(full_str)[0]
-    deg_right = CX + full_w // 2 + 2      # 2px outboard of ° right edge
+    full_w   = f_hdg.size(full_str)[0]
+    deg_right = CX + full_w // 2 + 2
     src_lbl  = "G" if hdg_src == "gps" else "M"
-    _text(surf, src_lbl, 8, hdg_col, x=deg_right, y=by2 + bh - 10)
+    _text(surf, src_lbl, 12, hdg_col, x=deg_right, y=by2 + bh - 15)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────
