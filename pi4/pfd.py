@@ -10299,7 +10299,11 @@ def main():
             except OSError:
                 pass
             print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  "
-                  f"flip={flip_ms:.1f}ms  rss={_mem_kb/1024:.1f}MB")
+                  f"flip={flip_ms:.1f}ms  rss={_mem_kb/1024:.1f}MB  "
+                  f"roll={disp.get('roll', 0.0):+.2f} "
+                  f"pitch={disp.get('pitch', 0.0):+.2f} "
+                  f"yaw={disp.get('yaw', 0.0):+.2f} "
+                  f"zupt={int(bool(disp.get('ahrs_zupt', False)))}")
             # Tracemalloc diff against baseline — only when --trace-mem.
             # Skip the first ~30 s so steady-state caches don't pollute
             # the "growing" picture.

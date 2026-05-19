@@ -587,11 +587,12 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
     # blocking a print(), unhandled exception in an async task). The 8 s
     # window is well above any legitimate loop latency but well below pilot
     # patience after a stall.
-    try:
-        _wdt = WDT(timeout=8000)
-    except Exception as e:
-        print(f'[AHRS] WDT init failed ({e}) — running without watchdog')
-        _wdt = None
+    #
+    # WDT is now initialised in main() and fed by a dedicated async task
+    # — see the wdt_loop coroutine below. Sensor_loop no longer touches
+    # the watchdog directly so HTTP-serve or GC pauses in other tasks
+    # can't starve the WDT feed.
+    _wdt = None
     _align_ms        = int(AHRS_ALIGN_DURATION_S * 1000)
     while True:
         # ── AHRS ──
@@ -855,11 +856,6 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                   f'mag={ahrs.cnt_mag} quat={ahrs.cnt_quat} '
                   f'bad_cksum={ahrs.cnt_bad_cksum}')
 
-        # Feed the watchdog every tick so a hung asyncio loop / blocking
-        # print() / unhandled exception triggers a reboot within 8 s.
-        if _wdt is not None:
-            _wdt.feed()
-
         # Periodic explicit GC. MicroPython's incremental GC can starve when
         # the loop allocates heavily (JSON encoding at BROADCAST_HZ, the WT901
         # driver's bytearray slicing). Forcing a collect every ~2 s keeps the
@@ -948,6 +944,22 @@ def _process_stdin_line(line):
                 print(f'$ORIENT_ACK,ERR invalid: {c},{m}')
         else:
             print('$ORIENT_ACK,ERR bad format')
+
+
+async def wdt_loop(wdt):
+    """Dedicated watchdog-feed task. Runs independently of sensor_loop and
+    the HTTP server so a stall in one task can't starve the WDT. Feed
+    cadence is 1 s — well below the 8 s timeout window. If the entire
+    asyncio scheduler ever stops running (true firmware deadlock), even
+    this task stops and the WDT correctly fires."""
+    if wdt is None:
+        return
+    while True:
+        try:
+            wdt.feed()
+        except Exception:
+            pass
+        await asyncio.sleep_ms(1000)
 
 
 async def stdin_cmd_loop():
@@ -1110,10 +1122,20 @@ async def main():
     else:
         print('Mahony filter disabled — using WT901 PKT_ANGLE Euler output')
 
+    # Hardware watchdog — separate task from sensor_loop so HTTP serving
+    # latency or GC pauses can't starve the feed. 8 s timeout window.
+    try:
+        _wdt = WDT(timeout=8000)
+        print('Watchdog enabled (8 s timeout, dedicated feed task)')
+    except Exception as e:
+        print(f'Watchdog init failed ({e}) — running unprotected')
+        _wdt = None
+
     await asyncio.gather(
         sensor_loop(ahrs, gps, baro, sdp, ahrs_filter, sdp_auto_zero),
         start_server(state, port=HTTP_PORT),
         stdin_cmd_loop(),
+        wdt_loop(_wdt),
     )
 
 
