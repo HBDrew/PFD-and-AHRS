@@ -4240,7 +4240,7 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
                                   radius_nm=_OBS_RADIUS_NM,
                                   alt_ft=alt_ft,
                                   window_ft=_OBS_WINDOW_FT)
-    if not nearby:
+    if len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect
@@ -4342,7 +4342,7 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
     nearby = apt_mod.query_nearby(_airports, lat, lon,
                                   radius_nm=AIRPORT_RADIUS_NM)
-    if not nearby:
+    if len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect
@@ -4480,7 +4480,7 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     nearby = rwy_mod.query_nearby(_runways, lat, lon,
                                   radius_nm=max(_RUNWAY_MAX_RANGE_NM,
                                                 _CENTERLINE_RANGE_NM))
-    if not nearby:
+    if len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect

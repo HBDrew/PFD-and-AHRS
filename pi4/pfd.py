@@ -8471,7 +8471,7 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     nearby = rwy_mod.query_nearby(_runways, lat, lon,
                                   radius_nm=max(_RUNWAY_MAX_RANGE_NM,
                                                 _CENTERLINE_RANGE_NM))
-    if not nearby:
+    if len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect
