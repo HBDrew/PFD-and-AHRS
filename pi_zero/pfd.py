@@ -1169,7 +1169,8 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
     spd_box_col = MAGENTA if airspeed_src == "gps" else CYAN
-    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=22, col=spd_box_col)
+    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=HDG_H,
+              font_sz=24, col=spd_box_col)
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
@@ -1216,7 +1217,8 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     # ALT bug button — top strip of alt tape; color matches bug triangle
     alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
     alt_box_col = CYAN if baro_ok else MAGENTA
-    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=22, col=alt_box_col)
+    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=HDG_H,
+              font_sz=22, col=alt_box_col)
 
     # VS bar — 5px wide on the outer (right) edge of the alt tape.
     # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
@@ -4313,12 +4315,16 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
       • Right (under alt tape)   : Baro setting — CYAN=baro sensor, MAGENTA=GPS ALT
     IAS and ALT bug buttons are drawn at the tops of their own tapes.
     """
-    y = HDG_Y + 2
+    # Bottom-row boxes fill the full HDG_H height of the heading strip so
+    # they read cleanly on the small 640x480 Waveshare panel. Matches the
+    # top-row speed / alt bug boxes (also bumped to HDG_H tall).
+    y = HDG_Y
 
     # HDG bug — left side of heading strip; color matches heading bug triangle
     _hdg_btn = f"{round(hdg_bug) % 360:03d}\u00b0" if hdg_bug is not None else "---\u00b0"
     hdg_box_col = MAGENTA if hdg_src == "gps" else CYAN
-    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=22, col=hdg_box_col)
+    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=HDG_H,
+              font_sz=24, col=hdg_box_col)
 
     # Baro — right side of heading strip; CYAN when baro sensor active, MAGENTA when GPS ALT
     # Accept any non-"gps" baro_src as meaning baro sensor is active (firmware uses
@@ -4327,17 +4333,17 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
         baro_unit = disp["ds"].get("baro_unit", "inhg")
         if baro_unit == "hpa":
             baro_lbl = f"{baro_hpa:.0f} hPa"
-            baro_fsz = 12
+            baro_fsz = 20
         else:
             baro_lbl = f"{baro_hpa / 33.8639:.2f} IN"
-            baro_fsz = 12   # wider string needs slightly smaller font
+            baro_fsz = 18    # "29.92 IN" is the widest string, font tuned to fit ALT_W-1
         baro_col = CYAN
     else:
         baro_lbl = "GPS ALT"
-        baro_fsz = 14
+        baro_fsz = 22
         baro_col = MAGENTA
     _cyan_box(surf, baro_lbl,
-              x=ALT_X + 1, y=y, w=ALT_W - 1, h=22, font_sz=baro_fsz, col=baro_col)
+              x=ALT_X + 1, y=y, w=ALT_W - 1, h=HDG_H, font_sz=baro_fsz, col=baro_col)
 
 
 # ── Veil surface for transparent overlay modes (allocated once) ───────────────
@@ -4611,25 +4617,28 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
             if apt.atype in ("M", "L"):
                 pygame.draw.circle(surf, col, (sx, sy), 7, 1)
 
-        # Ident label as a small "road sign" on a post above the symbol.
+        # Ident label as a "road sign" on a post above the symbol.
+        # Doubled in size from the original (font 9 / post 22 / line 1px)
+        # so the 4-letter ICAO ident is readable on the 640x480 panel
+        # without leaning in.
         if dist_nm <= AIRPORT_LABEL_NM:
             lbl = apt.ident
-            font_sz = 9
+            font_sz = 18
             f = _get_font(font_sz, bold=True)
             tw, th = f.size(lbl)
-            sign_w = tw + 8
-            sign_h = th + 4
-            post_h = 22
+            sign_w = tw + 16
+            sign_h = th + 8
+            post_h = 44
             sign_x = sx - sign_w // 2
             sign_y = sy - post_h - sign_h
             if sign_y < ay_r + 2:
                 sign_y = ay_r + 2
-                post_h = max(4, sy - sign_y - sign_h)
-            pygame.draw.line(surf, col, (sx, sy - 6), (sx, sign_y + sign_h), 1)
+                post_h = max(8, sy - sign_y - sign_h)
+            pygame.draw.line(surf, col, (sx, sy - 6), (sx, sign_y + sign_h), 2)
             pygame.draw.rect(surf, (0, 10, 26),
-                             (sign_x, sign_y, sign_w, sign_h), border_radius=2)
+                             (sign_x, sign_y, sign_w, sign_h), border_radius=3)
             pygame.draw.rect(surf, col,
-                             (sign_x, sign_y, sign_w, sign_h), width=1, border_radius=2)
+                             (sign_x, sign_y, sign_w, sign_h), width=2, border_radius=3)
             _text(surf, lbl, font_sz, col, bold=True,
                   cx=sx, cy=sign_y + sign_h // 2)
 
