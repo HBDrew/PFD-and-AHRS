@@ -22,6 +22,7 @@ import utime
 import ujson
 import sys
 import gc
+import machine
 from machine import Pin, WDT
 
 from config import (
@@ -55,6 +56,54 @@ TRIMS_FILE  = 'trims.json'
 MAGDEV_FILE = 'magdev.json'
 MAGCAL_FILE = 'magcal.json'   # hard-iron offsets (mx_off, my_off, mz_off)
 ORIENT_FILE = 'orient.json'
+BOOT_LOG_FILE = 'boot_log.json'  # boot count + last reset cause + last alive ms
+
+# Human-readable map for machine.reset_cause(). Values vary by port; the names
+# we care about are PWRON_RESET (clean power-up), WDT_RESET (watchdog fired,
+# usually means a task starved the scheduler > 8 s), SOFT_RESET (machine.reset()
+# or REPL Ctrl-D), HARD_RESET (RUN pin or external reset).
+_RESET_NAMES = {}
+for _n in ('PWRON_RESET', 'WDT_RESET', 'SOFT_RESET', 'HARD_RESET',
+           'DEEPSLEEP_RESET', 'BROWN_OUT_RESET'):
+    _v = getattr(machine, _n, None)
+    if _v is not None:
+        _RESET_NAMES[_v] = _n
+
+
+def load_boot_log():
+    try:
+        with open(BOOT_LOG_FILE, 'r') as f:
+            d = ujson.loads(f.read())
+        return {
+            'boot_count':       int(d.get('boot_count', 0)),
+            'last_cause':       int(d.get('last_cause', -1)),
+            'last_alive_ms':    int(d.get('last_alive_ms', 0)),
+        }
+    except Exception:
+        return {'boot_count': 0, 'last_cause': -1, 'last_alive_ms': 0}
+
+
+def save_boot_log(d):
+    try:
+        with open(BOOT_LOG_FILE, 'w') as f:
+            f.write(ujson.dumps(d))
+    except Exception as e:
+        print(f'save_boot_log failed: {e}')
+
+
+async def alive_ticker():
+    """Persist current uptime to flash every 5 s. On the next boot, the boot
+    logger reports the value as 'last alive ms' — i.e. how long we ran before
+    we died. Lets us bracket the death to within a 5 s window without needing
+    to be attached to the REPL when it happens."""
+    while True:
+        try:
+            d = load_boot_log()
+            d['last_alive_ms'] = utime.ticks_ms()
+            save_boot_log(d)
+        except Exception:
+            pass
+        await asyncio.sleep(5)
 
 
 def load_trims():
@@ -1008,6 +1057,26 @@ async def main():
     print('AHRS PFD  –  starting up')
     print('─' * 40)
 
+    # Boot-cause logger. machine.reset_cause() returns the reason for THIS
+    # boot — i.e. how the previous run ended. Pair it with the persisted
+    # last-alive timestamp to bracket how long we ran before dying.
+    try:
+        cause = machine.reset_cause()
+        cause_name = _RESET_NAMES.get(cause, f'UNKNOWN({cause})')
+        prev = load_boot_log()
+        boot_n = prev['boot_count'] + 1
+        print(f'Boot #{boot_n}  reset_cause={cause_name}'
+              f'  prev_alive_ms={prev["last_alive_ms"]}')
+        save_boot_log({
+            'boot_count':    boot_n,
+            'last_cause':    cause,
+            'last_alive_ms': 0,
+        })
+        state['boot_count']   = boot_n
+        state['reset_cause']  = cause_name
+    except Exception as e:
+        print(f'Boot logger failed: {e}')
+
     setup_ap()
 
     ahrs = WT901(WT901_UART_ID, WT901_TX_PIN, WT901_RX_PIN, WT901_BAUD)
@@ -1136,6 +1205,7 @@ async def main():
         start_server(state, port=HTTP_PORT),
         stdin_cmd_loop(),
         wdt_loop(_wdt),
+        alive_ticker(),
     )
 
 
