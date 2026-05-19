@@ -92,10 +92,15 @@ def save_boot_log(d):
 
 
 async def alive_ticker():
-    """Persist current uptime to flash every 5 s. On the next boot, the boot
+    """Persist current uptime to flash every 60 s. On the next boot, the boot
     logger reports the value as 'last alive ms' — i.e. how long we ran before
-    we died. Lets us bracket the death to within a 5 s window without needing
-    to be attached to the REPL when it happens."""
+    we died. Lets us bracket the death to within a one-minute window without
+    needing to be attached to the REPL when it happens.
+
+    Interval chosen against RP2040 flash endurance (~100k erase cycles per
+    sector): 60 s gives ≳ 5 years of continuous operation before we'd start
+    worrying about wear. 5 s — what we used during the bring-up soak — would
+    have burned through that in under a week."""
     while True:
         try:
             d = load_boot_log()
@@ -103,7 +108,7 @@ async def alive_ticker():
             save_boot_log(d)
         except Exception:
             pass
-        await asyncio.sleep(5)
+        await asyncio.sleep(60)
 
 
 def load_trims():
