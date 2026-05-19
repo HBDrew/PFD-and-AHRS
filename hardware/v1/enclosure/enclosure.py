@@ -45,23 +45,28 @@ GPS_ANT_H = 20.0        # tallest component: GPS patch antenna above PCB top
 HEADROOM  = 2.5         # clearance above tallest component → cavity ceiling
 
 # ─── Enclosure geometry ─────────────────────────────────────────────
-CLEAR_XY     = 4.5      # clearance between PCB outline and cavity wall
-                        # (needs ≥ 4.5 mm to fit Ø5 corner posts past the
-                        # PCB's 3 mm fillets — see math in commit msg)
+# Single-screw-per-corner design: one long M3 screw enters the lid top,
+# passes through a hanging post under the lid, through the PCB clearance
+# hole, and threads into a standoff rising from the floor. The hanging
+# post + standoff sandwich the PCB; the screw head clamps the lid down
+# onto the wall. Four screws do everything.
+CLEAR_XY     = 2.5      # cavity-wall clearance around PCB (no corner posts
+                        # to fit anymore, so we can run tighter)
 WALL         = 2.0      # side-wall thickness
 FLOOR        = 2.0      # bottom-shell floor thickness
 LID_T        = 2.5      # lid plate thickness
 OUTER_R      = 4.0      # outer corner fillet (cosmetic)
 
-# PCB standoffs (under the four mounting holes)
+# PCB standoffs (under the four PCB mounting holes; bottom shell)
 STANDOFF_H        = 5.0     # PCB sits this high above the floor (header tails)
 STANDOFF_DIA      = 6.0
 STANDOFF_BORE_DIA = 2.7     # M3 self-tap pilot
+STANDOFF_BORE_D   = 6.0     # how deep the thread bore goes into the standoff
 
-# Lid screw posts (corner pillars, run full cavity height)
-POST_DIA      = 5.0
-POST_BORE_DIA = 2.7         # M3 self-tap pilot
-POST_INSET    = POST_DIA / 2 + 0.3   # from outer wall inner face
+# Lid hanging posts (mirror the standoffs — hang DOWN from the lid to
+# clamp the PCB from above)
+LID_POST_DIA      = 6.0     # OD matches the standoff
+LID_POST_BORE_DIA = 3.4     # M3 clearance bore (screw shaft passes through)
 
 # USB micro-B cutout (right-angle boot ~12 × 8 → generous slot)
 USB_W         = 16.0        # along Y (short edge of board)
@@ -91,19 +96,19 @@ OUT_X   = CAV_X + 2 * WALL
 OUT_Y   = CAV_Y + 2 * WALL
 OUT_Z   = FLOOR + CAV_Z         # bottom-shell height (lid sits on top)
 
-# Mounting hole positions in *world* coords (PCB centered in cavity)
+# Mounting hole positions in *world* coords (PCB centered in cavity).
+# The standoffs, the lid hanging posts, and the screw clearance holes all
+# share these XY positions — that's the whole point of the single-screw
+# design.
 HOLES = [
     (hx - BOARD_X / 2, hy - BOARD_Y / 2)
     for (hx, hy) in BOARD_HOLES
 ]
 
-# Lid screw post positions — corners of the cavity, inset from wall
-POST_XY = [
-    (-CAV_X / 2 + POST_INSET, -CAV_Y / 2 + POST_INSET),
-    (+CAV_X / 2 - POST_INSET, -CAV_Y / 2 + POST_INSET),
-    (-CAV_X / 2 + POST_INSET, +CAV_Y / 2 - POST_INSET),
-    (+CAV_X / 2 - POST_INSET, +CAV_Y / 2 - POST_INSET),
-]
+# Length of the hanging post on the lid: spans from lid bottom down to
+# PCB top. Cavity height minus PCB top elevation within the cavity.
+PCB_TOP_Z       = STANDOFF_H + BOARD_T          # PCB top inside the cavity
+LID_POST_LEN    = CAV_Z - PCB_TOP_Z             # distance lid → PCB top
 
 
 # ─── BOTTOM SHELL ────────────────────────────────────────────────────
@@ -124,7 +129,8 @@ def make_bottom():
     )
     shell = shell.cut(cavity_cut)
 
-    # PCB standoffs in the floor (Ø6 × 5 mm tall with self-tap bore)
+    # PCB standoffs in the floor (Ø6 × 5 mm tall with M3 self-tap bore
+    # going down from the top, deep enough for solid thread engagement)
     for (hx, hy) in HOLES:
         standoff = (
             cq.Workplane("XY", origin=(hx, hy, FLOOR))
@@ -132,27 +138,12 @@ def make_bottom():
             .extrude(STANDOFF_H)
         )
         bore = (
-            cq.Workplane("XY", origin=(hx, hy, FLOOR))
+            cq.Workplane("XY",
+                         origin=(hx, hy, FLOOR + STANDOFF_H - STANDOFF_BORE_D))
             .circle(STANDOFF_BORE_DIA / 2)
-            .extrude(STANDOFF_H + 0.5)
+            .extrude(STANDOFF_BORE_D + 0.5)
         )
         shell = shell.union(standoff).cut(bore)
-
-    # Lid-screw corner posts (full cavity height, self-tap from top)
-    for (px, py) in POST_XY:
-        post = (
-            cq.Workplane("XY", origin=(px, py, FLOOR))
-            .circle(POST_DIA / 2)
-            .extrude(CAV_Z)
-        )
-        # Self-tap pilot: 8 mm down from the post top
-        bore_depth = 8.0
-        bore = (
-            cq.Workplane("XY", origin=(px, py, FLOOR + CAV_Z - bore_depth))
-            .circle(POST_BORE_DIA / 2)
-            .extrude(bore_depth + 0.5)
-        )
-        shell = shell.union(post).cut(bore)
 
     # USB cutout on the -X short edge
     usb = (
@@ -192,20 +183,30 @@ def make_lid():
     )
     lid = lid.union(lip)
 
-    # Screw clearance holes at the four corner posts
-    for (px, py) in POST_XY:
-        hole = (
-            cq.Workplane("XY", origin=(px, py, -lip_t - 0.5))
-            .circle(3.4 / 2)        # M3 clearance
-            .extrude(LID_T + lip_t + 1)
+    # Hanging posts at the PCB mounting hole positions — they extend
+    # down from the lid bottom into the cavity, contacting the PCB top
+    # so that tightening the four screws clamps the PCB between each
+    # post and its matching floor standoff.
+    for (hx, hy) in HOLES:
+        post = (
+            cq.Workplane("XY", origin=(hx, hy, -LID_POST_LEN))
+            .circle(LID_POST_DIA / 2)
+            .extrude(LID_POST_LEN)
         )
-        # Countersink at the top for a flush-ish look
+        # Screw clearance bore — runs from above the lid top all the
+        # way through the post so a single long M3 can pass through.
+        bore = (
+            cq.Workplane("XY", origin=(hx, hy, -LID_POST_LEN - 0.5))
+            .circle(LID_POST_BORE_DIA / 2)
+            .extrude(LID_POST_LEN + LID_T + 1)
+        )
+        # Countersink for the screw head, recessed into the lid top
         cs = (
-            cq.Workplane("XY", origin=(px, py, LID_T))
+            cq.Workplane("XY", origin=(hx, hy, LID_T))
             .circle(6.2 / 2)        # M3 head clearance
             .extrude(-1.6)
         )
-        lid = lid.cut(hole).cut(cs)
+        lid = lid.union(post).cut(bore).cut(cs)
 
     # Pneumatic ports (simple through-holes for now — tubes pass through
     # the lid and plug directly into the MS4525 inside)
