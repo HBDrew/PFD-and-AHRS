@@ -5475,11 +5475,26 @@ def main():
 
     if not demo_mode:
         global _sse_client
-        _sse_client = SSEClient(SSE_URL, state, _state_lock)
-        _sse_client.start()
-        disp["cs"]["ahrs_transport"] = "wifi"
-        disp["cs"]["ahrs_port"]      = SSE_URL
-        print(f"[PFD] Connecting to {SSE_URL}")
+        # Try USB serial first — direct connection to the Pico W AHRS,
+        # no Wi-Fi needed. Falls back to SSE over Wi-Fi if no USB device
+        # is enumerated (no Pico W plugged in).
+        try:
+            from serial_client import SerialClient
+            _usb_port = SerialClient.find_port()
+        except ImportError:
+            _usb_port = None
+        if _usb_port:
+            _sse_client = SerialClient(_usb_port, state, _state_lock)
+            _sse_client.start()
+            disp["cs"]["ahrs_transport"] = "usb"
+            disp["cs"]["ahrs_port"]      = _usb_port
+            print(f"[PFD] AHRS via USB serial: {_usb_port}")
+        else:
+            _sse_client = SSEClient(SSE_URL, state, _state_lock)
+            _sse_client.start()
+            disp["cs"]["ahrs_transport"] = "wifi"
+            disp["cs"]["ahrs_port"]      = SSE_URL
+            print(f"[PFD] AHRS via WiFi SSE: {SSE_URL}")
         threading.Thread(target=_poll_wifi_status, daemon=True,
                          name="WiFiPoll").start()
         threading.Thread(target=_poll_ahrs_diag,  daemon=True,
