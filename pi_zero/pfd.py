@@ -658,13 +658,19 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
 
     cx  = ax + aw // 2
     cy  = ay + ah // 2
-    pitch_py = int(pitch * px_per_deg)
 
-    # Horizon passes through (hcx, hcy) tilted by roll
-    hcx = cx
-    hcy = cy - pitch_py
     roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
+
+    # Horizon point: the point on the horizon line closest to the camera
+    # centre. Sign convention must match draw_pitch_ladder's _rv() which
+    # rotates body coords (0, pitch_px) to screen (cx + pitch_px*sin_r,
+    # cy + pitch_px*cos_r) — so the sky/ground polygon, the horizon
+    # line, and the pitch-ladder 0° line all draw at the same point for
+    # any pitch / roll combination.
+    pitch_offset = pitch * px_per_deg
+    hcx = cx + pitch_offset * sin_r
+    hcy = cy + pitch_offset * cos_r
 
     # Extend horizon line well beyond the rect so clipping takes care of edges
     R  = aw + ah
