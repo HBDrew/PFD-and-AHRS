@@ -2098,15 +2098,24 @@ def handle_event(event, demo_mode):
         if mode == "setup":
             idx = setup_hit(x, y)
             if   idx == 5: disp["mode"] = "pfd"
-            elif idx == 0: disp["mode"] = "flight_profile"
-            elif idx == 1: disp["mode"] = "display_setup"
-            elif idx == 2: disp["mode"] = "ahrs_setup"
+            elif idx == 0:
+                _ss_reset_scroll("flight_profile")
+                disp["mode"] = "flight_profile"
+            elif idx == 1:
+                _ss_reset_scroll("display_setup")
+                disp["mode"] = "display_setup"
+            elif idx == 2:
+                _ss_reset_scroll("ahrs_setup")
+                disp["mode"] = "ahrs_setup"
             elif idx == 3:
                 actual = disp["cs"].get("wifi_actual", "")
                 if actual:
                     disp["cs"]["wifi_ssid"] = actual
+                _ss_reset_scroll("connectivity_setup")
                 disp["mode"] = "connectivity_setup"
-            elif idx == 4: disp["mode"] = "system_setup"
+            elif idx == 4:
+                _ss_reset_scroll("system_setup")
+                disp["mode"] = "system_setup"
             return True
 
         # ── Display settings taps ─────────────────────────────────────────
@@ -2879,12 +2888,106 @@ def keyboard_hit(x, y):
 
 _SS_MX  = 12     # side margin
 _SS_Y0  = 52     # first row top (44px title bar + 8px gap)
-_SS_RH  = 62     # row height (62 lets 6 rows fit in 480px)
+_SS_RH  = 62     # row height (62 lets 6 rows fit in 480px without scroll)
 _SS_GAP = 6      # gap between rows
+
+# Per-setup-screen scroll offsets (in pixels). Keyed by disp["mode"].
+# Used when a screen's content exceeds the 436 px of vertical area below
+# the title bar — see _draw_scroll_arrows / _ss_scroll_hit.
+_ss_scroll = {}
+
+# Scroll-arrow button geometry (right edge, vertically anchored).
+_SS_ARROW_W   = 30
+_SS_ARROW_H   = 40
+_SS_ARROW_X   = DISPLAY_W - _SS_ARROW_W - 2
+_SS_ARROW_UP_Y   = 50
+_SS_ARROW_DN_Y   = DISPLAY_H - _SS_ARROW_H - 4
+_SS_TITLE_BAR_H  = 44   # taps in this band belong to the header, not rows
 
 
 def _ss_row_y(i):
-    return _SS_Y0 + i * (_SS_RH + _SS_GAP)
+    """Top-of-row pixel y for row index i, accounting for the active mode's
+    scroll offset. Both the draw and hit-test paths share this helper so
+    they stay in lock-step under scrolling."""
+    base = _SS_Y0 + i * (_SS_RH + _SS_GAP)
+    return base - _ss_scroll.get(disp.get("mode", ""), 0)
+
+
+def _ss_content_h(n_rows):
+    """Total pixel height of n_rows of setting rows (no trailing gap)."""
+    return _SS_Y0 + n_rows * (_SS_RH + _SS_GAP) - _SS_GAP
+
+
+def _ss_max_scroll(n_rows):
+    """Scroll cap so the LAST row's bottom just touches the screen edge."""
+    visible = DISPLAY_H - _SS_TITLE_BAR_H
+    return max(0, _ss_content_h(n_rows) - _SS_TITLE_BAR_H - visible)
+
+
+def _ss_clip_to_content(surf):
+    """set_clip the surface to the content area (below title bar). Returns
+    the previous clip so the caller can restore via set_clip(prev)."""
+    prev = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, _SS_TITLE_BAR_H,
+                              DISPLAY_W, DISPLAY_H - _SS_TITLE_BAR_H))
+    return prev
+
+
+def _draw_scroll_arrows(surf, mode, n_rows):
+    """Draw up/down scroll buttons on the right edge IF the screen
+    overflows.  No-op when n_rows fits comfortably."""
+    max_s = _ss_max_scroll(n_rows)
+    if max_s <= 0:
+        return
+    cur = _ss_scroll.get(mode, 0)
+    up_active = cur > 0
+    dn_active = cur < max_s
+    for arrow_y, direction, active in (
+        (_SS_ARROW_UP_Y, "up",   up_active),
+        (_SS_ARROW_DN_Y, "down", dn_active),
+    ):
+        bg = (0, 30, 50) if active else (10, 14, 22)
+        fg = CYAN        if active else (60, 72, 92)
+        pygame.draw.rect(surf, bg,
+                         (_SS_ARROW_X, arrow_y, _SS_ARROW_W, _SS_ARROW_H),
+                         border_radius=4)
+        pygame.draw.rect(surf, fg,
+                         (_SS_ARROW_X, arrow_y, _SS_ARROW_W, _SS_ARROW_H),
+                         width=2, border_radius=4)
+        cx = _SS_ARROW_X + _SS_ARROW_W // 2
+        cy = arrow_y + _SS_ARROW_H // 2
+        s  = 9
+        if direction == "up":
+            pts = [(cx, cy - s), (cx - s, cy + s), (cx + s, cy + s)]
+        else:
+            pts = [(cx, cy + s), (cx - s, cy - s), (cx + s, cy - s)]
+        pygame.draw.polygon(surf, fg, pts)
+
+
+def _ss_scroll_hit(x, y, mode, n_rows):
+    """If (x, y) hits a scroll-arrow button, update _ss_scroll[mode] and
+    return True (caller should NOT fire any row-level action this tap).
+    Returns False otherwise."""
+    max_s = _ss_max_scroll(n_rows)
+    if max_s <= 0:
+        return False
+    if not (_SS_ARROW_X <= x <= _SS_ARROW_X + _SS_ARROW_W):
+        return False
+    cur = _ss_scroll.get(mode, 0)
+    step = _SS_RH + _SS_GAP   # exactly one row per tap
+    if _SS_ARROW_UP_Y <= y <= _SS_ARROW_UP_Y + _SS_ARROW_H:
+        _ss_scroll[mode] = max(0, cur - step)
+        return True
+    if _SS_ARROW_DN_Y <= y <= _SS_ARROW_DN_Y + _SS_ARROW_H:
+        _ss_scroll[mode] = min(max_s, cur + step)
+        return True
+    return False
+
+
+def _ss_reset_scroll(mode):
+    """Clear scroll for the named mode — call when entering a setup screen
+    so the user always starts at the top."""
+    _ss_scroll.pop(mode, None)
 
 
 def _screen_header(surf, title):
@@ -3085,6 +3188,7 @@ def _trim_stepper(surf, bx, by, bw, bh, val, key):
 
 def draw_ahrs_setup(surf, ss):
     _screen_header(surf, "AHRS / SENSORS")
+    _prev_clip = _ss_clip_to_content(surf)
 
     # Row 0: Pitch trim — 0.1° per step (was 0.5°)
     bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction (0.1° / tap)")
@@ -3183,10 +3287,20 @@ def draw_ahrs_setup(surf, ss):
         else:
             _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, active)
 
+    surf.set_clip(_prev_clip)
+    _draw_scroll_arrows(surf, "ahrs_setup", 7)
+
 
 def ahrs_setup_hit(x, y, ss):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
+    # Scroll-arrow taps consume the event before any row hit-test.
+    if _ss_scroll_hit(x, y, "ahrs_setup", 7):
+        return None
+    # Don't let scrolled-up rows whose y now falls inside the title bar
+    # absorb taps that the user meant for the header.
+    if y < _SS_TITLE_BAR_H:
+        return None
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
