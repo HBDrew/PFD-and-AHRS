@@ -131,6 +131,11 @@ if HAS_NUMPY:
 _TINT_SYNC_MAX_NM = 40           # range cap for synchronous builds
 _TINT_RENDER_MAX_NM = 80         # range cap for rendering the tint at all
                                  # — above this, SRTM I/O is too heavy
+
+# Below this groundspeed, GPS track is noisy / arbitrary — the inset
+# rotation falls back to magnetic heading so it doesn't jitter or jump
+# while taxiing or holding short.  Matches HDG_TRK_MIN_KT in pfd.py.
+_TRK_MIN_KT = 3.0
 _tint_async_lock = threading.Lock()
 _tint_pending: set = set()       # keys currently being built on a worker
 _tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
@@ -422,12 +427,14 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     pygame.draw.rect(surf, _BG, rect)
 
     # Map rotation: track-up rotates so current track points up.
-    # Fall back to magnetic heading when GPS track is None or 0 — that's
-    # the typical "stationary, GPS hasn't computed a track yet" state.
+    # Fall back to magnetic heading whenever GPS groundspeed is below
+    # the track-valid threshold (~3 kt) — at low GS, GPS track is
+    # noisy / stale / arbitrary and would make the inset jitter or jump.
     # Using hdg in that case keeps the inset rotating with the nose so
-    # the toggle is visibly different from north-up even before takeoff.
+    # the toggle is still visibly different from north-up before takeoff.
     if orient == "trk":
-        if track_deg is None or track_deg == 0.0:
+        if (track_deg is None or track_deg == 0.0
+                or (gs_kt or 0.0) < _TRK_MIN_KT):
             rot_deg = float(hdg_deg or 0.0)
         else:
             rot_deg = float(track_deg)

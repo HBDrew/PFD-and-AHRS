@@ -7327,10 +7327,15 @@ def draw_mfd(surf, connected=True, data_stale=False):
         else:
             ete = "--:--"
         # 7 columns: GS / TRK / ALT / WPT / BTW / DIST / ETE
+        # TRK is dashed below the track-valid GS threshold — at low GS
+        # the GPS-computed track is noisy / arbitrary and a 3-digit
+        # readout would mislead.
+        trk_str = (f"{int(round(track)) % 360:03d}°"
+                   if gs_kt >= HDG_TRK_MIN_KT else "---°")
         n_cols = 7
         col_w = strip_w // n_cols
         _col(col_w // 2 + col_w * 0, "GS",   f"{int(round(gs_kt)):3d}")
-        _col(col_w // 2 + col_w * 1, "TRK",  f"{int(round(track)) % 360:03d}°")
+        _col(col_w // 2 + col_w * 1, "TRK",  trk_str)
         _col(col_w // 2 + col_w * 2, "ALT",  f"{int(round(alt)):5d}")
         _col(col_w // 2 + col_w * 3, "WPT",  d2["ident"], val_col=MAGENTA)
         _col(col_w // 2 + col_w * 4, "BTW",  f"{int(round(brg)) % 360:03d}°", val_col=MAGENTA)
@@ -7338,10 +7343,12 @@ def draw_mfd(surf, connected=True, data_stale=False):
         _col(col_w // 2 + col_w * 6, "ETE",  ete, val_col=MAGENTA)
     else:
         # No D2 active: 3 columns spanning the strip.
+        trk_str = (f"{int(round(track)) % 360:03d}°"
+                   if gs_kt >= HDG_TRK_MIN_KT else "---°")
         n_cols = 3
         col_w = strip_w // n_cols
         _col(col_w // 2 + col_w * 0, "GS",  f"{int(round(gs_kt)):3d} KT")
-        _col(col_w // 2 + col_w * 1, "TRK", f"{int(round(track)) % 360:03d}°")
+        _col(col_w // 2 + col_w * 1, "TRK", trk_str)
         _col(col_w // 2 + col_w * 2, "ALT", f"{int(round(alt)):5d} FT")
 
     # ── MFD chrome buttons ─────────────────────────────────────────────
