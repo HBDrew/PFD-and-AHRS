@@ -3104,10 +3104,10 @@ def handle_event(event, demo_mode):
                 cur = int(disp["ds"].get("map_zoom_nm", 10))
                 new = _mfd_map.zoom_out(
                     cur, allow_auto=bool(disp.get("nav", {}).get("ident")))
-                # Pi Zero 2W can't sustain the SRTM I/O + tint rebuild past
-                # 20 nm — boot-hang and reboot if a saved range >20 carries
-                # forward.  Clamp on every zoom-out, and again on load.
-                if new > MFD_MAX_ZOOM_NM:
+                # AUTO is 0 — let it through.  Otherwise clamp to the
+                # cap so a saved range never exceeds what pi_zero can
+                # render safely.
+                if new > 0 and new > MFD_MAX_ZOOM_NM:
                     new = MFD_MAX_ZOOM_NM
                 disp["ds"]["map_zoom_nm"] = new
                 _settings.mark_dirty()
@@ -7266,13 +7266,12 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
 import moving_map as _mfd_map   # noqa: E402
 
-# Pi Zero 2W tops out at 40 nm — at 80+ nm the SRTM tile bbox can pull
-# in more tiles than the cache holds, and the airport count past 40 nm
-# adds no value (moving_map gates airport draws there anyway).  The
-# render path has been tuned (smaller _TINT_N, async tint past 5 nm,
-# airport cap at 40 rows + type filter by zoom band) so 40 nm is
-# stable on bench hardware.
-MFD_MAX_ZOOM_NM = 40
+# Match pi4 inset zoom range — 1, 2, 5, 10, 20, 40, 80, 160 nm plus AUTO.
+# Past 40 nm the moving_map gates out tint, airports, and obstacles, so
+# the only layers rendering at 80/160 are state lines + D2 line + own-
+# ship — feather-light, no SRTM I/O, no surface alloc.  AUTO scales to
+# the active direct-to waypoint (or stays at 80 with no D2).
+MFD_MAX_ZOOM_NM = 160
 
 _MFD_PFD_BTN_W = 100
 _MFD_PFD_BTN_H = 36
@@ -7447,6 +7446,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
         # versions to avoid overlap with the D2 / PFD buttons + data strip.
         font=_mfd_get_apt_font(),
         draw_corner_labels=False,
+        # State lines: cheap (bbox-culled polyline blits) and only drawn
+        # at >= 20 nm where they're the primary navigational context
+        # past the airport / terrain coverage caps.
+        state_lines=_state_lines,
         # Aircraft position so the own-ship chevron stays at the real
         # GPS fix when the user has panned the map elsewhere.
         own_lat=ac_lat,
@@ -8091,7 +8094,8 @@ def main():
     # Clamp persisted map zoom — a saved value >20 nm would have crashed
     # the Pi on the first MFD render, so guarantee we boot at a safe range.
     saved_zoom = int(disp["ds"].get("map_zoom_nm", 10))
-    if saved_zoom > MFD_MAX_ZOOM_NM or saved_zoom <= 0:
+    # AUTO (0) is valid; only clamp negative or above-cap values.
+    if saved_zoom > MFD_MAX_ZOOM_NM or saved_zoom < 0:
         disp["ds"]["map_zoom_nm"] = min(MFD_MAX_ZOOM_NM, 10)
     _settings.start(disp, SETTINGS_PATH)
 
