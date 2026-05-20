@@ -91,6 +91,7 @@ disp["numpad_prev"]   = "pfd"       # mode to return to on cancel/enter
 disp["kbd_target"]    = ""          # field being edited in keyboard mode
 disp["kbd_buf"]       = ""          # text entered so far
 disp["kbd_prev"]      = "flight_profile"  # mode to return to on DONE/CANCEL
+disp["kbd_error"]     = ""          # error string shown on the keyboard (nav: UNKNOWN WAYPOINT)
 disp["fp"] = {                      # flight-profile values
     "tail":   "N12345", "actype": "C172S",
     "vs0":    VS0,  "vs1": VS1,  "vfe": VFE,
@@ -2547,6 +2548,38 @@ def handle_event(event, demo_mode):
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'ok':             # DONE
                     buf = disp["kbd_buf"].strip()
+                    if target == "nav_ident":
+                        # Direct-to entry — three paths (pi4 parity):
+                        #   1. Empty buf + active waypoint → re-confirm
+                        #      so the magenta line redraws from current pos.
+                        #   2. Typed buf resolves to a known airport →
+                        #      open the nav_confirm modal.
+                        #   3. Typed buf doesn't resolve → stay on the
+                        #      keyboard with an UNKNOWN WAYPOINT error.
+                        cur_ident = disp.get("nav", {}).get("ident", "")
+                        if buf:
+                            candidate = buf.upper()
+                            if _nav_lookup_ident(candidate):
+                                disp["nav_confirm_ident"] = candidate
+                                disp["nav_confirm_prev"]  = disp["kbd_prev"]
+                                disp["kbd_buf"] = ""
+                                disp["kbd_error"] = ""
+                                disp["mode"] = "nav_confirm"
+                            else:
+                                disp["kbd_error"] = f"UNKNOWN WAYPOINT  {candidate}"
+                            return True
+                        if cur_ident:
+                            disp["nav_confirm_ident"] = cur_ident
+                            disp["nav_confirm_prev"]  = disp["kbd_prev"]
+                            disp["kbd_buf"] = ""
+                            disp["kbd_error"] = ""
+                            disp["mode"] = "nav_confirm"
+                            return True
+                        # Empty buf with no active waypoint → close.
+                        disp["kbd_buf"]   = ""
+                        disp["kbd_error"] = ""
+                        disp["mode"] = disp["kbd_prev"]
+                        return True
                     if buf:
                         if disp["kbd_prev"] == "connectivity_setup":
                             disp["cs"][target] = buf
@@ -2618,13 +2651,38 @@ def handle_event(event, demo_mode):
 
         # ── MFD taps (display_mode == "mfd" while mode == "pfd") ──────────
         if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
-            # Tap the top-right "PFD" button to flip back to the PFD view.
             if _mfd_pfd_btn_hit(x, y):
+                # Flip back to the PFD view without going through SETUP.
                 disp["display_mode"] = "pfd"
+                _settings.mark_dirty()
+                return True
+            if _mfd_d2_btn_hit(x, y):
+                # Open the existing keyboard for waypoint entry.
+                _mfd_open_d2_keyboard()
+                return True
+            if _mfd_zoom_in_hit(x, y):
+                cur = int(disp["ds"].get("map_zoom_nm", 10))
+                disp["ds"]["map_zoom_nm"] = _mfd_map.zoom_in(cur)
+                _settings.mark_dirty()
+                return True
+            if _mfd_zoom_out_hit(x, y):
+                cur = int(disp["ds"].get("map_zoom_nm", 10))
+                disp["ds"]["map_zoom_nm"] = _mfd_map.zoom_out(
+                    cur, allow_auto=bool(disp.get("nav", {}).get("ident")))
                 _settings.mark_dirty()
                 return True
 
         # ── PFD taps ──────────────────────────────────────────────────────
+        # Tap on the CDI strip → open the keyboard for waypoint entry.
+        # Matches pi4 behaviour; the keyboard ENTER handler routes through
+        # the nav_confirm modal.
+        if (mode == "pfd"
+                and disp.get("display_mode", "pfd") == "pfd"
+                and disp.get("gps_ok", False)
+                and _cdi_hit(x, y)):
+            _mfd_open_d2_keyboard()
+            return True
+
         # Tap on SIM watermark → open sim controls overlay
         if _sim_state is not None and mode == "pfd":
             if CX - 30 <= x <= CX + 30 and CY - 30 <= y <= CY - 10:
@@ -3761,6 +3819,95 @@ def mag_cal_hit(x, y):
             if btn_xs[i] <= x <= btn_xs[i] + btn_w:
                 return action
     return "noop"
+
+
+# ── CDI strip helpers (great-circle math + draw) ────────────────────────────
+
+_CDI_FULL_SCALE_NM = 1.0      # ±1 nm full-scale en-route / D2
+_EARTH_R_NM        = 3440.065 # Earth mean radius (nautical miles)
+
+
+def _nav_geo_dist_brg(la1, lo1, la2, lo2):
+    """Great-circle distance (nm) and initial bearing (deg) from 1 to 2."""
+    phi1 = math.radians(la1); phi2 = math.radians(la2)
+    dphi = math.radians(la2 - la1); dlam = math.radians(lo2 - lo1)
+    a = (math.sin(dphi * 0.5) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam * 0.5) ** 2)
+    dist = 2.0 * _EARTH_R_NM * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    y = math.sin(dlam) * math.cos(phi2)
+    x = (math.cos(phi1) * math.sin(phi2)
+         - math.sin(phi1) * math.cos(phi2) * math.cos(dlam))
+    brg = math.degrees(math.atan2(y, x)) % 360.0
+    return dist, brg
+
+
+def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
+    """Signed great-circle cross-track distance (nm).  + = right of course."""
+    d13, brg13 = _nav_geo_dist_brg(act_lat, act_lon, cur_lat, cur_lon)
+    _,   brg12 = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
+    if d13 < 1e-6:
+        return 0.0
+    return _EARTH_R_NM * math.asin(
+        math.sin(d13 / _EARTH_R_NM) * math.sin(math.radians(brg13 - brg12))
+    )
+
+
+def draw_cdi(surf):
+    """Course Deviation Indicator strip above the heading readout box.
+    Always painted when GPS_OK so the strip is tappable; bare bar + a
+    "DIRECT →" affordance when no waypoint is active so the pilot has
+    a fixed entry point for the keyboard."""
+    nv = disp.get("nav", {}) or {}
+    ident = nv.get("ident", "")
+    have_wpt = bool(ident)
+
+    bar_w = max(140, int(DISPLAY_W * 0.32))
+    bar_h = 6
+    bar_y = HDG_Y - 56
+    bar_x = CX - bar_w // 2
+
+    plate = pygame.Surface((bar_w + 36, 48), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 190))
+    surf.blit(plate, (bar_x - 18, bar_y - 34))
+
+    pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
+                     border_radius=2)
+    for frac in (-1.0, -0.5, 0.0, 0.5, 1.0):
+        tx = bar_x + int((frac + 1.0) * 0.5 * bar_w)
+        if frac == 0.0:
+            pygame.draw.line(surf, WHITE,
+                             (tx, bar_y - 5), (tx, bar_y + bar_h + 5), 2)
+        else:
+            pygame.draw.circle(surf, (180, 200, 220),
+                               (tx, bar_y + bar_h // 2), 2)
+
+    if have_wpt:
+        lat = disp.get("lat", 0.0); lon = disp.get("lon", 0.0)
+        wpt_lat = float(nv["lat"]); wpt_lon = float(nv["lon"])
+        dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
+        act_lat = float(nv.get("act_lat", lat))
+        act_lon = float(nv.get("act_lon", lon))
+        xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+        full_scale = _CDI_FULL_SCALE_NM
+        xtk_clamped = max(-1.0, min(1.0, xtk / full_scale))
+        dx = -int(xtk_clamped * (bar_w / 2))
+        dcx = CX + dx
+        dcy = bar_y + bar_h // 2
+        dpts = [(dcx, dcy - 10), (dcx + 9, dcy), (dcx, dcy + 10), (dcx - 9, dcy)]
+        pygame.draw.polygon(surf, MAGENTA, dpts)
+        readout = f"{ident}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
+        _text(surf, readout, 18, MAGENTA, bold=True, cx=CX, cy=bar_y - 22)
+    else:
+        _text(surf, "DIRECT  →", 18, MAGENTA, bold=True, cx=CX, cy=bar_y - 22)
+
+
+def _cdi_hit(x, y):
+    """Tap on the CDI strip opens the keyboard for waypoint entry."""
+    bar_w = max(140, int(DISPLAY_W * 0.32))
+    bar_y = HDG_Y - 56
+    bar_x = CX - bar_w // 2
+    return (bar_x - 18 <= x <= bar_x + bar_w + 18 and
+            bar_y - 34 <= y <= bar_y + 14)
 
 
 # ── Direct-to navigation + confirm modal ─────────────────────────────────────
@@ -6305,6 +6452,29 @@ import moving_map as _mfd_map   # noqa: E402
 
 _MFD_PFD_BTN_W = 100
 _MFD_PFD_BTN_H = 36
+_MFD_D2_BTN_W  = 100
+_MFD_D2_BTN_H  = 36
+_MFD_ZOOM_BTN  = 56     # square zoom-in / zoom-out buttons
+
+
+def _mfd_d2_rect():
+    pad = 6
+    return (pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H)
+
+
+def _mfd_zoom_in_rect():
+    """Zoom-in (+) button, bottom-right."""
+    pad = 6
+    return (DISPLAY_W - _MFD_ZOOM_BTN - pad,
+            DISPLAY_H - _MFD_ZOOM_BTN - pad,
+            _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
+
+
+def _mfd_zoom_out_rect():
+    """Zoom-out (-) button, bottom-left."""
+    pad = 6
+    return (pad, DISPLAY_H - _MFD_ZOOM_BTN - pad,
+            _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
 
 
 def _mfd_get_range_label():
@@ -6353,16 +6523,78 @@ def draw_mfd(surf, connected=True, data_stale=False):
         direct_to=d2,
         airport_types_visible=apt_types,
         gs_kt=gs_kt,
-        range_label=_mfd_get_range_label(),
+        # Skip passing a font — the moving-map's built-in corner labels
+        # would be hidden under the D2 / PFD chrome buttons.  pi_zero
+        # renders all labels in the bottom data strip below instead.
     )
 
-    # Mini PFD button — tap to flip back to the PFD view without going
-    # through the SETUP screen.  Top-right corner so it doesn't sit on
-    # likely-tapped map area.
+    # ── Bottom data strip ─────────────────────────────────────────────
+    # Two-line data band between the corner zoom buttons.
+    #   Row 1: GS · TRK · RNG · ORIENT (always shown)
+    #   Row 2: ALT · (D2 ident · BRG · DIST · ETE when active)
     pad = 6
-    bx = DISPLAY_W - _MFD_PFD_BTN_W - pad
-    by = pad
-    _action_btn(surf, bx, by, _MFD_PFD_BTN_W, _MFD_PFD_BTN_H, "PFD", "normal", r=5)
+    strip_h  = _MFD_ZOOM_BTN
+    strip_y  = DISPLAY_H - strip_h - pad
+    strip_x0 = _MFD_ZOOM_BTN + pad * 2
+    strip_x1 = DISPLAY_W - _MFD_ZOOM_BTN - pad * 2
+    plate = pygame.Surface((strip_x1 - strip_x0, strip_h), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 180))
+    surf.blit(plate, (strip_x0, strip_y))
+    pygame.draw.rect(surf, (60, 80, 110),
+                     (strip_x0, strip_y, strip_x1 - strip_x0, strip_h),
+                     width=1, border_radius=4)
+    rng_lbl = _mfd_get_range_label()
+    orient_lbl = "TRK↑" if orient == "trk" else "N↑"
+    # Row 1
+    _text(surf, f"GS  {int(round(gs_kt)):3d} KT", 16, WHITE, bold=True,
+          x=strip_x0 + 12, y=strip_y + 6)
+    _text(surf, f"TRK {int(round(track)) % 360:03d}°", 16, WHITE, bold=True,
+          x=strip_x0 + 130, y=strip_y + 6)
+    _text(surf, f"RNG {rng_lbl}", 16, (180, 200, 220), bold=True,
+          x=strip_x0 + 250, y=strip_y + 6)
+    _text(surf, orient_lbl, 16, (180, 200, 220), bold=True,
+          x=strip_x0 + 360, y=strip_y + 6)
+    # Row 2
+    _text(surf, f"ALT  {int(round(alt)):5d} FT", 16, WHITE, bold=True,
+          x=strip_x0 + 12, y=strip_y + 28)
+    if d2 is not None:
+        dist_nm, brg = _nav_geo_dist_brg(lat, lon, d2["lat"], d2["lon"])
+        # ETE — needs ground speed; show dashes below taxi threshold.
+        if gs_kt >= 3.0 and dist_nm > 0.0:
+            hours = dist_nm / gs_kt
+            if hours < 1.0:
+                mm, ss = divmod(int(round(hours * 3600)), 60)
+                ete = f"{mm}:{ss:02d}"
+            else:
+                h_, rem = divmod(int(round(hours * 3600)), 3600)
+                mm, _ = divmod(rem, 60)
+                ete = f"{h_}:{mm:02d}"
+        else:
+            ete = "--:--"
+        _text(surf, f"→ {d2['ident']}", 18, MAGENTA, bold=True,
+              x=strip_x0 + 150, y=strip_y + 26)
+        _text(surf,
+              f"{int(round(brg)) % 360:03d}°  {dist_nm:.1f} NM  ETE {ete}",
+              16, MAGENTA, bold=True,
+              x=strip_x0 + 250, y=strip_y + 28)
+
+    # ── MFD chrome buttons ─────────────────────────────────────────────
+    # D2 (top-left), PFD (top-right), zoom-out (bottom-left, "−"),
+    # zoom-in (bottom-right, "+").
+    pad = 6
+    # Top-right PFD button
+    _action_btn(surf, DISPLAY_W - _MFD_PFD_BTN_W - pad, pad,
+                _MFD_PFD_BTN_W, _MFD_PFD_BTN_H, "PFD", "normal", r=5)
+    # Top-left D2 button — magenta-styled when D2 is active
+    d2_style = "warn" if d2 is not None else "normal"
+    d2_label = (d2["ident"] if d2 else "D2")
+    _action_btn(surf, pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H,
+                f"→ {d2_label}", d2_style, r=5)
+    # Zoom buttons (bottom corners)
+    zo_x, zo_y, zo_w, zo_h = _mfd_zoom_out_rect()
+    zi_x, zi_y, zi_w, zi_h = _mfd_zoom_in_rect()
+    _action_btn(surf, zo_x, zo_y, zo_w, zo_h, "−", "normal", r=8)
+    _action_btn(surf, zi_x, zi_y, zi_w, zi_h, "+", "normal", r=8)
 
     # No-link / stale-data badges
     if not connected or data_stale:
@@ -6378,6 +6610,33 @@ def _mfd_pfd_btn_hit(x, y):
     by = pad
     return (bx <= x <= bx + _MFD_PFD_BTN_W and
             by <= y <= by + _MFD_PFD_BTN_H)
+
+
+def _mfd_d2_btn_hit(x, y):
+    bx, by, bw, bh = _mfd_d2_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_zoom_in_hit(x, y):
+    bx, by, bw, bh = _mfd_zoom_in_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_zoom_out_hit(x, y):
+    bx, by, bw, bh = _mfd_zoom_out_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_open_d2_keyboard():
+    """Open the existing keyboard with kbd_target == 'nav_ident' so the
+    pilot can type an ICAO ident.  ENTER routes through the nav_confirm
+    modal."""
+    disp["kbd_target"] = "nav_ident"
+    disp["kbd_prev"]   = "pfd"          # MFD runs under mode == "pfd"
+    disp["kbd_buf"]    = ""
+    disp["kbd_error"]  = ""
+    disp["kbd_shift"]  = False
+    disp["mode"]       = "keyboard"
 
 
 # ── Main render function ──────────────────────────────────────────────────────
@@ -6584,6 +6843,11 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 11. Tap-buttons for heading bug, baro, and alt bug (color = data source)
     draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
                      hdg_src=hdg_src, baro_ok=baro_ok)
+
+    # 12. CDI strip — only when GPS is locked; bare strip + DIRECT prompt
+    # when no waypoint is active so the strip is always tappable.
+    if gps_ok:
+        draw_cdi(surf)
 
     # 12. Demo / SIM watermark
     if demo_mode:
