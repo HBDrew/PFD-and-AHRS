@@ -6616,9 +6616,11 @@ def draw_mfd(surf, connected=True, data_stale=False):
     nav = disp.get("nav", {})
     d2  = None
     if nav.get("ident"):
-        d2 = {"lat": float(nav.get("lat", 0.0)),
-              "lon": float(nav.get("lon", 0.0)),
-              "ident": nav.get("ident", "")}
+        d2 = {"lat":     float(nav.get("lat", 0.0)),
+              "lon":     float(nav.get("lon", 0.0)),
+              "act_lat": float(nav.get("act_lat", 0.0)),
+              "act_lon": float(nav.get("act_lon", 0.0)),
+              "ident":   nav.get("ident", "")}
     gs_kt = float(disp.get("speed", 0.0))
     apt_types = {
         "S": disp["ad"].get("show_public", True),
