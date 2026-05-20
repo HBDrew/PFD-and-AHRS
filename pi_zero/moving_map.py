@@ -387,6 +387,21 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
             args=(srtm_dir, water_dir, q_lat, q_lon,
                   range_nm, oversize, key),
             daemon=True, name="MapTintBuild").start()
+    # Async build in flight — instead of returning (None, None) and
+    # flashing "BUILDING…", reuse the most recent cached tint at the
+    # same range / size / oversize / water-mode.  Visually the user
+    # sees the previous tint centered slightly off the aircraft for
+    # the duration of the build (≤2.5 nm offset at 25 % quantisation);
+    # the new tint slides in seamlessly once the worker finishes.
+    # range_nm and size/oversize/water_dir must match — different
+    # zoom levels render at different target_px so they're not
+    # interchangeable as fallback surfaces.
+    for cached_key in reversed(_tint_cache):
+        if (cached_key[2] == key[2]   # range_nm
+                and cached_key[3] == key[3]   # size_px
+                and cached_key[4] == key[4]   # oversize
+                and cached_key[5] == key[5]): # water_dir bool
+            return _tint_cache[cached_key]
     return None, None
 
 
