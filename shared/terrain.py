@@ -89,6 +89,23 @@ import collections as _collections
 _TILE_CACHE_MAX = 16
 _tile_cache: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
 
+# Optional resolution gate.  pi_zero/pfd.py calls
+# terrain.set_resolution_preference("srtm3") at startup so the tile
+# loader treats SRTM1 .hgt files as missing.  This avoids loading
+# 52 MB float32 arrays per tile on a 512 MB Pi Zero 2W when the MFD
+# tint only samples ~2300 elevation points anyway.  pi4 leaves this
+# at "any" so the full-resolution SVT scene still uses SRTM1 when
+# present.
+_PREFER_RESOLUTION = "any"   # "any" | "srtm3"
+
+
+def set_resolution_preference(pref: str):
+    """Configure which SRTM resolutions the tile loader is willing to
+    read.  ``"any"`` (default) opens any .hgt file regardless of size;
+    ``"srtm3"`` skips the 25 MB SRTM1 files and only reads SRTM3."""
+    global _PREFER_RESOLUTION
+    _PREFER_RESOLUTION = pref
+
 
 def _tile_key(lat_int: int, lon_int: int) -> str:
     ns = 'N' if lat_int >= 0 else 'S'
@@ -126,6 +143,13 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
     # Detect resolution from file size (2 bytes per sample)
     file_bytes = os.path.getsize(path)
     if file_bytes == SRTM1_SAMPLES * SRTM1_SAMPLES * 2:
+        # Honour the caller's resolution preference — on memory-tight
+        # systems (pi_zero) we refuse to load SRTM1 entirely and let the
+        # caller treat the tile as missing.  Cache the None so we don't
+        # re-stat the file on every sample.
+        if _PREFER_RESOLUTION == "srtm3":
+            _cache_put(key, None)
+            return None
         n_samples = SRTM1_SAMPLES
     else:
         n_samples = SRTM3_SAMPLES  # default / fallback

@@ -155,31 +155,19 @@ if HAS_NUMPY:
 # very-zoomed-in render.  Wider zooms go async with a "BUILDING…" hint.
 _TINT_SYNC_MAX_NM = 5            # range cap for synchronous builds
 _TINT_RENDER_MAX_NM = 40         # range cap for rendering the tint at all.
-                                 # With _TINT_MAX_TARGET_PX = 256 the
-                                 # per-surface cost drops from ~3.4 MB
-                                 # to ~260 KB, so we can render tint at
-                                 # the full zoom range that the airport
-                                 # layer also supports.  Past 40 nm the
-                                 # SRTM tile bbox still grows enough to
-                                 # be risky on the Pi's 512 MB; the
-                                 # vector layers (airports / D2 / state
-                                 # lines) still render past 40 nm.
+                                 # With terrain.set_resolution_preference
+                                 # ("srtm3") forced on at startup, the
+                                 # SRTM tile bbox no longer pulls 52 MB
+                                 # SRTM1 files into RAM — even at 40 nm
+                                 # zoom the in-memory tile data stays
+                                 # bounded (~25 MB for 4 SRTM3 tiles).
+                                 # Vector layers still render past 40 nm
+                                 # if the user steps zoom up; the tint
+                                 # just stops appearing there.
 _tint_async_lock = threading.Lock()
 _tint_pending: set = set()       # keys currently being built on a worker
 _tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
 _TINT_READY_MAX = 6              # cap above ensures stale results don't pile up
-
-# Hard cap on the tint surface side length, in pixels.  pi4 lets the
-# render scale up to ~size_px * oversize (up to ~928² = ~3.4 MB per
-# surface, ~7 MB with the clearance overlay, plus rotation buffers).
-# On a 512 MB Pi Zero 2W that tipped into OOM at 20-40 nm zoom — the
-# tile bbox also pulls multiple multi-MB SRTM tiles into cache at
-# wider zooms.  Capping the upscale destination at 256² keeps each
-# tint surface to ~260 KB and lets us render terrain past 10 nm
-# without rebooting.  The 48-sample source grid is unchanged, so the
-# pixels-per-NM math the renderer uses stays correct; the final blit
-# uses pygame's normal bilinear stretch to fill the inset.
-_TINT_MAX_TARGET_PX = 256
 
 # Below this groundspeed, GPS track is noisy / arbitrary — the map
 # rotation falls back to magnetic heading so the inset doesn't jitter
@@ -276,7 +264,7 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     """Synchronous build path — used for close-range tints where the I/O
     cost is bounded by the SRTM tile cache. Wide ranges go through the
     async path in _tint_get instead."""
-    target_px = min(_TINT_MAX_TARGET_PX, max(8, int(size_px * oversize)))
+    target_px = max(8, int(size_px * oversize))
     if not HAS_NUMPY:
         n = _TINT_N
         tile = pygame.Surface((n, n))
@@ -362,7 +350,7 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
         _tint_cache[key] = entry
         return entry
 
-    target_px = min(_TINT_MAX_TARGET_PX, max(8, int(size_px * oversize)))
+    target_px = max(8, int(size_px * oversize))
 
     # If a background worker has finished a build for this key, finalize
     # it to a pygame surface here on the main thread and cache the result.
@@ -623,7 +611,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 # memory budget at wider zooms.
                 overlay = _build_alert_overlay(
                     elev_grid, alt_ft,
-                    min(_TINT_MAX_TARGET_PX, max(w, h)))
+                    max(w, h))
                 if overlay is not None:
                     if orient == "trk" and rot_deg != 0.0:
                         overlay_r = pygame.transform.rotate(overlay, rot_deg)

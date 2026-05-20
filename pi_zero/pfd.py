@@ -39,7 +39,15 @@ from sse_client import SSEClient
 from terrain import (
     get_elevation_ft, get_elevation_ft_combined,
     coarse_tile_list, coarse_tile_url, coarse_tile_path, coarse_disk_stats,
+    set_resolution_preference as _srtm_set_resolution_preference,
 )   # elevation lookup only — no SVT renderer
+
+# Pi Zero 2W only has 512 MB RAM and the tint samples ~2300 elevation
+# points anyway — SRTM1 (25 MB / 52 MB-in-RAM per tile) is wasteful
+# and contributed to OOM-reboots at wider zooms.  Tell the shared
+# tile loader to treat any SRTM1 .hgt files as missing so it falls
+# through to SRTM3 (5.8 MB-in-RAM per tile).
+_srtm_set_resolution_preference("srtm3")
 import obstacles as obs_mod
 import airports as apt_mod
 import water as water_mod
