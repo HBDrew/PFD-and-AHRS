@@ -2539,12 +2539,27 @@ def handle_event(event, demo_mode):
                     ch = ' ' if lbl == 'SPACE' else lbl
                     if len(disp["kbd_buf"]) < max_len:
                         disp["kbd_buf"] += ch
+                    disp["kbd_error"] = ""
                 elif sty == 'del':            # backspace
                     disp["kbd_buf"] = disp["kbd_buf"][:-1]
+                    disp["kbd_error"] = ""
                 elif sty in ('shift', 'shift_on'):
                     disp["kbd_shift"] = not disp.get("kbd_shift", False)
                 elif sty == 'x':              # CANCEL
                     disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
+                    disp["mode"] = disp["kbd_prev"]
+                elif sty == 'nrst':           # DIRECT TO NEAREST
+                    nearest = _nav_lookup_nearest()
+                    prev = disp["kbd_prev"]
+                    disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
+                    if not _nav_open_confirm(nearest, prev):
+                        disp["mode"] = prev
+                elif sty == 'clrfp':          # CANCEL D2
+                    _nav_clear()
+                    disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'ok':             # DONE
                     buf = disp["kbd_buf"].strip()
@@ -3027,6 +3042,34 @@ def _current_kb_rows():
 
 _KB_ROW_H=66; _KB_GAP_Y=6; _KB_GAP_X=4; _KB_Y0=112
 
+# Nav-ident extras row: NEAREST · CANCEL D2 below the QWERTY when the
+# keyboard is open for waypoint entry.  Compresses the row height so the
+# two action buttons fit on the 480-px Pi Zero panel.
+_KB_NAV_ROW_H  = 58
+_KB_NAV_BTN_H  = 38
+
+
+def _kb_nav_extras_visible():
+    return disp.get("kbd_target") == "nav_ident"
+
+
+def _kb_row_h():
+    return _KB_NAV_ROW_H if _kb_nav_extras_visible() else _KB_ROW_H
+
+
+def _kb_nav_extras_y():
+    rh = _kb_row_h()
+    return _KB_Y0 + 5 * rh + 4 * _KB_GAP_Y + 8
+
+
+def _kb_nav_extras_geometry():
+    """(bx_l, bx_r, btn_w) for the two nav-ident extras buttons:
+    DIRECT TO NEAREST · CANCEL D2."""
+    pad = 12
+    gap = 8
+    btn_w = (DISPLAY_W - 2 * pad - gap) // 2
+    return pad, pad + btn_w + gap, btn_w
+
 
 def _kb_row_x0(row):
     total = sum(w for _,w,_ in row) + _KB_GAP_X*(len(row)-1)
@@ -3060,7 +3103,8 @@ def _kb_key(surf, bx, by, bw, bh, label, style, r=6):
     _text(surf, label, fs, tc, bold=True, cx=bx+bw//2, cy=by+bh//2)
 
 
-def draw_keyboard(surf, title, current_val, entered="", transparent=False):
+def draw_keyboard(surf, title, current_val, entered="", transparent=False,
+                  error=""):
     """Full-screen QWERTY keyboard for text entry."""
     if not transparent:
         surf.fill((0,8,22))
@@ -3073,27 +3117,53 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False):
     pygame.draw.rect(surf,(0,15,38),(10,50,DISPLAY_W-21,50),border_radius=6)
     pygame.draw.rect(surf,WHITE,(10,50,DISPLAY_W-21,50),width=1,border_radius=6)
     _text(surf,disp_str,28,CYAN,bold=True,cx=DISPLAY_W//2,cy=75)
-    _text(surf,f"Current: {current_val}",10,(110,120,140),cx=DISPLAY_W//2,cy=104)
+    if error:
+        _text(surf, error, 12, (255, 90, 90), bold=True,
+              cx=DISPLAY_W//2, cy=104)
+    else:
+        _text(surf, f"Current: {current_val}", 10, (110, 120, 140),
+              cx=DISPLAY_W//2, cy=104)
+    rh = _kb_row_h()
     y = _KB_Y0
     for row in _current_kb_rows():
         x = _kb_row_x0(row)
         for label,kw,style in row:
-            _kb_key(surf,x,y,kw,_KB_ROW_H,label,style)
+            _kb_key(surf,x,y,kw,rh,label,style)
             x += kw+_KB_GAP_X
-        y += _KB_ROW_H+_KB_GAP_Y
+        y += rh+_KB_GAP_Y
+
+    if _kb_nav_extras_visible():
+        bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        by = _kb_nav_extras_y()
+        nrst = _nav_lookup_nearest()
+        nrst_lbl = f"DIRECT TO {nrst}" if nrst else "DIRECT TO NEAREST"
+        _action_btn(surf, bx_l, by, btn_w, _KB_NAV_BTN_H, nrst_lbl, "ok")
+        _action_btn(surf, bx_r, by, btn_w, _KB_NAV_BTN_H, "CANCEL D2", "danger")
 
 
 def keyboard_hit(x, y):
-    """Return (label, style) of the tapped key, or None."""
+    """Return (label, style) of the tapped key, or None.
+
+    Style 'nrst' / 'clrfp' are synthetic \u2014 emitted by the nav-ident
+    extras buttons (NEAREST, CANCEL D2)."""
+    if _kb_nav_extras_visible():
+        by = _kb_nav_extras_y()
+        if by <= y <= by + _KB_NAV_BTN_H:
+            bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+            if bx_l <= x <= bx_l + btn_w:
+                return ("NRST", "nrst")
+            if bx_r <= x <= bx_r + btn_w:
+                return ("CLRFP", "clrfp")
+    rh = _kb_row_h()
     ky = _KB_Y0
     for row in _current_kb_rows():
-        if ky <= y <= ky+_KB_ROW_H:
+        if ky <= y <= ky+rh:
             kx = _kb_row_x0(row)
             for label,kw,style in row:
                 if kx <= x <= kx+kw:
                     return (label, style)
                 kx += kw+_KB_GAP_X
-        ky += _KB_ROW_H+_KB_GAP_Y
+        ky += rh+_KB_GAP_Y
     return None
 
 
@@ -3965,6 +4035,52 @@ def nav_confirm_hit(x, y):
         if bx_r <= x <= bx_r + btn_w:
             return "activate"
     return "noop"
+
+
+_nav_nearest_cache = {"lat": None, "lon": None, "ident": "", "ts": 0.0}
+
+
+def _nav_lookup_nearest():
+    """Return the ident of the nearest public airport (S/M/L) within
+    100 nm, or "" if no airports / no fix.  Cached so the keyboard's
+    per-frame redraw doesn't hammer the spatial query."""
+    if _airports is None:
+        return ""
+    lat = disp.get("lat", 0.0)
+    lon = disp.get("lon", 0.0)
+    rlat = round(lat, 2)
+    rlon = round(lon, 2)
+    now = time.monotonic()
+    c = _nav_nearest_cache
+    if (rlat == c["lat"] and rlon == c["lon"]
+            and now - c["ts"] < 2.0):
+        return c["ident"]
+    nearby = apt_mod.query_nearby(_airports, lat, lon, radius_nm=100.0)
+    ident = ""
+    if nearby is not None and len(nearby) > 0:
+        if hasattr(nearby, "dtype"):
+            for i in range(len(nearby)):
+                if str(nearby["atype"][i]) in ("S", "M", "L"):
+                    ident = str(nearby["ident"][i])
+                    break
+        else:
+            for apt in nearby:
+                if apt.atype in ("S", "M", "L"):
+                    ident = apt.ident
+                    break
+    c["lat"] = rlat
+    c["lon"] = rlon
+    c["ts"]  = now
+    c["ident"] = ident
+    return ident
+
+
+def _nav_set_nearest() -> bool:
+    """Activate direct-to to the nearest public airport (S/M/L)."""
+    ident = _nav_lookup_nearest()
+    if not ident:
+        return False
+    return _nav_set_by_ident(ident)
 
 
 def _nav_lookup_ident(ident: str):
@@ -6949,14 +7065,20 @@ def render(surf, demo_mode, connected, data_stale=False):
         target = disp.get("kbd_target", "")
         buf    = disp.get("kbd_buf", "")
         prev   = disp.get("kbd_prev", "flight_profile")
-        if prev == "connectivity_setup":
+        if target == "nav_ident":
+            # Direct-to: surface the active ident as the placeholder so the
+            # pilot sees what's active while typing the replacement.
+            cur   = disp.get("nav", {}).get("ident", "")
+            title = "WAYPOINT"
+        elif prev == "connectivity_setup":
             cur   = disp["cs"].get(target, "")
             title = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID",
                      "wifi_pass": "WiFi PASSWORD"}.get(target, "ENTER TEXT")
         else:
             cur   = disp["fp"].get(target, "")
             title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
-        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True)
+        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True,
+                      error=disp.get("kbd_error", ""))
 
 
 # ── Terrain availability (computed once at import time) ───────────────────────
