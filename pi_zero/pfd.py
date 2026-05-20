@@ -7018,24 +7018,43 @@ def _mfd_zoom_out_rect():
             _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
 
 
+# Vertical spacing below the top-row chrome buttons.  Earlier rev had the
+# labels 4 px below — too close on the panel, hot fingers were landing on
+# the PFD button instead of the ORIENT tap.  18 px gives a clear gap.
+_MFD_LABEL_DROP = 18
+_MFD_LABEL_H    = 40   # tap-target height; text rendered centred
+
+
 def _mfd_rng_label_rect():
-    """RNG readout: directly under the D2 button (top-left)."""
+    """RNG readout: under the D2 button (top-left).  Passive label, but
+    its rect claims the chrome strip so a tap there doesn't pan the map."""
     pad = 6
-    return (pad, pad + _MFD_D2_BTN_H + 4, _MFD_D2_BTN_W, 22)
+    return (pad,
+            pad + _MFD_D2_BTN_H + _MFD_LABEL_DROP,
+            _MFD_D2_BTN_W,
+            _MFD_LABEL_H)
 
 
 def _mfd_orient_label_rect():
-    """ORIENT readout: directly under the PFD button (top-right).  Same
-    rect is used by the CTR (re-center) button when the map is panned."""
+    """ORIENT readout: under the PFD button (top-right).  Tappable to
+    toggle TRK↑ / N↑."""
     pad = 6
     return (DISPLAY_W - _MFD_PFD_BTN_W - pad,
-            pad + _MFD_PFD_BTN_H + 4,
-            _MFD_PFD_BTN_W, 22)
+            pad + _MFD_PFD_BTN_H + _MFD_LABEL_DROP,
+            _MFD_PFD_BTN_W,
+            _MFD_LABEL_H)
 
 
-# Legacy alias — when panned, CTR re-uses the orient label slot.
 def _mfd_center_btn_rect():
-    return _mfd_orient_label_rect()
+    """CTR (re-center) button — sits one full button-width below the
+    orient label so it stays visually distinct from the orient toggle
+    when the map is panned.  Both are visible at the same time."""
+    pad = 6
+    return (DISPLAY_W - _MFD_PFD_BTN_W - pad,
+            pad + _MFD_PFD_BTN_H + _MFD_LABEL_DROP
+                + _MFD_LABEL_H + _MFD_PFD_BTN_W,   # ← +100 px (button-width gap)
+            _MFD_PFD_BTN_W,
+            _MFD_PFD_BTN_H)
 
 
 def _mfd_center_btn_hit(x, y):
@@ -7046,10 +7065,7 @@ def _mfd_center_btn_hit(x, y):
 
 
 def _mfd_orient_label_hit(x, y):
-    """Tap-test on the ORIENT readout (TRK↑ / N↑) to toggle map rotation.
-    Only meaningful when not panned — panned slot is the CTR button."""
-    if _mfd_is_panned():
-        return False
+    """Tap-test on the ORIENT readout (TRK↑ / N↑) to toggle map rotation."""
     bx, by, bw, bh = _mfd_orient_label_rect()
     return bx <= x <= bx + bw and by <= y <= by + bh
 
@@ -7151,21 +7167,22 @@ def draw_mfd(surf, connected=True, data_stale=False):
     lat, lon = ac_lat, ac_lon
 
     # ── Top labels (no plate) ─────────────────────────────────────────
-    # RNG sits directly under the D2 button (left); ORIENT sits under the
-    # PFD button (right).  No background — they read as cyan-on-terrain.
-    # Orient label is tappable to toggle TRK↑ / N↑.
+    # RNG sits under the D2 button (left); ORIENT sits under the PFD
+    # button (right).  Both are cyan-on-terrain (no plate), with ORIENT
+    # tappable to toggle TRK↑ / N↑.  When the map is panned, a CTR
+    # button appears below ORIENT (one button-width down) so both the
+    # orient toggle and the re-center button stay visible.
     pad = 6
     rng_lbl = _mfd_get_range_label()
     orient_lbl = "TRK↑" if orient == "trk" else "N↑"
     rx, ry, rw, rh = _mfd_rng_label_rect()
     ox, oy, ow, oh = _mfd_orient_label_rect()
-    _text(surf, rng_lbl, 16, CYAN, bold=True, cx=rx + rw // 2, cy=ry + rh // 2)
+    _text(surf, rng_lbl, 20, CYAN, bold=True, cx=rx + rw // 2, cy=ry + rh // 2)
+    _text(surf, orient_lbl, 20, CYAN, bold=True,
+          cx=ox + ow // 2, cy=oy + oh // 2)
     if _mfd_is_panned():
-        # When panned, the orient slot becomes the CTR (re-center) button.
-        _action_btn(surf, ox, oy, ow, oh, "CTR", "ok", r=5)
-    else:
-        _text(surf, orient_lbl, 16, CYAN, bold=True,
-              cx=ox + ow // 2, cy=oy + oh // 2)
+        cx_, cy_, cw_, ch_ = _mfd_center_btn_rect()
+        _action_btn(surf, cx_, cy_, cw_, ch_, "CTR", "ok", r=5)
 
     # ── Bottom data strip ─────────────────────────────────────────────
     # Labeled column-style readouts.  Always shows GS / TRK / ALT on
