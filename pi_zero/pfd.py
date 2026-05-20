@@ -2794,6 +2794,7 @@ def _fp_field(surf, bx, by, bw, bh, label, value, units="", r=6):
 def draw_flight_profile(surf, fp_vals):
     """Full-screen Flight Profile setup screen."""
     surf.fill((0, 8, 22))
+    _prev_clip = _ss_clip_to_content(surf)
     pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
     _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
@@ -2825,6 +2826,7 @@ def draw_flight_profile(surf, fp_vals):
         _, label, units, _, _ = next(f for f in _FP_FIELDS if f[0]==key)
         bx = COLS[i%2]; by = y + (i//2)*(BH+GAP)
         _fp_field(surf, bx, by, BW, BH, label, fp_vals.get(key,"---"), units)
+    surf.set_clip(_prev_clip)
 
 
 def flight_profile_hit(x, y, fp_vals):
@@ -3128,6 +3130,7 @@ def _dsp_rx(row, bx, bw):
 
 def draw_display_setup(surf, ds):
     _screen_header(surf, "DISPLAY")
+    _prev_clip = _ss_clip_to_content(surf)
     for ri, row in enumerate(_DSP_ROWS):
         key, label, sub, opts_v, opts_l, bw_each = row
         is_night = (key == "night_mode")
@@ -3153,6 +3156,7 @@ def draw_display_setup(surf, ds):
             cur = ds.get(key, opts_v[0])
             for i, (v, lbl) in enumerate(zip(opts_v, opts_l)):
                 _seg_btn(surf, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
+    surf.set_clip(_prev_clip)
 
 
 def display_setup_hit(x, y, ds):
@@ -3850,6 +3854,7 @@ def _cs_val_box(surf, bx, by, bw, bh, key, val):
 
 def draw_connectivity_setup(surf, cs):
     _screen_header(surf, "CONNECTIVITY")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
 
     # Rows 0-2: editable fields (URL / SSID / password)
@@ -3877,7 +3882,7 @@ def draw_connectivity_setup(surf, cs):
                 lbl = f"WiFi: {actual}"
         cy  = by + bh//4 + i*bh//2
         pygame.draw.circle(surf, col, (bx2+238, cy), 6)
-        _text(surf, lbl, 13, col, bold=True, x=bx2+252, y=cy-9)
+        _text(surf, lbl, 16, col, bold=True, x=bx2+252, y=cy-10)
 
     # AHRS transport diagnostics — shown on a separate row under STATUS.
     # Visible even when ahrs_ok=False so the user can tell WHY the link
@@ -3911,13 +3916,14 @@ def draw_connectivity_setup(surf, cs):
             (cs.get("apply_msg",""), (100,180,80), _CS_BTN_Y - 20),
             (cs.get("test_msg",""),  (100,160,220), _CS_BTN_Y - 8)]:
         if msg:
-            _text(surf, msg, 10, col, cx=DISPLAY_W//2, y=y_off)
+            _text(surf, msg, 13, col, cx=DISPLAY_W//2, y=y_off)
 
     # Action buttons (SCAN / APPLY / TEST)
     third = (bw - 20) // 3
     _action_btn(surf, bx,                _CS_BTN_Y, third, _CS_BTN_H, "SCAN WIFI",  "normal")
     _action_btn(surf, bx+third+10,       _CS_BTN_Y, third, _CS_BTN_H, "APPLY WIFI", "warn")
     _action_btn(surf, bx+2*(third+10),   _CS_BTN_Y, third, _CS_BTN_H, "TEST AHRS",  "ok")
+    surf.set_clip(_prev_clip)
 
 
 def connectivity_setup_hit(x, y, cs):
@@ -3983,6 +3989,7 @@ def _sys_data_tile(surf, bx, by, bw, bh, label, sub, active=True):
 
 def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     lines = [
         ("Firmware version",  _SYS_VERSION),
@@ -3995,8 +4002,8 @@ def draw_system_setup(surf):
     pygame.draw.rect(surf, (55,75,105), (bx, _SYS_INFO_Y, bw, _SYS_IH), width=1, border_radius=6)
     for i, (k, v) in enumerate(lines):
         ty = _SYS_INFO_Y + 10 + i*_SYS_INFO_LH
-        _text(surf, k, 12, (120,140,165), x=bx+14, y=ty)
-        _text(surf, v, 13, WHITE, bold=True, x=bx+310, y=ty)
+        _text(surf, k, 15, (130,150,175), x=bx+14, y=ty)
+        _text(surf, v, 16, WHITE, bold=True, x=bx+310, y=ty)
 
     # DISPLAY MODE row
     _setting_row(surf, 0, "DISPLAY MODE", "Primary Flight Display or Multi-Function Display",
@@ -4049,6 +4056,7 @@ def draw_system_setup(surf):
 
     quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
     _action_btn(surf, bx, quit_y, bw, _SYS_BTN_H, "QUIT PFD", "danger")
+    surf.set_clip(_prev_clip)
 
 
 def system_setup_hit(x, y):
@@ -4325,7 +4333,7 @@ def draw_obstacle_data(surf, od):
     else:
         stat_str = "No obstacle data on disk"
         stat_col = YELLOW
-    _text(surf, stat_str, 12, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+    _text(surf, stat_str, 15, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
 
     downloading = od.get("downloading", False)
     parsing     = od.get("parsing", False)
@@ -4539,7 +4547,7 @@ def draw_airport_data(surf, ad):
     else:
         stat_str = "No airport data on disk"
         stat_col = YELLOW
-    _text(surf, stat_str, 11, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+    _text(surf, stat_str, 14, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
 
     downloading = ad.get("downloading", False)
     parsing     = ad.get("parsing", False)
@@ -4548,7 +4556,7 @@ def draw_airport_data(surf, ad):
     info_h = 82
     pygame.draw.rect(surf, (0,10,26), (bx, info_y, bw, info_h), border_radius=6)
     pygame.draw.rect(surf, (40,55,80), (bx, info_y, bw, info_h), width=1, border_radius=6)
-    _text(surf, "OurAirports Global Database", 12, WHITE, bold=True,
+    _text(surf, "OurAirports Global Database", 15, WHITE, bold=True,
           cx=DISPLAY_W//2, cy=info_y+14)
     _text(surf, "\u2248 72,000 airports worldwide",
           9, (140,160,185), cx=DISPLAY_W//2, cy=info_y+30)
@@ -4604,7 +4612,7 @@ def draw_airport_data(surf, ad):
     # centerlines were dropped (too cluttered on the 640×480 panel).
     filt_y = prog_y + prog_h + 12
     filt_h = 30
-    _text(surf, "Display filters:", 10, (140,160,185), x=bx+6, y=filt_y-12)
+    _text(surf, "Display filters:", 13, (140,160,185), x=bx+6, y=filt_y-14)
     bt_w = (bw - 30) // 4
     for i, (key, lbl) in enumerate([("show_public",   "PUBLIC"),
                                      ("show_heli",     "HELI"),
@@ -4652,7 +4660,7 @@ def draw_terrain_data(surf, td):
     stat_str = (f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB used"
                 if n_tiles else "No tiles on disk  \u00b7  SVT uses flat terrain")
     stat_col = (60,220,80) if n_tiles else YELLOW
-    _text(surf, stat_str, 12, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+    _text(surf, stat_str, 15, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
 
     downloading = td.get("downloading", False)
     rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
