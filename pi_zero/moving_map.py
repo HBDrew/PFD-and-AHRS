@@ -122,9 +122,11 @@ _apt_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
 
 
 def _quantise_centre(lat, lon, range_nm):
-    """Snap the centre to ~10% of the visible range so light pan motion
-    re-uses the same cached surface."""
-    step_deg = max(0.002, (range_nm / _NM_PER_DEG_LAT) * 0.10)
+    """Snap the centre to ~25% of the visible range so light pan motion
+    re-uses the same cached surface.  Was 10% — too fine at sim speeds
+    where the aircraft crossed cell boundaries faster than the async
+    tint worker could finish, leaving "BUILDING…" flashing constantly."""
+    step_deg = max(0.002, (range_nm / _NM_PER_DEG_LAT) * 0.25)
     cos_lat = max(0.05, math.cos(math.radians(lat)))
     return (round(lat / step_deg) * step_deg,
             round(lon / (step_deg / cos_lat)) * (step_deg / cos_lat))
@@ -152,11 +154,21 @@ if HAS_NUMPY:
 # (tiny bbox, 1-2 tiles) means the main thread stalls only on the rare
 # very-zoomed-in render.  Wider zooms go async with a "BUILDING…" hint.
 _TINT_SYNC_MAX_NM = 5            # range cap for synchronous builds
-_TINT_RENDER_MAX_NM = 80         # range cap for rendering the tint at all
-                                 # — above this, SRTM I/O is too heavy
+_TINT_RENDER_MAX_NM = 10         # range cap for rendering the tint at all.
+                                 # pi4 uses 80 — but on Pi Zero 2W each
+                                 # tint surface is ~3.4 MB at 928² and the
+                                 # SRTM tile bbox at 20+ nm pulls multiple
+                                 # 5.8 MB (SRTM3) or 52 MB (SRTM1) tiles
+                                 # into memory.  Combined with the rotate
+                                 # buffer that tipped a 512 MB Pi into OOM
+                                 # at 20 nm zoom.  10 nm cap keeps the
+                                 # vector layers (airports / D2 /
+                                 # state lines) usable past 10 nm with
+                                 # no terrain backdrop.
 _tint_async_lock = threading.Lock()
 _tint_pending: set = set()       # keys currently being built on a worker
 _tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
+_TINT_READY_MAX = 6              # cap above ensures stale results don't pile up
 
 
 def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
@@ -267,6 +279,13 @@ def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
                                         c_lat, c_lon, range_nm, oversize)
         with _tint_async_lock:
             _tint_ready[key] = (rgb, elevs)
+            # Cap _tint_ready: when the aircraft moves faster than
+            # builds finish (e.g. sim cruising), completed results for
+            # stale keys pile up and never get picked up by the main
+            # thread.  Prune oldest entries above the cap so memory
+            # stays bounded.
+            while len(_tint_ready) > _TINT_READY_MAX:
+                _tint_ready.pop(next(iter(_tint_ready)))
     except Exception as e:
         print(f"[moving_map] async tint build failed: {e}")
     finally:
