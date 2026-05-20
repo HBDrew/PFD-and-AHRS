@@ -2802,12 +2802,12 @@ def _fp_field(surf, bx, by, bw, bh, label, value, units="", r=6):
         gc = (int(15+t*35), int(20+t*50), int(40+t*80))
         pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
     pygame.draw.rect(surf, WHITE, (bx, by, bw, bh), width=2, border_radius=r)
-    _text(surf, label, 11, (155,170,190), x=bx+10, y=by+6)
+    _text(surf, label, 15, (160,175,200), x=bx+12, y=by+6)
     val_str = str(value) if value not in (None, "", 0) else "---"
     if units and val_str != "---":
         val_str = f"{val_str} {units}"
-    _text(surf, val_str, 18, WHITE, bold=True,
-          cx=bx+bw - _get_font(18,bold=True).size(val_str)[0]//2 - 12,
+    _text(surf, val_str, 26, WHITE, bold=True,
+          cx=bx+bw - _get_font(26,bold=True).size(val_str)[0]//2 - 14,
           cy=by+bh//2)
 
 
@@ -2818,7 +2818,7 @@ def draw_flight_profile(surf, fp_vals):
     pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
     _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
-    _text(surf, "FLIGHT PROFILE", 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+    _text(surf, "FLIGHT PROFILE", 24, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
 
     MX=_FP_MX; GAP=_FP_GAP
     FW = DISPLAY_W - 2*MX
@@ -2834,8 +2834,8 @@ def draw_flight_profile(surf, fp_vals):
     y += 2
     pygame.draw.line(surf, (40,60,90), (MX, y), (DISPLAY_W-MX, y), 1)
     y += 4
-    _text(surf, "V-SPEEDS  (knots) \u2014 tap to edit", 11, (120,140,165), x=MX, y=y)
-    y += 18
+    _text(surf, "V-SPEEDS  (knots) \u2014 tap to edit", 14, (140,160,185), x=MX, y=y)
+    y += 22
 
     # V-speed grid: 4 rows × 2 cols
     V_KEYS = [k for k,*_ in _FP_FIELDS if k not in ("tail","actype")]
@@ -2862,7 +2862,7 @@ def flight_profile_hit(x, y, fp_vals):
             return key
         fy += _FP_H1+GAP
     # V-speed grid
-    fy += 26   # divider + label
+    fy += 30   # divider + label (must match the draw-side y bump above)
     V_KEYS = [k for k,*_ in _FP_FIELDS if k not in ("tail","actype")]
     BW = (FW-GAP)//2; BH = (DISPLAY_H-fy-GAP*3-4)//4
     COLS = [MX, MX+BW+GAP]
@@ -2999,7 +2999,7 @@ _SS_DRAG_THRESHOLD = 8     # px before tap becomes drag
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         7,
     "display_setup":      5,
-    "system_setup":       8,
+    "system_setup":       9,
     "connectivity_setup": 6,
     "flight_profile":     8,
     "ahrs_firmware":      5,
@@ -4034,20 +4034,29 @@ def draw_system_setup(surf):
         ("AHRS link",         _ahrs_lbl),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
-    pygame.draw.rect(surf, (0,12,32), (bx, _SYS_INFO_Y, bw, _SYS_IH), border_radius=6)
-    pygame.draw.rect(surf, (55,75,105), (bx, _SYS_INFO_Y, bw, _SYS_IH), width=1, border_radius=6)
+    # SYSTEM uses absolute Y positions (not _ss_row_y), so apply the
+    # drag-scroll offset manually here.  Without this, the new GPS / AHRS
+    # link rows pushed QUIT PFD off the bottom of the panel with no way
+    # to reach it.
+    _sy = _ss_scroll.get("system_setup", 0)
+    info_y    = _SYS_INFO_Y    - _sy
+    mode_y    = _SYS_MODE_Y    - _sy
+    terrain_y = _SYS_TERRAIN_Y - _sy
+    btn_y     = _SYS_BTN_Y     - _sy
+    pygame.draw.rect(surf, (0,12,32), (bx, info_y, bw, _SYS_IH), border_radius=6)
+    pygame.draw.rect(surf, (55,75,105), (bx, info_y, bw, _SYS_IH), width=1, border_radius=6)
     for i, (k, v) in enumerate(lines):
-        ty = _SYS_INFO_Y + 10 + i*_SYS_INFO_LH
+        ty = info_y + 10 + i*_SYS_INFO_LH
         _text(surf, k, 15, (130,150,175), x=bx+14, y=ty)
         _text(surf, v, 16, WHITE, bold=True, x=bx+310, y=ty)
 
     # DISPLAY MODE row
     _setting_row(surf, 0, "DISPLAY MODE", "Primary Flight Display or Multi-Function Display",
-                 _y_override=_SYS_MODE_Y)
+                 _y_override=mode_y)
     cur = disp.get("display_mode", "pfd")
     btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
     rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
-    ry = _SYS_MODE_Y + (_SS_RH - btn_h_m) // 2
+    ry = mode_y + (_SS_RH - btn_h_m) // 2
     _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "PFD", cur == "pfd")
     # MFD — disabled placeholder
     pygame.draw.rect(surf, (0,8,18), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), border_radius=5)
@@ -4058,7 +4067,7 @@ def draw_system_setup(surf):
     # Data download tiles: TERRAIN | OBSTACLE | AIRPORT (three columns)
     third = (bw - 16) // 3
     n_tiles, used_mb = _td_disk_stats()
-    _sys_data_tile(surf, bx,              _SYS_TERRAIN_Y, third, _SS_RH,
+    _sys_data_tile(surf, bx,              terrain_y, third, _SS_RH,
                    "TERRAIN",
                    f"{n_tiles} tile{'s' if n_tiles != 1 else ''}  \u00b7  {used_mb:.1f} MB",
                    active=True)
@@ -4072,7 +4081,7 @@ def draw_system_setup(surf):
             od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB"
     else:
         od_sub = "Tap to download"
-    _sys_data_tile(surf, bx+third+8,      _SYS_TERRAIN_Y, third, _SS_RH,
+    _sys_data_tile(surf, bx+third+8,      terrain_y, third, _SS_RH,
                    "OBSTACLE", od_sub, active=True)
     ad_cnt     = disp["ad"].get("records", 0)
     ad_expired = disp["ad"].get("expired", False)
@@ -4083,17 +4092,17 @@ def draw_system_setup(surf):
             ad_sub = f"{ad_cnt:,} airports"
     else:
         ad_sub = "Tap to download"
-    _sys_data_tile(surf, bx+2*(third+8),  _SYS_TERRAIN_Y, third, _SS_RH,
+    _sys_data_tile(surf, bx+2*(third+8),  terrain_y, third, _SS_RH,
                    "AIRPORTS", ad_sub, active=True)
 
     half_w = (bw - 10) // 2
     # Layout: AHRS FIRMWARE (full-width), SIMULATOR+RESET (half-width), QUIT
-    sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
-    quit_y = sim_y       + _SYS_BTN_H + 10
-    _action_btn(surf, bx,           _SYS_BTN_Y, bw,     _SYS_BTN_H, "AHRS FIRMWARE",  "normal")
-    _action_btn(surf, bx,           sim_y,      half_w, _SYS_BTN_H, "SIMULATOR",       "ok")
-    _action_btn(surf, bx+half_w+10, sim_y,      half_w, _SYS_BTN_H, "RESET DEFAULTS",  "danger")
-    _action_btn(surf, bx,           quit_y,     bw,     _SYS_BTN_H, "QUIT PFD",        "danger")
+    sim_y  = btn_y + _SYS_BTN_H + 10
+    quit_y = sim_y + _SYS_BTN_H + 10
+    _action_btn(surf, bx,           btn_y,  bw,     _SYS_BTN_H, "AHRS FIRMWARE",  "normal")
+    _action_btn(surf, bx,           sim_y,  half_w, _SYS_BTN_H, "SIMULATOR",       "ok")
+    _action_btn(surf, bx+half_w+10, sim_y,  half_w, _SYS_BTN_H, "RESET DEFAULTS",  "danger")
+    _action_btn(surf, bx,           quit_y, bw,     _SYS_BTN_H, "QUIT PFD",        "danger")
     surf.set_clip(_prev_clip)
 
 
@@ -4101,6 +4110,9 @@ def system_setup_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    # Shift the incoming y into logical (unscrolled) coordinates so the
+    # button hit-tests still match the constants that defined the layout.
+    y += _ss_scroll.get("system_setup", 0)
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
         third = (bw - 16) // 3
         if bx <= x <= bx+third:
