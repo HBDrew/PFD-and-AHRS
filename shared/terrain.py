@@ -142,21 +142,31 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
 
     # Detect resolution from file size (2 bytes per sample)
     file_bytes = os.path.getsize(path)
-    if file_bytes == SRTM1_SAMPLES * SRTM1_SAMPLES * 2:
-        # Honour the caller's resolution preference — on memory-tight
-        # systems (pi_zero) we refuse to load SRTM1 entirely and let the
-        # caller treat the tile as missing.  Cache the None so we don't
-        # re-stat the file on every sample.
-        if _PREFER_RESOLUTION == "srtm3":
-            _cache_put(key, None)
-            return None
+    is_srtm1 = (file_bytes == SRTM1_SAMPLES * SRTM1_SAMPLES * 2)
+    # When the caller has asked for srtm3 but the file on disk is the
+    # 25 MB SRTM1 variant, downsample to SRTM3 resolution on load (every
+    # third sample, no interpolation — SRTM1's 30 m → SRTM3's 90 m).
+    # The cached array is SRTM3-sized so the per-tile RAM cost drops
+    # ~9× to ~5.8 MB.  Brief ~25 MB int16 peak during the read.
+    decimate_to_srtm3 = is_srtm1 and (_PREFER_RESOLUTION == "srtm3")
+    if is_srtm1 and not decimate_to_srtm3:
         n_samples = SRTM1_SAMPLES
     else:
-        n_samples = SRTM3_SAMPLES  # default / fallback
+        n_samples = SRTM3_SAMPLES  # output resolution after any decimation
 
     if HAS_NUMPY:
-        data = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
-        data = data.astype(np.float32)
+        if decimate_to_srtm3:
+            # Read int16 (~25 MB), slice every third sample, copy to
+            # release the big buffer, then convert to float32 + apply
+            # void mask + scale to feet.
+            raw = np.fromfile(path, dtype='>i2').reshape(
+                (SRTM1_SAMPLES, SRTM1_SAMPLES))
+            small = raw[::3, ::3].copy()
+            del raw
+            data = small.astype(np.float32)
+        else:
+            data = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
+            data = data.astype(np.float32)
         data[data == VOID_ELEV] = 0
         data *= 3.28084   # metres → feet
     else:
