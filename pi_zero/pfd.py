@@ -111,6 +111,7 @@ disp["fp"] = {                      # flight-profile values
 disp["display_mode"]  = "pfd"       # "pfd" | "mfd" (MFD not yet implemented)
 disp["td"] = {                      # terrain download state
     "downloading": False,
+    "compacting":  False,            # SRTM1 → SRTM3 in-place compactor
     "dl_region":   "",
     "dl_current":  0,
     "dl_total":    0,
@@ -2891,21 +2892,30 @@ def handle_event(event, demo_mode):
             if action == "back":
                 disp["mode"] = "system_setup"
             elif action == "cancel":
-                if disp["td"]["downloading"]:
+                if disp["td"].get("downloading"):
                     disp["td"]["dl_cancel"] = True
-                if disp["wd"]["downloading"]:
+                if disp["wd"].get("downloading"):
                     disp["wd"]["dl_cancel"] = True
+                if disp["td"].get("compacting"):
+                    disp["td"]["dl_cancel"] = True
             elif action == "current_area":
-                if not disp["td"]["downloading"]:
+                if not (disp["td"].get("downloading")
+                        or disp["td"].get("compacting")):
                     _td_start_current_area()
             elif action == "global_coarse":
-                if not disp["td"]["downloading"]:
+                if not (disp["td"].get("downloading")
+                        or disp["td"].get("compacting")):
                     _tdc_start_download()
             elif action == "water_masks":
-                if not disp["wd"]["downloading"]:
+                if not disp["wd"].get("downloading"):
                     _wd_start_download()
+            elif action == "compact":
+                if not (disp["td"].get("downloading")
+                        or disp["td"].get("compacting")):
+                    _td_start_compact()
             elif action and action.startswith("region:"):
-                if not disp["td"]["downloading"]:
+                if not (disp["td"].get("downloading")
+                        or disp["td"].get("compacting")):
                     idx = int(action.split(":")[1])
                     _td_start_download(_TD_REGIONS[idx])
             return True
@@ -5525,6 +5535,112 @@ def _td_start_current_area():
     t.start()
 
 
+# ── SRTM1 → SRTM3 compactor ────────────────────────────────────────────────
+# One-shot maintenance op: walks SRTM_DIR, decimates every SRTM1 .hgt to
+# SRTM3 in place.  Same atomic-rewrite logic as tools/compact_srtm.py so
+# an interrupted run can't leave half-written files.  Reuses the download
+# progress overlay — only one of {downloading, compacting} runs at a
+# time, gated in the UI.
+
+_SRTM1_BYTES = 3601 * 3601 * 2
+_SRTM3_BYTES = 1201 * 1201 * 2
+
+
+def _td_count_srtm1():
+    """Return (n_srtm1, total_reclaimable_bytes) over SRTM_DIR."""
+    if not os.path.isdir(SRTM_DIR):
+        return 0, 0
+    n = 0
+    saved = 0
+    for fname in os.listdir(SRTM_DIR):
+        if not fname.endswith(".hgt"):
+            continue
+        try:
+            sz = os.path.getsize(os.path.join(SRTM_DIR, fname))
+        except OSError:
+            continue
+        if sz == _SRTM1_BYTES:
+            n += 1
+            saved += _SRTM1_BYTES - _SRTM3_BYTES
+    return n, saved
+
+
+def _td_compact_worker():
+    """Background thread: decimate every SRTM1 .hgt to SRTM3 in place."""
+    td = disp["td"]
+    td["compacting"]   = True
+    td["dl_cancel"]    = False
+    td["dl_region"]    = "Compact SRTM"
+    try:
+        import numpy as np
+    except ImportError:
+        td["dl_status"]   = "numpy required"
+        td["compacting"]  = False
+        return
+    candidates = []
+    if os.path.isdir(SRTM_DIR):
+        for fname in sorted(os.listdir(SRTM_DIR)):
+            if fname.endswith(".hgt"):
+                candidates.append(fname)
+    td["dl_total"]   = len(candidates)
+    td["dl_current"] = 0
+    n_done = n_skip = n_err = 0
+    bytes_saved = 0
+    for i, fname in enumerate(candidates):
+        if td.get("dl_cancel"):
+            td["dl_status"] = (f"Cancelled  ({n_done} compacted, "
+                               f"{bytes_saved/1e9:.2f} GB freed)")
+            td["compacting"] = False
+            return
+        td["dl_current"] = i
+        path = os.path.join(SRTM_DIR, fname)
+        try:
+            sz = os.path.getsize(path)
+        except OSError:
+            n_err += 1
+            continue
+        if sz != _SRTM1_BYTES:
+            n_skip += 1
+            continue
+        td["dl_status"] = f"Compacting {fname}…"
+        try:
+            raw = np.fromfile(path, dtype='>i2').reshape(3601, 3601)
+            small = raw[::3, ::3].copy()
+            del raw
+            tmp = path + ".tmp"
+            small.astype('>i2').tofile(tmp)
+            if os.path.getsize(tmp) != _SRTM3_BYTES:
+                os.remove(tmp)
+                raise RuntimeError("size mismatch on write")
+            os.replace(tmp, path)
+            n_done += 1
+            bytes_saved += _SRTM1_BYTES - _SRTM3_BYTES
+        except Exception as exc:
+            td["dl_status"] = f"Error {fname}: {exc}"
+            n_err += 1
+    td["dl_current"]  = len(candidates)
+    td["dl_status"]   = (f"Done ✓  {n_done} compacted, "
+                         f"{bytes_saved/1e9:.2f} GB freed"
+                         + (f", {n_skip} already SRTM3" if n_skip else "")
+                         + (f", {n_err} errors" if n_err else ""))
+    td["compacting"]  = False
+    # Refresh the load_tile in-memory cache so the next render reads the
+    # now-smaller files (otherwise the cache holds float32 arrays built
+    # from the old SRTM1 read path until LRU evicts them naturally).
+    try:
+        from terrain import _tile_cache
+        _tile_cache.clear()
+    except (ImportError, AttributeError):
+        pass
+
+
+def _td_start_compact():
+    """Kick off the SRTM1 → SRTM3 compactor in the background."""
+    t = threading.Thread(target=_td_compact_worker, daemon=True,
+                         name="SRTMCompact")
+    t.start()
+
+
 def _tdc_download_thread():
     """Background download of all Mapzen Terrarium PNG coarse tiles for
     lat -60° to +75° at zoom 5 — ~576 tiles, ~8 MB total.  Matches the
@@ -6558,17 +6674,40 @@ def draw_terrain_data(surf, td):
     bx = _TD_MX; bw = DISPLAY_W - 2*_TD_MX
     n_tiles, used_mb = _td_disk_stats()
     c_tiles, c_mb    = coarse_disk_stats(COARSE_DIR)
+    n_srtm1, srtm1_reclaim = _td_count_srtm1()
+    compacting = td.get("compacting", False)
 
-    # Status strip — two lines: SRTM hi-res + Mapzen coarse.
+    # Status strip — two lines: SRTM hi-res + Mapzen coarse, with a
+    # COMPACT pill on the right edge when any SRTM1 tiles are on disk.
     strip_h = 46
     pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, strip_h), border_radius=4)
     pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, strip_h), width=1, border_radius=4)
+    # COMPACT button (right side of strip) — shown when SRTM1 tiles exist
+    # OR while a compact run is in progress.
+    show_compact = (n_srtm1 > 0) or compacting
+    cp_w = 92; cp_h = 32
+    cp_x = bx + bw - cp_w - 8
+    cp_y = 52 + (strip_h - cp_h) // 2
+    if show_compact:
+        cp_label = "COMPACTING…" if compacting else "COMPACT"
+        _action_btn(surf, cp_x, cp_y, cp_w, cp_h, cp_label,
+                    "warn" if compacting else "ok", r=5)
+        # Text shifts left to avoid the button
+        text_cx = (bx + cp_x) // 2
+    else:
+        text_cx = DISPLAY_W // 2
+
     if n_tiles:
-        hi_str = (f"SRTM hi-res:  {n_tiles} tile{'s' if n_tiles != 1 else ''}"
-                  f"  ·  {used_mb:.1f} MB")
+        if n_srtm1 > 0:
+            hi_str = (f"SRTM:  {n_tiles} tiles  ·  {used_mb:.0f} MB"
+                      f"  ({n_srtm1} SRTM1 → save "
+                      f"{srtm1_reclaim/1e9:.1f} GB)")
+        else:
+            hi_str = (f"SRTM:  {n_tiles} tile{'s' if n_tiles != 1 else ''}"
+                      f"  ·  {used_mb:.1f} MB  ·  SRTM3")
         hi_col = (60,220,80)
     else:
-        hi_str = "SRTM hi-res:  none on disk"
+        hi_str = "SRTM:  none on disk"
         hi_col = YELLOW
     if c_tiles:
         co_str = f"Mapzen global:  {c_tiles} tiles  ·  {c_mb:.1f} MB"
@@ -6576,10 +6715,12 @@ def draw_terrain_data(surf, td):
     else:
         co_str = "Mapzen global:  none on disk"
         co_col = (180,160,80)
-    _text(surf, hi_str, 13, hi_col, bold=True, cx=DISPLAY_W//2, cy=64)
-    _text(surf, co_str, 13, co_col, bold=True, cx=DISPLAY_W//2, cy=85)
+    _text(surf, hi_str, 13, hi_col, bold=True, cx=text_cx, cy=64)
+    _text(surf, co_str, 13, co_col, bold=True, cx=text_cx, cy=85)
 
-    downloading = td.get("downloading", False)
+    # `downloading` here gates the region tiles + cancel button to cover
+    # downloads and the compact pass — only one heavy job runs at a time.
+    downloading = td.get("downloading", False) or compacting
     cur_region  = td.get("dl_region", "")
     rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
     top_y = 52 + strip_h + 6
@@ -6699,8 +6840,23 @@ def terrain_data_hit(x, y, td):
     bh = available_h // (rows + 1)
     third_w = (bw - 2 * _TD_GAP) // 3
 
-    # Cancel button during download (covers both td and wd workers)
-    if td.get("downloading") or disp.get("wd", {}).get("downloading"):
+    # COMPACT button on the right side of the status strip — same rect
+    # the draw routine uses.  Only tappable when there are SRTM1 tiles
+    # to compact AND no job (download or compact) is currently running.
+    n_srtm1, _ = _td_count_srtm1()
+    compacting = td.get("compacting", False)
+    any_busy   = td.get("downloading") or disp.get("wd", {}).get("downloading") or compacting
+    if n_srtm1 > 0 or compacting:
+        cp_w = 92; cp_h = 32
+        cp_x = bx + bw - cp_w - 8
+        cp_y = 52 + (strip_h - cp_h) // 2
+        if (cp_x <= x <= cp_x + cp_w and cp_y <= y <= cp_y + cp_h
+                and not any_busy):
+            return "compact"
+
+    # Cancel button during download or compact (covers td, wd, compact)
+    if (td.get("downloading") or disp.get("wd", {}).get("downloading")
+            or compacting):
         prog_y = DISPLAY_H - 58
         if (DISPLAY_W-100-bx <= x <= DISPLAY_W-bx and
                 prog_y+6 <= y <= prog_y+42):
