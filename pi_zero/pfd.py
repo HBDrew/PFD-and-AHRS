@@ -5147,7 +5147,8 @@ def system_setup_hit(x, y):
 # (RPI-RP2 mass-storage device).  Verbatim port of the pi4 implementation.
 
 _FW_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
-_FW_SCRIPTS = ["main.py", "config.py", "web_server.py", "wt901.py", "bme280.py", "gps.py"]
+_FW_SCRIPTS = ["main.py", "config.py", "web_server.py", "wt901.py",
+               "bme280.py", "gps.py", "airdata.py", "sdp31.py"]
 _IPHONE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "iphone_display")
 _FW_WEB     = ["index.html", "terrain.js", "sw.js", "manifest.webmanifest", "icon-192.png"]
 _FW_ROW_H   = 76
