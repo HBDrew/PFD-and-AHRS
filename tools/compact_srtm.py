@@ -51,9 +51,12 @@ def _is_srtm3(path):
     return os.path.getsize(path) == SRTM3_BYTES
 
 
-def _decimate(path, dry_run=False):
-    """Read an SRTM1 .hgt, decimate to SRTM3, atomic-rewrite in place.
-    Returns the number of bytes reclaimed."""
+def _decimate(path, dry_run=False, output_dir=None):
+    """Read an SRTM1 .hgt, decimate to SRTM3.  In-place rewrite by default;
+    when output_dir is set, write the decimated copy there and leave the
+    original SRTM1 file untouched (useful for pi4 → pi_zero hand-off).
+    Returns the number of bytes reclaimed (for in-place) or the size of
+    the produced SRTM3 file (for output_dir mode)."""
     try:
         import numpy as np
     except ImportError:
@@ -68,14 +71,23 @@ def _decimate(path, dry_run=False):
     small = raw[::3, ::3].copy()
     del raw
 
-    tmp_path = path + ".tmp"
+    if output_dir:
+        # Side-by-side mode: write to <output_dir>/<basename>, leave the
+        # source SRTM1 file untouched.  Caller is responsible for
+        # ensuring output_dir exists; we still write atomically so a
+        # half-finished file can't be picked up by a consumer.
+        dest = os.path.join(output_dir, os.path.basename(path))
+    else:
+        dest = path
+
+    tmp_path = dest + ".tmp"
     small.astype('>i2').tofile(tmp_path)
     if os.path.getsize(tmp_path) != SRTM3_BYTES:
         # Sanity check before destroying the original.
         os.remove(tmp_path)
         raise RuntimeError(f"size mismatch on {tmp_path}: "
                            f"{os.path.getsize(tmp_path)} != {SRTM3_BYTES}")
-    os.replace(tmp_path, path)
+    os.replace(tmp_path, dest)
     return saved
 
 
@@ -83,6 +95,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--srtm-dir", required=True,
                     help="Directory containing .hgt files")
+    ap.add_argument("--output-dir",
+                    help="Write decimated copies here instead of "
+                         "overwriting in place.  Useful for producing "
+                         "pi_zero-ready tiles on a pi4 that wants to "
+                         "keep its SRTM1 source intact.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Report what would change without writing.")
     args = ap.parse_args()
@@ -90,6 +107,8 @@ def main():
     if not os.path.isdir(args.srtm_dir):
         print(f"ERROR: {args.srtm_dir} is not a directory", file=sys.stderr)
         sys.exit(1)
+    if args.output_dir and not args.dry_run:
+        os.makedirs(args.output_dir, exist_ok=True)
 
     entries = sorted(f for f in os.listdir(args.srtm_dir) if f.endswith(".hgt"))
     if not entries:
@@ -112,7 +131,8 @@ def main():
             n_other += 1
             continue
         try:
-            bytes_saved += _decimate(path, dry_run=args.dry_run)
+            bytes_saved += _decimate(path, dry_run=args.dry_run,
+                                     output_dir=args.output_dir)
             n_srtm1 += 1
         except Exception as exc:
             print(f"  ERROR {name}: {exc}")
