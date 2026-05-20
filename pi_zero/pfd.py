@@ -2969,12 +2969,23 @@ def handle_event(event, demo_mode):
                 return True
             if _mfd_zoom_out_hit(x, y):
                 cur = int(disp["ds"].get("map_zoom_nm", 10))
-                disp["ds"]["map_zoom_nm"] = _mfd_map.zoom_out(
+                new = _mfd_map.zoom_out(
                     cur, allow_auto=bool(disp.get("nav", {}).get("ident")))
+                # Pi Zero 2W can't sustain the SRTM I/O + tint rebuild past
+                # 20 nm — boot-hang and reboot if a saved range >20 carries
+                # forward.  Clamp on every zoom-out, and again on load.
+                if new > MFD_MAX_ZOOM_NM:
+                    new = MFD_MAX_ZOOM_NM
+                disp["ds"]["map_zoom_nm"] = new
                 _settings.mark_dirty()
                 return True
             if _mfd_center_btn_hit(x, y):
                 _mfd_clear_pan()
+                return True
+            if _mfd_orient_label_hit(x, y):
+                cur = disp["ds"].get("map_orient", "trk")
+                disp["ds"]["map_orient"] = "nrth" if cur == "trk" else "trk"
+                _settings.mark_dirty()
                 return True
             # Anywhere else over the map → start a pan/tap drag.  MOTION
             # converts to pan; UP without motion runs airport hit-test.
@@ -6974,6 +6985,12 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
 import moving_map as _mfd_map   # noqa: E402
 
+# Pi Zero 2W tint rebuild + SRTM tile fetch can't sustain ranges past
+# 20 nm — at 40+ nm the build OOMs and the kernel reboots the Pi.
+# Cap zoom both on settings load and inside zoom_out so a saved value
+# never makes it into a render() call.
+MFD_MAX_ZOOM_NM = 20
+
 _MFD_PFD_BTN_W = 100
 _MFD_PFD_BTN_H = 36
 _MFD_D2_BTN_W  = 100
@@ -7001,24 +7018,39 @@ def _mfd_zoom_out_rect():
             _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
 
 
-def _mfd_center_btn_rect():
-    """CTR (re-center) button — sits in the right half of the top plate,
-    only present when the map is panned."""
+def _mfd_rng_label_rect():
+    """RNG readout: directly under the D2 button (top-left)."""
     pad = 6
-    top_x0 = _MFD_D2_BTN_W + pad * 2
-    top_x1 = DISPLAY_W - _MFD_PFD_BTN_W - pad * 2
-    top_w  = top_x1 - top_x0
-    btn_w  = 80
-    btn_h  = _MFD_PFD_BTN_H
-    bx = top_x0 + top_w - btn_w - 6
-    by = pad
-    return (bx, by, btn_w, btn_h)
+    return (pad, pad + _MFD_D2_BTN_H + 4, _MFD_D2_BTN_W, 22)
+
+
+def _mfd_orient_label_rect():
+    """ORIENT readout: directly under the PFD button (top-right).  Same
+    rect is used by the CTR (re-center) button when the map is panned."""
+    pad = 6
+    return (DISPLAY_W - _MFD_PFD_BTN_W - pad,
+            pad + _MFD_PFD_BTN_H + 4,
+            _MFD_PFD_BTN_W, 22)
+
+
+# Legacy alias — when panned, CTR re-uses the orient label slot.
+def _mfd_center_btn_rect():
+    return _mfd_orient_label_rect()
 
 
 def _mfd_center_btn_hit(x, y):
     if not _mfd_is_panned():
         return False
     bx, by, bw, bh = _mfd_center_btn_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_orient_label_hit(x, y):
+    """Tap-test on the ORIENT readout (TRK↑ / N↑) to toggle map rotation.
+    Only meaningful when not panned — panned slot is the CTR button."""
+    if _mfd_is_panned():
+        return False
+    bx, by, bw, bh = _mfd_orient_label_rect()
     return bx <= x <= bx + bw and by <= y <= by + bh
 
 
@@ -7033,11 +7065,15 @@ _mfd_apt_font = None
 
 
 def _mfd_get_apt_font():
-    """Lazy-init a small bold font for airport labels on the MFD.  Loaded
-    on first call (after pygame.font.init) so import order isn't fragile."""
+    """Lazy-init a bold font for airport labels on the MFD.  Sized for
+    a panel-mounted 480 px display read at arm's length — much larger
+    than the pi4 inset's 11 px because the labels are the only ident
+    cue at altitude."""
     global _mfd_apt_font
     if _mfd_apt_font is None:
-        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", 11, bold=True)
+        # 3x the pi4 inset size — labels are the primary ident cue on
+        # the MFD and need to read at arm's length.
+        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", 33, bold=True)
     return _mfd_apt_font
 
 
@@ -7114,36 +7150,22 @@ def draw_mfd(surf, connected=True, data_stale=False):
     )
     lat, lon = ac_lat, ac_lon
 
-    # ── Top centre badges ──────────────────────────────────────────────
-    # RNG and orient (TRK↑/N↑) sit between the D2 button (top-left) and
-    # PFD button (top-right) with their own background plate so they don't
-    # blend into terrain.
+    # ── Top labels (no plate) ─────────────────────────────────────────
+    # RNG sits directly under the D2 button (left); ORIENT sits under the
+    # PFD button (right).  No background — they read as cyan-on-terrain.
+    # Orient label is tappable to toggle TRK↑ / N↑.
     pad = 6
-    top_x0 = _MFD_D2_BTN_W + pad * 2
-    top_x1 = DISPLAY_W - _MFD_PFD_BTN_W - pad * 2
-    top_w  = top_x1 - top_x0
-    top_h  = _MFD_PFD_BTN_H
-    plate = pygame.Surface((top_w, top_h), pygame.SRCALPHA)
-    plate.fill((0, 8, 22, 180))
-    surf.blit(plate, (top_x0, pad))
-    pygame.draw.rect(surf, (60, 80, 110), (top_x0, pad, top_w, top_h),
-                     width=1, border_radius=4)
     rng_lbl = _mfd_get_range_label()
     orient_lbl = "TRK↑" if orient == "trk" else "N↑"
-    _text(surf, "RNG", 11, (140, 170, 200), bold=True,
-          x=top_x0 + 14, y=pad + 4)
-    _text(surf, rng_lbl, 20, WHITE, bold=True,
-          x=top_x0 + 14, y=pad + 14)
-    # Right side of the plate: CENTER button when panned (cyan, tap → snap
-    # back to aircraft), otherwise the orient indicator.
+    rx, ry, rw, rh = _mfd_rng_label_rect()
+    ox, oy, ow, oh = _mfd_orient_label_rect()
+    _text(surf, rng_lbl, 16, CYAN, bold=True, cx=rx + rw // 2, cy=ry + rh // 2)
     if _mfd_is_panned():
-        ctr_x, ctr_y, ctr_w, ctr_h = _mfd_center_btn_rect()
-        _action_btn(surf, ctr_x, ctr_y, ctr_w, ctr_h, "CTR", "ok", r=5)
+        # When panned, the orient slot becomes the CTR (re-center) button.
+        _action_btn(surf, ox, oy, ow, oh, "CTR", "ok", r=5)
     else:
-        _text(surf, "ORIENT", 11, (140, 170, 200), bold=True,
-              x=top_x0 + top_w - 90, y=pad + 4)
-        _text(surf, orient_lbl, 20, WHITE, bold=True,
-              x=top_x0 + top_w - 90, y=pad + 14)
+        _text(surf, orient_lbl, 16, CYAN, bold=True,
+              cx=ox + ow // 2, cy=oy + oh // 2)
 
     # ── Bottom data strip ─────────────────────────────────────────────
     # Labeled column-style readouts.  Always shows GS / TRK / ALT on
@@ -7267,12 +7289,13 @@ def _mfd_chrome_hit(x, y):
     if _mfd_zoom_in_hit(x, y):      return True
     if _mfd_zoom_out_hit(x, y):     return True
     if _mfd_center_btn_hit(x, y):   return True
-    # Top centre plate (RNG / ORIENT)
-    pad = 6
-    top_x0 = _MFD_D2_BTN_W + pad * 2
-    top_x1 = DISPLAY_W - _MFD_PFD_BTN_W - pad * 2
-    if top_x0 <= x <= top_x1 and pad <= y <= pad + _MFD_PFD_BTN_H:
+    if _mfd_orient_label_hit(x, y): return True
+    # RNG label (under D2) is a passive readout but still claims its rect
+    # so a hot finger doesn't accidentally pan the map.
+    rx, ry, rw, rh = _mfd_rng_label_rect()
+    if rx <= x <= rx + rw and ry <= y <= ry + rh:
         return True
+    pad = 6
     # Bottom data strip (full width minus zoom buttons)
     strip_y = DISPLAY_H - _MFD_ZOOM_BTN - pad
     strip_x0 = _MFD_ZOOM_BTN + pad * 2
@@ -7732,6 +7755,11 @@ def main():
     # Restore persisted user settings before initialising the display
     if _settings.load_into(disp, SETTINGS_PATH):
         print(f"[PFD] Settings restored from {SETTINGS_PATH}")
+    # Clamp persisted map zoom — a saved value >20 nm would have crashed
+    # the Pi on the first MFD render, so guarantee we boot at a safe range.
+    saved_zoom = int(disp["ds"].get("map_zoom_nm", 10))
+    if saved_zoom > MFD_MAX_ZOOM_NM or saved_zoom <= 0:
+        disp["ds"]["map_zoom_nm"] = min(MFD_MAX_ZOOM_NM, 10)
     _settings.start(disp, SETTINGS_PATH)
 
     # Screen-to-screen sync: start the UDP listener so we hear peers from

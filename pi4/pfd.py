@@ -93,6 +93,7 @@ import airports as apt_mod
 import runways as rwy_mod
 import water as water_mod
 import settings as _settings
+import screen_sync as _ssync_mod
 import moving_map as _map_mod
 import sun as _sun_mod
 import hits as _hits_mod
@@ -265,6 +266,15 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_rx":        0,    # count of $AHRS, lines parsed OK
     "ahrs_err":       0,    # count of parse / IO errors
     "ahrs_last_err":  "",   # most recent error message
+    # Screen-to-screen sync.  Each category is opt-in per direction so a
+    # screen with its own AHRS can still publish bugs/baro/nav to a
+    # second screen, etc.  All default off; toggled in the Screen Sync
+    # subscreen.
+    "sync_publish_bugs": False, "sync_consume_bugs": False,
+    "sync_publish_baro": False, "sync_consume_baro": False,
+    "sync_publish_nav":  False, "sync_consume_nav":  False,
+    "sync_publish_ahrs": False, "sync_consume_ahrs": False,
+    "sync_publish_gps":  False, "sync_consume_gps":  False,
 }
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
@@ -363,6 +373,196 @@ def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
 _sse_client  = None
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
+
+# ── Screen-to-screen sync ────────────────────────────────────────────────────
+# Created in main() once disp["cs"] has been restored from settings.json.
+_screen_sync = None
+_ssync_suppress_publish = 0
+_ssync_last_ahrs_t = 0.0
+_ssync_last_gps_t  = 0.0
+_SSYNC_AHRS_MIN_DT = 0.05    # 20 Hz upper bound
+_SSYNC_GPS_MIN_DT  = 0.20    # 5 Hz upper bound
+
+
+def _ssync_kinds_from_cs(direction):
+    """Build the set of categories whose `direction` ("publish" / "consume")
+    toggle is on in disp["cs"]."""
+    out = set()
+    cs = disp.get("cs", {})
+    for k in (_ssync_mod.KIND_BUGS, _ssync_mod.KIND_BARO,
+              _ssync_mod.KIND_NAV,  _ssync_mod.KIND_AHRS,
+              _ssync_mod.KIND_GPS):
+        if cs.get(f"sync_{direction}_{k}", False):
+            out.add(k)
+    return out
+
+
+def _ssync_refresh_kinds():
+    if _screen_sync is None:
+        return
+    _screen_sync.set_publish_kinds(_ssync_kinds_from_cs("publish"))
+    _screen_sync.set_consume_kinds(_ssync_kinds_from_cs("consume"))
+
+
+def _ssync_publish_bugs():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    _screen_sync.publish(_ssync_mod.KIND_BUGS, {
+        "alt_bug": float(disp.get("alt_bug", 0.0)),
+        "spd_bug": float(disp.get("spd_bug", 0.0)),
+        "hdg_bug": float(disp.get("hdg_bug", 0.0)),
+        "vs_bug":  float(disp.get("vs_bug",  0.0)),
+    })
+
+
+def _ssync_apply_bugs(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if "alt_bug" in data:
+            disp["alt_bug"] = float(data["alt_bug"])
+        if "spd_bug" in data:
+            disp["spd_bug"] = float(data["spd_bug"])
+        if "hdg_bug" in data:
+            disp["hdg_bug"] = float(data["hdg_bug"])
+        if "vs_bug" in data:
+            disp["vs_bug"] = float(data["vs_bug"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_baro():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    _screen_sync.publish(_ssync_mod.KIND_BARO, {
+        "baro_hpa": float(disp.get("baro_hpa", BARO_DEFAULT_HPA)),
+    })
+
+
+def _ssync_apply_baro(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if "baro_hpa" in data:
+            new_hpa = float(data["baro_hpa"])
+            disp["baro_hpa"] = new_hpa
+            try:
+                with _state_lock:
+                    state["baro_hpa"] = new_hpa
+                _push_baro_to_pico(new_hpa)
+            except Exception:
+                pass
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_nav():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    nav = disp.get("nav", {})
+    _screen_sync.publish(_ssync_mod.KIND_NAV, {
+        "ident":   nav.get("ident", ""),
+        "lat":     float(nav.get("lat", 0.0)),
+        "lon":     float(nav.get("lon", 0.0)),
+        "elev_ft": float(nav.get("elev_ft", 0.0)),
+        "act_lat": float(nav.get("act_lat", 0.0)),
+        "act_lon": float(nav.get("act_lon", 0.0)),
+    })
+
+
+def _ssync_apply_nav(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        ident = str(data.get("ident", ""))
+        if not ident:
+            disp["nav"]["ident"]   = ""
+            disp["nav"]["lat"]     = 0.0
+            disp["nav"]["lon"]     = 0.0
+            disp["nav"]["elev_ft"] = 0.0
+            disp["nav"]["act_lat"] = 0.0
+            disp["nav"]["act_lon"] = 0.0
+        else:
+            disp["nav"]["ident"]   = ident
+            disp["nav"]["lat"]     = float(data.get("lat", 0.0))
+            disp["nav"]["lon"]     = float(data.get("lon", 0.0))
+            disp["nav"]["elev_ft"] = float(data.get("elev_ft", 0.0))
+            disp["nav"]["act_lat"] = float(data.get("act_lat", 0.0))
+            disp["nav"]["act_lon"] = float(data.get("act_lon", 0.0))
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_ahrs():
+    global _ssync_last_ahrs_t
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    if not _screen_sync.publish_enabled(_ssync_mod.KIND_AHRS):
+        return
+    now = time.monotonic()
+    if now - _ssync_last_ahrs_t < _SSYNC_AHRS_MIN_DT:
+        return
+    _ssync_last_ahrs_t = now
+    _screen_sync.publish(_ssync_mod.KIND_AHRS, {
+        "pitch": float(disp.get("pitch", 0.0)),
+        "roll":  float(disp.get("roll",  0.0)),
+        "yaw":   float(disp.get("yaw",   0.0)),
+    })
+
+
+def _ssync_apply_ahrs(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        with _state_lock:
+            if "pitch" in data:
+                state["pitch"] = float(data["pitch"])
+            if "roll" in data:
+                state["roll"]  = float(data["roll"])
+            if "yaw" in data:
+                state["yaw"]   = float(data["yaw"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_gps():
+    global _ssync_last_gps_t
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    if not _screen_sync.publish_enabled(_ssync_mod.KIND_GPS):
+        return
+    now = time.monotonic()
+    if now - _ssync_last_gps_t < _SSYNC_GPS_MIN_DT:
+        return
+    _ssync_last_gps_t = now
+    _screen_sync.publish(_ssync_mod.KIND_GPS, {
+        "lat":     float(disp.get("lat", 0.0)),
+        "lon":     float(disp.get("lon", 0.0)),
+        "gps_alt": float(disp.get("gps_alt", 0.0)),
+        "speed":   float(disp.get("speed", 0.0)),
+        "track":   float(disp.get("track", 0.0)),
+        "gps_ok":  bool(disp.get("gps_ok", False)),
+        "fix":     int(disp.get("fix", 0)),
+        "sats":    int(disp.get("sats", 0)),
+    })
+
+
+def _ssync_apply_gps(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        with _state_lock:
+            for k in ("lat", "lon", "gps_alt", "speed", "track"):
+                if k in data:
+                    state[k] = float(data[k])
+            if "gps_ok" in data:
+                state["gps_ok"] = bool(data["gps_ok"])
+            if "fix" in data:
+                state["fix"] = int(data["fix"])
+            if "sats" in data:
+                state["sats"] = int(data["sats"])
+    finally:
+        _ssync_suppress_publish -= 1
 
 # ── GPS-slaved heading complementary filter ───────────────────────────────────
 # Propagate heading using the AHRS gyro yaw-rate (smooth, 30 Hz) and
@@ -2552,6 +2752,7 @@ class SimFlyState:
         disp["alt_bug"] = sim["init_alt"]
         if disp.get("spd_bug") is None:
             disp["spd_bug"] = sim["init_spd"]
+        _ssync_publish_bugs()
 
     def tick(self):
         now = time.monotonic()
@@ -3461,18 +3662,24 @@ def handle_event(event, demo_mode):
         if disp["mode"] == "pfd":
             if event.key == pygame.K_UP:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 + 100
+                _ssync_publish_bugs()
             if event.key == pygame.K_DOWN:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 - 100
+                _ssync_publish_bugs()
             if event.key == pygame.K_LEFT:
                 _bk = _active_bug_key()
                 disp[_bk] = (round(disp[_bk]) - 10) % 360
+                _ssync_publish_bugs()
             if event.key == pygame.K_RIGHT:
                 _bk = _active_bug_key()
                 disp[_bk] = (round(disp[_bk]) + 10) % 360
+                _ssync_publish_bugs()
             if event.key in (pygame.K_PLUS, pygame.K_EQUALS):
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 + 1) / 100
+                _ssync_publish_baro()
             if event.key == pygame.K_MINUS:
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 - 1) / 100
+                _ssync_publish_baro()
 
     # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────
     if event.type == pygame.FINGERDOWN:
@@ -4071,12 +4278,16 @@ def handle_event(event, demo_mode):
                         if target == "alt_bug":
                             # Input is hundreds of display-unit altitude.
                             disp["alt_bug"] = float(val * 100) / alt_factor
+                            _ssync_publish_bugs()
                         elif target == "hdg_bug":
                             disp["hdg_bug"] = float(val % 360)
+                            _ssync_publish_bugs()
                         elif target == "trk_bug":
                             disp["trk_bug"] = float(val % 360)
+                            _ssync_publish_bugs()
                         elif target == "spd_bug":
                             disp["spd_bug"] = float(val) / spd_factor
+                            _ssync_publish_bugs()
                         elif target == "baro_hpa":
                             baro_unit = ds.get("baro_unit", "inhg")
                             if baro_unit == "hpa":
@@ -4091,6 +4302,7 @@ def handle_event(event, demo_mode):
                             with _state_lock:
                                 state["baro_hpa"] = new_hpa
                             _push_baro_to_pico(new_hpa)
+                            _ssync_publish_baro()
                         elif target == "sim_init_alt":
                             disp["sim"]["init_alt"] = float(val * 100) / alt_factor
                         elif target == "sim_init_hdg":
@@ -4201,6 +4413,7 @@ def handle_event(event, demo_mode):
         if ALT_X <= x <= DISPLAY_W and TAPE_TOP <= y <= TAPE_BOT:
             ft = round(disp["alt"] + (TAPE_MID - y) / PX_PER_FT)
             disp["alt_bug"] = round(ft / 100) * 100
+            _ssync_publish_bugs()
         # Tap on heading tape → adjust active bug by position.  In TRK mode
         # the centre reference is GPS track (matching what the box shows),
         # so the bug lands under the finger relative to the displayed value.
@@ -4209,6 +4422,7 @@ def handle_event(event, demo_mode):
             _bk = _active_bug_key()
             _ref = disp.get("track", disp["yaw"]) if _bk == "trk_bug" else disp["yaw"]
             disp[_bk] = round(_ref + off) % 360
+            _ssync_publish_bugs()
 
     return True
 
@@ -7986,6 +8200,7 @@ def _nav_set_by_ident(ident: str) -> bool:
     disp["nav"]["act_lat"] = lat
     disp["nav"]["act_lon"] = lon
     _settings.mark_dirty()
+    _ssync_publish_nav()
     return True
 
 
@@ -8048,6 +8263,7 @@ def _nav_clear() -> None:
     disp["nav"]["act_lat"] = 0.0
     disp["nav"]["act_lon"] = 0.0
     _settings.mark_dirty()
+    _ssync_publish_nav()
 
 
 _DIRECT_TO_DRAPE_OFFSET_FT = 200.0  # ft above terrain.  Has to clear the
@@ -9567,6 +9783,22 @@ def main():
     if disp["ss"].get("hdg_src") not in ("mag", "trk", "auto"):
         disp["ss"]["hdg_src"] = "auto"
     _settings.start(disp, SETTINGS_PATH)
+
+    # Screen-to-screen sync: start the UDP listener so we hear peers from
+    # boot.  Publish/consume sets come from disp["cs"] (restored above),
+    # so the user's previous toggle state is honoured at startup.
+    global _screen_sync
+    _screen_sync = _ssync_mod.ScreenSync(
+        publish_kinds=_ssync_kinds_from_cs("publish"),
+        consume_kinds=_ssync_kinds_from_cs("consume"))
+    _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
+    _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
+    _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
+    _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
+    _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
+    _screen_sync.start()
+    print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
+          f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
 
     _init_backlight()
     _set_backlight(disp["ds"].get("brightness", 8))
