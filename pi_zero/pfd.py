@@ -6528,35 +6528,52 @@ def draw_mfd(surf, connected=True, data_stale=False):
         # renders all labels in the bottom data strip below instead.
     )
 
-    # ── Bottom data strip ─────────────────────────────────────────────
-    # Two-line data band between the corner zoom buttons.
-    #   Row 1: GS · TRK · RNG · ORIENT (always shown)
-    #   Row 2: ALT · (D2 ident · BRG · DIST · ETE when active)
+    # ── Top centre badges ──────────────────────────────────────────────
+    # RNG and orient (TRK↑/N↑) sit between the D2 button (top-left) and
+    # PFD button (top-right) with their own background plate so they don't
+    # blend into terrain.
     pad = 6
+    top_x0 = _MFD_D2_BTN_W + pad * 2
+    top_x1 = DISPLAY_W - _MFD_PFD_BTN_W - pad * 2
+    top_w  = top_x1 - top_x0
+    top_h  = _MFD_PFD_BTN_H
+    plate = pygame.Surface((top_w, top_h), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 180))
+    surf.blit(plate, (top_x0, pad))
+    pygame.draw.rect(surf, (60, 80, 110), (top_x0, pad, top_w, top_h),
+                     width=1, border_radius=4)
+    rng_lbl = _mfd_get_range_label()
+    orient_lbl = "TRK↑" if orient == "trk" else "N↑"
+    _text(surf, "RNG", 11, (140, 170, 200), bold=True,
+          x=top_x0 + 14, y=pad + 4)
+    _text(surf, rng_lbl, 20, WHITE, bold=True,
+          x=top_x0 + 14, y=pad + 14)
+    _text(surf, "ORIENT", 11, (140, 170, 200), bold=True,
+          x=top_x0 + top_w - 90, y=pad + 4)
+    _text(surf, orient_lbl, 20, WHITE, bold=True,
+          x=top_x0 + top_w - 90, y=pad + 14)
+
+    # ── Bottom data strip ─────────────────────────────────────────────
+    # Labeled column-style readouts.  Always shows GS / TRK / ALT on
+    # the left; WPT / BTW / DIST / ETE on the right when D2 is active.
     strip_h  = _MFD_ZOOM_BTN
     strip_y  = DISPLAY_H - strip_h - pad
     strip_x0 = _MFD_ZOOM_BTN + pad * 2
     strip_x1 = DISPLAY_W - _MFD_ZOOM_BTN - pad * 2
-    plate = pygame.Surface((strip_x1 - strip_x0, strip_h), pygame.SRCALPHA)
+    strip_w  = strip_x1 - strip_x0
+    plate = pygame.Surface((strip_w, strip_h), pygame.SRCALPHA)
     plate.fill((0, 8, 22, 180))
     surf.blit(plate, (strip_x0, strip_y))
     pygame.draw.rect(surf, (60, 80, 110),
-                     (strip_x0, strip_y, strip_x1 - strip_x0, strip_h),
+                     (strip_x0, strip_y, strip_w, strip_h),
                      width=1, border_radius=4)
-    rng_lbl = _mfd_get_range_label()
-    orient_lbl = "TRK↑" if orient == "trk" else "N↑"
-    # Row 1
-    _text(surf, f"GS  {int(round(gs_kt)):3d} KT", 16, WHITE, bold=True,
-          x=strip_x0 + 12, y=strip_y + 6)
-    _text(surf, f"TRK {int(round(track)) % 360:03d}°", 16, WHITE, bold=True,
-          x=strip_x0 + 130, y=strip_y + 6)
-    _text(surf, f"RNG {rng_lbl}", 16, (180, 200, 220), bold=True,
-          x=strip_x0 + 250, y=strip_y + 6)
-    _text(surf, orient_lbl, 16, (180, 200, 220), bold=True,
-          x=strip_x0 + 360, y=strip_y + 6)
-    # Row 2
-    _text(surf, f"ALT  {int(round(alt)):5d} FT", 16, WHITE, bold=True,
-          x=strip_x0 + 12, y=strip_y + 28)
+    # Helper — small caption above, big value below.
+    def _col(cx_off, caption, value, val_col=WHITE):
+        _text(surf, caption, 11, (140, 170, 200), bold=True,
+              cx=strip_x0 + cx_off, y=strip_y + 4)
+        _text(surf, value, 22, val_col, bold=True,
+              cx=strip_x0 + cx_off, cy=strip_y + 30)
+
     if d2 is not None:
         dist_nm, brg = _nav_geo_dist_brg(lat, lon, d2["lat"], d2["lon"])
         # ETE — needs ground speed; show dashes below taxi threshold.
@@ -6571,17 +6588,27 @@ def draw_mfd(surf, connected=True, data_stale=False):
                 ete = f"{h_}:{mm:02d}"
         else:
             ete = "--:--"
-        _text(surf, f"→ {d2['ident']}", 18, MAGENTA, bold=True,
-              x=strip_x0 + 150, y=strip_y + 26)
-        _text(surf,
-              f"{int(round(brg)) % 360:03d}°  {dist_nm:.1f} NM  ETE {ete}",
-              16, MAGENTA, bold=True,
-              x=strip_x0 + 250, y=strip_y + 28)
+        # 7 columns: GS / TRK / ALT / WPT / BTW / DIST / ETE
+        n_cols = 7
+        col_w = strip_w // n_cols
+        _col(col_w // 2 + col_w * 0, "GS",   f"{int(round(gs_kt)):3d}")
+        _col(col_w // 2 + col_w * 1, "TRK",  f"{int(round(track)) % 360:03d}°")
+        _col(col_w // 2 + col_w * 2, "ALT",  f"{int(round(alt)):5d}")
+        _col(col_w // 2 + col_w * 3, "WPT",  d2["ident"], val_col=MAGENTA)
+        _col(col_w // 2 + col_w * 4, "BTW",  f"{int(round(brg)) % 360:03d}°", val_col=MAGENTA)
+        _col(col_w // 2 + col_w * 5, "DIST", f"{dist_nm:.1f}", val_col=MAGENTA)
+        _col(col_w // 2 + col_w * 6, "ETE",  ete, val_col=MAGENTA)
+    else:
+        # No D2 active: 3 columns spanning the strip.
+        n_cols = 3
+        col_w = strip_w // n_cols
+        _col(col_w // 2 + col_w * 0, "GS",  f"{int(round(gs_kt)):3d} KT")
+        _col(col_w // 2 + col_w * 1, "TRK", f"{int(round(track)) % 360:03d}°")
+        _col(col_w // 2 + col_w * 2, "ALT", f"{int(round(alt)):5d} FT")
 
     # ── MFD chrome buttons ─────────────────────────────────────────────
     # D2 (top-left), PFD (top-right), zoom-out (bottom-left, "−"),
     # zoom-in (bottom-right, "+").
-    pad = 6
     # Top-right PFD button
     _action_btn(surf, DISPLAY_W - _MFD_PFD_BTN_W - pad, pad,
                 _MFD_PFD_BTN_W, _MFD_PFD_BTN_H, "PFD", "normal", r=5)
