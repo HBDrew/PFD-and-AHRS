@@ -339,9 +339,12 @@ def _ssync_publish_ahrs():
         return
     _ssync_last_ahrs_t = now
     _screen_sync.publish(_ssync_mod.KIND_AHRS, {
-        "pitch": float(disp.get("pitch", 0.0)),
-        "roll":  float(disp.get("roll",  0.0)),
-        "yaw":   float(disp.get("yaw",   0.0)),
+        "pitch":    float(disp.get("pitch", 0.0)),
+        "roll":     float(disp.get("roll",  0.0)),
+        "yaw":      float(disp.get("yaw",   0.0)),
+        # Include health so the receiving screen can mark its attitude
+        # indicator as live (no red X) when a peer's Pico is sourcing it.
+        "ahrs_ok":  bool(disp.get("ahrs_ok", False)),
     })
 
 
@@ -360,12 +363,22 @@ def _ssync_apply_ahrs(data):
                 state["roll"]  = float(data["roll"])
             if "yaw" in data:
                 state["yaw"]   = float(data["yaw"])
+            if "ahrs_ok" in data:
+                state["ahrs_ok"] = bool(data["ahrs_ok"])
     finally:
         _ssync_suppress_publish -= 1
 
 
 def _ssync_publish_gps():
-    """Broadcast GPS state at most 5 Hz."""
+    """Broadcast GPS + altitude + airspeed sensor outputs at most 5 Hz.
+
+    The "gps" category is the convenience bucket for everything the
+    Pico produces that isn't attitude — position, fused altitude / VS,
+    baro source flag, MS4525/SDP3x air-data.  On a setup where one
+    screen has the Pico and the other shadows it, RX of this category
+    is what makes the altimeter tape and airspeed source work without
+    a local sensor.
+    """
     global _ssync_last_gps_t
     if _screen_sync is None or _ssync_suppress_publish:
         return
@@ -376,25 +389,35 @@ def _ssync_publish_gps():
         return
     _ssync_last_gps_t = now
     _screen_sync.publish(_ssync_mod.KIND_GPS, {
-        "lat":     float(disp.get("lat", 0.0)),
-        "lon":     float(disp.get("lon", 0.0)),
-        "gps_alt": float(disp.get("gps_alt", 0.0)),
-        "speed":   float(disp.get("speed", 0.0)),
-        "track":   float(disp.get("track", 0.0)),
-        "gps_ok":  bool(disp.get("gps_ok", False)),
-        "fix":     int(disp.get("fix", 0)),
-        "sats":    int(disp.get("sats", 0)),
+        # Position
+        "lat":         float(disp.get("lat", 0.0)),
+        "lon":         float(disp.get("lon", 0.0)),
+        "gps_alt":     float(disp.get("gps_alt", 0.0)),
+        "speed":       float(disp.get("speed", 0.0)),
+        "track":       float(disp.get("track", 0.0)),
+        "gps_ok":      bool(disp.get("gps_ok", False)),
+        "fix":         int(disp.get("fix", 0)),
+        "sats":        int(disp.get("sats", 0)),
+        # Altitude / vertical
+        "alt":         float(disp.get("alt", 0.0)),
+        "vspeed":      float(disp.get("vspeed", 0.0)),
+        "baro_src":    str(disp.get("baro_src", "gps")),
+        "baro_ok":     bool(disp.get("baro_ok", False)),
+        # Air data
+        "ias_kt":      float(disp.get("ias_kt", 0.0)),
+        "tas_kt":      float(disp.get("tas_kt", 0.0)),
+        "airdata_ok":  bool(disp.get("airdata_ok", False)),
     })
 
 
 def _ssync_apply_gps(data):
-    """Inject remote GPS into shared state.  Same caveat as AHRS — if a
-    local source is also writing, it wins on the next sample."""
+    """Inject remote GPS + altitude + airspeed into shared state."""
     global _ssync_suppress_publish
     _ssync_suppress_publish += 1
     try:
         with _state_lock:
-            for k in ("lat", "lon", "gps_alt", "speed", "track"):
+            for k in ("lat", "lon", "gps_alt", "speed", "track",
+                      "alt", "vspeed", "ias_kt", "tas_kt"):
                 if k in data:
                     state[k] = float(data[k])
             if "gps_ok" in data:
@@ -403,6 +426,12 @@ def _ssync_apply_gps(data):
                 state["fix"] = int(data["fix"])
             if "sats" in data:
                 state["sats"] = int(data["sats"])
+            if "baro_src" in data:
+                state["baro_src"] = str(data["baro_src"])
+            if "baro_ok" in data:
+                state["baro_ok"] = bool(data["baro_ok"])
+            if "airdata_ok" in data:
+                state["airdata_ok"] = bool(data["airdata_ok"])
     finally:
         _ssync_suppress_publish -= 1
 
@@ -1962,6 +1991,12 @@ class SimFlyState:
             state["gps_ok"]  = True
             state["baro_ok"] = False
             state["baro_src"] = "gps"
+            # Faux air-data so the airspeed tape responds when the
+            # pilot picks IAS as the speed source in sim: IAS == GS
+            # (still air assumption), TAS scaled for ISA altitude.
+            state["ias_kt"]     = sim["init_spd"]
+            state["tas_kt"]     = sim["init_spd"]
+            state["airdata_ok"] = True
         # Seed bugs so the aircraft holds its initial state
         disp["hdg_bug"] = sim["init_hdg"]
         disp["alt_bug"] = sim["init_alt"]
@@ -2013,6 +2048,11 @@ class SimFlyState:
             spd_err = tgt_spd - spd
             d_spd   = max(-2.0 * dt, min(2.0 * dt, spd_err * 0.5))
             state["speed"] = max(0.0, spd + d_spd)
+            # Faux IAS/TAS track GS in sim (still air assumption) so the
+            # airspeed tape moves when the pilot has IAS as the source.
+            state["ias_kt"]     = state["speed"]
+            state["tas_kt"]     = state["speed"]
+            state["airdata_ok"] = True
 
             # ── Position ───────────────────────────────────────────────────────
             nm_s           = state["speed"] / 3600.0
@@ -8192,6 +8232,16 @@ def main():
 
         if _sse_client:
             connected = _sse_client.connected
+            # If the local SSE/serial link is down but a peer screen is
+            # actively shadowing us data over UDP, treat the link as
+            # alive — the NO LINK badge is about "no data source", not
+            # "no SSE socket".  Without this the badge stays red on a
+            # screen whose only source is a sibling PFD's published
+            # AHRS / GPS feed.
+            if (not connected and _screen_sync is not None):
+                _peers, _age = _screen_sync.peer_status()
+                if _peers > 0 and _age is not None and _age < 3.0:
+                    connected = True
             disp["cs"]["ahrs_ok"] = connected
             # Stale-data timeout: track when link first dropped
             if not connected:
