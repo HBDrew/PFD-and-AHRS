@@ -7750,7 +7750,24 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # ── MFD: full-screen moving map (replaces the PFD when toggled) ──────────
     if disp.get("display_mode", "pfd") == "mfd" and mode == "pfd":
+        # Terrain / obstacle alerts work on the MFD too.  Use the
+        # higher of GPS GS and IAS (when airdata_ok) so the alert
+        # arms whichever speed source the pilot has selected — and
+        # actually fires sooner when both are available.  gps_ok is
+        # still required since we need position for the lookups.
+        _alert_speed = disp.get("speed", 0.0)
+        if disp.get("airdata_ok"):
+            _alert_speed = max(_alert_speed, disp.get("ias_kt", 0.0))
+        _update_terrain_alert(
+            disp.get("lat", 0.0), disp.get("lon", 0.0),
+            disp.get("alt", 0.0), _alert_speed,
+            disp.get("gps_ok", False),
+            vso_kt=disp["fp"].get("vs0", VS0))
         draw_mfd(surf, connected=connected, data_stale=data_stale)
+        # Banner overlaid on top of the MFD chrome — same position the
+        # PFD uses (top-centre between the D2 and PFD buttons there's
+        # plenty of clear space at y=3).
+        draw_terrain_alert(surf)
         return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
@@ -7843,7 +7860,13 @@ def render(surf, demo_mode, connected, data_stale=False):
     ai_rect = (AI_X, AI_Y, AI_W, AI_H)
 
     # 0. Compute terrain/obstacle alert level for this frame
-    _update_terrain_alert(lat, lon, alt, speed, gps_ok,
+    # Pick the better speed source for alert gating: max of GS and IAS
+    # (when airdata_ok) so we don't wait for GPS to spin up before
+    # alerts arm on a Pico that has both.
+    _alert_speed = speed
+    if disp.get("airdata_ok"):
+        _alert_speed = max(_alert_speed, disp.get("ias_kt", 0.0))
+    _update_terrain_alert(lat, lon, alt, _alert_speed, gps_ok,
                           vso_kt=fp.get("vs0", VS0))
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground
