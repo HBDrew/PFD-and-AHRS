@@ -6381,7 +6381,8 @@ def system_setup_hit(x, y):
 
 _FW_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
 _FW_SCRIPTS = ["main.py", "config.py", "web_server.py", "wt901.py",
-               "bme280.py", "gps.py", "airdata.py", "sdp31.py"]
+               "bme280.py", "gps.py", "airdata.py", "sdp31.py",
+               "ms4525.py", "ahrs_filter.py"]
 _IPHONE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "iphone_display")
 _FW_WEB     = ["index.html", "terrain.js", "sw.js", "manifest.webmanifest", "icon-192.png"]
 _FW_ROW_H   = 72
