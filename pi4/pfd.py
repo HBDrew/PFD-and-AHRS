@@ -3485,6 +3485,42 @@ def handle_event(event, demo_mode):
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
 
+    # ── Drag-to-scroll on setup screens ──────────────────────────────────────
+    # We defer the tap-fire on BUTTONDOWN inside a drag-capable setup
+    # screen, watch MOTION to detect a scroll-drag, and on BUTTONUP either
+    # consume the drag (no action fires) or replay the tap at the up
+    # position so the underlying row-hit code runs as if nothing happened.
+    global _ss_drag, _dispatch_replay
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        x, y = pos
+        dy = y - _ss_drag["down_y"]
+        if not _ss_drag["is_drag"] and abs(dy) > _SS_DRAG_THRESHOLD:
+            _ss_drag["is_drag"] = True
+        if _ss_drag["is_drag"]:
+            mode = _ss_drag["mode"]
+            n_rows = _SS_DRAG_MODES.get(mode, 5)
+            max_s = _ss_max_scroll(n_rows)
+            new_scroll = _ss_drag["scroll_at_down"] - dy
+            _ss_scroll[mode] = max(0, min(max_s, new_scroll))
+        _ss_drag["pos"] = (x, y)
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _ss_drag is not None:
+        d = _ss_drag
+        _ss_drag = None
+        if not d["is_drag"]:
+            _dispatch_replay = True
+            try:
+                fake = pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN,
+                    {"pos": d["pos"], "button": 1})
+                handle_event(fake, demo_mode)
+            finally:
+                _dispatch_replay = False
+        return True
+
     # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
         # Skip if this is part of a multi-touch gesture
@@ -3497,19 +3533,43 @@ def handle_event(event, demo_mode):
 
         mode = disp["mode"]
 
+        # Defer tap-fire on drag-capable setup screens — except taps inside
+        # the title bar (back button), which still fire immediately.
+        if (not _dispatch_replay
+                and mode in _SS_DRAG_MODES
+                and y >= _SS_TITLE_BAR_H):
+            _ss_drag = {
+                "mode":           mode,
+                "down_x":         x,
+                "down_y":         y,
+                "pos":            (x, y),
+                "scroll_at_down": _ss_scroll.get(mode, 0),
+                "is_drag":        False,
+            }
+            return True
+
         # ── Setup screen taps ─────────────────────────────────────────────
         if mode == "setup":
             idx = setup_hit(x, y)
             if   idx == 5: disp["mode"] = "pfd"
-            elif idx == 0: disp["mode"] = "flight_profile"
-            elif idx == 1: disp["mode"] = "display_setup"
-            elif idx == 2: disp["mode"] = "ahrs_setup"
+            elif idx == 0:
+                _ss_reset_scroll("flight_profile")
+                disp["mode"] = "flight_profile"
+            elif idx == 1:
+                _ss_reset_scroll("display_setup")
+                disp["mode"] = "display_setup"
+            elif idx == 2:
+                _ss_reset_scroll("ahrs_setup")
+                disp["mode"] = "ahrs_setup"
             elif idx == 3:
                 actual = disp["cs"].get("wifi_actual", "")
                 if actual:
                     disp["cs"]["wifi_ssid"] = actual
+                _ss_reset_scroll("connectivity_setup")
                 disp["mode"] = "connectivity_setup"
-            elif idx == 4: disp["mode"] = "system_setup"
+            elif idx == 4:
+                _ss_reset_scroll("system_setup")
+                disp["mode"] = "system_setup"
             return True
 
         # ── Display settings taps ─────────────────────────────────────────
@@ -4618,12 +4678,57 @@ def keyboard_hit(x, y):
 
 _SS_MX  = 12     # side margin
 _SS_Y0  = 52     # first row top (44px title bar + 8px gap)
-_SS_RH  = 62     # row height (62 lets 6 rows fit in 480px)
+_SS_RH  = 62     # row height
 _SS_GAP = 6      # gap between rows
+
+# Per-setup-screen scroll offsets (in pixels). Keyed by disp["mode"].
+# Used when a screen's content exceeds the available vertical area below
+# the title bar.
+_ss_scroll = {}
+
+_SS_TITLE_BAR_H = 44
+
+# Drag-to-scroll state. Set on MOUSEBUTTONDOWN/FINGERDOWN inside a drag-
+# capable setup screen, cleared on UP. Motion exceeding _SS_DRAG_THRESHOLD
+# converts the touch from "tap" to "drag".
+_ss_drag = None
+_SS_DRAG_THRESHOLD = 8
+_SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
+    "ahrs_setup":         8,
+    "display_setup":      10,
+    "system_setup":       9,
+    "connectivity_setup": 6,
+    "flight_profile":     8,
+    "ahrs_firmware":      5,
+}
+_dispatch_replay = False
 
 
 def _ss_row_y(i):
-    return _SS_Y0 + i * (_SS_RH + _SS_GAP)
+    base = _SS_Y0 + i * (_SS_RH + _SS_GAP)
+    return base - _ss_scroll.get(disp.get("mode", ""), 0)
+
+
+def _ss_content_h(n_rows):
+    return _SS_Y0 + n_rows * (_SS_RH + _SS_GAP) - _SS_GAP
+
+
+def _ss_max_scroll(n_rows):
+    visible = DISPLAY_H - _SS_TITLE_BAR_H
+    return max(0, _ss_content_h(n_rows) - _SS_TITLE_BAR_H - visible)
+
+
+def _ss_clip_to_content(surf):
+    """Clip drawing to the area below the title bar.  Returns the previous
+    clip so the caller can restore it via surf.set_clip(prev)."""
+    prev = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, _SS_TITLE_BAR_H,
+                              DISPLAY_W, DISPLAY_H - _SS_TITLE_BAR_H))
+    return prev
+
+
+def _ss_reset_scroll(mode):
+    _ss_scroll.pop(mode, None)
 
 
 def _screen_header(surf, title):
@@ -4775,6 +4880,7 @@ def _dsp_layers_geom(bx, bw):
 
 def draw_display_setup(surf, ds):
     _screen_header(surf, "DISPLAY")
+    _prev_clip = _ss_clip_to_content(surf)
     for ri, row in enumerate(_DSP_ROWS):
         key, label, sub, opts_v, opts_l, bw_each = row
         bx, by, bw, bh = _setting_row(surf, ri, label, sub)
@@ -4816,6 +4922,7 @@ def draw_display_setup(surf, ds):
         _seg_btn(surf,
                  rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
                  ry, _DSP_LAYERS_BTN_W, _DSP_BTN_H, lbl, active)
+    surf.set_clip(_prev_clip)
 
 
 def display_setup_hit(x, y, ds):
@@ -5080,6 +5187,7 @@ def _approach_cancel():
 
 def draw_ahrs_setup(surf, ss):
     _screen_header(surf, "AHRS / SENSORS")
+    _prev_clip = _ss_clip_to_content(surf)
 
     # Row 0: Pitch trim
     bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction")
@@ -5199,6 +5307,7 @@ def draw_ahrs_setup(surf, ss):
     else:
         _action_btn(surf, inh_bx, inh_by, inh_w, _DSP_BTN_H,
                     "INHIBIT", "normal")
+    surf.set_clip(_prev_clip)
 
 
 def ahrs_setup_hit(x, y, ss):
@@ -5447,6 +5556,7 @@ def _cs_val_box(surf, bx, by, bw, bh, key, val):
 
 def draw_connectivity_setup(surf, cs):
     _screen_header(surf, "CONNECTIVITY")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
 
     # Rows 0-2: editable fields (URL / SSID / password)
@@ -5515,6 +5625,7 @@ def draw_connectivity_setup(surf, cs):
     _action_btn(surf, bx,                _CS_BTN_Y, third, _CS_BTN_H, "SCAN WIFI",  "normal")
     _action_btn(surf, bx+third+10,       _CS_BTN_Y, third, _CS_BTN_H, "APPLY WIFI", "warn")
     _action_btn(surf, bx+2*(third+10),   _CS_BTN_Y, third, _CS_BTN_H, "TEST AHRS",  "ok")
+    surf.set_clip(_prev_clip)
 
 
 def connectivity_setup_hit(x, y, cs):
@@ -5580,6 +5691,7 @@ def _sys_data_tile(surf, bx, by, bw, bh, label, sub, active=True):
 
 def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     _gps_ok   = disp.get("gps_ok", False)
     _gps_comm = disp.get("gps_comm", False)
@@ -5658,6 +5770,7 @@ def draw_system_setup(surf):
     _action_btn(surf, bx,           sim_y,      half_w, _SYS_BTN_H, "SIMULATOR",       "ok")
     _action_btn(surf, bx+half_w+10, sim_y,      half_w, _SYS_BTN_H, "RESET DEFAULTS",  "danger")
     _action_btn(surf, bx,           quit_y,     bw,     _SYS_BTN_H, "QUIT PFD",        "danger")
+    surf.set_clip(_prev_clip)
 
 
 def system_setup_hit(x, y):
@@ -5877,6 +5990,7 @@ def _do_flash_uf2():
 
 def draw_ahrs_firmware(surf):
     _screen_header(surf, "AHRS FIRMWARE")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     fw = disp["fw"]
 
@@ -5938,6 +6052,7 @@ def draw_ahrs_firmware(surf):
     flash_style = "normal" if fw.get("flash_state") != "flashing" else "warn"
     _action_btn(surf, bx,          btn_y, half, 54, "PUSH SCRIPTS TO PICO", push_style)
     _action_btn(surf, bx+half+10,  btn_y, half, 54, "FLASH .UF2",           flash_style)
+    surf.set_clip(_prev_clip)
 
 
 def ahrs_firmware_hit(x, y):
