@@ -756,10 +756,30 @@ def _get_font(size: int, bold: bool = False):
     return _fonts[key]
 
 
+# LRU cache of rendered text surfaces.  pi_zero calls _text dozens of
+# times per frame (tape ticks, readouts, status labels) and font.render
+# allocates a fresh SDL surface each call — at 12 fps that was a major
+# source of memory churn, contributing to OOM-reboots during sustained
+# high-FPS scenes like a steep turn.  The cache caps at 512 entries
+# (~3 MB worst case for typical label sizes), evicting LRU on overflow.
+import collections as _collections_text
+_TEXT_CACHE_MAX = 512
+_text_cache: "_collections_text.OrderedDict" = _collections_text.OrderedDict()
+
+
 def _text(surf, txt, size, colour, cx=None, cy=None, x=None, y=None, bold=False):
     """Render text centred on (cx,cy) or top-left at (x,y)."""
-    fnt = _get_font(size, bold)
-    img = fnt.render(str(txt), True, colour)
+    txt_s = str(txt)
+    key = (txt_s, size, colour, bold)
+    img = _text_cache.get(key)
+    if img is None:
+        fnt = _get_font(size, bold)
+        img = fnt.render(txt_s, True, colour)
+        _text_cache[key] = img
+        if len(_text_cache) > _TEXT_CACHE_MAX:
+            _text_cache.popitem(last=False)
+    else:
+        _text_cache.move_to_end(key)
     if cx is not None:
         rx = cx - img.get_width() // 2
     else:
@@ -1378,6 +1398,8 @@ def alt_y(ft, alt):  return int(TAPE_MID - (ft - alt)  * PX_PER_FT)
 
 _spd_tape_bg = None   # cached speed-tape background surface
 _alt_tape_bg = None   # cached alt-tape background surface
+_hdg_tape_bg = None   # cached heading-tape background surface
+_red_x_overlays = {}  # cached red-X overlay panels keyed by (w, h)
 
 
 def draw_speed_tape(surf, speed, gs_bug=None,
@@ -1624,7 +1646,14 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
     pointer is suppressed (it would just sit at centre) and the readout box
     shows a small "TRK" sub-label instead of "MAG".
     """
-    hdg_surf = pygame.Surface((DISPLAY_W, HDG_H), pygame.SRCALPHA)
+    # Cache the background plate — at 12+ fps on Pi Zero 2W the repeated
+    # SDL surface alloc + free here was a significant memory churn,
+    # especially in a sustained turn when the tape is repainted every
+    # frame.  Allocate once, fill each call.
+    global _hdg_tape_bg
+    if _hdg_tape_bg is None:
+        _hdg_tape_bg = pygame.Surface((DISPLAY_W, HDG_H), pygame.SRCALPHA)
+    hdg_surf = _hdg_tape_bg
     hdg_surf.fill((0, 8, 22, 210))
     surf.blit(hdg_surf, (0, HDG_Y))
     pygame.draw.line(surf, (255, 255, 255, 80), (0, HDG_Y), (DISPLAY_W, HDG_Y), 1)
@@ -1879,8 +1908,16 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
 # ── Red-X failure overlays ────────────────────────────────────────────────────
 def draw_red_x(surf, x, y, w, h, label):
     """Semi-transparent dark overlay with red X and label."""
-    ov = pygame.Surface((w, h), pygame.SRCALPHA)
-    ov.fill((20, 0, 0, 160))
+    # Cache by (w, h) — there are only ~4 overlay sizes (attitude / hdg /
+    # speed / alt) so the dict stays small.  Repeated alloc + free of
+    # SRCALPHA surfaces was a hot allocator during sustained AHRS-fail
+    # overlays (e.g. NO LINK during data_stale).
+    key = (int(w), int(h))
+    ov = _red_x_overlays.get(key)
+    if ov is None:
+        ov = pygame.Surface((w, h), pygame.SRCALPHA)
+        ov.fill((20, 0, 0, 160))
+        _red_x_overlays[key] = ov
     surf.blit(ov, (x, y))
     pygame.draw.line(surf, RED, (x + 4, y + 4), (x + w - 4, y + h - 4), 3)
     pygame.draw.line(surf, RED, (x + w - 4, y + 4), (x + 4, y + h - 4), 3)

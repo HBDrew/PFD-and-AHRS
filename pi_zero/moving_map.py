@@ -106,6 +106,20 @@ _TINT_CACHE_MAX = 4   # pi4 uses 6; pi_zero gets less RAM, so trim.
 _TINT_N = 48          # elevation samples per side; smoothscaled up to fit.
                       # pi4 uses 64 — 48 cuts the build cost by ~45 %.
 
+# Cached overlay surfaces keyed by (w, h) so render() doesn't allocate
+# a fresh full-screen SRCALPHA each frame.  Only one entry in practice
+# (the inset size doesn't change at runtime).
+_veil_cache: dict = {}
+
+# Cached airport ident labels keyed by (ident, font id).  The 33 pt
+# font on pi_zero MFD makes each font.render call a real cost; the
+# cache holds rendered labels so repeated frames reuse them.  Capped
+# at 256 entries (LRU eviction) so a long cross-country flight doesn't
+# grow the cache unbounded as the visible set shifts.
+import collections as _collections_mm
+_APT_LABEL_CACHE_MAX = 256
+_apt_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
+
 
 def _quantise_centre(lat, lon, range_nm):
     """Snap the centre to ~10% of the visible range so light pan motion
@@ -574,9 +588,15 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
                     surf.blit(overlay_r, o_rect)
 
-    # Slightly darker veil under vector layers so labels read cleanly
-    veil = pygame.Surface((w, h), pygame.SRCALPHA)
-    veil.fill((0, 0, 0, 60))
+    # Slightly darker veil under vector layers so labels read cleanly.
+    # Cache by (w, h) — on the pi_zero MFD this is a full-screen-sized
+    # SRCALPHA surface (640×480 = ~1.2 MB), and re-allocating it every
+    # frame at 12+ fps was a major source of SDL surface churn.
+    veil = _veil_cache.get((w, h))
+    if veil is None:
+        veil = pygame.Surface((w, h), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 60))
+        _veil_cache[(w, h)] = veil
     surf.blit(veil, (x, y))
 
     # ── State / province lines ──────────────────────────────────────────────
@@ -683,7 +703,20 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     pygame.draw.circle(surf, _APT_PUB, (ix, iy),
                                        4 if atype in ("M", "L") else 3)
                 if font is not None and range_nm <= 10:
-                    lbl = font.render(str(ids[i]), True, _APT_PUB)
+                    # Cache rendered idents — at 33 pt, font.render on
+                    # Pi Zero costs ~250 µs/call, and the same idents
+                    # repeat every frame as long as the aircraft sits
+                    # over the same area.
+                    ident_str = str(ids[i])
+                    cache_key = (ident_str, id(font))
+                    lbl = _apt_label_cache.get(cache_key)
+                    if lbl is None:
+                        lbl = font.render(ident_str, True, _APT_PUB)
+                        _apt_label_cache[cache_key] = lbl
+                        if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                            _apt_label_cache.popitem(last=False)
+                    else:
+                        _apt_label_cache.move_to_end(cache_key)
                     surf.blit(lbl, (ix + 5, iy - 7))
                 drawn += 1
 
