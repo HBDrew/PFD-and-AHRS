@@ -1280,7 +1280,12 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     surf.set_clip(pygame.Rect(ax, ay, aw, ah))
 
     cx  = ax + aw // 2
-    cy  = ay + ah // 2
+    # Anchor horizon at TAPE_MID — same reference as draw_pitch_ladder's
+    # zero-pitch line.  _full_ai (the rect this is called with) has its
+    # geometric centre above TAPE_MID, which produced a ~1° gap between
+    # this fallback horizon and the pitch ladder when SVT couldn't paint
+    # (no GPS / no SRTM tiles).
+    cy  = TAPE_MID
 
     roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
