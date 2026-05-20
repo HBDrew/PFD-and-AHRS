@@ -1,0 +1,810 @@
+"""
+moving_map.py – 2D top-down moving-map inset for the lower-left of the AI.
+
+Pure pygame; no GL.  Reuses the existing shared/airports, shared/runways,
+shared/obstacles and shared/terrain caches that the SVT and overlays
+already keep loaded.
+
+Layers (painter's order):
+  1. Black background
+  2. Hypsometric terrain tint   (cached surface, rebuilt only on pan/zoom)
+  3. Runway centerlines
+  4. Obstacle dots
+  5. Airport markers
+  6. Direct-to course line + waypoint diamond
+  7. Own-ship symbol at centre
+  8. Range ring + corner labels
+  9. Frame border
+
+Track-up: own-ship at centre, map rotates so track is up.
+North-up: own-ship anchored at centre, north stays up.
+"""
+
+import math
+import os
+import threading
+import pygame
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
+import sys as _sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_sys.path.insert(0, os.path.join(_HERE, "..", "shared"))
+
+import airports as _apt_mod    # noqa: E402
+try:
+    import runways as _rwy_mod   # noqa: E402
+except ImportError:
+    _rwy_mod = None
+import obstacles as _obs_mod   # noqa: E402
+import water as _water_mod     # noqa: E402
+from terrain import load_tile  # noqa: E402
+
+
+# Water tint — slightly darker than the SVT mid-distance water_color so
+# the inset reads as "ocean" rather than "sky reflection" against the
+# panel background.
+_WATER_TINT_RGB = (45, 80, 120)
+
+
+_NM_PER_DEG_LAT = 60.0
+
+
+def _gc_interp(la1, lo1, la2, lo2, f):
+    """Lat/lon at fraction f ∈ [0, 1] along the great circle from 1 to 2.
+    Same slerp the SVT direct-to trace uses — keeps the inset's D2 line
+    visually consistent with the CDI (which measures XTK off the GC) and
+    the 3D trace painted on the AI."""
+    phi1 = math.radians(la1); lam1 = math.radians(lo1)
+    phi2 = math.radians(la2); lam2 = math.radians(lo2)
+    dphi = phi2 - phi1
+    dlam = lam2 - lam1
+    a = (math.sin(dphi * 0.5) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam * 0.5) ** 2)
+    d = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    if d < 1e-9:
+        return la1, lo1
+    sd = math.sin(d)
+    A = math.sin((1.0 - f) * d) / sd
+    B = math.sin(f * d) / sd
+    x = A * math.cos(phi1) * math.cos(lam1) + B * math.cos(phi2) * math.cos(lam2)
+    y = A * math.cos(phi1) * math.sin(lam1) + B * math.cos(phi2) * math.sin(lam2)
+    z = A * math.sin(phi1) + B * math.sin(phi2)
+    return (math.degrees(math.atan2(z, math.hypot(x, y))),
+            math.degrees(math.atan2(y, x)))
+
+# Inset chrome
+_BG          = (0, 0, 0)
+_FRAME       = (60, 80, 110)
+_LABEL       = (180, 200, 220)
+_RING        = (110, 140, 180)
+_OWNSHIP     = (255, 220, 50)
+_RWY_COL     = (220, 220, 230)
+_OBS_COL     = (220, 80, 80)
+_APT_PUB     = (60, 220, 80)
+_APT_HELI    = (200, 80, 200)
+_APT_WATER   = (80, 160, 220)
+_APT_OTHER   = (200, 160, 80)
+_D2_MAGENTA  = (220, 0, 220)
+_HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
+_STATE_LINE  = (110, 130, 160)      # muted slate-blue: visible over tint
+                                    # without competing with airports / D2
+
+
+# ── Hypsometric terrain tint cache ────────────────────────────────────────────
+# Building the tint is the only expensive work on the inset.  At cruise the
+# centre moves slowly, so quantising it lets one cached surface serve many
+# frames.  The cache holds a few entries to absorb pan motion and zoom changes
+# without thrashing.
+
+_tint_cache: dict = {}
+_TINT_CACHE_MAX = 6
+_TINT_N = 64       # elevation samples per side; smoothscaled up to fit
+
+
+def _quantise_centre(lat, lon, range_nm):
+    """Snap the centre to ~10% of the visible range so light pan motion
+    re-uses the same cached surface."""
+    step_deg = max(0.002, (range_nm / _NM_PER_DEG_LAT) * 0.10)
+    cos_lat = max(0.05, math.cos(math.radians(lat)))
+    return (round(lat / step_deg) * step_deg,
+            round(lon / (step_deg / cos_lat)) * (step_deg / cos_lat))
+
+
+# Vectorised palette breakpoints, used by np.interp inside _build_tint.
+# Mirrors PALETTE_ABSOLUTE in shared/terrain.py — keep in sync.
+if HAS_NUMPY:
+    _PAL_X = np.array([0, 2000, 4000, 6000, 8000, 10000, 13000],
+                      dtype=np.float32)
+    _PAL_R = np.array([30,  80, 130, 160, 190, 210, 240], dtype=np.float32)
+    _PAL_G = np.array([100, 110,  95,  65,  80, 195, 240], dtype=np.float32)
+    _PAL_B = np.array([30,  40,  45,  25,  35, 185, 245], dtype=np.float32)
+
+
+# Wide-zoom tints (80 nm and above) sample ~64 SRTM tiles, which evicts the
+# 32-entry SRTM cache and forces ~30 s of disk I/O on the render thread when
+# the user steps zoom out. Mirror the SVT outer-mesh strategy: numpy work
+# happens on a worker thread, pygame surface finalisation stays on the main
+# thread (pygame's surface APIs are not thread-safe), and the renderer
+# paints around a None tint while the build is in flight.
+_TINT_SYNC_MAX_NM = 40           # range cap for synchronous builds
+_TINT_RENDER_MAX_NM = 80         # range cap for rendering the tint at all
+                                 # — above this, SRTM I/O is too heavy
+_tint_async_lock = threading.Lock()
+_tint_pending: set = set()       # keys currently being built on a worker
+_tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
+
+
+def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
+    """Numpy-only pixel builder for the hypsometric tint. Returns
+    (rgb (n, n, 3) uint8, elevs (n, n) float32) — north-up — or
+    (None, None) when numpy isn't available. Safe to call from a
+    background worker because it never touches a pygame surface."""
+    if not HAS_NUMPY:
+        return None, None
+    n = _TINT_N
+    span_nm = 2.0 * range_nm * oversize
+    span_lat = span_nm / _NM_PER_DEG_LAT
+    cos_lat = max(0.05, math.cos(math.radians(c_lat)))
+    span_lon = span_lat / cos_lat
+
+    lat_top = c_lat + span_lat * 0.5
+    lat_bot = c_lat - span_lat * 0.5
+    lon_lf  = c_lon - span_lon * 0.5
+    lon_rt  = c_lon + span_lon * 0.5
+
+    rows_lat = np.linspace(lat_top, lat_bot, n, dtype=np.float64)
+    cols_lon = np.linspace(lon_lf,  lon_rt,  n, dtype=np.float64)
+    sample_lat = np.broadcast_to(rows_lat[:, None], (n, n))
+    sample_lon = np.broadcast_to(cols_lon[None, :], (n, n))
+
+    elevs = np.zeros((n, n), dtype=np.float32)
+    water = np.zeros((n, n), dtype=bool)
+
+    lat_int = np.floor(sample_lat).astype(np.int32)
+    lon_int = np.floor(sample_lon).astype(np.int32)
+    enc = ((lat_int.astype(np.int64) + 90) * 1000 +
+           (lon_int.astype(np.int64) + 360))
+
+    for tile_key in np.unique(enc):
+        tla = int(tile_key) // 1000 - 90
+        tlo = int(tile_key) %  1000 - 360
+        mask = (lat_int == tla) & (lon_int == tlo)
+        if not mask.any():
+            continue
+
+        sres = load_tile(srtm_dir, tla, tlo)
+        if sres is not None:
+            sarr, sn = sres
+            sstep = 1.0 / (sn - 1)
+            srow = np.clip(
+                np.round((tla + 1 - sample_lat) / sstep).astype(np.int32),
+                0, sn - 1)
+            scol = np.clip(
+                np.round((sample_lon - tlo) / sstep).astype(np.int32),
+                0, sn - 1)
+            elevs[mask] = sarr[srow[mask], scol[mask]]
+
+        if water_dir:
+            wres = _water_mod.load_tile(water_dir, tla, tlo)
+            if wres is not None:
+                wmask, wn = wres
+                wstep = 1.0 / (wn - 1)
+                wrow = np.clip(
+                    np.round((tla + 1 - sample_lat) / wstep).astype(np.int32),
+                    0, wn - 1)
+                wcol = np.clip(
+                    np.round((sample_lon - tlo) / wstep).astype(np.int32),
+                    0, wn - 1)
+                water[mask] = wmask[wrow[mask], wcol[mask]] > 0
+
+    rgb_r = np.interp(elevs, _PAL_X, _PAL_R).astype(np.uint8)
+    rgb_g = np.interp(elevs, _PAL_X, _PAL_G).astype(np.uint8)
+    rgb_b = np.interp(elevs, _PAL_X, _PAL_B).astype(np.uint8)
+    rgb = np.stack([rgb_r, rgb_g, rgb_b], axis=-1)
+    if water.any():
+        rgb[water] = _WATER_TINT_RGB
+    return rgb, elevs
+
+
+def _finalize_tint_surface(rgb, target_px):
+    """Main-thread pygame finalize: rgb (n, n, 3) uint8 → smoothscaled
+    Surface at target_px. Called from _tint_get when picking up a
+    background-built result."""
+    if rgb is None:
+        surf = pygame.Surface((target_px, target_px))
+        surf.fill(_BG)
+        return surf
+    tile = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
+    return pygame.transform.smoothscale(tile, (target_px, target_px))
+
+
+def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
+    """Synchronous build path — used for close-range tints where the I/O
+    cost is bounded by the SRTM tile cache. Wide ranges go through the
+    async path in _tint_get instead."""
+    target_px = max(8, int(size_px * oversize))
+    if not HAS_NUMPY:
+        n = _TINT_N
+        tile = pygame.Surface((n, n))
+        tile.fill(_BG)
+        return pygame.transform.smoothscale(tile, (target_px, target_px)), None
+    rgb, elevs = _build_tint_pixels(srtm_dir, water_dir,
+                                    c_lat, c_lon, range_nm, oversize)
+    return _finalize_tint_surface(rgb, target_px), elevs
+
+
+def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
+                       range_nm, oversize, key):
+    """Worker thread: do the heavy numpy work, post the result for the
+    main thread to convert into a pygame surface on the next render."""
+    try:
+        rgb, elevs = _build_tint_pixels(srtm_dir, water_dir,
+                                        c_lat, c_lon, range_nm, oversize)
+        with _tint_async_lock:
+            _tint_ready[key] = (rgb, elevs)
+    except Exception as e:
+        print(f"[moving_map] async tint build failed: {e}")
+    finally:
+        with _tint_async_lock:
+            _tint_pending.discard(key)
+
+
+# SVT clearance bands.  Mirror the palette in svt_renderer.py so a pixel
+# painted red on the AI shows up red on the inset and vice versa.
+_ALERT_RED_FT    = 0     # clearance < 0 ft  → terrain at/above aircraft
+_ALERT_ORANGE_FT = 100   # clearance < 100 ft → SVT "warning" band
+_ALERT_AMBER_FT  = 500   # clearance < 500 ft → SVT "caution" band
+_ALERT_RGBA = {
+    "red":    (220,  30,  30, 220),
+    "orange": (220,  80,   0, 200),
+    "amber":  (200, 130,   0, 170),
+}
+
+
+def _build_alert_overlay(elev_grid, alt_ft, target_px):
+    """RGBA overlay painting clearance < 500 ft pixels in SVT colours.
+
+    Reuses the cached north-up (n × n) elevation grid; the comparison
+    against current alt_ft happens every frame so the overlay tracks
+    altitude even while the underlying hypsometric tint is cache-hot."""
+    if not HAS_NUMPY or elev_grid is None:
+        return None
+    n = elev_grid.shape[0]
+    clearance = alt_ft - elev_grid
+
+    rgba = np.zeros((n, n, 4), dtype=np.uint8)
+    m_red    = clearance < _ALERT_RED_FT
+    m_orange = (~m_red) & (clearance < _ALERT_ORANGE_FT)
+    m_amber  = (clearance >= _ALERT_ORANGE_FT) & (clearance < _ALERT_AMBER_FT)
+    rgba[m_red]    = _ALERT_RGBA["red"]
+    rgba[m_orange] = _ALERT_RGBA["orange"]
+    rgba[m_amber]  = _ALERT_RGBA["amber"]
+
+    if not (m_red.any() or m_orange.any() or m_amber.any()):
+        return None
+
+    tile = pygame.image.frombuffer(rgba.tobytes(), (n, n), 'RGBA')
+    return pygame.transform.smoothscale(tile, (target_px, target_px))
+
+
+def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
+    if not srtm_dir:
+        return None, None
+    q_lat, q_lon = _quantise_centre(c_lat, c_lon, range_nm)
+    # water_dir is part of the cache key so toggling water tiles on/off
+    # invalidates stale tints.  Empty string == no water sampling.
+    key = (round(q_lat, 4), round(q_lon, 4),
+           float(range_nm), int(size_px), round(oversize, 2),
+           bool(water_dir))
+    if key in _tint_cache:
+        entry = _tint_cache.pop(key)
+        _tint_cache[key] = entry
+        return entry
+
+    target_px = max(8, int(size_px * oversize))
+
+    # If a background worker has finished a build for this key, finalize
+    # it to a pygame surface here on the main thread and cache the result.
+    with _tint_async_lock:
+        ready = _tint_ready.pop(key, None)
+    if ready is not None:
+        rgb, elevs = ready
+        entry = (_finalize_tint_surface(rgb, target_px), elevs)
+        _tint_cache[key] = entry
+        while len(_tint_cache) > _TINT_CACHE_MAX:
+            _tint_cache.pop(next(iter(_tint_cache)))
+        return entry
+
+    # Close ranges: sync build (fits in the SRTM tile cache, fast enough
+    # that the render thread won't notice).
+    if range_nm <= _TINT_SYNC_MAX_NM:
+        entry = _build_tint(srtm_dir, water_dir, q_lat, q_lon,
+                            range_nm, size_px, oversize)
+        _tint_cache[key] = entry
+        while len(_tint_cache) > _TINT_CACHE_MAX:
+            _tint_cache.pop(next(iter(_tint_cache)))
+        return entry
+
+    # Wide ranges: hand off to a worker so the render thread stays
+    # responsive. Renderer paints a no-tint inset until the result
+    # comes back on a later frame.
+    with _tint_async_lock:
+        in_flight = key in _tint_pending
+        if not in_flight:
+            _tint_pending.add(key)
+    if not in_flight:
+        threading.Thread(
+            target=_tint_async_worker,
+            args=(srtm_dir, water_dir, q_lat, q_lon,
+                  range_nm, oversize, key),
+            daemon=True, name="MapTintBuild").start()
+    return None, None
+
+
+def _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
+                      project_fn):
+    """Draw admin_1 boundary polylines visible inside the inset bbox.
+
+    Uses each polyline's stored bbox to skip anything fully outside a
+    generous lat/lon window around the aircraft (1.6× the nominal range
+    on each axis — covers track-up rotation + the inset's longer axis).
+    Polylines that survive culling are projected through the caller's
+    project_fn (same rotation/translation used by every other vector
+    layer) and stroked as a single pygame.draw.lines call.
+    """
+    if state_lines is None or not HAS_NUMPY:
+        return
+
+    seg_starts = state_lines["seg_starts"]
+    seg_bboxes = state_lines["seg_bboxes"]   # (M, 4) lon_min, lat_min, lon_max, lat_max
+    points     = state_lines["points"]       # (N, 2) lon, lat
+    if len(seg_starts) <= 1:
+        return
+
+    # Visible lat/lon window — generous margin so a polyline that just
+    # clips the corner of the inset still draws cleanly.
+    d_lat = range_nm * 1.6 / _NM_PER_DEG_LAT
+    d_lon = range_nm * 1.6 / (_NM_PER_DEG_LAT * cos_lat)
+    lat_min, lat_max = lat - d_lat, lat + d_lat
+    lon_min, lon_max = lon - d_lon, lon + d_lon
+
+    # Vectorised AABB test: rejects ~99 % of the world's polylines.
+    overlaps = ((seg_bboxes[:, 0] <= lon_max)
+                & (seg_bboxes[:, 2] >= lon_min)
+                & (seg_bboxes[:, 1] <= lat_max)
+                & (seg_bboxes[:, 3] >= lat_min))
+    visible_idx = np.flatnonzero(overlaps)
+    if visible_idx.size == 0:
+        return
+
+    for idx in visible_idx:
+        s = int(seg_starts[idx])
+        e = int(seg_starts[idx + 1])
+        if e - s < 2:
+            continue
+        ring = points[s:e]
+        pts = [project_fn(float(la), float(lo)) for lo, la in ring]
+        # Quick screen-bbox reject: if every projected point is offscreen
+        # on the same side, skip the draw call entirely.
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        sx, sy, sw, sh = surf.get_clip()
+        if max(xs) < sx or min(xs) > sx + sw or \
+           max(ys) < sy or min(ys) > sy + sh:
+            continue
+        pygame.draw.lines(surf, _STATE_LINE, False,
+                          [(int(px), int(py)) for px, py in pts], 1)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
+           range_nm, settings,
+           airports_arr=None, runways_arr=None, obstacles_arr=None,
+           srtm_dir="", water_dir="", direct_to=None, font=None,
+           airport_types_visible=None, gs_kt=0.0, vso_kt=None,
+           range_label=None, state_lines=None):
+    """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
+
+    ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
+    at the inset's shorter axis (snap to 1/2/5/10/20/40 nm).  ``settings``
+    is ``disp["ds"]`` — used for per-layer toggles.
+
+    ``direct_to`` is an optional dict ``{"lat", "lon", "ident"}``; when
+    present, draws the magenta course line and waypoint diamond.
+    """
+    x, y, w, h = rect
+    if w < 16 or h < 16:
+        return
+
+    pygame.draw.rect(surf, _BG, rect)
+
+    # Map rotation: track-up rotates so current track points up.
+    # Fall back to magnetic heading when GPS track is None or 0 — that's
+    # the typical "stationary, GPS hasn't computed a track yet" state.
+    # Using hdg in that case keeps the inset rotating with the nose so
+    # the toggle is visibly different from north-up even before takeoff.
+    if orient == "trk":
+        if track_deg is None or track_deg == 0.0:
+            rot_deg = float(hdg_deg or 0.0)
+        else:
+            rot_deg = float(track_deg)
+    else:
+        rot_deg = 0.0
+
+    half_min = min(w, h) / 2
+    px_per_nm = half_min / max(0.5, range_nm)
+    cx, cy = x + w / 2.0, y + h / 2.0
+    cos_lat = max(0.05, math.cos(math.radians(lat)))
+
+    # World → inset projection, with optional track-up rotation.
+    # Sign matches `pygame.transform.rotate(tint, rot_deg)` below: that
+    # call rotates the cached terrain surface CCW by rot_deg so that
+    # current track ends up at the top of the inset.  Projecting world
+    # points the same direction (CCW by rot_deg in the math frame where
+    # +n is up) keeps runways, airports, obstacles and the direct-to
+    # course line visually aligned with the rotated tint instead of
+    # mirrored across the centre.
+    if rot_deg != 0.0:
+        rr = math.radians(rot_deg)
+        sin_r, cos_r = math.sin(rr), math.cos(rr)
+    else:
+        sin_r, cos_r = 0.0, 1.0
+
+    def _project(la, lo):
+        n_nm = (la - lat) * _NM_PER_DEG_LAT
+        e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+        if rot_deg != 0.0:
+            e2 = e_nm * cos_r - n_nm * sin_r
+            n2 = e_nm * sin_r + n_nm * cos_r
+            e_nm, n_nm = e2, n2
+        return cx + e_nm * px_per_nm, cy - n_nm * px_per_nm
+
+    old_clip = surf.get_clip()
+    surf.set_clip(rect)
+
+    # ── Hypsometric terrain tint ─────────────────────────────────────────────
+    # Water sampling is gated on the same map_show_water toggle the user
+    # already has on the Display setup screen — off → cells render as
+    # whatever PALETTE_ABSOLUTE puts at sea level (dark green), on →
+    # ocean cells override with a water-blue tint.
+    # Above _TINT_RENDER_MAX_NM the tint build pulls in ~64 SRTM1 tiles
+    # (≈1.6 GB across reads). Even with the async worker the SD-card I/O
+    # storm can OOM/swap a Pi 4 hard enough to lock the PFD up. Drop the
+    # tint entirely at the widest zoom — state lines, the D2 line, and
+    # the range ring still give whole-leg context.
+    if (settings.get("map_show_terrain", True) and srtm_dir
+            and range_nm <= _TINT_RENDER_MAX_NM):
+        oversize = 1.0 if orient == "nrth" else 1.45
+        _wd = water_dir if settings.get("map_show_water", True) else ""
+        tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
+                                    max(w, h), oversize)
+        if tint is None and range_nm > _TINT_SYNC_MAX_NM and font is not None:
+            # Async build in flight at 80 nm — small breadcrumb at centre
+            # so the pilot sees the inset is still alive while the
+            # worker churns through SRTM tile loads.
+            wait_surf = font.render("BUILDING…", True, _LABEL)
+            surf.blit(wait_surf,
+                      (int(cx) - wait_surf.get_width() // 2,
+                       int(cy) - wait_surf.get_height() // 2))
+        if tint is not None:
+            if orient == "trk" and rot_deg != 0.0:
+                tint_r = pygame.transform.rotate(tint, rot_deg)
+            else:
+                tint_r = tint
+            tr = tint_r.get_rect(center=(int(cx), int(cy)))
+            surf.blit(tint_r, tr)
+
+            # SVT-style clearance overlay (red / orange / amber).  Inhibit
+            # below Vso so taxi and rollout don't paint the inset red —
+            # mirrors how the PFD's TAWS banner is gated.
+            if vso_kt is not None and gs_kt >= vso_kt and elev_grid is not None:
+                overlay = _build_alert_overlay(
+                    elev_grid, alt_ft, max(w, h))
+                if overlay is not None:
+                    if orient == "trk" and rot_deg != 0.0:
+                        overlay_r = pygame.transform.rotate(overlay, rot_deg)
+                    else:
+                        overlay_r = overlay
+                    o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
+                    surf.blit(overlay_r, o_rect)
+
+    # Slightly darker veil under vector layers so labels read cleanly
+    veil = pygame.Surface((w, h), pygame.SRCALPHA)
+    veil.fill((0, 0, 0, 60))
+    surf.blit(veil, (x, y))
+
+    # ── State / province lines ──────────────────────────────────────────────
+    # Only useful once the inset is showing whole-region context; at close
+    # ranges they're indistinguishable noise and never within the visible
+    # bbox.  Bbox-culled in lat/lon space so the per-frame cost stays
+    # microseconds at any range.
+    if (state_lines is not None
+            and settings.get("map_show_state_lines", True)
+            and range_nm >= 20):
+        _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
+                          _project)
+
+    # ── Runways ──────────────────────────────────────────────────────────────
+    # Runway rectangles only carry useful detail at terminal-area zooms —
+    # above 5 nm they collapse to single pixels and clutter the screen.
+    if (_rwy_mod is not None
+            and settings.get("map_show_runways", True) and runways_arr is not None
+            and range_nm <= 5):
+        nearby = _rwy_mod.query_nearby(runways_arr, lat, lon,
+                                       radius_nm=range_nm * 1.4)
+        for r in nearby:
+            x1, y1 = _project(r.le_lat, r.le_lon)
+            x2, y2 = _project(r.he_lat, r.he_lon)
+            w_px = max(1, int(px_per_nm * (r.width_ft / 6076.0) * 0.5))
+            pygame.draw.line(surf, _RWY_COL,
+                             (int(x1), int(y1)), (int(x2), int(y2)), w_px)
+
+    # ── Obstacles ────────────────────────────────────────────────────────────
+    # Match the SVT display convention: only show obstacles within
+    # 1000 ft below the aircraft (collision-risk window); obstacles
+    # above are always shown (they're a hazard).  The defaults in
+    # obstacles.query_nearby already encode that, so just pass alt_ft.
+    # Above 10 nm range, obstacle dots turn into useless speckle (and
+    # the pilot is too far away to care), so they're hidden regardless
+    # of the master toggle.
+    if (settings.get("map_show_obstacles", True)
+            and obstacles_arr is not None
+            and range_nm <= 10):
+        nearby = _obs_mod.query_nearby(obstacles_arr, lat, lon,
+                                       radius_nm=range_nm * 1.4,
+                                       alt_ft=alt_ft)
+        if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
+            for la, lo in zip(nearby["lat"], nearby["lon"]):
+                ox, oy = _project(float(la), float(lo))
+                pygame.draw.circle(surf, _OBS_COL, (int(ox), int(oy)), 2)
+        else:
+            for o in nearby:
+                ox, oy = _project(o.lat, o.lon)
+                pygame.draw.circle(surf, _OBS_COL, (int(ox), int(oy)), 2)
+
+    # ── Airports ─────────────────────────────────────────────────────────────
+    # Per-type filtering matches the main PFD: caller passes a set of
+    # visible atype letters (S/M/L = public, H = helo, W = water, B = other).
+    # Default ``None`` = show every type the master toggle covers.
+    # Above 40 nm the airport dots smear into noise — the destination is
+    # still marked by the D2 waypoint diamond drawn below, which is what
+    # the pilot actually cares about at whole-leg scale.
+    if (settings.get("map_show_airports", True) and airports_arr is not None
+            and range_nm <= 40):
+        nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
+                                       radius_nm=range_nm * 1.4)
+        if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
+            ids   = nearby["ident"]
+            types = nearby["atype"]
+            lats  = nearby["lat"]
+            lons  = nearby["lon"]
+            for i in range(len(nearby)):
+                atype = str(types[i])
+                if (airport_types_visible is not None
+                        and atype not in airport_types_visible):
+                    continue
+                ax2, ay2 = _project(float(lats[i]), float(lons[i]))
+                ix, iy = int(ax2), int(ay2)
+                if atype == "H":
+                    pygame.draw.circle(surf, _APT_HELI, (ix, iy), 3)
+                elif atype == "W":
+                    pygame.draw.circle(surf, _APT_WATER, (ix, iy), 3, 1)
+                elif atype == "B":
+                    pygame.draw.circle(surf, _APT_OTHER, (ix, iy), 2)
+                else:
+                    pygame.draw.circle(surf, _APT_PUB, (ix, iy),
+                                       4 if atype in ("M", "L") else 3)
+                if font is not None and range_nm <= 10:
+                    lbl = font.render(str(ids[i]), True, _APT_PUB)
+                    surf.blit(lbl, (ix + 5, iy - 7))
+
+    # ── Direct-to / approach course line + waypoint diamond ─────────────────
+    # Two distinct line shapes:
+    #
+    #   D2 (magenta):   from the activation point to the waypoint —
+    #                   represents the chosen course, not a moving
+    #                   bearing-to-waypoint arrow.  Same convention the
+    #                   SVT direct-to trace uses.
+    #
+    #   APPROACH (cyan): from the runway threshold OUT along the final
+    #                   approach course (reciprocal of the runway
+    #                   heading) for the same final length as the HITS
+    #                   boxes.  Mirrors the corridor the pilot sees in
+    #                   3D so the inset and the SVT match.
+    #
+    # The diamond marker stays at the waypoint / threshold either way.
+    if (settings.get("map_show_directto", True)
+            and direct_to is not None and direct_to.get("ident")):
+        approach_active = bool(direct_to.get("approach_active"))
+        course_col = _HITS_CYAN if approach_active else _D2_MAGENTA
+        wpx, wpy = _project(direct_to["lat"], direct_to["lon"])
+
+        if approach_active:
+            # Walk back from the threshold along the reciprocal of the
+            # final approach course for `approach_final_nm` (default 5).
+            course_deg = float(direct_to.get("approach_course_deg", 0.0))
+            final_nm   = float(direct_to.get("approach_final_nm", 5.0))
+            away_rad   = math.radians((course_deg + 180.0) % 360.0)
+            t_lat = float(direct_to["lat"])
+            t_lon = float(direct_to["lon"])
+            cos_t = max(0.05, math.cos(math.radians(t_lat)))
+            far_lat = t_lat + final_nm * math.cos(away_rad) / _NM_PER_DEG_LAT
+            far_lon = t_lon + (final_nm * math.sin(away_rad)
+                               / (_NM_PER_DEG_LAT * cos_t))
+            fx, fy = _project(far_lat, far_lon)
+            pygame.draw.line(surf, course_col,
+                             (int(wpx), int(wpy)),
+                             (int(fx),  int(fy)), 2)
+        else:
+            # Plain D2: polyline along the great-circle from activation
+            # to waypoint.  Drawing two endpoints joined by a straight
+            # line in equirectangular projection turns into a rhumb-ish
+            # path that diverges from the actual GC by tens of nm on
+            # transcontinental legs — the CDI (which uses spherical XTK)
+            # and the SVT trace (which slerps the GC) then disagree
+            # visibly with the inset.  Sample the GC and stitch with a
+            # polyline so all three views match.  Fall back to the
+            # waypoint itself if no act_lat/lon was set.
+            ax_lat = float(direct_to.get("act_lat") or direct_to["lat"])
+            ax_lon = float(direct_to.get("act_lon") or direct_to["lon"])
+            n_seg = 20
+            pts = []
+            for i in range(n_seg + 1):
+                f = i / n_seg
+                la, lo = _gc_interp(ax_lat, ax_lon,
+                                    direct_to["lat"], direct_to["lon"], f)
+                px, py = _project(la, lo)
+                pts.append((int(px), int(py)))
+            pygame.draw.lines(surf, course_col, False, pts, 2)
+
+        d = 5
+        pygame.draw.polygon(surf, course_col,
+                            [(int(wpx),     int(wpy) - d),
+                             (int(wpx) + d, int(wpy)),
+                             (int(wpx),     int(wpy) + d),
+                             (int(wpx) - d, int(wpy))])
+
+    # ── Range ring ───────────────────────────────────────────────────────────
+    # Shrink the ring 2 px inside the inset's shorter axis so the frame
+    # border (drawn after clip release) and pygame's half-open clip rect
+    # don't nibble the top and bottom scanlines of the outline.
+    pygame.draw.circle(surf, _RING, (int(cx), int(cy)),
+                       max(1, int(range_nm * px_per_nm) - 2), 1)
+
+    # ── Own-ship chevron ─────────────────────────────────────────────────────
+    # Track-up: chevron always points up.  North-up: chevron rotates to
+    # current track so the pilot still sees direction of motion (falling
+    # back to hdg when GPS track isn't reliable, same rule as above).
+    if orient == "trk":
+        own_rot = 0.0
+    else:
+        if track_deg is None or track_deg == 0.0:
+            own_rot = float(hdg_deg or 0.0)
+        else:
+            own_rot = float(track_deg)
+    s = 7
+    base_pts = [(0, -s), (s, s), (0, s * 0.4), (-s, s)]
+    cr = math.cos(math.radians(own_rot))
+    sr = math.sin(math.radians(own_rot))
+    rotated = [(cx + p[0] * cr - p[1] * sr,
+                cy + p[0] * sr + p[1] * cr) for p in base_pts]
+    pygame.draw.polygon(surf, _OWNSHIP,
+                        [(int(rx), int(ry)) for rx, ry in rotated])
+
+    surf.set_clip(old_clip)
+
+    # ── Frame + corner labels ────────────────────────────────────────────────
+    pygame.draw.rect(surf, _FRAME, rect, width=1)
+
+    if font is not None:
+        if range_label:
+            # Caller supplied a custom prefix — used by AUTO mode to show
+            # "AUTO 20 NM" instead of a bare distance.
+            rng_lbl = f"{range_label} {range_nm:g} NM"
+        else:
+            rng_lbl = f"{range_nm:g} NM"
+        orient_lbl = "TRK↑" if orient == "trk" else "N↑"
+        rng_surf = font.render(rng_lbl, True, _LABEL)
+        orient_surf = font.render(orient_lbl, True, _LABEL)
+        surf.blit(rng_surf, (x + 4, y + 2))
+        surf.blit(orient_surf,
+                  (x + w - orient_surf.get_width() - 4, y + 2))
+
+        # ETE — only when a direct-to is active.  Bottom-right corner,
+        # magenta to match the D2 course-line convention.  Uses GPS
+        # ground speed; below 3 kt (taxi threshold) the ETE is unstable
+        # so we render dashes rather than a noise-driven number.
+        if direct_to is not None and direct_to.get("ident"):
+            n_nm = (direct_to["lat"] - lat) * _NM_PER_DEG_LAT
+            e_nm = ((direct_to["lon"] - lon)
+                    * _NM_PER_DEG_LAT * cos_lat)
+            d_nm = math.hypot(n_nm, e_nm)
+            if gs_kt >= 3.0 and d_nm > 0.0:
+                hours = d_nm / gs_kt
+                if hours < 1.0:
+                    mm_, ss_ = divmod(int(round(hours * 3600)), 60)
+                    ete_lbl = f"ETE {mm_}:{ss_:02d}"
+                elif hours < 10.0:
+                    h_  = int(hours)
+                    mm_ = int(round((hours - h_) * 60))
+                    if mm_ == 60:
+                        h_ += 1
+                        mm_ = 0
+                    ete_lbl = f"ETE {h_}:{mm_:02d}"
+                else:
+                    ete_lbl = "ETE --:--"
+            else:
+                ete_lbl = "ETE --:--"
+            ete_col = (_HITS_CYAN
+                       if direct_to.get("approach_active")
+                       else _D2_MAGENTA)
+            ete_surf = font.render(ete_lbl, True, ete_col)
+            ete_w = ete_surf.get_width()
+            ete_h = ete_surf.get_height()
+            # Small dark backplate so the magenta text reads over any
+            # tint colour underneath.
+            plate = pygame.Surface((ete_w + 6, ete_h + 2), pygame.SRCALPHA)
+            plate.fill((0, 0, 0, 160))
+            surf.blit(plate,
+                      (x + w - ete_w - 7, y + h - ete_h - 4))
+            surf.blit(ete_surf,
+                      (x + w - ete_w - 4, y + h - ete_h - 3))
+
+
+def hit_test(rect, x, y) -> bool:
+    """Return True if (x, y) falls inside the inset rect — used by the
+    main event dispatcher to decide whether a touch belongs to the map."""
+    rx, ry, rw, rh = rect
+    return rx <= x <= rx + rw and ry <= y <= ry + rh
+
+
+# ── Pinch-zoom state ──────────────────────────────────────────────────────────
+# Snap-points for the discrete zoom levels.  ZOOM_AUTO (== 0) is a sentinel:
+# the inset picks the smallest standard step that fits the active direct-to
+# (capped at 80 nm) and forces north-up.  AUTO sits at the end of the cycle
+# so a left-tap on the largest standard level (80) flips to AUTO when a
+# direct-to is active, and stays at 80 when one isn't.
+
+ZOOM_AUTO   = 0
+ZOOM_LEVELS = (1, 2, 5, 10, 20, 40, 80, 160)
+
+
+def zoom_in(current_nm: int) -> int:
+    """Step the range to the next-smaller snap point (zoom in)."""
+    if current_nm == ZOOM_AUTO:
+        return ZOOM_LEVELS[-1]
+    levels = ZOOM_LEVELS
+    for i, lvl in enumerate(levels):
+        if current_nm <= lvl and i > 0:
+            return levels[i - 1]
+    return levels[0]
+
+
+def zoom_out(current_nm: int, allow_auto: bool = False) -> int:
+    """Step the range to the next-larger snap point (zoom out).
+    Caller passes ``allow_auto=True`` when a direct-to is active so AUTO
+    becomes reachable from the largest standard step."""
+    if current_nm == ZOOM_AUTO:
+        return ZOOM_AUTO
+    levels = ZOOM_LEVELS
+    for i, lvl in enumerate(levels):
+        if current_nm < lvl:
+            return lvl
+    return ZOOM_AUTO if allow_auto else levels[-1]
+
+
+def auto_fit_range(d_nm: float) -> int:
+    """Pick the smallest standard zoom step that contains a given distance.
+    Distance comes from current-position → direct-to-destination; the
+    caller adds whatever margin it wants before invoking this. Caps at
+    the largest standard step (currently 160 nm)."""
+    for lvl in ZOOM_LEVELS:
+        if d_nm <= lvl:
+            return lvl
+    return ZOOM_LEVELS[-1]

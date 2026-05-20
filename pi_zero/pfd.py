@@ -138,6 +138,14 @@ disp["ad"] = {                      # airport download/parse state
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
+    # MFD settings — only relevant when disp["display_mode"] == "mfd".
+    "map_orient":       "trk",   # "trk" | "nrth"
+    "map_zoom_nm":      10,      # half-extent of the inset's shorter axis
+    "map_show_terrain":  True,
+    "map_show_water":    True,
+    "map_show_airports": True,
+    "map_show_obstacles": True,
+    "map_show_state_lines": True,
 }
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
@@ -2373,6 +2381,10 @@ def handle_event(event, demo_mode):
             elif action == "ahrs_firmware":
                 _ss_reset_scroll("ahrs_firmware")
                 disp["mode"] = "ahrs_firmware"
+            elif action and action.startswith("set:display_mode:"):
+                disp["display_mode"] = action.split(":")[-1]
+                _settings.mark_dirty()
+                disp["mode"] = "pfd"   # exit setup so the change is visible
             elif action == "simulator":
                 disp["mode"] = "sim_setup"
             elif action == "quit":
@@ -2603,6 +2615,14 @@ def handle_event(event, demo_mode):
                     disp["mode"] = disp["numpad_prev"]
                     disp["numpad_buf"] = ""
             return True
+
+        # ── MFD taps (display_mode == "mfd" while mode == "pfd") ──────────
+        if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+            # Tap the top-right "PFD" button to flip back to the PFD view.
+            if _mfd_pfd_btn_hit(x, y):
+                disp["display_mode"] = "pfd"
+                _settings.mark_dirty()
+                return True
 
         # ── PFD taps ──────────────────────────────────────────────────────
         # Tap on SIM watermark → open sim controls overlay
@@ -4230,11 +4250,7 @@ def draw_system_setup(surf):
     rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
     ry = mode_y + (_SS_RH - btn_h_m) // 2
     _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "PFD", cur == "pfd")
-    # MFD — disabled placeholder
-    pygame.draw.rect(surf, (0,8,18), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), border_radius=5)
-    pygame.draw.rect(surf, (35,45,60), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), width=2, border_radius=5)
-    _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
-    _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
+    _seg_btn(surf, rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m, "MFD", cur == "mfd")
 
     # Data download tiles: TERRAIN | OBSTACLE | AIRPORT (three columns)
     third = (bw - 16) // 3
@@ -4285,6 +4301,15 @@ def system_setup_hit(x, y):
     # Shift the incoming y into logical (unscrolled) coordinates so the
     # button hit-tests still match the constants that defined the layout.
     y += _ss_scroll.get("system_setup", 0)
+    # DISPLAY MODE row — PFD / MFD toggle
+    btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
+    rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
+    ry = _SYS_MODE_Y + (_SS_RH - btn_h_m) // 2
+    if ry <= y <= ry + btn_h_m:
+        if rx <= x <= rx + btn_w_m:
+            return "set:display_mode:pfd"
+        if rx+btn_w_m+gap_m <= x <= rx+2*btn_w_m+gap_m:
+            return "set:display_mode:mfd"
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
         third = (bw - 16) // 3
         if bx <= x <= bx+third:
@@ -6270,6 +6295,90 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
                   cx=sx, cy=sign_y + sign_h // 2)
 
 
+# ── MFD: full-screen moving map ──────────────────────────────────────────────
+# Wraps shared/moving_map.py with the pi_zero state.  Uses the same airport
+# + obstacle + SRTM + water caches the PFD already keeps loaded — no extra
+# memory cost.  Runways are intentionally absent (pi_zero PFD dropped them
+# earlier so we don't load the runway DB).
+
+import moving_map as _mfd_map   # noqa: E402
+
+_MFD_PFD_BTN_W = 100
+_MFD_PFD_BTN_H = 36
+
+
+def _mfd_get_range_label():
+    """Default-range label is the numeric NM value; AUTO mode reserved
+    for the future flight-plan-aware fit-to-route."""
+    nm = disp["ds"].get("map_zoom_nm", 10)
+    return f"{nm} NM" if nm > 0 else "AUTO"
+
+
+def draw_mfd(surf, connected=True, data_stale=False):
+    """Full-screen moving map.  Reuses pi_zero's already-loaded airport +
+    obstacle + terrain caches; pulls the active direct-to from disp["nav"]
+    so the magenta course line / waypoint diamond paints when D2 is set."""
+    surf.fill((0, 0, 0))
+    rect = (0, 0, DISPLAY_W, DISPLAY_H)
+    lat = disp.get("lat", DEMO_LAT)
+    lon = disp.get("lon", DEMO_LON)
+    alt = disp.get("alt", 0.0)
+    hdg = disp.get("yaw", 0.0)
+    track = disp.get("track", hdg)
+    orient    = disp["ds"].get("map_orient", "trk")
+    range_nm  = int(disp["ds"].get("map_zoom_nm", 10))
+    nav = disp.get("nav", {})
+    d2  = None
+    if nav.get("ident"):
+        d2 = {"lat": float(nav.get("lat", 0.0)),
+              "lon": float(nav.get("lon", 0.0)),
+              "ident": nav.get("ident", "")}
+    gs_kt = float(disp.get("speed", 0.0))
+    apt_types = {
+        "S": disp["ad"].get("show_public", True),
+        "M": disp["ad"].get("show_public", True),
+        "L": disp["ad"].get("show_public", True),
+        "H": disp["ad"].get("show_heli", True),
+        "W": disp["ad"].get("show_seaplane", False),
+        "B": disp["ad"].get("show_other", False),
+    }
+    _mfd_map.render(
+        surf, rect, lat, lon, alt, hdg, track, orient, range_nm,
+        disp["ds"],
+        airports_arr=_airports,
+        runways_arr=None,
+        obstacles_arr=_obstacles,
+        srtm_dir=SRTM_DIR,
+        water_dir=WATER_DIR,
+        direct_to=d2,
+        airport_types_visible=apt_types,
+        gs_kt=gs_kt,
+        range_label=_mfd_get_range_label(),
+    )
+
+    # Mini PFD button — tap to flip back to the PFD view without going
+    # through the SETUP screen.  Top-right corner so it doesn't sit on
+    # likely-tapped map area.
+    pad = 6
+    bx = DISPLAY_W - _MFD_PFD_BTN_W - pad
+    by = pad
+    _action_btn(surf, bx, by, _MFD_PFD_BTN_W, _MFD_PFD_BTN_H, "PFD", "normal", r=5)
+
+    # No-link / stale-data badges
+    if not connected or data_stale:
+        _text(surf, "NO LINK" if not connected else "DATA STALE",
+              16, (240, 90, 90), bold=True,
+              cx=DISPLAY_W // 2, cy=DISPLAY_H - 18)
+
+
+def _mfd_pfd_btn_hit(x, y):
+    """Top-right PFD button on the MFD."""
+    pad = 6
+    bx = DISPLAY_W - _MFD_PFD_BTN_W - pad
+    by = pad
+    return (bx <= x <= bx + _MFD_PFD_BTN_W and
+            by <= y <= by + _MFD_PFD_BTN_H)
+
 
 # ── Main render function ──────────────────────────────────────────────────────
 def render(surf, demo_mode, connected, data_stale=False):
@@ -6314,6 +6423,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_airport_data(surf, disp["ad"]); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
+
+    # ── MFD: full-screen moving map (replaces the PFD when toggled) ──────────
+    if disp.get("display_mode", "pfd") == "mfd" and mode == "pfd":
+        draw_mfd(surf, connected=connected, data_stale=data_stale)
+        return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
     surf.fill((0, 0, 0))
