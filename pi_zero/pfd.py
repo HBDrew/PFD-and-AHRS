@@ -141,6 +141,12 @@ disp["ss"] = {                      # AHRS / sensor settings
     "hdg_src":       "mag",   # "mag" | "gps"  — heading source (magnetic or GPS track)
     "airspeed_src":  "gps",   # "gps" | "ias"  — speed source (GPS groundspeed or IAS sensor)
 }
+disp["fw"] = {                      # AHRS firmware loader state
+    "push_state":  "",   # ""|"pushing"|"done"|"error"
+    "push_msg":    "",
+    "flash_state": "",   # ""|"flashing"|"done"|"error"
+    "flash_msg":   "",
+}
 disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
     "wifi_pass": "",        "wifi_ok":  False,
@@ -2315,6 +2321,17 @@ def handle_event(event, demo_mode):
             return True
 
         # ── System screen taps ────────────────────────────────────────────────────────────────────
+        # ── AHRS firmware screen taps ─────────────────────────────────────
+        if mode == "ahrs_firmware":
+            action = ahrs_firmware_hit(x, y)
+            if action == "back":
+                disp["mode"] = "system_setup"
+            elif action == "push_scripts":
+                _do_push_scripts()
+            elif action == "flash_uf2":
+                _do_flash_uf2()
+            return True
+
         if mode == "system_setup":
             action = system_setup_hit(x, y)
             if action == "back":
@@ -2325,6 +2342,9 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "obstacle_data"
             elif action == "airport_data":
                 disp["mode"] = "airport_data"
+            elif action == "ahrs_firmware":
+                _ss_reset_scroll("ahrs_firmware")
+                disp["mode"] = "ahrs_firmware"
             elif action == "simulator":
                 disp["mode"] = "sim_setup"
             elif action == "quit":
@@ -2982,6 +3002,7 @@ _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "system_setup":       8,
     "connectivity_setup": 6,
     "flight_profile":     8,
+    "ahrs_firmware":      5,
 }
 _dispatch_replay = False   # guard against infinite recursion in the
                            # deferred-tap replay path
@@ -3957,7 +3978,7 @@ _SYS_INFO_Y  = 56
 _SYS_INFO_LH = 28
 
 
-_SYS_N_LINES = 5
+_SYS_N_LINES = 7
 _SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
 _SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # DISPLAY MODE row top
 _SYS_TERRAIN_Y = _SYS_MODE_Y + _SS_RH + 8         # TERRAIN DATA row top
@@ -3991,11 +4012,26 @@ def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
     _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    _gps_ok   = disp.get("gps_ok", False)
+    _gps_comm = disp.get("gps_comm", False)
+    _gps_sats = int(disp.get("sats", 0) or 0)
+    if _gps_ok:
+        _gps_status = f"fix \u00b7 {_gps_sats} sat{'s' if _gps_sats != 1 else ''}"
+    elif _gps_comm:
+        _gps_status = "no fix \u00b7 acquiring"
+    else:
+        _gps_status = "no signal"
+    _ahrs_xport = disp.get("cs", {}).get("ahrs_transport", "wifi")
+    _ahrs_port  = disp.get("cs", {}).get("ahrs_port", "\u2014")
+    _ahrs_lbl   = (f"USB \u00b7 {_ahrs_port}" if _ahrs_xport == "usb"
+                   else f"WiFi \u00b7 {_ahrs_port}")
     lines = [
         ("Firmware version",  _SYS_VERSION),
         ("Build date",        _SYS_BUILD),
         ("Display",           f"{DISPLAY_W}\u00d7{DISPLAY_H}  DPI"),
         ("Hardware",          "Pi Zero 2W + Pico W"),
+        ("GPS",               _gps_status),
+        ("AHRS link",         _ahrs_lbl),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
     pygame.draw.rect(surf, (0,12,32), (bx, _SYS_INFO_Y, bw, _SYS_IH), border_radius=6)
@@ -4051,11 +4087,13 @@ def draw_system_setup(surf):
                    "AIRPORTS", ad_sub, active=True)
 
     half_w = (bw - 10) // 2
-    _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "SIMULATOR", "ok")
-    _action_btn(surf, bx+half_w+10,  _SYS_BTN_Y, half_w, _SYS_BTN_H, "RESET DEFAULTS", "danger")
-
-    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
-    _action_btn(surf, bx, quit_y, bw, _SYS_BTN_H, "QUIT PFD", "danger")
+    # Layout: AHRS FIRMWARE (full-width), SIMULATOR+RESET (half-width), QUIT
+    sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
+    quit_y = sim_y       + _SYS_BTN_H + 10
+    _action_btn(surf, bx,           _SYS_BTN_Y, bw,     _SYS_BTN_H, "AHRS FIRMWARE",  "normal")
+    _action_btn(surf, bx,           sim_y,      half_w, _SYS_BTN_H, "SIMULATOR",       "ok")
+    _action_btn(surf, bx+half_w+10, sim_y,      half_w, _SYS_BTN_H, "RESET DEFAULTS",  "danger")
+    _action_btn(surf, bx,           quit_y,     bw,     _SYS_BTN_H, "QUIT PFD",        "danger")
     surf.set_clip(_prev_clip)
 
 
@@ -4072,14 +4110,285 @@ def system_setup_hit(x, y):
         if bx+2*(third+8) <= x <= bx+2*(third+8)+third:
             return "airport_data"
     half_w = (bw - 10) // 2
-    if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
-        if bx <= x <= bx+half_w:
+    sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
+    quit_y = sim_y       + _SYS_BTN_H + 10
+    # AHRS FIRMWARE (full-width, top button row)
+    if _SYS_BTN_Y <= y <= _SYS_BTN_Y + _SYS_BTN_H and bx <= x <= bx + bw:
+        return "ahrs_firmware"
+    # SIMULATOR + RESET DEFAULTS (half-width)
+    if sim_y <= y <= sim_y + _SYS_BTN_H:
+        if bx <= x <= bx + half_w:
             return "simulator"
-        if bx+half_w+10 <= x <= bx+half_w+10+half_w:
+        if bx + half_w + 10 <= x <= bx + half_w + 10 + half_w:
             return "reset_defaults"
-    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
-    if quit_y <= y <= quit_y+_SYS_BTN_H and bx <= x <= bx+bw:
+    # QUIT PFD (full-width)
+    if quit_y <= y <= quit_y + _SYS_BTN_H and bx <= x <= bx + bw:
         return "quit"
+    return None
+
+
+# ── AHRS firmware loader / flasher ───────────────────────────────────────────
+# Pushes the firmware/*.py files to a running Pico over USB-CDC (via mpremote)
+# and, optionally, copies a MicroPython .uf2 to a Pico booted into BOOTSEL
+# (RPI-RP2 mass-storage device).  Verbatim port of the pi4 implementation.
+
+_FW_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
+_FW_SCRIPTS = ["main.py", "config.py", "web_server.py", "wt901.py", "bme280.py", "gps.py"]
+_IPHONE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "iphone_display")
+_FW_WEB     = ["index.html", "terrain.js", "sw.js", "manifest.webmanifest", "icon-192.png"]
+_FW_ROW_H   = 76
+_FW_Y0      = 56
+
+_pico_serial_cache  = (0.0, None)
+_pico_bootsel_cache = (0.0, None)
+_PICO_CACHE_TTL = 2.0
+
+
+def _find_pico_serial():
+    """Return first /dev/ttyACM* or /dev/ttyUSB* path, or None (cached 2 s)."""
+    global _pico_serial_cache
+    now = time.time()
+    if now - _pico_serial_cache[0] < _PICO_CACHE_TTL:
+        return _pico_serial_cache[1]
+    import glob
+    result = None
+    for pat in ["/dev/ttyACM*", "/dev/ttyUSB*"]:
+        ports = sorted(glob.glob(pat))
+        if ports:
+            result = ports[0]
+            break
+    _pico_serial_cache = (now, result)
+    return result
+
+
+def _find_pico_bootsel():
+    """Return RPI-RP2 mount path, auto-mounting via udisksctl if needed
+    (cached 2 s)."""
+    global _pico_bootsel_cache
+    now = time.time()
+    if now - _pico_bootsel_cache[0] < _PICO_CACHE_TTL:
+        return _pico_bootsel_cache[1]
+    import glob
+    for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
+        mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
+        if mounts:
+            _pico_bootsel_cache = (now, mounts[0])
+            return mounts[0]
+    try:
+        r = subprocess.run(
+            ["lsblk", "-o", "NAME,LABEL", "--noheadings", "--raw"],
+            capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "RPI-RP2":
+                devpath = f"/dev/{parts[0]}"
+                mr = subprocess.run(["udisksctl", "mount", "-b", devpath],
+                                    capture_output=True, timeout=10)
+                if mr.returncode != 0:
+                    subprocess.run(["sudo", "mkdir", "-p", "/mnt/RPI-RP2"],
+                                   capture_output=True, timeout=5)
+                    uid = os.getuid(); gid = os.getgid()
+                    subprocess.run(["sudo", "mount", "-o", f"uid={uid},gid={gid}",
+                                    devpath, "/mnt/RPI-RP2"],
+                                   capture_output=True, timeout=10)
+                for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
+                    mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
+                    if mounts:
+                        _pico_bootsel_cache = (now, mounts[0])
+                        return mounts[0]
+    except Exception:
+        pass
+    _pico_bootsel_cache = (now, None)
+    return None
+
+
+def _find_uf2():
+    """Return first .uf2 file in firmware/ dir, or None."""
+    import glob
+    files = sorted(glob.glob(os.path.join(_FW_DIR, "*.uf2")))
+    return files[0] if files else None
+
+
+def _do_push_scripts():
+    disp["fw"]["push_state"] = "pushing"
+    disp["fw"]["push_msg"]   = "Starting…"
+    def _worker():
+        global _sse_client
+        released_serial_port = None
+        prev_client = _sse_client
+        try:
+            from serial_client import SerialClient as _SC
+            if isinstance(prev_client, _SC):
+                released_serial_port = prev_client.port
+                disp["fw"]["push_msg"] = "Releasing serial port…"
+                prev_client.stop()
+                _sse_client = None
+                global _pico_serial_cache
+                _pico_serial_cache = (0.0, None)
+                time.sleep(1.5)
+        except ImportError:
+            pass
+
+        port = _find_pico_serial()
+        if not port:
+            disp["fw"]["push_msg"]   = "Pico not detected — check USB cable"
+            disp["fw"]["push_state"] = "error"
+            return
+        cmd = ["python3", "-m", "mpremote", "connect", port]
+        first = True
+        all_files = (
+            [(name, os.path.join(_FW_DIR, name))     for name in _FW_SCRIPTS] +
+            [(name, os.path.join(_IPHONE_DIR, name)) for name in _FW_WEB]
+        )
+        for name, src_path in all_files:
+            if not os.path.isfile(src_path):
+                continue
+            if not first:
+                cmd.append("+")
+            first = False
+            cmd += ["cp", src_path, f":{name}"]
+        cmd += ["+", "reset"]
+        try:
+            disp["fw"]["push_msg"] = "Copying files…"
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout).strip()
+                disp["fw"]["push_msg"]   = err[:80] if err else "mpremote failed"
+                disp["fw"]["push_state"] = "error"
+            else:
+                disp["fw"]["push_msg"]   = "All scripts pushed — Pico rebooting"
+                disp["fw"]["push_state"] = "done"
+        except FileNotFoundError:
+            disp["fw"]["push_msg"]   = "mpremote not found — pip3 install mpremote --break-system-packages"
+            disp["fw"]["push_state"] = "error"
+        except subprocess.TimeoutExpired:
+            disp["fw"]["push_msg"]   = "Timed out — check connection"
+            disp["fw"]["push_state"] = "error"
+        except Exception as e:
+            disp["fw"]["push_msg"]   = str(e)[:80]
+            disp["fw"]["push_state"] = "error"
+        finally:
+            if released_serial_port and _sse_client is None:
+                try:
+                    from serial_client import SerialClient as _SC
+                    time.sleep(3)
+                    new_client = _SC(released_serial_port, state, _state_lock)
+                    new_client.start()
+                    _sse_client = new_client
+                    disp["cs"]["ahrs_transport"] = "usb"
+                    disp["cs"]["ahrs_port"]      = released_serial_port
+                except Exception:
+                    pass
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _do_flash_uf2():
+    disp["fw"]["flash_state"] = "flashing"
+    disp["fw"]["flash_msg"]   = "Starting…"
+    def _worker():
+        uf2 = _find_uf2()
+        if not uf2:
+            disp["fw"]["flash_msg"]   = "No .uf2 file in firmware/ — add one first"
+            disp["fw"]["flash_state"] = "error"
+            return
+        mount = _find_pico_bootsel()
+        if not mount:
+            disp["fw"]["flash_msg"]   = "RPI-RP2 not mounted — hold BOOTSEL then plug USB"
+            disp["fw"]["flash_state"] = "error"
+            return
+        try:
+            import shutil
+            dest = os.path.join(mount, os.path.basename(uf2))
+            disp["fw"]["flash_msg"] = f"Writing {os.path.basename(uf2)}…"
+            shutil.copy(uf2, dest)
+            disp["fw"]["flash_msg"]   = "Flashed — Pico will auto-reboot"
+            disp["fw"]["flash_state"] = "done"
+        except Exception as e:
+            disp["fw"]["flash_msg"]   = str(e)[:80]
+            disp["fw"]["flash_state"] = "error"
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def draw_ahrs_firmware(surf):
+    _screen_header(surf, "AHRS FIRMWARE")
+    _prev_clip = _ss_clip_to_content(surf)
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    fw = disp["fw"]
+
+    # ── Device status row ────────────────────────────────────────────────
+    row_y = _FW_Y0
+    pygame.draw.rect(surf, (0,12,32), (bx, row_y, bw, _FW_ROW_H), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, row_y, bw, _FW_ROW_H), width=1, border_radius=6)
+    _text(surf, "DEVICE STATUS", 13, (130,160,190), bold=True, x=bx+14, y=row_y+8)
+
+    serial = _find_pico_serial()
+    s_col  = (60,220,80) if serial else (90,100,115)
+    s_lbl  = serial if serial else "not detected"
+    pygame.draw.circle(surf, s_col, (bx+22, row_y+44), 7)
+    _text(surf, f"USB Serial:  {s_lbl}", 15, s_col, bold=bool(serial),
+          x=bx+38, y=row_y+34)
+
+    bootsel = _find_pico_bootsel()
+    b_col   = (60,220,80) if bootsel else (90,100,115)
+    b_lbl   = bootsel if bootsel else "not mounted"
+    pygame.draw.circle(surf, b_col, (bx + bw//2 + 8, row_y+44), 7)
+    _text(surf, f"BOOTSEL:  {b_lbl}", 15, b_col, bold=bool(bootsel),
+          x=bx + bw//2 + 22, y=row_y+34)
+
+    # ── Push scripts row ─────────────────────────────────────────────────
+    row_y += _FW_ROW_H + 8
+    pygame.draw.rect(surf, (0,12,32), (bx, row_y, bw, _FW_ROW_H), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, row_y, bw, _FW_ROW_H), width=1, border_radius=6)
+    _text(surf, "PUSH SCRIPTS", 16, WHITE, bold=True, x=bx+14, y=row_y+8)
+    files_lbl = "  ".join(_FW_SCRIPTS)
+    if _get_font(12).size(files_lbl)[0] > bw - 28:
+        files_lbl = "main.py  config.py  web_server.py  + 3 more"
+    _text(surf, files_lbl, 12, (130,150,180), x=bx+14, y=row_y+30)
+    ps = fw.get("push_state", "")
+    pm = fw.get("push_msg",   "")
+    p_col = (60,220,80) if ps=="done" else (220,80,80) if ps=="error" else (180,180,100)
+    if pm:
+        _text(surf, pm, 13, p_col, bold=True, x=bx+14, y=row_y+52)
+
+    # ── Flash .uf2 row ───────────────────────────────────────────────────
+    row_y += _FW_ROW_H + 8
+    pygame.draw.rect(surf, (0,12,32), (bx, row_y, bw, _FW_ROW_H), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, row_y, bw, _FW_ROW_H), width=1, border_radius=6)
+    _text(surf, "FLASH MICROPYTHON  (.uf2)", 16, WHITE, bold=True, x=bx+14, y=row_y+8)
+    uf2 = _find_uf2()
+    uf2_lbl = os.path.basename(uf2) if uf2 else "no .uf2 found in firmware/"
+    _text(surf, uf2_lbl, 12, (130,150,180) if uf2 else (180,120,70),
+          x=bx+14, y=row_y+30)
+    fs = fw.get("flash_state", "")
+    fm = fw.get("flash_msg",   "")
+    f_col = (60,220,80) if fs=="done" else (220,80,80) if fs=="error" else (180,180,100)
+    if fm:
+        _text(surf, fm, 13, f_col, bold=True, x=bx+14, y=row_y+52)
+    else:
+        _text(surf, "Hold BOOTSEL + connect USB, then tap FLASH .UF2",
+              12, (130,145,165), x=bx+14, y=row_y+52)
+
+    # ── Action buttons ───────────────────────────────────────────────────
+    btn_y  = row_y + _FW_ROW_H + 14
+    half   = (bw - 10) // 2
+    push_style  = "normal" if fw.get("push_state")  != "pushing"  else "warn"
+    flash_style = "normal" if fw.get("flash_state") != "flashing" else "warn"
+    _action_btn(surf, bx,          btn_y, half, 56, "PUSH SCRIPTS TO PICO", push_style)
+    _action_btn(surf, bx+half+10,  btn_y, half, 56, "FLASH .UF2",           flash_style)
+    surf.set_clip(_prev_clip)
+
+
+def ahrs_firmware_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    btn_y = _FW_Y0 + 3 * (_FW_ROW_H + 8) + 14
+    half  = (bw - 10) // 2
+    if btn_y <= y <= btn_y + 56:
+        if bx <= x <= bx + half:
+            return "push_scripts"
+        if bx + half + 10 <= x <= bx + half + 10 + half:
+            return "flash_uf2"
     return None
 
 
@@ -5161,6 +5470,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_connectivity_setup(surf, disp["cs"]); return
     if mode == "system_setup":
         draw_system_setup(surf); return
+    if mode == "ahrs_firmware":
+        draw_ahrs_firmware(surf); return
     if mode == "terrain_data":
         draw_terrain_data(surf, disp["td"]); return
     if mode == "obstacle_data":
