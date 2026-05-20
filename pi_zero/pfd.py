@@ -36,7 +36,10 @@ import pygame.gfxdraw
 
 from config import *   # noqa: F403
 from sse_client import SSEClient
-from terrain import get_elevation_ft   # elevation lookup only — no SVT renderer
+from terrain import (
+    get_elevation_ft, get_elevation_ft_combined,
+    coarse_tile_list, coarse_tile_url, coarse_tile_path, coarse_disk_stats,
+)   # elevation lookup only — no SVT renderer
 import obstacles as obs_mod
 import airports as apt_mod
 import settings as _settings
@@ -790,9 +793,9 @@ def draw_above_horizon_terrain(surf, ai_rect, lat, lon, alt_ft,
         sample_lats = lat + d_nm * _np.cos(abs_brg_rad) / nm_per_deg_lat
         sample_lons = lon + d_nm * _np.sin(abs_brg_rad) / nm_per_deg_lon
         for i in range(_AHT_N_RAYS):
-            elev = get_elevation_ft(SRTM_DIR,
-                                    float(sample_lats[i]),
-                                    float(sample_lons[i]))
+            elev = get_elevation_ft_combined(SRTM_DIR, COARSE_DIR,
+                                             float(sample_lats[i]),
+                                             float(sample_lons[i]))
             if elev > peak_elev[i]:
                 peak_elev[i] = elev
                 peak_dist[i] = d_nm
@@ -2448,6 +2451,9 @@ def handle_event(event, demo_mode):
             elif action == "current_area":
                 if not disp["td"]["downloading"]:
                     _td_start_current_area()
+            elif action == "global_coarse":
+                if not disp["td"]["downloading"]:
+                    _tdc_start_download()
             elif action and action.startswith("region:"):
                 if not disp["td"]["downloading"]:
                     idx = int(action.split(":")[1])
@@ -4539,6 +4545,56 @@ def _td_start_current_area():
     t.start()
 
 
+def _tdc_download_thread():
+    """Background download of all Mapzen Terrarium PNG coarse tiles for
+    lat -60° to +75° at zoom 5 — ~576 tiles, ~8 MB total.  Matches the
+    iPhone PFD's downloadCoarse() behaviour."""
+    td = disp["td"]
+    td["downloading"] = True
+    td["dl_region"]   = "Global Low-Res"
+    tiles = coarse_tile_list()
+    td["dl_total"]    = len(tiles)
+    td["dl_current"]  = 0
+    td["dl_cancel"]   = False
+    os.makedirs(COARSE_DIR, exist_ok=True)
+    ok = skip = err = 0
+    for i, (z, x, y) in enumerate(tiles):
+        if td["dl_cancel"]:
+            td["dl_status"] = f"Cancelled  ({ok} new, {skip} skipped)"
+            td["downloading"] = False
+            return
+        td["dl_current"] = i
+        dest = coarse_tile_path(COARSE_DIR, z, x, y)
+        if os.path.exists(dest):
+            skip += 1
+            continue
+        url = coarse_tile_url(z, x, y)
+        td["dl_status"] = f"Downloading {z}/{x}/{y}.png"
+        try:
+            with urllib.request.urlopen(url, timeout=20) as resp:
+                data = resp.read()
+            with open(dest + ".tmp", "wb") as f:
+                f.write(data)
+            os.replace(dest + ".tmp", dest)
+            ok += 1
+        except Exception as exc:
+            td["dl_status"] = f"Error {z}/{x}/{y}: {exc}"
+            err += 1
+    td["dl_current"] = len(tiles)
+    td["dl_status"]  = (f"Done ✓  {ok} downloaded"
+                        + (f", {skip} skipped" if skip else "")
+                        + (f", {err} errors"   if err  else ""))
+    td["downloading"] = False
+    global _has_terrain
+    _has_terrain = _check_terrain()
+
+
+def _tdc_start_download():
+    """Kick off the global-coarse download in a background thread."""
+    t = threading.Thread(target=_tdc_download_thread, daemon=True)
+    t.start()
+
+
 # ── Obstacle data download ─────────────────────────────────────────────────────
 
 def _od_load_obstacles():
@@ -4980,38 +5036,68 @@ def draw_terrain_data(surf, td):
     _screen_header(surf, "TERRAIN DATA")
     bx = _TD_MX; bw = DISPLAY_W - 2*_TD_MX
     n_tiles, used_mb = _td_disk_stats()
+    c_tiles, c_mb    = coarse_disk_stats(COARSE_DIR)
 
-    # Status strip
-    pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, 28), border_radius=4)
-    pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, 28), width=1, border_radius=4)
-    stat_str = (f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB used"
-                if n_tiles else "No tiles on disk  \u00b7  SVT uses flat terrain")
-    stat_col = (60,220,80) if n_tiles else YELLOW
-    _text(surf, stat_str, 15, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+    # Status strip — two lines: SRTM hi-res + Mapzen coarse.
+    strip_h = 46
+    pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, strip_h), border_radius=4)
+    pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, strip_h), width=1, border_radius=4)
+    if n_tiles:
+        hi_str = (f"SRTM hi-res:  {n_tiles} tile{'s' if n_tiles != 1 else ''}"
+                  f"  ·  {used_mb:.1f} MB")
+        hi_col = (60,220,80)
+    else:
+        hi_str = "SRTM hi-res:  none on disk"
+        hi_col = YELLOW
+    if c_tiles:
+        co_str = f"Mapzen global:  {c_tiles} tiles  ·  {c_mb:.1f} MB"
+        co_col = (60,220,80)
+    else:
+        co_str = "Mapzen global:  none on disk"
+        co_col = (180,160,80)
+    _text(surf, hi_str, 13, hi_col, bold=True, cx=DISPLAY_W//2, cy=64)
+    _text(surf, co_str, 13, co_col, bold=True, cx=DISPLAY_W//2, cy=85)
 
     downloading = td.get("downloading", False)
+    cur_region  = td.get("dl_region", "")
     rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
-    available_h = DISPLAY_H - _TD_MY - _TD_GAP*(rows-1) - 8
-    bh = available_h // (rows + 1)   # +1 row for the "Current Area" button
+    top_y = 52 + strip_h + 6
+    available_h = DISPLAY_H - top_y - _TD_GAP*(rows-1) - 8
+    bh = available_h // (rows + 1)   # +1 row for the two top action buttons
 
-    # ── Current Area button (full width) ─────────────────────────────────────
-    cur_col = (50,50,70) if downloading else (0,18,45)
-    cur_oc  = (70,70,95)  if downloading else WHITE
-    pygame.draw.rect(surf, cur_col, (bx, _TD_MY, bw, bh), border_radius=6)
-    gh = bh // 5
-    for i in range(gh):
-        t = 1.0 - i/gh
-        gc = (int(15+t*25), int(20+t*40), int(40+t*65)) if not downloading else (int(20+t*20),int(20+t*20),int(30+t*30))
-        pygame.draw.line(surf, gc, (bx+6, _TD_MY+1+i), (bx+bw-6, _TD_MY+1+i))
-    pygame.draw.rect(surf, cur_oc, (bx, _TD_MY, bw, bh), width=2, border_radius=6)
-    _text(surf, "DOWNLOAD CURRENT AREA", 15, cur_oc, bold=True,
-          cx=DISPLAY_W//2, cy=_TD_MY+bh//2-8)
+    # ── Top row: CURRENT AREA (left) + GLOBAL LOW-RES (right) ────
+    half_w = (bw - _TD_GAP) // 2
+
+    def _draw_action_tile(rx, ry, rw, label, sub, active):
+        col = (0,28,18) if active else ((50,50,70) if downloading else (0,18,45))
+        oc  = (40,180,60) if active else ((70,70,95) if downloading else WHITE)
+        pygame.draw.rect(surf, col, (rx, ry, rw, bh), border_radius=6)
+        if not downloading or active:
+            gh = bh // 5
+            for i in range(gh):
+                t = 1.0 - i/gh
+                gc = (int(15+t*25), int(20+t*40), int(40+t*65))
+                pygame.draw.line(surf, gc, (rx+6, ry+1+i), (rx+rw-6, ry+1+i))
+        pygame.draw.rect(surf, oc, (rx, ry, rw, bh), width=2, border_radius=6)
+        tc = (40,180,60) if active else ((70,80,90) if downloading else WHITE)
+        _text(surf, label, 15, tc, bold=True, cx=rx+rw//2, cy=ry+bh//2-10)
+        _text(surf, sub, 11,
+              (110,130,150) if not active else (60,180,80),
+              cx=rx+rw//2, cy=ry+bh//2+10)
+
     lat_i = int(disp.get("lat", DEMO_LAT)); lon_i = int(disp.get("lon", DEMO_LON))
-    area_str = f"25 tiles around {lat_i}\u00b0{'N' if lat_i>=0 else 'S'}  {abs(lon_i)}\u00b0{'W' if lon_i<0 else 'E'}  \u2248 35 MB"
-    _text(surf, area_str, 10, (120,140,165), cx=DISPLAY_W//2, cy=_TD_MY+bh//2+10)
+    area_str = (f"25 tiles  ·  {lat_i}°{'N' if lat_i>=0 else 'S'} "
+                f"{abs(lon_i)}°{'W' if lon_i<0 else 'E'}  ≈ 35 MB")
+    _draw_action_tile(bx, top_y, half_w, "CURRENT AREA", area_str,
+                      active=(downloading and cur_region == "Current Area"))
+    n_coarse   = len(coarse_tile_list())
+    coarse_str = f"~{n_coarse} tiles  ·  global  ·  ≈ 8 MB"
+    _draw_action_tile(bx + half_w + _TD_GAP, top_y, half_w,
+                      "GLOBAL LOW-RES", coarse_str,
+                      active=(downloading and cur_region == "Global Low-Res"))
 
     # ── Preset region grid ────────────────────────────────────────────────────
-    grid_y = _TD_MY + bh + _TD_GAP
+    grid_y = top_y + bh + _TD_GAP
     btn_w = (bw - _TD_GAP) // 2
     for idx, region in enumerate(_TD_REGIONS):
         col = idx % _TD_COLS; row = idx // _TD_COLS
@@ -5074,8 +5160,13 @@ def terrain_data_hit(x, y, td):
         return "back"
     bx = _TD_MX; bw = DISPLAY_W - 2*_TD_MX
     rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
-    available_h = DISPLAY_H - _TD_MY - _TD_GAP*(rows-1) - 8
+    # Match the draw-side geometry: now-taller status strip + new
+    # half-width action-tile row.
+    strip_h = 46
+    top_y = 52 + strip_h + 6
+    available_h = DISPLAY_H - top_y - _TD_GAP*(rows-1) - 8
     bh = available_h // (rows + 1)
+    half_w = (bw - _TD_GAP) // 2
 
     # Cancel button during download
     if td.get("downloading"):
@@ -5084,12 +5175,15 @@ def terrain_data_hit(x, y, td):
                 prog_y+6 <= y <= prog_y+42):
             return "cancel"
 
-    # Current Area button
-    if bx <= x <= bx+bw and _TD_MY <= y <= _TD_MY+bh:
-        return "current_area"
+    # Top action-tile row: CURRENT AREA + GLOBAL LOW-RES
+    if top_y <= y <= top_y+bh:
+        if bx <= x <= bx+half_w:
+            return "current_area"
+        if bx+half_w+_TD_GAP <= x <= bx+half_w+_TD_GAP+half_w:
+            return "global_coarse"
 
     # Region grid
-    grid_y = _TD_MY + bh + _TD_GAP
+    grid_y = top_y + bh + _TD_GAP
     btn_w = (bw - _TD_GAP) // 2
     for idx, region in enumerate(_TD_REGIONS):
         col = idx % _TD_COLS; row = idx // _TD_COLS
@@ -5740,9 +5834,14 @@ def render(surf, demo_mode, connected, data_stale=False):
 
 # ── Terrain availability (computed once at import time) ───────────────────────
 def _check_terrain():
-    if not os.path.isdir(SRTM_DIR):
-        return False
-    return any(f.endswith(".hgt") for f in os.listdir(SRTM_DIR))
+    """True if either the high-res SRTM cache or the coarse Mapzen cache
+    has at least one tile on disk — silhouette and TAWS lookups will
+    happily mix the two via get_elevation_ft_combined."""
+    if os.path.isdir(SRTM_DIR) and any(f.endswith(".hgt") for f in os.listdir(SRTM_DIR)):
+        return True
+    if os.path.isdir(COARSE_DIR) and any(f.endswith(".png") for f in os.listdir(COARSE_DIR)):
+        return True
+    return False
 
 _has_terrain = _check_terrain()
 
