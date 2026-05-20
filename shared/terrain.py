@@ -77,15 +77,23 @@ def interp_colour(palette, value):
 
 # ── SRTM tile cache ────────────────────────────────────────────────────────────
 # LRU-capped to bound RSS on a Pi 4: each SRTM3 tile is ~5.7 MB in memory
-# (1201² float32) and SRTM1 tiles are ~52 MB (3601² float32).  Without a cap
+# (1201² int16) and SRTM1 tiles are ~26 MB (3601² int16).  Without a cap
 # the cache grew unbounded as the user visited new sim airports across CONUS,
-# eventually OOM-killing the process.  32 entries is enough for the inner +
-# outer mesh extents (~50 nm radius → ~9 tiles) plus comfortable hysteresis.
+# eventually OOM-killing the process.
+#
+# Tiles are stored as int16 in feet (Earth's elevation range -1411..+29032 ft
+# fits comfortably in int16's -32768..+32767), halving the memory footprint
+# vs the previous float32 representation. Bilinear interpolation in
+# get_elevation_ft auto-promotes to float during arithmetic.
+#
+# Cap of 12 covers the inner + outer mesh extents (~50 nm radius → ~9 tiles)
+# plus comfortable hysteresis. Previously 32 — too generous on a 2 GB Pi.
 import collections as _collections
 # 16 entries: enough for a 50-nm MFD bbox (~9 tiles) plus hysteresis as
-# the aircraft moves into new ones.  Previously 32, which let SRTM1
-# tiles (52 MB each) snowball past the Pi Zero 2W's 512 MB RAM during
-# extended bench sessions and trigger an oom-kill / reboot.
+# the aircraft moves into new ones.  Now that tiles are stored as int16
+# (~2.8 MB SRTM3 in feet), 16 fits comfortably even on the Pi Zero 2W.
+# Previously 32 — let SRTM1 tiles snowball past the 512 MB RAM during
+# extended bench sessions and trigger oom-kill / reboot.
 _TILE_CACHE_MAX = 16
 _tile_cache: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
 
@@ -156,19 +164,23 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
 
     if HAS_NUMPY:
         if decimate_to_srtm3:
-            # Read int16 (~25 MB), slice every third sample, copy to
-            # release the big buffer, then convert to float32 + apply
-            # void mask + scale to feet.
-            raw = np.fromfile(path, dtype='>i2').reshape(
+            # Read SRTM1 raw int16 (~25 MB), slice every third sample to
+            # SRTM3 resolution, copy to release the big buffer.  Decimated
+            # array then goes through the same metres→feet + void mask +
+            # int16-recast as a native SRTM3 file.
+            raw_full = np.fromfile(path, dtype='>i2').reshape(
                 (SRTM1_SAMPLES, SRTM1_SAMPLES))
-            small = raw[::3, ::3].copy()
-            del raw
-            data = small.astype(np.float32)
+            data_raw = raw_full[::3, ::3].copy()
+            del raw_full
         else:
-            data = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
-            data = data.astype(np.float32)
-        data[data == VOID_ELEV] = 0
-        data *= 3.28084   # metres → feet
+            data_raw = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
+        # metres → feet, replace voids, then store as int16 to halve the
+        # cache footprint.  The float intermediate is transient — only the
+        # final int16 array enters the cache.  Bilinear interpolation in
+        # get_elevation_ft auto-promotes to float on read.
+        data = (np.where(data_raw == VOID_ELEV, 0, data_raw).astype(np.float32)
+                * 3.28084).astype(np.int16)
+        del data_raw
     else:
         # Pure-Python fallback (slow, 2-byte big-endian signed int)
         with open(path, 'rb') as f:

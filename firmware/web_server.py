@@ -130,29 +130,78 @@ async def _handle_baro(writer, params, state):
     await writer.wait_closed()
 
 
+# SSE client tracking. The iPhone WiFi handoffs / page refreshes /
+# background-suspends leave Pico-side connections orphaned — writer.drain()
+# then blocks indefinitely waiting for ACKs from a peer that's gone, the
+# socket pool fills, and new connections silently fail (iPhone sees "no
+# link"). We cap concurrent SSE clients and time-out drain() to kill dead
+# connections fast enough that the pool stays available for the live client.
+_SSE_MAX_CLIENTS     = 2
+_SSE_DRAIN_TIMEOUT_S = 2.0
+_sse_client_count    = 0
+
+
 async def _handle_sse(writer, state):
     """Keep the connection open and stream JSON state as SSE events."""
-    await _send_headers(
-        writer, '200 OK', 'text/event-stream',
-        'Cache-Control: no-cache\r\nConnection: keep-alive\r\n'
-    )
-    interval_ms = 1000 // state.get('_broadcast_hz', 10)
+    global _sse_client_count
+
+    # Refuse new connections when the pool is saturated rather than letting
+    # them quietly hang. iPhone gets a clean 503 it can retry against once
+    # the existing zombies drain out.
+    if _sse_client_count >= _SSE_MAX_CLIENTS:
+        body = b'SSE busy'
+        try:
+            await _send_headers(writer, '503 Service Unavailable', 'text/plain',
+                                f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+            writer.write(body)
+            try:
+                await asyncio.wait_for(writer.drain(), 1.0)
+            except Exception:
+                pass
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+        print(f'[SSE] refused — {_sse_client_count}/{_SSE_MAX_CLIENTS} clients active')
+        return
+
+    _sse_client_count += 1
+    print(f'[SSE] client connected ({_sse_client_count}/{_SSE_MAX_CLIENTS} active)')
     try:
+        await _send_headers(
+            writer, '200 OK', 'text/event-stream',
+            'Cache-Control: no-cache\r\nConnection: keep-alive\r\n'
+        )
+        interval_ms = 1000 // state.get('_broadcast_hz', 10)
         while True:
             # Build a shallow copy, skipping internal (_-prefixed) keys
             payload = {k: v for k, v in state.items() if not k.startswith('_')}
             event = 'data: ' + ujson.dumps(payload) + '\n\n'
             writer.write(event.encode())
-            await writer.drain()
+            try:
+                # Bounded drain so dead peers don't pin the task. Without
+                # this, a backgrounded iPhone or dropped WiFi leaves the
+                # task in a permanent wait — sockets accumulate, pool fills.
+                await asyncio.wait_for(writer.drain(), _SSE_DRAIN_TIMEOUT_S)
+            except Exception:
+                # Any failure (timeout, broken pipe, reset) → peer is gone.
+                # Break the loop and let the finally block release the slot.
+                break
             await asyncio.sleep_ms(interval_ms)
-    except Exception:
-        pass
+    except Exception as e:
+        # Most likely a normal client disconnect — keep the log quiet.
+        if 'ECONNRESET' not in str(e) and 'BROKEN' not in str(e).upper():
+            print(f'[SSE] client error: {e}')
     finally:
+        _sse_client_count = max(0, _sse_client_count - 1)
         try:
             writer.close()
             await writer.wait_closed()
         except Exception:
             pass
+        print(f'[SSE] client closed ({_sse_client_count}/{_SSE_MAX_CLIENTS} active)')
 
 
 async def _handle_trim(writer, params, state):
@@ -234,6 +283,76 @@ async def _handle_magcal(writer, params, state):
     else:  # 'get'
         table = state.get('_magdev', [])
         body = ujson.dumps({'corrections': table, 'active': len(table) == 36}).encode()
+        await _send_headers(writer, '200 OK', 'application/json',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
+async def _handle_magoff(writer, params, state):
+    """
+    GET /magoff?action=get               → JSON {mx_off, my_off, mz_off, active}
+    GET /magoff?action=set&v=mx,my,mz    → store hard-iron offsets (3 floats)
+    GET /magoff?action=clear             → zero the offsets
+    """
+    action = params.get('action', 'get')
+
+    if action == 'set':
+        try:
+            v_str = params.get('v', '')
+            vals = [float(x) for x in v_str.split(',') if x.strip()]
+            if len(vals) == 3:
+                state['_mag_offset'] = (vals[0], vals[1], vals[2])
+                state['_save_magcal'] = True
+                print(f'magoff: stored {vals[0]:.1f},{vals[1]:.1f},{vals[2]:.1f}')
+            else:
+                print(f'magoff: REJECTED — need 3, got {len(vals)}')
+        except Exception as e:
+            print(f'magoff set error: {e}')
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    elif action == 'clear':
+        state['_mag_offset'] = (0.0, 0.0, 0.0)
+        state['_save_magcal'] = True
+        state['_magtumble_active'] = False
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    elif action == 'tumble_start':
+        state['_magtumble_active'] = True
+        state['_magtumble_min'] = [None, None, None]
+        state['_magtumble_max'] = [None, None, None]
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    elif action == 'tumble_finish':
+        mn = state.get('_magtumble_min', [None]*3)
+        mx = state.get('_magtumble_max', [None]*3)
+        if state.get('_magtumble_active') and all(v is not None for v in mn):
+            off = (0.5*(mn[0]+mx[0]), 0.5*(mn[1]+mx[1]), 0.5*(mn[2]+mx[2]))
+            state['_mag_offset'] = off
+            state['_save_magcal'] = True
+        state['_magtumble_active'] = False
+        body = b'OK'
+        await _send_headers(writer, '200 OK', 'text/plain',
+                            f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+        writer.write(body)
+
+    else:  # 'get'
+        o = state.get('_mag_offset', (0.0, 0.0, 0.0))
+        active = any(abs(v) > 1e-6 for v in o)
+        body = ujson.dumps({'mx_off': o[0], 'my_off': o[1], 'mz_off': o[2],
+                             'active': active}).encode()
         await _send_headers(writer, '200 OK', 'application/json',
                             f'Content-Length: {len(body)}\r\nConnection: close\r\n')
         writer.write(body)
@@ -339,6 +458,8 @@ async def _client_handler(reader, writer, state):
         await _handle_trim(writer, params, state)
     elif path == '/magcal':
         await _handle_magcal(writer, params, state)
+    elif path == '/magoff':
+        await _handle_magoff(writer, params, state)
     elif path == '/sdp_zero':
         await _handle_sdp_zero(writer, state)
     else:
