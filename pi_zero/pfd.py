@@ -3071,9 +3071,9 @@ def _setting_row(surf, row_i, label, sub="", _y_override=None):
         gc = (int(15+t*25), int(20+t*40), int(40+t*65))
         pygame.draw.line(surf, gc, (bx+6, by+1+i), (bx+bw-6, by+1+i))
     pygame.draw.rect(surf, (55, 75, 105), (bx, by, bw, bh), width=1, border_radius=6)
-    _text(surf, label, 18, WHITE, bold=True, x=bx+14, y=by+8)
+    _text(surf, label, 20, WHITE, bold=True, x=bx+14, y=by+6)
     if sub:
-        _text(surf, sub, 12, (140, 155, 175), x=bx+14, y=by+34)
+        _text(surf, sub, 14, (155, 170, 195), x=bx+14, y=by+34)
     return bx, by, bw, bh
 
 
