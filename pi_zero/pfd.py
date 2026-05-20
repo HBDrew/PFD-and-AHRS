@@ -7520,7 +7520,12 @@ def draw_mfd(surf, connected=True, data_stale=False):
         col_w = strip_w // n_cols
         _col(col_w // 2 + col_w * 0, "GS",   f"{int(round(gs_kt)):3d}")
         _col(col_w // 2 + col_w * 1, "TRK",  trk_str)
-        _col(col_w // 2 + col_w * 2, "ALT",  f"{int(round(alt)):5d}")
+        # ALT snapped to 20 ft increments — the smoothed disp value walks
+        # every frame and a 1-ft-per-frame jitter on the bottom-of-strip
+        # readout is visually busy.  20 ft matches the standard PFD tape
+        # tick spacing and is finer than typical baro accuracy anyway.
+        alt_q = int(round(alt / 20.0) * 20)
+        _col(col_w // 2 + col_w * 2, "ALT",  f"{alt_q:5d}")
         _col(col_w // 2 + col_w * 3, "WPT",  d2["ident"], val_col=MAGENTA)
         _col(col_w // 2 + col_w * 4, "BTW",  f"{int(round(brg)) % 360:03d}°", val_col=MAGENTA)
         _col(col_w // 2 + col_w * 5, "DIST", f"{dist_nm:.1f}", val_col=MAGENTA)
@@ -7533,7 +7538,8 @@ def draw_mfd(surf, connected=True, data_stale=False):
         col_w = strip_w // n_cols
         _col(col_w // 2 + col_w * 0, "GS",  f"{int(round(gs_kt)):3d} KT")
         _col(col_w // 2 + col_w * 1, "TRK", trk_str)
-        _col(col_w // 2 + col_w * 2, "ALT", f"{int(round(alt)):5d} FT")
+        alt_q = int(round(alt / 20.0) * 20)
+        _col(col_w // 2 + col_w * 2, "ALT", f"{alt_q:5d} FT")
 
     # ── MFD chrome buttons ─────────────────────────────────────────────
     # D2 (top-left), PFD (top-right), zoom-out (bottom-left, "−"),
