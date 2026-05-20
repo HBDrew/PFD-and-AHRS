@@ -171,6 +171,14 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_err":       0,    # count of parse / IO errors
     "ahrs_last_err":  "",   # most recent error message
 }
+disp["nav"] = {                     # direct-to navigation
+    "ident":   "",      # ICAO/local ID of active waypoint, "" = none
+    "lat":     0.0,
+    "lon":     0.0,
+    "elev_ft": 0.0,
+    "act_lat": 0.0,     # aircraft lat at activation (CDI course reference)
+    "act_lon": 0.0,
+}
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
     "init_alt":   5000.0,
@@ -2255,6 +2263,15 @@ def handle_event(event, demo_mode):
                 _settings.mark_dirty()
             return True
 
+        # ── Nav-confirm modal taps ────────────────────────────────────────
+        if mode == "nav_confirm":
+            action = nav_confirm_hit(x, y)
+            if action == "activate":
+                _nav_confirm_apply()
+            elif action == "cancel":
+                _nav_confirm_cancel()
+            return True
+
         # ── Mag-cal modal taps ────────────────────────────────────────────
         if mode == "mag_cal":
             action = mag_cal_hit(x, y)
@@ -3724,6 +3741,135 @@ def mag_cal_hit(x, y):
             if btn_xs[i] <= x <= btn_xs[i] + btn_w:
                 return action
     return "noop"
+
+
+# ── Direct-to navigation + confirm modal ─────────────────────────────────────
+# Lookup-by-ident and a small "Activate Direct to XXXX?" modal that gates
+# the actual activation.  Verbatim port of pi4's flow — the plumbing the
+# MFD work consumes for D2 routing.  No PFD-side entry point on pi_zero
+# yet; the keyboard hands off into _nav_open_confirm once the MFD lands.
+
+_NAVCNF_W     = 360
+_NAVCNF_H     = 170
+_NAVCNF_BTN_H = 48
+
+
+def _navcnf_geom():
+    bx = (DISPLAY_W - _NAVCNF_W) // 2
+    by = (DISPLAY_H - _NAVCNF_H) // 2
+    btn_y = by + _NAVCNF_H - _NAVCNF_BTN_H - 14
+    btn_w = (_NAVCNF_W - 14 - 14 - 12) // 2
+    bx_l  = bx + 14
+    bx_r  = bx + _NAVCNF_W - 14 - btn_w
+    return bx, by, btn_y, btn_w, bx_l, bx_r
+
+
+def draw_nav_confirm(surf):
+    """Centred "Activate Direct to XXXX?" modal."""
+    ident = disp.get("nav_confirm_ident", "")
+    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
+
+    _draw_veil(surf)
+    panel = pygame.Surface((_NAVCNF_W, _NAVCNF_H), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _NAVCNF_W, _NAVCNF_H),
+                     width=2, border_radius=10)
+
+    _text(surf, "DIRECT TO", 14, (170, 200, 230), bold=True,
+          cx=bx + _NAVCNF_W // 2, cy=by + 24)
+    _text(surf, ident or "—", 36, MAGENTA, bold=True,
+          cx=bx + _NAVCNF_W // 2, cy=by + 68)
+    _text(surf, "Activate?", 15, (210, 220, 240),
+          cx=bx + _NAVCNF_W // 2, cy=by + 102)
+
+    _action_btn(surf, bx_l, btn_y, btn_w, _NAVCNF_BTN_H, "CANCEL",   "danger")
+    _action_btn(surf, bx_r, btn_y, btn_w, _NAVCNF_BTN_H, "ACTIVATE", "ok")
+
+
+def nav_confirm_hit(x, y):
+    """Return 'activate' / 'cancel' / 'noop' / None for a tap on the modal."""
+    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
+    if not (bx <= x <= bx + _NAVCNF_W and by <= y <= by + _NAVCNF_H):
+        return None
+    if btn_y <= y <= btn_y + _NAVCNF_BTN_H:
+        if bx_l <= x <= bx_l + btn_w:
+            return "cancel"
+        if bx_r <= x <= bx_r + btn_w:
+            return "activate"
+    return "noop"
+
+
+def _nav_lookup_ident(ident: str):
+    """Return (ident, lat, lon, elev_ft) for the first matching airport,
+    or None."""
+    if _airports is None or not ident:
+        return None
+    if hasattr(_airports, "dtype"):
+        mask = _airports["ident"] == ident
+        rows = _airports[mask]
+        if len(rows) == 0:
+            return None
+        row = rows[0]
+        return (str(row["ident"]), float(row["lat"]),
+                float(row["lon"]), float(row["elev_ft"]))
+    for rec in _airports:
+        if rec[0] == ident:
+            return (rec[0], float(rec[2]), float(rec[3]), float(rec[4]))
+    return None
+
+
+def _nav_set_by_ident(ident: str) -> bool:
+    """Activate direct-to to the airport with this ident.  Returns True on hit."""
+    hit = _nav_lookup_ident(ident)
+    if hit is None:
+        return False
+    lat = disp.get("lat", 0.0)
+    lon = disp.get("lon", 0.0)
+    ai, alat, alon, aelev = hit
+    disp["nav"]["ident"]   = ai
+    disp["nav"]["lat"]     = alat
+    disp["nav"]["lon"]     = alon
+    disp["nav"]["elev_ft"] = aelev
+    disp["nav"]["act_lat"] = lat
+    disp["nav"]["act_lon"] = lon
+    _settings.mark_dirty()
+    return True
+
+
+def _nav_clear() -> None:
+    disp["nav"]["ident"]   = ""
+    disp["nav"]["lat"]     = 0.0
+    disp["nav"]["lon"]     = 0.0
+    disp["nav"]["elev_ft"] = 0.0
+    disp["nav"]["act_lat"] = 0.0
+    disp["nav"]["act_lon"] = 0.0
+    _settings.mark_dirty()
+
+
+def _nav_open_confirm(ident: str, prev_mode: str) -> bool:
+    """Switch to the nav_confirm modal for `ident`.  Returns False if
+    the ident is empty (caller falls through to its no-op path)."""
+    if not ident:
+        return False
+    disp["nav_confirm_ident"] = ident
+    disp["nav_confirm_prev"]  = prev_mode
+    disp["mode"] = "nav_confirm"
+    return True
+
+
+def _nav_confirm_apply():
+    """Activate the pending direct-to and dismiss the modal."""
+    ident = disp.get("nav_confirm_ident", "")
+    if ident:
+        _nav_set_by_ident(ident)
+    disp["nav_confirm_ident"] = ""
+    disp["mode"] = disp.get("nav_confirm_prev", "pfd")
+
+
+def _nav_confirm_cancel():
+    disp["nav_confirm_ident"] = ""
+    disp["mode"] = disp.get("nav_confirm_prev", "pfd")
 
 
 # ── WiFi network scan ─────────────────────────────────────────────────────────
@@ -6143,6 +6289,15 @@ def render(surf, demo_mode, connected, data_stale=False):
         # it was launched from.
         draw_ahrs_setup(surf, disp["ss"])
         draw_mag_cal(surf); return
+    if mode == "nav_confirm":
+        # Modal is borderless; paint whatever screen the caller was on,
+        # then the modal on top.
+        prev = disp.get("nav_confirm_prev", "pfd")
+        if prev == "pfd":
+            disp["mode"] = "pfd"
+            render(surf, demo_mode, connected, data_stale)
+            disp["mode"] = "nav_confirm"
+        draw_nav_confirm(surf); return
     if mode == "wifi_scan":
         draw_wifi_scan(surf, disp["cs"]); return
     if mode == "connectivity_setup":
