@@ -321,6 +321,92 @@ def _ssync_publish_nav():
     })
 
 
+_ssync_last_ahrs_t = 0.0
+_ssync_last_gps_t  = 0.0
+_SSYNC_AHRS_MIN_DT = 0.05    # 20 Hz upper bound
+_SSYNC_GPS_MIN_DT  = 0.20    # 5 Hz upper bound
+
+
+def _ssync_publish_ahrs():
+    """Broadcast attitude at most 20 Hz."""
+    global _ssync_last_ahrs_t
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    if not _screen_sync.publish_enabled(_ssync_mod.KIND_AHRS):
+        return
+    now = time.monotonic()
+    if now - _ssync_last_ahrs_t < _SSYNC_AHRS_MIN_DT:
+        return
+    _ssync_last_ahrs_t = now
+    _screen_sync.publish(_ssync_mod.KIND_AHRS, {
+        "pitch": float(disp.get("pitch", 0.0)),
+        "roll":  float(disp.get("roll",  0.0)),
+        "yaw":   float(disp.get("yaw",   0.0)),
+    })
+
+
+def _ssync_apply_ahrs(data):
+    """Inject remote attitude into the shared state dict so the normal
+    smoothing path picks it up.  Only useful when this screen has no
+    local AHRS source — otherwise the local writer just bashes it back
+    on the next sensor sample."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        with _state_lock:
+            if "pitch" in data:
+                state["pitch"] = float(data["pitch"])
+            if "roll" in data:
+                state["roll"]  = float(data["roll"])
+            if "yaw" in data:
+                state["yaw"]   = float(data["yaw"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_gps():
+    """Broadcast GPS state at most 5 Hz."""
+    global _ssync_last_gps_t
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    if not _screen_sync.publish_enabled(_ssync_mod.KIND_GPS):
+        return
+    now = time.monotonic()
+    if now - _ssync_last_gps_t < _SSYNC_GPS_MIN_DT:
+        return
+    _ssync_last_gps_t = now
+    _screen_sync.publish(_ssync_mod.KIND_GPS, {
+        "lat":     float(disp.get("lat", 0.0)),
+        "lon":     float(disp.get("lon", 0.0)),
+        "gps_alt": float(disp.get("gps_alt", 0.0)),
+        "speed":   float(disp.get("speed", 0.0)),
+        "track":   float(disp.get("track", 0.0)),
+        "gps_ok":  bool(disp.get("gps_ok", False)),
+        "fix":     int(disp.get("fix", 0)),
+        "sats":    int(disp.get("sats", 0)),
+    })
+
+
+def _ssync_apply_gps(data):
+    """Inject remote GPS into shared state.  Same caveat as AHRS — if a
+    local source is also writing, it wins on the next sample."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        with _state_lock:
+            for k in ("lat", "lon", "gps_alt", "speed", "track"):
+                if k in data:
+                    state[k] = float(data[k])
+            if "gps_ok" in data:
+                state["gps_ok"] = bool(data["gps_ok"])
+            if "fix" in data:
+                state["fix"] = int(data["fix"])
+            if "sats" in data:
+                state["sats"] = int(data["sats"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
 def _ssync_apply_nav(data):
     """Apply a remote D2 update.  Empty ident clears D2 (matches the
     CANCEL D2 button on the keyboard)."""
@@ -7658,6 +7744,8 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
     _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
     _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
+    _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
+    _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
     _screen_sync.start()
     print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
           f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
@@ -8034,6 +8122,10 @@ def main():
 
         # Smooth sensor values into display values
         smooth_state()
+
+        # Push AHRS / GPS to peer screens (rate-limited inside the helpers).
+        _ssync_publish_ahrs()
+        _ssync_publish_gps()
 
         # Events
         for event in pygame.event.get():
