@@ -6985,11 +6985,13 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
 import moving_map as _mfd_map   # noqa: E402
 
-# Pi Zero 2W tint rebuild + SRTM tile fetch can't sustain ranges past
-# 20 nm — at 40+ nm the build OOMs and the kernel reboots the Pi.
-# Cap zoom both on settings load and inside zoom_out so a saved value
-# never makes it into a render() call.
-MFD_MAX_ZOOM_NM = 20
+# Pi Zero 2W tops out at 40 nm — at 80+ nm the SRTM tile bbox can pull
+# in more tiles than the cache holds, and the airport count past 40 nm
+# adds no value (moving_map gates airport draws there anyway).  The
+# render path has been tuned (smaller _TINT_N, async tint past 5 nm,
+# airport cap at 40 rows + type filter by zoom band) so 40 nm is
+# stable on bench hardware.
+MFD_MAX_ZOOM_NM = 40
 
 _MFD_PFD_BTN_W = 100
 _MFD_PFD_BTN_H = 36

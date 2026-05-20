@@ -102,8 +102,9 @@ _STATE_LINE  = (110, 130, 160)      # muted slate-blue: visible over tint
 # without thrashing.
 
 _tint_cache: dict = {}
-_TINT_CACHE_MAX = 6
-_TINT_N = 64       # elevation samples per side; smoothscaled up to fit
+_TINT_CACHE_MAX = 4   # pi4 uses 6; pi_zero gets less RAM, so trim.
+_TINT_N = 48          # elevation samples per side; smoothscaled up to fit.
+                      # pi4 uses 64 — 48 cuts the build cost by ~45 %.
 
 
 def _quantise_centre(lat, lon, range_nm):
@@ -131,7 +132,12 @@ if HAS_NUMPY:
 # happens on a worker thread, pygame surface finalisation stays on the main
 # thread (pygame's surface APIs are not thread-safe), and the renderer
 # paints around a None tint while the build is in flight.
-_TINT_SYNC_MAX_NM = 40           # range cap for synchronous builds
+#
+# pi_zero values are tighter than pi4's because the Pi Zero 2W only has
+# 512 MB RAM and a much slower SD card: keeping sync builds at <= 5 nm
+# (tiny bbox, 1-2 tiles) means the main thread stalls only on the rare
+# very-zoomed-in render.  Wider zooms go async with a "BUILDING…" hint.
+_TINT_SYNC_MAX_NM = 5            # range cap for synchronous builds
 _TINT_RENDER_MAX_NM = 80         # range cap for rendering the tint at all
                                  # — above this, SRTM I/O is too heavy
 _tint_async_lock = threading.Lock()
@@ -623,14 +629,31 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 pygame.draw.circle(surf, _OBS_COL, (int(ox), int(oy)), 2)
 
     # ── Airports ─────────────────────────────────────────────────────────────
-    # Per-type filtering matches the main PFD: caller passes a set of
+    # Per-type filtering matches the main PFD; caller passes a set of
     # visible atype letters (S/M/L = public, H = helo, W = water, B = other).
-    # Default ``None`` = show every type the master toggle covers.
-    # Above 40 nm the airport dots smear into noise — the destination is
-    # still marked by the D2 waypoint diamond drawn below, which is what
-    # the pilot actually cares about at whole-leg scale.
+    # On the pi_zero MFD, ``query_nearby`` can return 300+ airports in
+    # dense areas at 20 nm, and the per-airport pygame.draw.circle calls
+    # add up fast (~75 µs each × 300 = 22 ms just for dots) plus a font
+    # render per ident at narrow zooms.  We bound the cost three ways:
+    #
+    #   1. Hard cap the rendered count at MAX_AIRPORTS_DRAWN.  Results
+    #      are sorted nearest-first by query_nearby, so the cap throws
+    #      away the farthest ones first — the pilot already can't read
+    #      a label that's 25 nm away anyway.
+    #   2. At wider zooms, narrow the visible set to "important" types
+    #      only.  >10 nm drops "B"/"H"/"W"; >20 nm drops "S" too.
+    #   3. Labels stay capped at <= 10 nm where they're actually legible.
+    MAX_AIRPORTS_DRAWN = 40
     if (settings.get("map_show_airports", True) and airports_arr is not None
             and range_nm <= 40):
+        if range_nm > 20:
+            allowed_types = {"L"}
+        elif range_nm > 10:
+            allowed_types = {"M", "L"}
+        elif range_nm > 5:
+            allowed_types = {"S", "M", "L"}
+        else:
+            allowed_types = None    # all visible types
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
@@ -638,8 +661,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             types = nearby["atype"]
             lats  = nearby["lat"]
             lons  = nearby["lon"]
+            drawn = 0
             for i in range(len(nearby)):
+                if drawn >= MAX_AIRPORTS_DRAWN:
+                    break
                 atype = str(types[i])
+                if allowed_types is not None and atype not in allowed_types:
+                    continue
                 if (airport_types_visible is not None
                         and atype not in airport_types_visible):
                     continue
@@ -657,6 +685,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 if font is not None and range_nm <= 10:
                     lbl = font.render(str(ids[i]), True, _APT_PUB)
                     surf.blit(lbl, (ix + 5, iy - 7))
+                drawn += 1
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:

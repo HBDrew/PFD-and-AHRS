@@ -82,7 +82,11 @@ def interp_colour(palette, value):
 # eventually OOM-killing the process.  32 entries is enough for the inner +
 # outer mesh extents (~50 nm radius → ~9 tiles) plus comfortable hysteresis.
 import collections as _collections
-_TILE_CACHE_MAX = 32
+# 16 entries: enough for a 50-nm MFD bbox (~9 tiles) plus hysteresis as
+# the aircraft moves into new ones.  Previously 32, which let SRTM1
+# tiles (52 MB each) snowball past the Pi Zero 2W's 512 MB RAM during
+# extended bench sessions and trigger an oom-kill / reboot.
+_TILE_CACHE_MAX = 16
 _tile_cache: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
 
 
