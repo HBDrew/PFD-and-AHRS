@@ -59,6 +59,7 @@ AI_H = TAPE_H                           # 414
 _HERE         = os.path.dirname(os.path.abspath(__file__))
 SRTM_DIR      = os.path.join(_HERE, "data", "srtm")
 COARSE_DIR    = os.path.join(_HERE, "data", "terrain_coarse")
+WATER_DIR     = os.path.join(_HERE, "data", "water")
 
 # ── Obstacle database (FAA DOF) ───────────────────────────────────────────────
 OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")

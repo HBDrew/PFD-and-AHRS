@@ -31,6 +31,7 @@ apt-get install -y --no-install-recommends \
     python3-pygame \
     python3-numpy \
     python3-serial \
+    python3-pyshp \
     libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev \
     fonts-dejavu-core \
     git curl \

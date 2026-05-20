@@ -42,6 +42,7 @@ from terrain import (
 )   # elevation lookup only — no SVT renderer
 import obstacles as obs_mod
 import airports as apt_mod
+import water as water_mod
 import settings as _settings
 
 DEG = math.pi / 180
@@ -143,6 +144,13 @@ disp["ss"] = {                      # AHRS / sensor settings
     "mag_cal":       "idle", "mounting": "normal",
     "hdg_src":       "mag",   # "mag" | "gps"  — heading source (magnetic or GPS track)
     "airspeed_src":  "gps",   # "gps" | "ias"  — speed source (GPS groundspeed or IAS sensor)
+}
+disp["wd"] = {                      # water-mask download / rasterise state
+    "downloading": False,
+    "dl_status":   "",
+    "dl_current":  0,
+    "dl_total":    0,
+    "dl_cancel":   False,
 }
 disp["fw"] = {                      # AHRS firmware loader state
     "push_state":  "",   # ""|"pushing"|"done"|"error"
@@ -2447,13 +2455,19 @@ def handle_event(event, demo_mode):
             if action == "back":
                 disp["mode"] = "system_setup"
             elif action == "cancel":
-                disp["td"]["dl_cancel"] = True
+                if disp["td"]["downloading"]:
+                    disp["td"]["dl_cancel"] = True
+                if disp["wd"]["downloading"]:
+                    disp["wd"]["dl_cancel"] = True
             elif action == "current_area":
                 if not disp["td"]["downloading"]:
                     _td_start_current_area()
             elif action == "global_coarse":
                 if not disp["td"]["downloading"]:
                     _tdc_start_download()
+            elif action == "water_masks":
+                if not disp["wd"]["downloading"]:
+                    _wd_start_download()
             elif action and action.startswith("region:"):
                 if not disp["td"]["downloading"]:
                     idx = int(action.split(":")[1])
@@ -4595,6 +4609,524 @@ def _tdc_start_download():
     t.start()
 
 
+# ── Water-mask download ───────────────────────────────────────────────────────
+# Companion to the SRTM download flow: pulls the Natural Earth 10m ocean +
+# lakes shapefiles once (~12 MB combined), then for each existing .hgt tile
+# rasterises a 1201×1201 binary water mask in-process using pyshp + pygame's
+# C-based polygon fill.  Runs in a daemon thread so the UI stays responsive;
+# status reported via disp["wd"].
+#
+# Speed vs the old gdal_rasterize subprocess flow:
+#   - shapefiles parsed ONCE per process (cached at module level), not once
+#     per tile per shapefile.
+#   - pygame.draw.polygon is a single C scanline fill, no subprocess startup.
+#   - bbox prefilter discards inland tiles in microseconds.
+# Typical 25-tile "current area": old ~3 minutes, new ~5 seconds.
+
+_WD_NE_FILES   = ("ne_10m_ocean", "ne_10m_lakes")
+_WD_NE_PRIMARY = "https://naciscdn.org/naturalearth/10m/physical"
+_WD_NE_MIRROR  = ("https://github.com/nvkelso/natural-earth-vector/"
+                  "raw/master/zips/10m_physical")
+_WD_TILE_RES   = 1201
+
+# Per-shapefile cache of (bbox, [ring, ...]) tuples; built lazily on first use.
+_wd_shapes_cache = {}
+
+
+def _wd_shapes_dir():
+    """Where Natural Earth .shp files live (alongside data/srtm/)."""
+    return os.path.join(os.path.dirname(SRTM_DIR), "natural_earth")
+
+
+def _wd_ensure_shapefiles(wd):
+    """Download + unzip the Natural Earth shapefiles if not present.
+    Returns the list of shapefile names found, or None on failure."""
+    import zipfile as _zipfile
+    sdir = _wd_shapes_dir()
+    os.makedirs(sdir, exist_ok=True)
+    found = []
+    for name in _WD_NE_FILES:
+        shp_path = os.path.join(sdir, name + ".shp")
+        if os.path.exists(shp_path):
+            found.append(name)
+            continue
+        zip_path = os.path.join(sdir, name + ".zip")
+        wd["dl_status"] = f"Downloading {name}.zip…"
+        urls = (f"{_WD_NE_PRIMARY}/{name}.zip",
+                f"{_WD_NE_MIRROR}/{name}.zip")
+        ok = False
+        for url in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=30) as resp:
+                    blob = resp.read()
+                with open(zip_path, "wb") as f:
+                    f.write(blob)
+                ok = True
+                break
+            except Exception as e:
+                wd["dl_status"] = f"  retry: {e}"
+        if not ok:
+            wd["dl_status"] = f"Failed to download {name}.zip"
+            return None
+        try:
+            with _zipfile.ZipFile(zip_path) as z:
+                z.extractall(sdir)
+            os.remove(zip_path)
+        except Exception as e:
+            wd["dl_status"] = f"Unzip failed: {e}"
+            return None
+        if not os.path.exists(shp_path):
+            wd["dl_status"] = f"{name}.shp missing after unzip"
+            return None
+        found.append(name)
+    return found
+
+
+def _wd_load_shapes(name, wd):
+    """Return cached parsed shapefile for `name`.  Cached as a dict with
+    flat numpy arrays (much smaller + faster than nested Python lists),
+    persisted to disk as .npz so subsequent runs skip the slow shapefile
+    parse entirely:
+
+        {'points':       (N, 2) float32,    flat list of all (lon, lat)
+         'ring_starts':  (M+1,) int32,       indices into points[] per ring
+         'ring_bboxes':  (M, 4) float32}     (lon_min, lat_min, lon_max, lat_max)
+
+    Pure numpy means the worker thread never has to touch pygame/SDL
+    (which has global locks that can deadlock the render thread when a
+    huge polygon is being filled in C).
+    """
+    import numpy as _np
+    if name in _wd_shapes_cache:
+        return _wd_shapes_cache[name]
+
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, name + ".npz")
+
+    # Fast path: previously-parsed cache on disk.
+    if os.path.exists(npz_path):
+        wd["dl_status"] = f"Loading cached {name}…"
+        try:
+            with _np.load(npz_path, allow_pickle=False) as z:
+                cache = {
+                    "points":      z["points"],
+                    "ring_starts": z["ring_starts"],
+                    "ring_bboxes": z["ring_bboxes"],
+                }
+            _wd_shapes_cache[name] = cache
+            return cache
+        except Exception:
+            pass   # fall through to re-parse
+
+    # Slow path: parse the .shp.  Big shapefiles (ocean has 600 K points)
+    # can take 30 s the first time; cache to .npz makes the second run
+    # instant.
+    import shapefile as _shapefile   # pyshp
+    shp_path = os.path.join(sdir, name + ".shp")
+    wd["dl_status"] = f"Parsing {name}.shp (one-time, ~30 s)…"
+
+    all_pts = []
+    ring_starts = [0]
+    ring_bboxes = []
+    cum = 0
+    with _shapefile.Reader(shp_path) as sf:
+        for shp in sf.iterShapes():
+            parts = list(shp.parts) + [len(shp.points)]
+            for i in range(len(parts) - 1):
+                ring = shp.points[parts[i]:parts[i + 1]]
+                if len(ring) < 3:
+                    continue
+                arr = _np.asarray(ring, dtype=_np.float32)
+                all_pts.append(arr)
+                cum += len(arr)
+                ring_starts.append(cum)
+                ring_bboxes.append((arr[:, 0].min(), arr[:, 1].min(),
+                                    arr[:, 0].max(), arr[:, 1].max()))
+
+    if not all_pts:
+        cache = {
+            "points":      _np.zeros((0, 2), dtype=_np.float32),
+            "ring_starts": _np.zeros((1,), dtype=_np.int32),
+            "ring_bboxes": _np.zeros((0, 4), dtype=_np.float32),
+        }
+    else:
+        cache = {
+            "points":      _np.concatenate(all_pts, axis=0).astype(_np.float32),
+            "ring_starts": _np.asarray(ring_starts, dtype=_np.int32),
+            "ring_bboxes": _np.asarray(ring_bboxes, dtype=_np.float32),
+        }
+
+    # Persist cache for next time.
+    try:
+        _np.savez(npz_path,
+                  points=cache["points"],
+                  ring_starts=cache["ring_starts"],
+                  ring_bboxes=cache["ring_bboxes"])
+    except OSError:
+        pass
+
+    _wd_shapes_cache[name] = cache
+    return cache
+
+
+# ── State / province boundary lines ───────────────────────────────────────────
+# Companion to the water-mask download.  Pulls Natural Earth's 10m admin-1
+# (states / provinces) shapefile, parses its polygons as a flat polyline cache
+# the inset can scan with bbox culling, persists the parsed result as a small
+# .npz alongside the water shapefiles so subsequent boots load in ~10 ms.
+
+_SL_NE_NAME       = "ne_10m_admin_1_states_provinces"
+_SL_NE_PRIMARY    = "https://naciscdn.org/naturalearth/10m/cultural"
+_SL_NE_MIRROR     = ("https://github.com/nvkelso/natural-earth-vector/"
+                     "raw/master/zips/10m_cultural")
+_SL_NPZ_NAME      = _SL_NE_NAME + "_lines.npz"
+
+
+def _sl_ensure_shapefile(wd):
+    """Download + unzip the admin_1 shapefile if missing.  Status text reuses
+    disp["wd"] so it shows up in the existing water-mask progress strip."""
+    import zipfile as _zipfile
+    sdir = _wd_shapes_dir()
+    os.makedirs(sdir, exist_ok=True)
+    shp_path = os.path.join(sdir, _SL_NE_NAME + ".shp")
+    if os.path.exists(shp_path):
+        return shp_path
+    zip_path = os.path.join(sdir, _SL_NE_NAME + ".zip")
+    wd["dl_status"] = f"Downloading {_SL_NE_NAME}.zip…"
+    urls = (f"{_SL_NE_PRIMARY}/{_SL_NE_NAME}.zip",
+            f"{_SL_NE_MIRROR}/{_SL_NE_NAME}.zip")
+    for url in urls:
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                blob = resp.read()
+            with open(zip_path, "wb") as f:
+                f.write(blob)
+            break
+        except Exception as e:
+            wd["dl_status"] = f"  state-lines retry: {e}"
+    else:
+        wd["dl_status"] = f"Failed to download {_SL_NE_NAME}.zip"
+        return None
+    try:
+        with _zipfile.ZipFile(zip_path) as z:
+            z.extractall(sdir)
+        os.remove(zip_path)
+    except Exception as e:
+        wd["dl_status"] = f"Unzip failed: {e}"
+        return None
+    return shp_path if os.path.exists(shp_path) else None
+
+
+def _sl_build_cache(wd):
+    """Parse the admin_1 shapefile into a flat polyline cache and persist
+    it as .npz.  Returns the cache dict, or None on failure.
+
+        {'points':     (N, 2) float32   flat (lon, lat) for every vertex
+         'seg_starts': (M+1,) int32     indices into points[] per polyline
+         'seg_bboxes': (M, 4) float32   (lon_min, lat_min, lon_max, lat_max)}
+
+    State borders ship as polygons in the shapefile; we copy each ring's
+    vertices verbatim and let the renderer draw it as a closed polyline.
+    No simplification — the file is small (~3000 rings, ~500 K points) and
+    bbox culling skips everything outside the inset bbox in microseconds."""
+    import numpy as _np
+    try:
+        import shapefile as _shapefile
+    except ImportError:
+        wd["dl_status"] = ("Install pyshp: sudo pip3 install "
+                           "--break-system-packages pyshp")
+        return None
+
+    shp_path = _sl_ensure_shapefile(wd)
+    if shp_path is None:
+        return None
+
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, _SL_NPZ_NAME)
+
+    wd["dl_status"] = f"Parsing {_SL_NE_NAME}.shp (one-time)…"
+    all_pts, seg_starts, seg_bboxes = [], [0], []
+    cum = 0
+    with _shapefile.Reader(shp_path) as sf:
+        for shp in sf.iterShapes():
+            parts = list(shp.parts) + [len(shp.points)]
+            for i in range(len(parts) - 1):
+                ring = shp.points[parts[i]:parts[i + 1]]
+                if len(ring) < 2:
+                    continue
+                arr = _np.asarray(ring, dtype=_np.float32)
+                all_pts.append(arr)
+                cum += len(arr)
+                seg_starts.append(cum)
+                seg_bboxes.append((arr[:, 0].min(), arr[:, 1].min(),
+                                   arr[:, 0].max(), arr[:, 1].max()))
+
+    if not all_pts:
+        return None
+    cache = {
+        "points":     _np.concatenate(all_pts, axis=0).astype(_np.float32),
+        "seg_starts": _np.asarray(seg_starts, dtype=_np.int32),
+        "seg_bboxes": _np.asarray(seg_bboxes, dtype=_np.float32),
+    }
+    try:
+        _np.savez(npz_path,
+                  points=cache["points"],
+                  seg_starts=cache["seg_starts"],
+                  seg_bboxes=cache["seg_bboxes"])
+    except OSError:
+        pass
+    return cache
+
+
+def _sl_load_cache():
+    """Load the parsed state-lines .npz if it exists.  Returns the cache
+    dict or None.  Called once at startup and again after the worker
+    finishes a fresh download/parse."""
+    import numpy as _np
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, _SL_NPZ_NAME)
+    if not os.path.exists(npz_path):
+        return None
+    try:
+        with _np.load(npz_path, allow_pickle=False) as z:
+            return {
+                "points":     z["points"],
+                "seg_starts": z["seg_starts"],
+                "seg_bboxes": z["seg_bboxes"],
+            }
+    except Exception:
+        return None
+
+
+_state_lines = None  # populated on startup by _sl_load_cache(); rebound after
+                     # the water/state worker finishes building the cache.
+
+
+def _wd_fill_ring(out, ring_xy_px):
+    """Burn one polygon ring (N×2 float pixel coords) into out (H, W)
+    uint8 array via numpy scanline fill.  Even–odd fill rule means
+    polygon-with-holes (e.g. ocean cut by continents) renders correctly
+    when outer + inner rings are passed in.
+    """
+    import numpy as _np
+    n = len(ring_xy_px)
+    if n < 3:
+        return
+    H, W = out.shape
+
+    x1 = ring_xy_px[:, 0]
+    y1 = ring_xy_px[:, 1]
+    x2 = _np.roll(x1, -1)
+    y2 = _np.roll(y1, -1)
+
+    # Edge prefilter: drop edges entirely above or below the tile in Y.
+    # Do NOT prefilter in X — closed polygons whose perimeter lies far
+    # east/west of the tile (e.g. the Pacific Ocean ring's antimeridian
+    # and Asian-coast edges for an offshore CONUS tile) still contribute
+    # scanline-crossing parity.  Their xs values land outside [0, W) and
+    # are clipped during fill, but keeping them is what makes the
+    # even–odd count even on every scanline.
+    keep = ~(((y1 < 0) & (y2 < 0)) | ((y1 >= H) & (y2 >= H)))
+    if not keep.any():
+        return
+    x1 = x1[keep]; y1 = y1[keep]
+    x2 = x2[keep]; y2 = y2[keep]
+
+    y_min = max(0, int(_np.floor(min(y1.min(), y2.min()))))
+    y_max = min(H - 1, int(_np.ceil(max(y1.max(), y2.max()))))
+    if y_min > y_max:
+        return
+
+    for y in range(y_min, y_max + 1):
+        # Edges crossing scanline y (top-inclusive, bottom-exclusive)
+        crosses = ((y1 <= y) & (y < y2)) | ((y2 <= y) & (y < y1))
+        if not crosses.any():
+            continue
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            xs = x1[crosses] + (y - y1[crosses]) * \
+                 (x2[crosses] - x1[crosses]) / (y2[crosses] - y1[crosses])
+        xs = _np.sort(xs)
+        # Even–odd fill between successive intersection pairs
+        for k in range(0, len(xs) - 1, 2):
+            x_start = max(0, int(_np.ceil(xs[k])))
+            x_end   = min(W, int(xs[k + 1]) + 1)
+            if x_start < x_end:
+                out[y, x_start:x_end] ^= 1   # XOR for even–odd
+
+
+def _wd_rasterise_tile(lat_int, lon_int, shape_names, wd):
+    """Build a (res×res) uint8 0/1 water mask for the 1°×1° tile at
+    (lat_int, lon_int).  Pure numpy — no pygame/SDL on the worker
+    thread, so the main render loop stays unblocked even on a huge
+    polygon."""
+    import numpy as _np
+    res = _WD_TILE_RES
+    out = _np.zeros((res, res), dtype=_np.uint8)
+
+    tile_lon0 = float(lon_int)
+    tile_lon1 = float(lon_int + 1)
+    tile_lat0 = float(lat_int)
+    tile_lat1 = float(lat_int + 1)
+    scale = float(res - 1)
+
+    for name in shape_names:
+        cache = _wd_load_shapes(name, wd)
+        ring_starts = cache["ring_starts"]
+        bboxes      = cache["ring_bboxes"]
+        points      = cache["points"]
+        if len(bboxes) == 0:
+            continue
+
+        # Vectorised per-ring bbox prefilter
+        keep_rings = ~((bboxes[:, 2] < tile_lon0) | (bboxes[:, 0] > tile_lon1) |
+                       (bboxes[:, 3] < tile_lat0) | (bboxes[:, 1] > tile_lat1))
+        ring_idx = _np.flatnonzero(keep_rings)
+        if ring_idx.size == 0:
+            continue
+
+        for ri in ring_idx:
+            s = ring_starts[ri]
+            e = ring_starts[ri + 1]
+            ring = points[s:e]
+            # Convert lon/lat → pixel coords (col 0 = west, row 0 = north).
+            xy = _np.empty_like(ring)
+            xy[:, 0] = (ring[:, 0] - tile_lon0) * scale
+            xy[:, 1] = (tile_lat1 - ring[:, 1]) * scale
+            _wd_fill_ring(out, xy)
+
+    # XOR fill produced 0/1 pixels but inner rings (continents inside
+    # ocean) flip back to 0, which is what we want — water=1 only.
+    return out
+
+
+def _wd_existing_srtm_tiles():
+    """Enumerate (lat_int, lon_int) for every .hgt file in SRTM_DIR."""
+    tiles = []
+    if not os.path.isdir(SRTM_DIR):
+        return tiles
+    for f in os.listdir(SRTM_DIR):
+        if not f.endswith(".hgt") or len(f) < 11:
+            continue
+        try:
+            ns = f[0]
+            lat_int = int(f[1:3]) * (1 if ns == "N" else -1)
+            ew = f[3]
+            lon_int = int(f[4:7]) * (1 if ew == "E" else -1)
+        except ValueError:
+            continue
+        tiles.append((lat_int, lon_int))
+    return sorted(tiles)
+
+
+def _wd_target_tiles(buffer_deg=1):
+    """SRTM tiles plus a `buffer_deg` border in every direction.
+
+    Adding buffer tiles means the rasteriser also produces water masks
+    for offshore tiles where the SRTM coverage stops (e.g. just east of
+    the Florida coast, or west of California).  Those tiles have no
+    .hgt file but a valid .water mask — Natural Earth's ocean polygon
+    fills them entirely with water — so the SVT outer mesh paints
+    Pacific/Atlantic blue instead of defaulting to flat brown."""
+    have = set(_wd_existing_srtm_tiles())
+    extended = set(have)
+    for lat_int, lon_int in have:
+        for dlat in range(-buffer_deg, buffer_deg + 1):
+            for dlon in range(-buffer_deg, buffer_deg + 1):
+                la = lat_int + dlat
+                lo = lon_int + dlon
+                if -90 <= la <= 89 and -180 <= lo <= 179:
+                    extended.add((la, lo))
+    return sorted(extended)
+
+
+def _wd_download_thread():
+    """Background worker: download Natural Earth + rasterise per-tile masks."""
+    from water import save_tile, _tile_key as _water_tile_key
+
+    wd = disp["wd"]
+    wd["downloading"] = True
+    wd["dl_cancel"]   = False
+    wd["dl_current"]  = 0
+    wd["dl_total"]    = 0
+
+    # Pure-python path: needs pyshp.  If missing, tell the user how to
+    # install it without forcing them to install gdal-bin (heavy + slow).
+    try:
+        import shapefile  # noqa: F401
+    except ImportError:
+        wd["dl_status"] = ("Install pyshp: sudo pip3 install "
+                           "--break-system-packages pyshp")
+        wd["downloading"] = False
+        return
+
+    wd["dl_status"] = "Loading Natural Earth shapefiles…"
+    found = _wd_ensure_shapefiles(wd)
+    if found is None:
+        wd["downloading"] = False
+        return
+
+    tiles = _wd_target_tiles(buffer_deg=1)
+    if not tiles:
+        wd["dl_status"] = "No SRTM tiles on disk — download terrain first"
+        wd["downloading"] = False
+        return
+
+    os.makedirs(WATER_DIR, exist_ok=True)
+    wd["dl_total"] = len(tiles)
+    ok = skip = err = 0
+    try:
+        for i, (lat_int, lon_int) in enumerate(tiles):
+            if wd["dl_cancel"]:
+                wd["dl_status"] = (f"Cancelled  ({ok} new, "
+                                   f"{skip} skipped, {err} errors)")
+                return
+            wd["dl_current"] = i
+            key = _water_tile_key(lat_int, lon_int)
+            out_path = os.path.join(WATER_DIR, key)
+            if os.path.exists(out_path):
+                skip += 1
+                continue
+            wd["dl_status"] = f"Rasterising {key}…"
+            try:
+                arr = _wd_rasterise_tile(lat_int, lon_int, found, wd)
+                save_tile(out_path, arr)
+                ok += 1
+            except Exception as e:
+                wd["dl_status"] = f"{key}: {e}"
+                err += 1
+        wd["dl_current"] = len(tiles)
+        wd["dl_status"]  = (f"Done ✓  {ok} new"
+                            + (f", {skip} skipped" if skip else "")
+                            + (f", {err} errors"   if err   else ""))
+
+        # State / province boundary polylines.  Downloaded + parsed once
+        # alongside the water shapefiles so the inset can paint state
+        # context at the wider zoom levels.  Best-effort: if pyshp /
+        # network fail the rest of the water flow still completes.
+        global _state_lines
+        if _sl_load_cache() is None:
+            wd["dl_status"] = "Fetching state boundaries…"
+            built = _sl_build_cache(wd)
+            if built is not None:
+                _state_lines = built
+                wd["dl_status"] = (f"Done ✓  {ok} new"
+                                   + (f", {skip} skipped" if skip else "")
+                                   + (f", {err} errors"   if err   else "")
+                                   + "  · state lines ready")
+        else:
+            _state_lines = _sl_load_cache()
+    finally:
+        wd["downloading"] = False
+
+
+def _wd_start_download():
+    """Kick off the water-mask rasterise in a daemon thread."""
+    if disp["wd"]["downloading"]:
+        return
+    t = threading.Thread(target=_wd_download_thread, daemon=True,
+                         name="WaterMaskDL")
+    t.start()
+
 # ── Obstacle data download ─────────────────────────────────────────────────────
 
 def _od_load_obstacles():
@@ -5065,36 +5597,46 @@ def draw_terrain_data(surf, td):
     available_h = DISPLAY_H - top_y - _TD_GAP*(rows-1) - 8
     bh = available_h // (rows + 1)   # +1 row for the two top action buttons
 
-    # ── Top row: CURRENT AREA (left) + GLOBAL LOW-RES (right) ────
-    half_w = (bw - _TD_GAP) // 2
+    # ── Top row: CURRENT AREA, GLOBAL LOW-RES, WATER MASKS (1/3 each) ────
+    third_w = (bw - 2 * _TD_GAP) // 3
+    wd_downloading = disp.get("wd", {}).get("downloading", False)
 
     def _draw_action_tile(rx, ry, rw, label, sub, active):
-        col = (0,28,18) if active else ((50,50,70) if downloading else (0,18,45))
-        oc  = (40,180,60) if active else ((70,70,95) if downloading else WHITE)
+        any_busy = downloading or wd_downloading
+        col = (0,28,18) if active else ((50,50,70) if any_busy else (0,18,45))
+        oc  = (40,180,60) if active else ((70,70,95) if any_busy else WHITE)
         pygame.draw.rect(surf, col, (rx, ry, rw, bh), border_radius=6)
-        if not downloading or active:
+        if not any_busy or active:
             gh = bh // 5
             for i in range(gh):
                 t = 1.0 - i/gh
                 gc = (int(15+t*25), int(20+t*40), int(40+t*65))
                 pygame.draw.line(surf, gc, (rx+6, ry+1+i), (rx+rw-6, ry+1+i))
         pygame.draw.rect(surf, oc, (rx, ry, rw, bh), width=2, border_radius=6)
-        tc = (40,180,60) if active else ((70,80,90) if downloading else WHITE)
+        tc = (40,180,60) if active else ((70,80,90) if any_busy else WHITE)
         _text(surf, label, 15, tc, bold=True, cx=rx+rw//2, cy=ry+bh//2-10)
         _text(surf, sub, 11,
               (110,130,150) if not active else (60,180,80),
               cx=rx+rw//2, cy=ry+bh//2+10)
 
     lat_i = int(disp.get("lat", DEMO_LAT)); lon_i = int(disp.get("lon", DEMO_LON))
-    area_str = (f"25 tiles  ·  {lat_i}°{'N' if lat_i>=0 else 'S'} "
-                f"{abs(lon_i)}°{'W' if lon_i<0 else 'E'}  ≈ 35 MB")
-    _draw_action_tile(bx, top_y, half_w, "CURRENT AREA", area_str,
+    area_str = f"25 tiles  ·  ≈ 35 MB"
+    _draw_action_tile(bx, top_y, third_w, "CURRENT AREA", area_str,
                       active=(downloading and cur_region == "Current Area"))
     n_coarse   = len(coarse_tile_list())
-    coarse_str = f"~{n_coarse} tiles  ·  global  ·  ≈ 8 MB"
-    _draw_action_tile(bx + half_w + _TD_GAP, top_y, half_w,
+    coarse_str = f"~{n_coarse} tiles  ·  ≈ 8 MB"
+    _draw_action_tile(bx + third_w + _TD_GAP, top_y, third_w,
                       "GLOBAL LOW-RES", coarse_str,
                       active=(downloading and cur_region == "Global Low-Res"))
+    # Water tile uses the same active highlight when its dedicated worker
+    # is running.  Re-runs the rasteriser for every existing SRTM tile.
+    w_tiles, w_mb = water_mod.disk_stats(WATER_DIR)
+    if w_tiles:
+        water_sub = f"{w_tiles} tiles  ·  {w_mb:.1f} MB"
+    else:
+        water_sub = "needs pyshp + SRTM"
+    _draw_action_tile(bx + 2*(third_w + _TD_GAP), top_y, third_w,
+                      "WATER MASKS", water_sub, active=wd_downloading)
 
     # ── Preset region grid ────────────────────────────────────────────────────
     grid_y = top_y + bh + _TD_GAP
@@ -5166,21 +5708,23 @@ def terrain_data_hit(x, y, td):
     top_y = 52 + strip_h + 6
     available_h = DISPLAY_H - top_y - _TD_GAP*(rows-1) - 8
     bh = available_h // (rows + 1)
-    half_w = (bw - _TD_GAP) // 2
+    third_w = (bw - 2 * _TD_GAP) // 3
 
-    # Cancel button during download
-    if td.get("downloading"):
+    # Cancel button during download (covers both td and wd workers)
+    if td.get("downloading") or disp.get("wd", {}).get("downloading"):
         prog_y = DISPLAY_H - 58
         if (DISPLAY_W-100-bx <= x <= DISPLAY_W-bx and
                 prog_y+6 <= y <= prog_y+42):
             return "cancel"
 
-    # Top action-tile row: CURRENT AREA + GLOBAL LOW-RES
+    # Top action-tile row: CURRENT AREA + GLOBAL LOW-RES + WATER MASKS
     if top_y <= y <= top_y+bh:
-        if bx <= x <= bx+half_w:
+        if bx <= x <= bx+third_w:
             return "current_area"
-        if bx+half_w+_TD_GAP <= x <= bx+half_w+_TD_GAP+half_w:
+        if bx+third_w+_TD_GAP <= x <= bx+2*third_w+_TD_GAP:
             return "global_coarse"
+        if bx+2*(third_w+_TD_GAP) <= x <= bx+2*(third_w+_TD_GAP)+third_w:
+            return "water_masks"
 
     # Region grid
     grid_y = top_y + bh + _TD_GAP
