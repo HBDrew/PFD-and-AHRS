@@ -2479,10 +2479,16 @@ def handle_event(event, demo_mode):
                 _ssync_publish_baro()
 
     # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────
+    global _mfd_drag
     if event.type == pygame.FINGERDOWN:
         _active_fingers[event.finger_id] = pygame.time.get_ticks()
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
             _multitouch_t0 = pygame.time.get_ticks()
+            # The first finger may have started an MFD pan / airport-tap
+            # drag.  Cancel it so the eventual finger-up doesn't fire
+            # _mfd_airport_tap or finish a pan from the first finger's
+            # path.  Lets a two-finger hold cleanly enter setup mode.
+            _mfd_drag = None
 
     if event.type == pygame.FINGERUP:
         _active_fingers.pop(event.finger_id, None)
@@ -2531,7 +2537,6 @@ def handle_event(event, demo_mode):
     # Same defer-replay pattern as scroll-drag: DOWN over the MFD's map
     # area is held until MOTION exceeds the threshold (→ pan) or UP fires
     # with no significant motion (→ airport hit-test).
-    global _mfd_drag
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _mfd_drag is not None:
         pos = event.pos if hasattr(event, "pos") else (
             int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
