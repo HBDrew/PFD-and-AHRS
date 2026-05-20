@@ -44,6 +44,7 @@ import obstacles as obs_mod
 import airports as apt_mod
 import water as water_mod
 import settings as _settings
+import screen_sync as _ssync_mod
 
 DEG = math.pi / 180
 
@@ -179,6 +180,15 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_rx":        0,    # count of $AHRS, lines parsed OK
     "ahrs_err":       0,    # count of parse / IO errors
     "ahrs_last_err":  "",   # most recent error message
+    # Screen-to-screen sync.  Each category is opt-in per direction so a
+    # screen with its own AHRS can still publish bugs/baro/nav to a
+    # second screen, etc.  All default off; toggled in the Screen Sync
+    # subscreen.
+    "sync_publish_bugs": False, "sync_consume_bugs": False,
+    "sync_publish_baro": False, "sync_consume_baro": False,
+    "sync_publish_nav":  False, "sync_consume_nav":  False,
+    "sync_publish_ahrs": False, "sync_consume_ahrs": False,
+    "sync_publish_gps":  False, "sync_consume_gps":  False,
 }
 disp["nav"] = {                     # direct-to navigation
     "ident":   "",      # ICAO/local ID of active waypoint, "" = none
@@ -208,6 +218,66 @@ SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 _sse_client  = None
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
+
+# ── Screen-to-screen sync ────────────────────────────────────────────────────
+# Created in main() once disp["cs"] has been restored from settings.json.
+_screen_sync = None
+# When a remote update arrives we want to mark it as applied without
+# bouncing it back out as a fresh broadcast.  Bumped by listener
+# callbacks, checked by _ssync_publish_*.
+_ssync_suppress_publish = 0
+
+
+def _ssync_kinds_from_cs(direction):
+    """Build the set of categories whose `direction` ("publish" / "consume")
+    toggle is on in disp["cs"]."""
+    out = set()
+    cs = disp.get("cs", {})
+    for k in (_ssync_mod.KIND_BUGS, _ssync_mod.KIND_BARO,
+              _ssync_mod.KIND_NAV,  _ssync_mod.KIND_AHRS,
+              _ssync_mod.KIND_GPS):
+        if cs.get(f"sync_{direction}_{k}", False):
+            out.add(k)
+    return out
+
+
+def _ssync_refresh_kinds():
+    """Push current disp["cs"] sync toggles into the live ScreenSync."""
+    if _screen_sync is None:
+        return
+    _screen_sync.set_publish_kinds(_ssync_kinds_from_cs("publish"))
+    _screen_sync.set_consume_kinds(_ssync_kinds_from_cs("consume"))
+
+
+def _ssync_publish_bugs():
+    """Broadcast current bug values to peer screens (no-op when neither
+    sync is running nor publish-bugs is enabled)."""
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    _screen_sync.publish(_ssync_mod.KIND_BUGS, {
+        "alt_bug": float(disp.get("alt_bug", 0.0)),
+        "spd_bug": float(disp.get("spd_bug", 0.0)),
+        "hdg_bug": float(disp.get("hdg_bug", 0.0)),
+        "vs_bug":  float(disp.get("vs_bug",  0.0)),
+    })
+
+
+def _ssync_apply_bugs(data):
+    """Listener callback: apply incoming bug values from a peer.  Sets
+    the suppression flag so the assignment doesn't echo back out."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if "alt_bug" in data:
+            disp["alt_bug"] = float(data["alt_bug"])
+        if "spd_bug" in data:
+            disp["spd_bug"] = float(data["spd_bug"])
+        if "hdg_bug" in data:
+            disp["hdg_bug"] = float(data["hdg_bug"])
+        if "vs_bug" in data:
+            disp["vs_bug"] = float(data["vs_bug"])
+    finally:
+        _ssync_suppress_publish -= 1
 
 # ── GPS-slaved heading complementary filter ───────────────────────────────────
 # Propagate heading using the AHRS gyro yaw-rate (smooth, 30 Hz) and
@@ -1737,6 +1807,7 @@ class SimFlyState:
         disp["alt_bug"] = sim["init_alt"]
         if disp.get("spd_bug") is None:
             disp["spd_bug"] = sim["init_spd"]
+        _ssync_publish_bugs()
 
     def tick(self):
         now = time.monotonic()
@@ -2114,8 +2185,10 @@ def handle_event(event, demo_mode):
         if disp["mode"] == "pfd":
             if event.key == pygame.K_UP:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 + 100
+                _ssync_publish_bugs()
             if event.key == pygame.K_DOWN:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 - 100
+                _ssync_publish_bugs()
             if event.key == pygame.K_LEFT:
                 disp["hdg_bug"] = (round(disp["hdg_bug"]) - 10) % 360
             if event.key == pygame.K_RIGHT:
@@ -2671,10 +2744,13 @@ def handle_event(event, demo_mode):
                                       "m":  0.3048}.get(ds.get("alt_unit", "ft"), 1.0)
                         if target == "alt_bug":
                             disp["alt_bug"] = float(val * 100) / alt_factor
+                            _ssync_publish_bugs()
                         elif target == "hdg_bug":
                             disp["hdg_bug"] = float(val % 360)
+                            _ssync_publish_bugs()
                         elif target == "spd_bug":
                             disp["spd_bug"] = float(val) / spd_factor
+                            _ssync_publish_bugs()
                         elif target == "baro_hpa":
                             baro_unit = ds.get("baro_unit", "inhg")
                             if baro_unit == "hpa":
@@ -2782,10 +2858,12 @@ def handle_event(event, demo_mode):
         if ALT_X <= x <= DISPLAY_W and TAPE_TOP <= y <= TAPE_BOT:
             ft = round(disp["alt"] + (TAPE_MID - y) / PX_PER_FT)
             disp["alt_bug"] = round(ft / 100) * 100
+            _ssync_publish_bugs()
         # Tap on heading tape → adjust hdg bug by position
         if HDG_Y <= y <= DISPLAY_H:
             off = (x - CX) / PX_PER_DEG
             disp["hdg_bug"] = round(disp["yaw"] + off) % 360
+            _ssync_publish_bugs()
 
     return True
 
@@ -7386,6 +7464,18 @@ def main():
     if _settings.load_into(disp, SETTINGS_PATH):
         print(f"[PFD] Settings restored from {SETTINGS_PATH}")
     _settings.start(disp, SETTINGS_PATH)
+
+    # Screen-to-screen sync: start the UDP listener so we hear peers from
+    # boot.  Publish/consume sets come from disp["cs"] (restored above),
+    # so the user's previous toggle state is honoured at startup.
+    global _screen_sync
+    _screen_sync = _ssync_mod.ScreenSync(
+        publish_kinds=_ssync_kinds_from_cs("publish"),
+        consume_kinds=_ssync_kinds_from_cs("consume"))
+    _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
+    _screen_sync.start()
+    print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
+          f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
 
     _init_backlight()
     _set_backlight(disp["ds"].get("brightness", 8))
