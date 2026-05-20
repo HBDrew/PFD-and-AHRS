@@ -1135,11 +1135,12 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                   x=SPD_X + tl + 2, y=vy - 9)
 
     # GS/IAS bug — color reflects source: magenta=GPS groundspeed, cyan=IAS sensor.
-    # Park bound: bug chevron sits BELOW the top bug-readout box (h=HDG_H tall
-    # starting at y=2) rather than at TAPE_TOP — otherwise the chevron drew
-    # inside the (now-bigger) bug box at the top.
+    # When the bug is above the visible tape range the chevron parks with its
+    # CENTRE at the bug-readout box's bottom edge (y=2+HDG_H=46) so half of
+    # the chevron hides behind the box — mirroring how the bottom park puts
+    # the chevron half behind the heading-tape bug box at TAPE_BOT.
     if gs_bug is not None:
-        _spd_bug_park_top = HDG_H + 20   # bug box bottom (46) + chevron half + gap
+        _spd_bug_park_top = 2 + HDG_H
         gby = max(_spd_bug_park_top, min(TAPE_BOT, spd_y(gs_bug, speed)))
         gb = [(SPD_X,      gby - 17),
               (SPD_X + 14, gby - 17), (SPD_X + 14, gby - 5), (SPD_X + 7, gby),
@@ -1241,10 +1242,10 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         pygame.draw.rect(surf, MAGENTA, (ALT_X + ALT_W - 5, _vsy1, 5, _vsy2 - _vsy1))
 
     # Altitude bug — color reflects source: cyan=baro/pressure transducer, magenta=GPS alt (baro failed).
-    # Park bound at HDG_H + 20 so the chevron sits BELOW the top alt-bug
-    # readout box rather than inside it.
+    # Park bound: chevron centre at the alt-bug-readout box's bottom edge so
+    # half of the chevron tucks behind the box (symmetric with TAPE_BOT park).
     if alt_bug is not None:
-        _alt_bug_park_top = HDG_H + 20
+        _alt_bug_park_top = 2 + HDG_H
         aby = max(_alt_bug_park_top, min(TAPE_BOT, ay2(alt_bug)))
         bug = [(ALT_X + ALT_W,      aby - 17),
                (ALT_X + ALT_W - 14, aby - 17), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
@@ -4836,8 +4837,8 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
             baro_fsz = 24    # cyan box border + display-setup choice tells the pilot the unit
         baro_col = CYAN
     else:
-        baro_lbl = "GPS ALT"
-        baro_fsz = 22
+        baro_lbl = "GPS"
+        baro_fsz = 24
         baro_col = MAGENTA
     _cyan_box(surf, baro_lbl,
               x=ALT_X + 1, y=y, w=ALT_W - 1, h=HDG_H, font_sz=baro_fsz, col=baro_col)
