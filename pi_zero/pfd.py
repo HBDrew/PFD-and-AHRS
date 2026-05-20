@@ -2823,12 +2823,8 @@ def _fp_field(surf, bx, by, bw, bh, label, value, units="", r=6):
 
 def draw_flight_profile(surf, fp_vals):
     """Full-screen Flight Profile setup screen."""
-    surf.fill((0, 8, 22))
+    _screen_header(surf, "FLIGHT PROFILE")
     _prev_clip = _ss_clip_to_content(surf)
-    pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
-    pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
-    _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
-    _text(surf, "FLIGHT PROFILE", 24, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
 
     MX=_FP_MX; GAP=_FP_GAP
     FW = DISPLAY_W - 2*MX
