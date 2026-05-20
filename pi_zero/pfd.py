@@ -7261,6 +7261,11 @@ def draw_mfd(surf, connected=True, data_stale=False):
         direct_to=d2,
         airport_types_visible=apt_types,
         gs_kt=gs_kt,
+        # Pass Vso (stall speed dirty) so the SVT-style clearance
+        # overlay activates above stall — moving_map paints red where
+        # terrain is at/above the aircraft, orange < 100 ft, amber
+        # < 500 ft, same palette as the PFD's terrain alerts.
+        vso_kt=disp["fp"].get("vs0", VS0),
         # Font enables airport labels (≤10 nm).  Corner labels (RNG / ETE)
         # are drawn by pi_zero's own chrome below, so suppress moving_map's
         # versions to avoid overlap with the D2 / PFD buttons + data strip.
