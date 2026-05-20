@@ -5176,14 +5176,23 @@ def _find_pico_serial():
 
 
 def _find_pico_bootsel():
-    """Return RPI-RP2 mount path, auto-mounting via udisksctl if needed
-    (cached 2 s)."""
+    """Return the Pico BOOTSEL mount path, auto-mounting via udisksctl
+    if needed (cached 2 s).  Handles both chip families:
+        Pico W  (RP2040)  → label "RPI-RP2"
+        Pico 2W (RP2350)  → label "RP2350"
+    """
     global _pico_bootsel_cache
     now = time.time()
     if now - _pico_bootsel_cache[0] < _PICO_CACHE_TTL:
         return _pico_bootsel_cache[1]
     import glob
-    for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
+    _LABELS = ("RPI-RP2", "RP2350")
+    _mount_pats = [p
+                   for lbl in _LABELS
+                   for p in (f"/media/*/{lbl}",
+                             f"/run/media/*/{lbl}",
+                             f"/mnt/{lbl}")]
+    for pat in _mount_pats:
         mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
         if mounts:
             _pico_bootsel_cache = (now, mounts[0])
@@ -5194,18 +5203,19 @@ def _find_pico_bootsel():
             capture_output=True, text=True, timeout=5)
         for line in r.stdout.splitlines():
             parts = line.split()
-            if len(parts) >= 2 and parts[1] == "RPI-RP2":
+            if len(parts) >= 2 and parts[1] in _LABELS:
+                label   = parts[1]
                 devpath = f"/dev/{parts[0]}"
                 mr = subprocess.run(["udisksctl", "mount", "-b", devpath],
                                     capture_output=True, timeout=10)
                 if mr.returncode != 0:
-                    subprocess.run(["sudo", "mkdir", "-p", "/mnt/RPI-RP2"],
+                    subprocess.run(["sudo", "mkdir", "-p", f"/mnt/{label}"],
                                    capture_output=True, timeout=5)
                     uid = os.getuid(); gid = os.getgid()
                     subprocess.run(["sudo", "mount", "-o", f"uid={uid},gid={gid}",
-                                    devpath, "/mnt/RPI-RP2"],
+                                    devpath, f"/mnt/{label}"],
                                    capture_output=True, timeout=10)
-                for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
+                for pat in _mount_pats:
                     mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
                     if mounts:
                         _pico_bootsel_cache = (now, mounts[0])
@@ -5307,7 +5317,7 @@ def _do_flash_uf2():
             return
         mount = _find_pico_bootsel()
         if not mount:
-            disp["fw"]["flash_msg"]   = "RPI-RP2 not mounted — hold BOOTSEL then plug USB"
+            disp["fw"]["flash_msg"]   = "Pico BOOTSEL not mounted — hold BOOTSEL then plug USB"
             disp["fw"]["flash_state"] = "error"
             return
         try:
