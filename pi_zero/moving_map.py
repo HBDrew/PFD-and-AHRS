@@ -403,12 +403,66 @@ def _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _rot_deg_for(orient, hdg_deg, track_deg):
+    """Resolve map rotation in degrees CCW (in the math frame where +n is up).
+    Track-up uses track when valid, falls back to heading; north-up is 0."""
+    if orient != "trk":
+        return 0.0
+    if track_deg is None or track_deg == 0.0:
+        return float(hdg_deg or 0.0)
+    return float(track_deg)
+
+
+def make_projector(rect, lat, lon, orient, range_nm, hdg_deg, track_deg):
+    """Return (project, unproject) closures bound to the given map params.
+
+    project(la, lo) → (sx, sy) screen coordinates inside ``rect``.
+    unproject(sx, sy) → (la, lo) world coordinates.
+
+    Used by callers that need to hit-test features (e.g. tap-an-airport)
+    or apply pan-by-drag deltas in world coordinates.  Shares the same
+    rotation + small-angle equirectangular math as ``render()``."""
+    x, y, w, h = rect
+    rot_deg = _rot_deg_for(orient, hdg_deg, track_deg)
+    half_min = min(w, h) / 2
+    px_per_nm = half_min / max(0.5, range_nm)
+    cx, cy = x + w / 2.0, y + h / 2.0
+    cos_lat = max(0.05, math.cos(math.radians(lat)))
+    if rot_deg != 0.0:
+        rr = math.radians(rot_deg)
+        sin_r, cos_r = math.sin(rr), math.cos(rr)
+    else:
+        sin_r, cos_r = 0.0, 1.0
+
+    def project(la, lo):
+        n_nm = (la - lat) * _NM_PER_DEG_LAT
+        e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+        if rot_deg != 0.0:
+            e2 = e_nm * cos_r - n_nm * sin_r
+            n2 = e_nm * sin_r + n_nm * cos_r
+            e_nm, n_nm = e2, n2
+        return cx + e_nm * px_per_nm, cy - n_nm * px_per_nm
+
+    def unproject(sx, sy):
+        e_nm = (sx - cx) / px_per_nm
+        n_nm = -(sy - cy) / px_per_nm
+        if rot_deg != 0.0:
+            e2 = e_nm * cos_r + n_nm * sin_r
+            n2 = -e_nm * sin_r + n_nm * cos_r
+            e_nm, n_nm = e2, n2
+        return (lat + n_nm / _NM_PER_DEG_LAT,
+                lon + e_nm / (_NM_PER_DEG_LAT * cos_lat))
+
+    return project, unproject
+
+
 def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
-           range_label=None, state_lines=None):
+           range_label=None, state_lines=None,
+           own_lat=None, own_lon=None, draw_corner_labels=True):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -688,12 +742,20 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             own_rot = float(hdg_deg or 0.0)
         else:
             own_rot = float(track_deg)
+    # When the caller passes own_lat/own_lon (pan mode: map centred away
+    # from the aircraft), project the aircraft to its actual screen pos
+    # instead of pinning the chevron to the rect centre.
+    if (own_lat is not None and own_lon is not None
+            and (abs(own_lat - lat) > 1e-9 or abs(own_lon - lon) > 1e-9)):
+        ox, oy = _project(own_lat, own_lon)
+    else:
+        ox, oy = cx, cy
     s = 7
     base_pts = [(0, -s), (s, s), (0, s * 0.4), (-s, s)]
     cr = math.cos(math.radians(own_rot))
     sr = math.sin(math.radians(own_rot))
-    rotated = [(cx + p[0] * cr - p[1] * sr,
-                cy + p[0] * sr + p[1] * cr) for p in base_pts]
+    rotated = [(ox + p[0] * cr - p[1] * sr,
+                oy + p[0] * sr + p[1] * cr) for p in base_pts]
     pygame.draw.polygon(surf, _OWNSHIP,
                         [(int(rx), int(ry)) for rx, ry in rotated])
 
@@ -702,7 +764,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # ── Frame + corner labels ────────────────────────────────────────────────
     pygame.draw.rect(surf, _FRAME, rect, width=1)
 
-    if font is not None:
+    if font is not None and draw_corner_labels:
         if range_label:
             # Caller supplied a custom prefix — used by AUTO mode to show
             # "AUTO 20 NM" instead of a bare distance.

@@ -188,6 +188,10 @@ disp["nav"] = {                     # direct-to navigation
     "act_lat": 0.0,     # aircraft lat at activation (CDI course reference)
     "act_lon": 0.0,
 }
+disp["mfd_pan"] = {                 # MFD pan offset
+    "lat": None,        # None → map follows aircraft
+    "lon": None,
+}
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
     "init_alt":   5000.0,
@@ -2170,6 +2174,36 @@ def handle_event(event, demo_mode):
                 _dispatch_replay = False
         return True
 
+    # ── MFD pan / airport-tap drag handler ──────────────────────────────────
+    # Same defer-replay pattern as scroll-drag: DOWN over the MFD's map
+    # area is held until MOTION exceeds the threshold (→ pan) or UP fires
+    # with no significant motion (→ airport hit-test).
+    global _mfd_drag
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _mfd_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        x, y = pos
+        dx = x - _mfd_drag["down_x"]
+        dy = y - _mfd_drag["down_y"]
+        if (not _mfd_drag["is_drag"]
+                and (abs(dx) > _MFD_DRAG_THRESHOLD
+                     or abs(dy) > _MFD_DRAG_THRESHOLD)):
+            _mfd_drag["is_drag"] = True
+        if _mfd_drag["is_drag"]:
+            _mfd_apply_drag(_mfd_drag, dx, dy)
+        _mfd_drag["pos"] = (x, y)
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _mfd_drag is not None:
+        d = _mfd_drag
+        _mfd_drag = None
+        if not d["is_drag"]:
+            # Tap: try airport hit-test.  If nothing nearby, the tap is a
+            # no-op (no fall-through to chrome — chrome was already filtered
+            # out at DOWN time).
+            _mfd_airport_tap(*d["pos"])
+        return True
+
     # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
         # Skip if this is part of a multi-touch gesture
@@ -2686,6 +2720,30 @@ def handle_event(event, demo_mode):
                     cur, allow_auto=bool(disp.get("nav", {}).get("ident")))
                 _settings.mark_dirty()
                 return True
+            if _mfd_center_btn_hit(x, y):
+                _mfd_clear_pan()
+                return True
+            # Anywhere else over the map → start a pan/tap drag.  MOTION
+            # converts to pan; UP without motion runs airport hit-test.
+            if not _dispatch_replay and not _mfd_chrome_hit(x, y):
+                cen_lat, cen_lon = _mfd_effective_center()
+                hdg = disp.get("yaw", 0.0)
+                track = disp.get("track", hdg)
+                orient = disp["ds"].get("map_orient", "trk")
+                range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+                rot_deg = _mfd_map._rot_deg_for(orient, hdg, track)
+                px_per_nm = min(DISPLAY_W, DISPLAY_H) / 2.0 / max(0.5, range_nm)
+                _mfd_drag = {
+                    "down_x":   x,
+                    "down_y":   y,
+                    "pos":      (x, y),
+                    "is_drag":  False,
+                    "base_lat": cen_lat,
+                    "base_lon": cen_lon,
+                    "rot_deg":  rot_deg,
+                    "px_per_nm": px_per_nm,
+                }
+                return True
 
         # ── PFD taps ──────────────────────────────────────────────────────
         # Tap on the CDI strip → open the keyboard for waypoint entry.
@@ -3197,6 +3255,11 @@ _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
 }
 _dispatch_replay = False   # guard against infinite recursion in the
                            # deferred-tap replay path
+
+# MFD drag/pan state — set on DOWN inside the map, cleared on UP.
+# Motion exceeding _MFD_DRAG_THRESHOLD converts a tap into a pan-drag.
+_mfd_drag = None
+_MFD_DRAG_THRESHOLD = 8
 
 
 def _ss_row_y(i):
@@ -6593,11 +6656,63 @@ def _mfd_zoom_out_rect():
             _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
 
 
+def _mfd_center_btn_rect():
+    """CTR (re-center) button — sits in the right half of the top plate,
+    only present when the map is panned."""
+    pad = 6
+    top_x0 = _MFD_D2_BTN_W + pad * 2
+    top_x1 = DISPLAY_W - _MFD_PFD_BTN_W - pad * 2
+    top_w  = top_x1 - top_x0
+    btn_w  = 80
+    btn_h  = _MFD_PFD_BTN_H
+    bx = top_x0 + top_w - btn_w - 6
+    by = pad
+    return (bx, by, btn_w, btn_h)
+
+
+def _mfd_center_btn_hit(x, y):
+    if not _mfd_is_panned():
+        return False
+    bx, by, bw, bh = _mfd_center_btn_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
 def _mfd_get_range_label():
     """Default-range label is the numeric NM value; AUTO mode reserved
     for the future flight-plan-aware fit-to-route."""
     nm = disp["ds"].get("map_zoom_nm", 10)
     return f"{nm} NM" if nm > 0 else "AUTO"
+
+
+_mfd_apt_font = None
+
+
+def _mfd_get_apt_font():
+    """Lazy-init a small bold font for airport labels on the MFD.  Loaded
+    on first call (after pygame.font.init) so import order isn't fragile."""
+    global _mfd_apt_font
+    if _mfd_apt_font is None:
+        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", 11, bold=True)
+    return _mfd_apt_font
+
+
+def _mfd_effective_center():
+    """Return (lat, lon) for the map center: pan offset if active, else
+    the aircraft position."""
+    pan = disp.get("mfd_pan", {})
+    if pan.get("lat") is not None and pan.get("lon") is not None:
+        return float(pan["lat"]), float(pan["lon"])
+    return (disp.get("lat", DEMO_LAT), disp.get("lon", DEMO_LON))
+
+
+def _mfd_is_panned():
+    pan = disp.get("mfd_pan", {})
+    return pan.get("lat") is not None and pan.get("lon") is not None
+
+
+def _mfd_clear_pan():
+    disp["mfd_pan"]["lat"] = None
+    disp["mfd_pan"]["lon"] = None
 
 
 def draw_mfd(surf, connected=True, data_stale=False):
@@ -6606,8 +6721,9 @@ def draw_mfd(surf, connected=True, data_stale=False):
     so the magenta course line / waypoint diamond paints when D2 is set."""
     surf.fill((0, 0, 0))
     rect = (0, 0, DISPLAY_W, DISPLAY_H)
-    lat = disp.get("lat", DEMO_LAT)
-    lon = disp.get("lon", DEMO_LON)
+    ac_lat = disp.get("lat", DEMO_LAT)
+    ac_lon = disp.get("lon", DEMO_LON)
+    cen_lat, cen_lon = _mfd_effective_center()
     alt = disp.get("alt", 0.0)
     hdg = disp.get("yaw", 0.0)
     track = disp.get("track", hdg)
@@ -6631,7 +6747,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
         "B": disp["ad"].get("show_other", False),
     }
     _mfd_map.render(
-        surf, rect, lat, lon, alt, hdg, track, orient, range_nm,
+        surf, rect, cen_lat, cen_lon, alt, hdg, track, orient, range_nm,
         disp["ds"],
         airports_arr=_airports,
         runways_arr=None,
@@ -6641,10 +6757,17 @@ def draw_mfd(surf, connected=True, data_stale=False):
         direct_to=d2,
         airport_types_visible=apt_types,
         gs_kt=gs_kt,
-        # Skip passing a font — the moving-map's built-in corner labels
-        # would be hidden under the D2 / PFD chrome buttons.  pi_zero
-        # renders all labels in the bottom data strip below instead.
+        # Font enables airport labels (≤10 nm).  Corner labels (RNG / ETE)
+        # are drawn by pi_zero's own chrome below, so suppress moving_map's
+        # versions to avoid overlap with the D2 / PFD buttons + data strip.
+        font=_mfd_get_apt_font(),
+        draw_corner_labels=False,
+        # Aircraft position so the own-ship chevron stays at the real
+        # GPS fix when the user has panned the map elsewhere.
+        own_lat=ac_lat,
+        own_lon=ac_lon,
     )
+    lat, lon = ac_lat, ac_lon
 
     # ── Top centre badges ──────────────────────────────────────────────
     # RNG and orient (TRK↑/N↑) sit between the D2 button (top-left) and
@@ -6666,10 +6789,16 @@ def draw_mfd(surf, connected=True, data_stale=False):
           x=top_x0 + 14, y=pad + 4)
     _text(surf, rng_lbl, 20, WHITE, bold=True,
           x=top_x0 + 14, y=pad + 14)
-    _text(surf, "ORIENT", 11, (140, 170, 200), bold=True,
-          x=top_x0 + top_w - 90, y=pad + 4)
-    _text(surf, orient_lbl, 20, WHITE, bold=True,
-          x=top_x0 + top_w - 90, y=pad + 14)
+    # Right side of the plate: CENTER button when panned (cyan, tap → snap
+    # back to aircraft), otherwise the orient indicator.
+    if _mfd_is_panned():
+        ctr_x, ctr_y, ctr_w, ctr_h = _mfd_center_btn_rect()
+        _action_btn(surf, ctr_x, ctr_y, ctr_w, ctr_h, "CTR", "ok", r=5)
+    else:
+        _text(surf, "ORIENT", 11, (140, 170, 200), bold=True,
+              x=top_x0 + top_w - 90, y=pad + 4)
+        _text(surf, orient_lbl, 20, WHITE, bold=True,
+              x=top_x0 + top_w - 90, y=pad + 14)
 
     # ── Bottom data strip ─────────────────────────────────────────────
     # Labeled column-style readouts.  Always shows GS / TRK / ALT on
@@ -6782,6 +6911,106 @@ def _mfd_open_d2_keyboard():
     disp["kbd_error"]  = ""
     disp["kbd_shift"]  = False
     disp["mode"]       = "keyboard"
+
+
+def _mfd_chrome_hit(x, y):
+    """True if (x, y) is over any MFD chrome button or the data strip —
+    i.e. the user can't pan / tap-airport here because some other widget
+    owns the tap."""
+    if _mfd_d2_btn_hit(x, y):       return True
+    if _mfd_pfd_btn_hit(x, y):      return True
+    if _mfd_zoom_in_hit(x, y):      return True
+    if _mfd_zoom_out_hit(x, y):     return True
+    if _mfd_center_btn_hit(x, y):   return True
+    # Top centre plate (RNG / ORIENT)
+    pad = 6
+    top_x0 = _MFD_D2_BTN_W + pad * 2
+    top_x1 = DISPLAY_W - _MFD_PFD_BTN_W - pad * 2
+    if top_x0 <= x <= top_x1 and pad <= y <= pad + _MFD_PFD_BTN_H:
+        return True
+    # Bottom data strip (full width minus zoom buttons)
+    strip_y = DISPLAY_H - _MFD_ZOOM_BTN - pad
+    strip_x0 = _MFD_ZOOM_BTN + pad * 2
+    strip_x1 = DISPLAY_W - _MFD_ZOOM_BTN - pad * 2
+    if strip_x0 <= x <= strip_x1 and strip_y <= y <= strip_y + _MFD_ZOOM_BTN:
+        return True
+    return False
+
+
+def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
+    """Hit-test airports against a screen tap.  Uses the same projection
+    moving_map.render() uses.  Returns True if an airport was hit (and
+    the nav_confirm modal was opened)."""
+    if _airports is None:
+        return False
+    rect = (0, 0, DISPLAY_W, DISPLAY_H)
+    cen_lat, cen_lon = _mfd_effective_center()
+    hdg = disp.get("yaw", 0.0)
+    track = disp.get("track", hdg)
+    orient = disp["ds"].get("map_orient", "trk")
+    range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+    project, _ = _mfd_map.make_projector(
+        rect, cen_lat, cen_lon, orient, range_nm, hdg, track)
+    apt_types = {
+        "S": disp["ad"].get("show_public", True),
+        "M": disp["ad"].get("show_public", True),
+        "L": disp["ad"].get("show_public", True),
+        "H": disp["ad"].get("show_heli", True),
+        "W": disp["ad"].get("show_seaplane", False),
+        "B": disp["ad"].get("show_other", False),
+    }
+    nearby = apt_mod.query_nearby(_airports, cen_lat, cen_lon,
+                                  radius_nm=range_nm * 1.4)
+    if nearby is None or len(nearby) == 0:
+        return False
+    best_d2 = (tap_px + 1) ** 2
+    best = None
+    if hasattr(nearby, "dtype"):
+        for i in range(len(nearby)):
+            atype = str(nearby["atype"][i])
+            if not apt_types.get(atype, False):
+                continue
+            sx, sy = project(float(nearby["lat"][i]),
+                             float(nearby["lon"][i]))
+            d2 = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best = str(nearby["ident"][i])
+    else:
+        for r in nearby:
+            if not apt_types.get(getattr(r, "atype", ""), False):
+                continue
+            sx, sy = project(float(r.lat), float(r.lon))
+            d2 = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best = r.ident
+    if best is None:
+        return False
+    _nav_open_confirm(best, "pfd")
+    return True
+
+
+def _mfd_apply_drag(d, dx_px, dy_px):
+    """Apply pixel drag delta to the pan center using the projection
+    parameters captured on DOWN.  Inverse-rotates the screen delta so
+    track-up panning feels natural."""
+    px_per_nm = d["px_per_nm"]
+    if px_per_nm <= 0:
+        return
+    e_s = dx_px / px_per_nm
+    n_s = -dy_px / px_per_nm
+    rot_deg = d["rot_deg"]
+    if rot_deg != 0.0:
+        rr = math.radians(rot_deg)
+        cr, sr = math.cos(rr), math.sin(rr)
+        e_nm = e_s * cr + n_s * sr
+        n_nm = -e_s * sr + n_s * cr
+    else:
+        e_nm, n_nm = e_s, n_s
+    cos_lat = max(0.05, math.cos(math.radians(d["base_lat"])))
+    disp["mfd_pan"]["lat"] = d["base_lat"] - n_nm / 60.0
+    disp["mfd_pan"]["lon"] = d["base_lon"] - e_nm / (60.0 * cos_lat)
 
 
 # ── Main render function ──────────────────────────────────────────────────────
