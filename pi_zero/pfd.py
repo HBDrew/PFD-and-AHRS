@@ -671,8 +671,10 @@ def smooth_state():
     """Copy live state → display values with IIR smoothing for analogue fields."""
     with _state_lock:
         snap = dict(state)
-    for k in ("roll", "pitch", "ay", "speed", "alt", "vspeed"):
-        disp[k] = disp[k] * (1 - SMOOTH_K) + snap[k] * SMOOTH_K
+    for k in ("roll", "pitch", "ay", "speed", "alt", "vspeed",
+              "ias_kt", "tas_kt"):
+        if k in snap:
+            disp[k] = disp.get(k, 0.0) * (1 - SMOOTH_K) + snap[k] * SMOOTH_K
     # Heading: handle 0/360 wraparound
     dh = ((snap["yaw"] - disp["yaw"] + 180) % 360) - 180
     disp["yaw"] = (disp["yaw"] + dh * SMOOTH_K) % 360
@@ -683,9 +685,10 @@ def smooth_state():
     # whenever the SSE stream carried a stale QNH echo back from the firmware.
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
-              "ahrs_ok", "gps_ok", "baro_ok",
+              "ahrs_ok", "gps_ok", "baro_ok", "airdata_ok",
               "pitch_trim", "roll_trim", "yaw_trim"):
-        disp[k] = snap[k]
+        if k in snap:
+            disp[k] = snap[k]
 
 
 # ── Font helpers ──────────────────────────────────────────────────────────────
@@ -3843,28 +3846,18 @@ def draw_ahrs_setup(surf, ss):
         _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
                  lbl, v == cur_src)
 
-    # Row 6: Airspeed source (GPS GS vs IAS sensor)
+    # Row 6: Airspeed source (GPS GS vs IAS sensor).  When IAS is
+    # selected but airdata_ok is False (sensor missing or stale), the
+    # speed tape auto-falls back to GPS GS so the display never blanks.
     bx, by, bw, bh = _setting_row(surf, 6, "AIRSPEED SOURCE",
-                                   "GPS groundspeed or IAS sensor")
+                                   "GPS groundspeed or IAS sensor (auto-falls back to GS without air data)")
     cur_as = ss.get("airspeed_src", "gps")
     opts_as = [("gps", "GPS GS"), ("ias", "IAS SENSOR")]
     total_as = 2*120 + _DSP_BTN_G
     rx = bx + bw - total_as - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts_as):
-        active = v == cur_as
-        if v == "ias":
-            # IAS sensor not yet wired in pi_zero — keep greyed-out stub
-            pygame.draw.rect(surf, (18, 18, 20),
-                             (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), border_radius=6)
-            pygame.draw.rect(surf, (55, 55, 65),
-                             (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), width=2, border_radius=6)
-            _text(surf, lbl, 14, (75, 75, 88), bold=False,
-                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2-8)
-            _text(surf, "future", 10, (60, 60, 72),
-                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2+9)
-        else:
-            _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, active)
+        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v == cur_as)
 
     surf.set_clip(_prev_clip)
 
@@ -3932,14 +3925,14 @@ def ahrs_setup_hit(x, y, ss):
                 if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
                     return f"set:hdg_src:{v}"
         elif ri == 6:
-            # AIRSPEED SOURCE: GPS GS / IAS SENSOR (IAS still greyed out)
+            # AIRSPEED SOURCE: GPS GS / IAS SENSOR — both tappable now.
             total_as = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_as - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            # Only GPS GS (index 0) is active; IAS SENSOR (index 1) is future/disabled
-            if rx <= x <= rx+120:
-                if ry <= y <= ry+_DSP_BTN_H:
-                    return "set:airspeed_src:gps"
+            for i, v in enumerate(("gps", "ias")):
+                xi = rx + i * (120 + _DSP_BTN_G)
+                if xi <= x <= xi + 120 and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:airspeed_src:{v}"
     return None
 
 
@@ -7501,9 +7494,17 @@ def render(surf, demo_mode, connected, data_stale=False):
         hdg = disp["yaw"]
 
     # ── Airspeed source selection ─────────────────────────────────────────────
-    # "gps" (default): GPS groundspeed  → bug triangle is magenta
-    # "ias":           IAS sensor        → bug triangle is cyan (future)
-    airspeed_src = ss.get("airspeed_src", "gps")
+    # "gps" : GPS groundspeed         → bug triangle / tape source label is magenta
+    # "ias" : MS4525/SDP3x airspeed   → bug triangle / tape source label is cyan
+    # Effective source resolves to "ias" only when the pilot has selected it AND
+    # the air-data sensor is currently fresh (airdata_ok). Auto-falls-back to
+    # GPS GS otherwise so a transient sensor dropout doesn't blank the tape.
+    _user_src = ss.get("airspeed_src", "gps")
+    if _user_src == "ias" and disp.get("airdata_ok"):
+        airspeed_src = "ias"
+        speed = disp.get("ias_kt", speed)
+    else:
+        airspeed_src = "gps"
 
     # ── Unit conversions ──────────────────────────────────────────────────────
     ds = disp["ds"]
