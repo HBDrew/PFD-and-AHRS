@@ -2802,7 +2802,17 @@ def _fp_field(surf, bx, by, bw, bh, label, value, units="", r=6):
         gc = (int(15+t*35), int(20+t*50), int(40+t*80))
         pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
     pygame.draw.rect(surf, WHITE, (bx, by, bw, bh), width=2, border_radius=r)
-    _text(surf, label, 20, (170,185,210), bold=True, x=bx+14, y=by+8)
+    # Two-line label when the V-speed code is followed by an em-dash and
+    # description (e.g. "VS0 — Stall flaps"); single-line for simple
+    # labels like "TAIL NUMBER".  Keeps the long descriptive label off
+    # the value field on the right.
+    em_dash = " — "
+    if em_dash in label:
+        code, desc = label.split(em_dash, 1)
+        _text(surf, code, 20, (180,195,220), bold=True, x=bx+14, y=by+6)
+        _text(surf, desc, 13, (140,160,185), x=bx+14, y=by+bh-20)
+    else:
+        _text(surf, label, 20, (180,195,220), bold=True, x=bx+14, y=by+8)
     val_str = str(value) if value not in (None, "", 0) else "---"
     if units and val_str != "---":
         val_str = f"{val_str} {units}"
