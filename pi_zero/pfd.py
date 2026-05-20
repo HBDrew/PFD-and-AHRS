@@ -2308,7 +2308,9 @@ def handle_event(event, demo_mode):
         # ── Setup screen taps ─────────────────────────────────────────────
         if mode == "setup":
             idx = setup_hit(x, y)
-            if   idx == 5: disp["mode"] = "pfd"
+            # Indices follow _SETUP_ITEMS row-major order: 0 FLIGHT, 1 DISPLAY,
+            # 2 AHRS, 3 CONNECTIVITY, 4 SCREEN SYNC, 5 SYSTEM, 6 EXIT.
+            if   idx == 6: disp["mode"] = "pfd"
             elif idx == 0:
                 _ss_reset_scroll("flight_profile")
                 disp["mode"] = "flight_profile"
@@ -2325,6 +2327,9 @@ def handle_event(event, demo_mode):
                 _ss_reset_scroll("connectivity_setup")
                 disp["mode"] = "connectivity_setup"
             elif idx == 4:
+                _ss_reset_scroll("screen_sync_setup")
+                disp["mode"] = "screen_sync_setup"
+            elif idx == 5:
                 _ss_reset_scroll("system_setup")
                 disp["mode"] = "system_setup"
             return True
@@ -2430,6 +2435,21 @@ def handle_event(event, demo_mode):
                     if ok:
                         _restart_sse(disp["cs"]["ahrs_url"])
                 threading.Thread(target=_do_test, daemon=True).start()
+            return True
+
+        # ── Screen sync taps ──────────────────────────────────────────────
+        if mode == "screen_sync_setup":
+            action = screen_sync_setup_hit(x, y, disp["cs"])
+            if action == "back":
+                disp["mode"] = "setup"
+            elif action and action.startswith(("toggle_publish:",
+                                                "toggle_consume:")):
+                head, kind = action.split(":", 1)
+                direction = head.split("_", 1)[1]    # "publish" or "consume"
+                key = f"sync_{direction}_{kind}"
+                disp["cs"][key] = not disp["cs"].get(key, False)
+                _settings.mark_dirty()
+                _ssync_refresh_kinds()
             return True
 
         # ── WiFi scan screen taps ─────────────────────────────────────────────
@@ -2875,14 +2895,18 @@ _SETUP_ITEMS = [
     (1, 0, "DISPLAY",         "Units · Brightness · Night mode"),
     (0, 1, "AHRS / SENSORS",  "Trim · Mag cal · Mounting"),
     (1, 1, "CONNECTIVITY",    "WiFi · AHRS link"),
-    (0, 2, "SYSTEM",          "Version · Diagnostics · Reset"),
-    (1, 2, "EXIT",            "Return to PFD"),
+    (0, 2, "SCREEN SYNC",     "Share bugs · baro · nav · AHRS"),
+    (1, 2, "SYSTEM",          "Version · Diagnostics · Reset"),
+    (0, 3, "EXIT",            "Return to PFD"),
 ]
-_S_MX=15; _S_MY=50; _S_GX=10; _S_GY=12
+_S_MX=15; _S_MY=50; _S_GX=10; _S_GY=10
 _S_BW = (DISPLAY_W - 2*_S_MX - _S_GX) // 2
-_S_BH = (DISPLAY_H - _S_MY - 14 - 2*_S_GY) // 3
+_S_BH = (DISPLAY_H - _S_MY - 14 - 3*_S_GY) // 4
 _S_COLS = [_S_MX, _S_MX + _S_BW + _S_GX]
-_S_ROWS = [_S_MY, _S_MY + _S_BH + _S_GY, _S_MY + 2*(_S_BH + _S_GY)]
+_S_ROWS = [_S_MY,
+           _S_MY + _S_BH + _S_GY,
+           _S_MY + 2*(_S_BH + _S_GY),
+           _S_MY + 3*(_S_BH + _S_GY)]
 
 
 def _setup_button(surf, bx, by, bw, bh, label, subtitle="", exit_btn=False, r=8):
@@ -3330,6 +3354,7 @@ _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "connectivity_setup": 6,
     "flight_profile":     8,
     "ahrs_firmware":      5,
+    "screen_sync_setup":  6,    # 1 peer-status + 5 categories
 }
 _dispatch_replay = False   # guard against infinite recursion in the
                            # deferred-tap replay path
@@ -4563,6 +4588,89 @@ def connectivity_setup_hit(x, y, cs):
             return "apply_wifi"
         if bx+2*(third+10) <= x <= bx+3*third+20:
             return "test_ahrs"
+    return None
+
+
+# ── Screen Sync subscreen ─────────────────────────────────────────────────────
+# One row per category (BUGS / BARO / NAV / AHRS / GPS).  Each row has two
+# segmented pills: TX (publish to peers) and RX (consume from peers).  Tap
+# either pill to toggle.  A peer-status header row shows whether anyone
+# is on the wire so the user can confirm the link works before flipping
+# their first toggle.
+
+_SCS_KINDS = (
+    ("bugs", "BUGS",     "alt / spd / hdg / vs"),
+    ("baro", "BARO",     "altimeter setting"),
+    ("nav",  "NAV (D2)", "waypoint ident + activation point"),
+    ("ahrs", "AHRS",     "pitch / roll / yaw — local only when off"),
+    ("gps",  "GPS",      "lat / lon / alt / speed / track"),
+)
+
+_SCS_PILL_W = 86
+_SCS_PILL_H = 36
+_SCS_PILL_GAP = 6
+
+
+def _scs_pill_rects(by, bh):
+    """Return (tx_rect, rx_rect) for the right side of a sync row."""
+    bw = DISPLAY_W - 2 * _SS_MX
+    rx = _SS_MX + bw - _SS_MX - _SCS_PILL_W
+    tx = rx - _SCS_PILL_GAP - _SCS_PILL_W
+    py = by + (bh - _SCS_PILL_H) // 2
+    return ((tx, py, _SCS_PILL_W, _SCS_PILL_H),
+            (rx, py, _SCS_PILL_W, _SCS_PILL_H))
+
+
+def draw_screen_sync_setup(surf, cs):
+    _screen_header(surf, "SCREEN SYNC")
+    _prev_clip = _ss_clip_to_content(surf)
+
+    # Row 0: peer status
+    bx, by, bw, bh = _setting_row(surf, 0, "PEER",
+                                   "Other PFD seen on this network")
+    if _screen_sync is None:
+        n, age = 0, None
+        peer_id = ""
+    else:
+        n, age = _screen_sync.peer_status()
+        peer_id = _screen_sync.first_peer_id()
+    if n > 0:
+        age_s = f"{age:.1f}s" if age is not None else "—"
+        col   = (60, 220, 80)
+        lbl   = f"PEER {peer_id}  ·  last {age_s} ago"
+    else:
+        col   = (180, 90, 90)
+        lbl   = "NO PEER"
+    pygame.draw.circle(surf, col, (bx + bw - 240, by + bh // 2), 7)
+    _text(surf, lbl, 16, col, bold=True,
+          x=bx + bw - 226, y=by + bh // 2 - 9)
+
+    # Rows 1-5: per-category TX/RX toggles
+    for i, (kind, label, sub) in enumerate(_SCS_KINDS, start=1):
+        bx2, by2, bw2, bh2 = _setting_row(surf, i, label, sub)
+        tx_rect, rx_rect = _scs_pill_rects(by2, bh2)
+        _seg_btn(surf, *tx_rect, "TX",
+                 cs.get(f"sync_publish_{kind}", False))
+        _seg_btn(surf, *rx_rect, "RX",
+                 cs.get(f"sync_consume_{kind}", False))
+
+    surf.set_clip(_prev_clip)
+
+
+def screen_sync_setup_hit(x, y, cs):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    for i, (kind, _, _sub) in enumerate(_SCS_KINDS, start=1):
+        by = _ss_row_y(i)
+        if not (by <= y <= by + _SS_RH):
+            continue
+        tx_rect, rx_rect = _scs_pill_rects(by, _SS_RH)
+        tx_x, tx_y, tx_w, tx_h = tx_rect
+        rx_x, rx_y, rx_w, rx_h = rx_rect
+        if tx_x <= x <= tx_x + tx_w and tx_y <= y <= tx_y + tx_h:
+            return f"toggle_publish:{kind}"
+        if rx_x <= x <= rx_x + rx_w and rx_y <= y <= rx_y + rx_h:
+            return f"toggle_consume:{kind}"
     return None
 
 
@@ -7122,6 +7230,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_wifi_scan(surf, disp["cs"]); return
     if mode == "connectivity_setup":
         draw_connectivity_setup(surf, disp["cs"]); return
+    if mode == "screen_sync_setup":
+        draw_screen_sync_setup(surf, disp["cs"]); return
     if mode == "system_setup":
         draw_system_setup(surf); return
     if mode == "ahrs_firmware":
