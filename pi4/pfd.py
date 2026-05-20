@@ -894,6 +894,11 @@ def _restart_sse(url):
     sse_url = url.rstrip("/") + "/events"
     _sse_client = SSEClient(sse_url, state, _state_lock)
     _sse_client.start()
+    # Keep the AHRS LINK row's transport label honest — TEST AHRS / a
+    # WiFi-side restart needs to overwrite whatever USB labels were set
+    # at boot, otherwise the screen lies about which transport is live.
+    disp["cs"]["ahrs_transport"] = "wifi"
+    disp["cs"]["ahrs_port"]      = sse_url
     print(f"[PFD] SSE → {sse_url}")
 
 
