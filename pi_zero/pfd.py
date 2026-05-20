@@ -279,6 +279,72 @@ def _ssync_apply_bugs(data):
     finally:
         _ssync_suppress_publish -= 1
 
+
+def _ssync_publish_baro():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    _screen_sync.publish(_ssync_mod.KIND_BARO, {
+        "baro_hpa": float(disp.get("baro_hpa", BARO_DEFAULT_HPA)),
+    })
+
+
+def _ssync_apply_baro(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if "baro_hpa" in data:
+            new_hpa = float(data["baro_hpa"])
+            disp["baro_hpa"] = new_hpa
+            # Mirror the numpad-commit path: keep shared state in lock-step
+            # and push the new altimeter setting to the Pico if connected.
+            try:
+                with _state_lock:
+                    state["baro_hpa"] = new_hpa
+                _push_baro_to_pico(new_hpa)
+            except Exception:
+                pass
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_nav():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    nav = disp.get("nav", {})
+    _screen_sync.publish(_ssync_mod.KIND_NAV, {
+        "ident":   nav.get("ident", ""),
+        "lat":     float(nav.get("lat", 0.0)),
+        "lon":     float(nav.get("lon", 0.0)),
+        "elev_ft": float(nav.get("elev_ft", 0.0)),
+        "act_lat": float(nav.get("act_lat", 0.0)),
+        "act_lon": float(nav.get("act_lon", 0.0)),
+    })
+
+
+def _ssync_apply_nav(data):
+    """Apply a remote D2 update.  Empty ident clears D2 (matches the
+    CANCEL D2 button on the keyboard)."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        ident = str(data.get("ident", ""))
+        if not ident:
+            disp["nav"]["ident"]   = ""
+            disp["nav"]["lat"]     = 0.0
+            disp["nav"]["lon"]     = 0.0
+            disp["nav"]["elev_ft"] = 0.0
+            disp["nav"]["act_lat"] = 0.0
+            disp["nav"]["act_lon"] = 0.0
+        else:
+            disp["nav"]["ident"]   = ident
+            disp["nav"]["lat"]     = float(data.get("lat", 0.0))
+            disp["nav"]["lon"]     = float(data.get("lon", 0.0))
+            disp["nav"]["elev_ft"] = float(data.get("elev_ft", 0.0))
+            disp["nav"]["act_lat"] = float(data.get("act_lat", 0.0))
+            disp["nav"]["act_lon"] = float(data.get("act_lon", 0.0))
+    finally:
+        _ssync_suppress_publish -= 1
+
 # ── GPS-slaved heading complementary filter ───────────────────────────────────
 # Propagate heading using the AHRS gyro yaw-rate (smooth, 30 Hz) and
 # slowly slave the absolute reference toward the GPS ground track (1–5 Hz,
@@ -2191,12 +2257,16 @@ def handle_event(event, demo_mode):
                 _ssync_publish_bugs()
             if event.key == pygame.K_LEFT:
                 disp["hdg_bug"] = (round(disp["hdg_bug"]) - 10) % 360
+                _ssync_publish_bugs()
             if event.key == pygame.K_RIGHT:
                 disp["hdg_bug"] = (round(disp["hdg_bug"]) + 10) % 360
+                _ssync_publish_bugs()
             if event.key in (pygame.K_PLUS, pygame.K_EQUALS):
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 + 1) / 100
+                _ssync_publish_baro()
             if event.key == pygame.K_MINUS:
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 - 1) / 100
+                _ssync_publish_baro()
 
     # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────
     if event.type == pygame.FINGERDOWN:
@@ -2781,6 +2851,7 @@ def handle_event(event, demo_mode):
                             with _state_lock:
                                 state["baro_hpa"] = new_hpa
                             _push_baro_to_pico(new_hpa)
+                            _ssync_publish_baro()
                         elif target == "sim_init_alt":
                             disp["sim"]["init_alt"] = float(val * 100) / alt_factor
                         elif target == "sim_init_hdg":
@@ -4283,6 +4354,7 @@ def _nav_set_by_ident(ident: str) -> bool:
     disp["nav"]["act_lat"] = lat
     disp["nav"]["act_lon"] = lon
     _settings.mark_dirty()
+    _ssync_publish_nav()
     return True
 
 
@@ -4293,6 +4365,7 @@ def _nav_clear() -> None:
     disp["nav"]["elev_ft"] = 0.0
     disp["nav"]["act_lat"] = 0.0
     disp["nav"]["act_lon"] = 0.0
+    _ssync_publish_nav()
     _settings.mark_dirty()
 
 
@@ -7583,6 +7656,8 @@ def main():
         publish_kinds=_ssync_kinds_from_cs("publish"),
         consume_kinds=_ssync_kinds_from_cs("consume"))
     _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
+    _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
+    _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
     _screen_sync.start()
     print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
           f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
