@@ -5522,10 +5522,30 @@ def draw_airport_data(surf, ad):
         col = (60,220,80) if status_msg.startswith("Done") else (160,160,170)
         _text(surf, status_msg, 9, col, cx=DISPLAY_W//2, cy=prog_y+20)
 
+    # ── Symbol legend — visual key for the three airport types ──────────
+    leg_y = prog_y + prog_h + 12
+    leg_h = 34
+    pygame.draw.rect(surf, (0,8,20), (bx, leg_y, bw, leg_h), border_radius=4)
+    _text(surf, "Symbol legend:", 12, (140,160,185), bold=True,
+          x=bx+10, y=leg_y+9)
+    # Public airport ring
+    lx = bx + 130; ly = leg_y + 18
+    pygame.draw.circle(surf, (120, 220, 255), (lx, ly), 5, 0)
+    pygame.draw.circle(surf, (0, 10, 30), (lx, ly), 3, 0)
+    _text(surf, "PUBLIC", 11, (170,180,195), x=lx+10, y=leg_y+10)
+    # Heliport
+    _text(surf, "H", 13, (220, 120, 220), bold=True, cx=bx+250, cy=ly)
+    _text(surf, "HELIPORT", 11, (170,180,195), x=bx+260, y=leg_y+10)
+    # Seaplane base
+    sx = bx + 380
+    pygame.draw.circle(surf, (150, 200, 255), (sx, ly), 4, 1)
+    pygame.draw.line(surf, (150, 200, 255), (sx - 4, ly + 5), (sx + 4, ly + 5), 1)
+    _text(surf, "SEAPLANE", 11, (170,180,195), x=sx+10, y=leg_y+10)
+
     # ── Display filters — toggle which airport types render on the AI ────
     # pi_zero shows airports + symbols only; runway polygons and extended
     # centerlines were dropped (too cluttered on the 640×480 panel).
-    filt_y = prog_y + prog_h + 12
+    filt_y = leg_y + leg_h + 14
     filt_h = 30
     _text(surf, "Display filters:", 13, (140,160,185), x=bx+6, y=filt_y-14)
     bt_w = (bw - 30) // 4
@@ -5543,10 +5563,13 @@ def airport_data_hit(x, y, ad):
     bx = _AD_MX; bw = DISPLAY_W - 2*_AD_MX
     btn_y = 92 + 82 + 10
     btn_h = 48
-    # Filter toggle strip
+    # Filter toggle strip — match draw-side: symbol legend (leg_h=34 + 12+14)
+    # sits between the download progress strip and the filter row.
     prog_y = btn_y + btn_h + 8
     prog_h = 40
-    filt_y = prog_y + prog_h + 12
+    leg_y  = prog_y + prog_h + 12
+    leg_h  = 34
+    filt_y = leg_y + leg_h + 14
     filt_h = 30
     bt_w   = (bw - 30) // 4
     if filt_y <= y <= filt_y + filt_h:
