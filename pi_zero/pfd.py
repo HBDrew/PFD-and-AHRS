@@ -2802,7 +2802,7 @@ def _fp_field(surf, bx, by, bw, bh, label, value, units="", r=6):
         gc = (int(15+t*35), int(20+t*50), int(40+t*80))
         pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
     pygame.draw.rect(surf, WHITE, (bx, by, bw, bh), width=2, border_radius=r)
-    _text(surf, label, 15, (160,175,200), x=bx+12, y=by+6)
+    _text(surf, label, 20, (170,185,210), bold=True, x=bx+14, y=by+8)
     val_str = str(value) if value not in (None, "", 0) else "---"
     if units and val_str != "---":
         val_str = f"{val_str} {units}"
