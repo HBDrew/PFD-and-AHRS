@@ -657,7 +657,12 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     surf.set_clip(pygame.Rect(ax, ay, aw, ah))
 
     cx  = ax + aw // 2
-    cy  = ay + ah // 2
+    # Anchor the horizon at TAPE_MID — same reference centre the pitch
+    # ladder uses for its zero-pitch line.  Using the rect's geometric
+    # centre (ay + ah/2) put the horizon ~11 px above TAPE_MID for
+    # _full_ai = (0, 0, W, HDG_Y), producing a visible ~1° gap between
+    # the white horizon line drawn here and the pitch-ladder horizon.
+    cy  = TAPE_MID
 
     roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
@@ -765,7 +770,9 @@ def draw_above_horizon_terrain(surf, ai_rect, lat, lon, alt_ft,
 
     ax, ay_r, aw, ah = ai_rect
     cx = ax + aw // 2
-    cy = ay_r + ah // 2
+    # Same TAPE_MID anchor as draw_simple_ai_background / draw_pitch_ladder
+    # so the silhouette base sits exactly on the horizon line.
+    cy = TAPE_MID
 
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = max(1.0, 60.0 * math.cos(math.radians(lat)))
@@ -1221,12 +1228,6 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                 _text(surf, s, 13, (230, 230, 230), bold=True,
                       x=ALT_X + ALT_W - tl - 2 - lw, y=fy - 8)
 
-    # ALT bug button — top strip of alt tape; color matches bug triangle
-    alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
-    alt_box_col = CYAN if baro_ok else MAGENTA
-    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=HDG_H,
-              font_sz=22, col=alt_box_col)
-
     # VS bar — 5px wide on the outer (right) edge of the alt tape.
     # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
     # 2000 fpm ≡ 200 ft on the tape scale.
@@ -1244,6 +1245,8 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     # Altitude bug — color reflects source: cyan=baro/pressure transducer, magenta=GPS alt (baro failed).
     # Park bound: chevron centre at the alt-bug-readout box's bottom edge so
     # half of the chevron tucks behind the box (symmetric with TAPE_BOT park).
+    # MUST be drawn BEFORE the top _cyan_box so the box overlays the chevron's
+    # top half when parked (matches the speed-tape draw order).
     if alt_bug is not None:
         _alt_bug_park_top = 2 + HDG_H
         aby = max(_alt_bug_park_top, min(TAPE_BOT, ay2(alt_bug)))
@@ -1254,6 +1257,14 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         surf.set_clip((0, TAPE_TOP, DISPLAY_W, TAPE_BOT - TAPE_TOP))
         pygame.draw.polygon(surf, alt_bug_col, bug)
         surf.set_clip(None)
+
+    # ALT bug button — top strip of alt tape; color matches bug triangle.
+    # Drawn AFTER the chevron so a parked chevron's top half hides behind
+    # the box.
+    alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
+    alt_box_col = CYAN if baro_ok else MAGENTA
+    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=HDG_H,
+              font_sz=22, col=alt_box_col)
 
     # Altitude readout box — Veeder-Root style scaled 1.5× from the SVG spec.
     # Layout: inner section(63) → drum section(36) → pointer(22) = 121px total.
