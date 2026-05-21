@@ -21,10 +21,10 @@ DISPLAY_DIR="$REPO_DIR/pi_display"
 USER_HOME=$(getent passwd "${SUDO_USER:-pi}" | cut -d: -f6)
 RUN_USER="${SUDO_USER:-pi}"
 
-echo "[1/8] Updating package lists…"
+echo "[1/9] Updating package lists…"
 apt-get update -qq
 
-echo "[2/8] Installing system dependencies…"
+echo "[2/9] Installing system dependencies…"
 apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     python3-pygame \
@@ -34,11 +34,11 @@ apt-get install -y --no-install-recommends \
     git curl \
     2>/dev/null
 
-echo "[3/8] Installing Python packages…"
+echo "[3/9] Installing Python packages…"
 pip3 install --quiet --break-system-packages pygame numpy 2>/dev/null || \
 pip3 install --quiet pygame numpy
 
-echo "[4/8] Configuring DSI display (KLAYERS 3.5\" 640×480)…"
+echo "[4/9] Configuring DSI display (KLAYERS 3.5\" 640×480)…"
 # Enable DSI, set framebuffer resolution
 if ! grep -q "dtoverlay=vc4-kms-v3d" /boot/firmware/config.txt 2>/dev/null; then
     cat >> /boot/firmware/config.txt << 'CFG'
@@ -54,12 +54,12 @@ else
     echo "  → config.txt already configured"
 fi
 
-echo "[5/8] Creating data directories…"
+echo "[5/9] Creating data directories…"
 mkdir -p "$DISPLAY_DIR/data/srtm"
 mkdir -p "$DISPLAY_DIR/data/obstacles"
 chown -R "$RUN_USER:" "$DISPLAY_DIR/data"
 
-echo "[6/8] Installing systemd service…"
+echo "[6/9] Installing systemd service…"
 cat > /etc/systemd/system/pfd.service << SVCEOF
 [Unit]
 Description=PFD Flight Display
@@ -88,12 +88,19 @@ systemctl daemon-reload
 systemctl enable pfd.service
 echo "  → pfd.service installed and enabled"
 
-echo "[7/8] WiFi config…"
+echo "[7/9] Disabling ModemManager (boots hang when AHRS USB-serial is plugged in)…"
+# ModemManager probes any USB CDC-ACM device on appearance, sending AT commands.
+# The Pico W AHRS doesn't respond, MM blocks for ~90 s, and the whole boot
+# stalls behind it. Mask rather than disable so it stays off through upgrades.
+systemctl mask ModemManager.service 2>/dev/null || true
+echo "  → ModemManager masked"
+
+echo "[8/9] WiFi config…"
 echo "  → To switch networks use: sudo raspi-config → System → Wireless LAN"
 echo "  → Home WiFi (terrain downloads): normal AP mode"
 echo "  → Flight mode (Pico W AP):       connect to PFD_AP"
 
-echo "[8/8] Creating terrain download helper…"
+echo "[9/9] Creating terrain download helper…"
 cat > "$DISPLAY_DIR/download_terrain.py" << 'DLEOF'
 #!/usr/bin/env python3
 """
