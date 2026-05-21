@@ -8225,11 +8225,13 @@ def draw_mfd(surf, connected=True, data_stale=False):
     # PFD ↔ MFD swap is the 3-finger 2-s hold (MFD_SWAP_HOLD_MS).
     _action_btn(surf, DISPLAY_W - _MFD_FPL_BTN_W - pad, pad,
                 _MFD_FPL_BTN_W, _MFD_FPL_BTN_H, "FPL", "normal", r=5)
-    # Top-left D2 button — magenta-styled when D2 is active
+    # Top-left D2 button — magenta-styled when D2 is active.  Label
+    # is "D→" when inactive, "D→ <ident>" when a direct-to is set
+    # (arrow-after-D reads as the standard "direct to" affordance).
     d2_style = "warn" if d2 is not None else "normal"
-    d2_label = (d2["ident"] if d2 else "D2")
+    d2_label = f"D→ {d2['ident']}" if d2 else "D→"
     _action_btn(surf, pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H,
-                f"→ {d2_label}", d2_style, r=5)
+                d2_label, d2_style, r=5)
     # Zoom buttons (bottom corners)
     zo_x, zo_y, zo_w, zo_h = _mfd_zoom_out_rect()
     zi_x, zi_y, zi_w, zi_h = _mfd_zoom_in_rect()
