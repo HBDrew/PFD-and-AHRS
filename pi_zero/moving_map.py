@@ -832,6 +832,20 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                              (int(wpx) + d, int(wpy)),
                              (int(wpx),     int(wpy) + d),
                              (int(wpx) - d, int(wpy))])
+        # Always-on D2 ident label next to the waypoint diamond.  The
+        # airport-loop above caps labels at <= 10 nm and 40 nearest;
+        # at wider zooms (or in dense areas where the airport got
+        # decimated out) the diamond would otherwise be unlabelled.
+        # Match the course / diamond colour so it reads as "the D2".
+        d2_ident = str(direct_to.get("ident", ""))
+        if d2_ident and font is not None:
+            d2_lbl = _apt_label_cache.get((d2_ident, id(font), "d2"))
+            if d2_lbl is None:
+                d2_lbl = font.render(d2_ident, True, course_col)
+                _apt_label_cache[(d2_ident, id(font), "d2")] = d2_lbl
+                if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                    _apt_label_cache.popitem(last=False)
+            surf.blit(d2_lbl, (int(wpx) + d + 3, int(wpy) - d - 2))
 
     # ── Range ring ───────────────────────────────────────────────────────────
     # Shrink the ring 2 px inside the inset's shorter axis so the frame
