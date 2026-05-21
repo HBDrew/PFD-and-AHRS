@@ -2890,6 +2890,12 @@ def handle_event(event, demo_mode):
                 _ssync_refresh_kinds()
             return True
 
+        # ── FPL placeholder taps ──────────────────────────────────────────
+        if mode == "fpl":
+            if fpl_hit(x, y) == "back":
+                disp["mode"] = "pfd"   # MFD runs under mode=pfd
+            return True
+
         # ── MFD strip-setup chooser taps ──────────────────────────────────
         if mode == "mfd_strip_setup":
             act, payload = mfd_strip_setup_hit(x, y)
@@ -3268,10 +3274,11 @@ def handle_event(event, demo_mode):
 
         # ── MFD taps (display_mode == "mfd" while mode == "pfd") ──────────
         if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
-            if _mfd_pfd_btn_hit(x, y):
-                # Flip back to the PFD view without going through SETUP.
-                disp["display_mode"] = "pfd"
-                _settings.mark_dirty()
+            if _mfd_fpl_btn_hit(x, y):
+                # Open the flight-plan editor (placeholder until multi-
+                # waypoint plans + user waypoints land).  PFD ↔ MFD
+                # swap is now the 3-finger 2-s hold gesture.
+                disp["mode"] = "fpl"
                 return True
             if _mfd_d2_btn_hit(x, y):
                 # Open the existing keyboard for waypoint entry.
@@ -7734,10 +7741,10 @@ import moving_map as _mfd_map   # noqa: E402
 # the active direct-to waypoint (or stays at 80 with no D2).
 MFD_MAX_ZOOM_NM = 160
 
-_MFD_PFD_BTN_W = 100
-_MFD_PFD_BTN_H = 36
+_MFD_FPL_BTN_W = 100
+_MFD_FPL_BTN_H = 52     # taller — FPL opens the flight-plan editor (TODO)
 _MFD_D2_BTN_W  = 100
-_MFD_D2_BTN_H  = 36
+_MFD_D2_BTN_H  = 52     # taller — matches FPL for a balanced chrome row
 _MFD_ZOOM_BTN  = 56     # square zoom-in / zoom-out buttons
 _MFD_STRIP_H   = 46     # height of the bottom data strip
 _MFD_STRIP_PAD = 6      # gap between strip and zoom buttons above it
@@ -7871,6 +7878,13 @@ def _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2):
         "sats":     int(disp.get("sats", 0)),
         "d2":       d2,
     }
+    # AGL: alt minus terrain elevation under the aircraft.  Returns 0
+    # when no SRTM tile is loaded for the current cell — same fallback
+    # the terrain-alert code already relies on, so an unknown tile reads
+    # as "AGL == alt" rather than dashing out the slot.
+    if _has_terrain:
+        ground_ft = get_elevation_ft(SRTM_DIR, lat, lon)
+        ctx["agl"] = max(0.0, alt - ground_ft)
     if d2 is not None:
         dist_nm, brg = _nav_geo_dist_brg(lat, lon, d2["lat"], d2["lon"])
         ctx["dist_nm"] = dist_nm
@@ -7914,8 +7928,11 @@ def _mfd_strip_format(kind, ctx):
         alt_q = int(round(ctx["alt"] / 20.0) * 20)
         return ("ALT", f"{alt_q:5d}", WHITE)
     if kind == "agl":
-        # Wired up once terrain-elev lookup is exposed at this layer.
-        return ("AGL", "----", (140, 140, 140))
+        v = ctx.get("agl")
+        if v is None:
+            return ("AGL", "----", (140, 140, 140))
+        agl_q = int(round(v / 20.0) * 20)
+        return ("AGL", f"{agl_q:5d}", WHITE)
     if kind == "vs":
         return ("VS", f"{int(round(ctx['vs'])):+5d}", WHITE)
     if kind == "oat":
@@ -7991,9 +8008,9 @@ def _mfd_orient_label_rect():
     """ORIENT readout: under the PFD button (top-right).  Tappable to
     toggle TRK↑ / N↑."""
     pad = 6
-    return (DISPLAY_W - _MFD_PFD_BTN_W - pad,
-            pad + _MFD_PFD_BTN_H + _MFD_LABEL_DROP,
-            _MFD_PFD_BTN_W,
+    return (DISPLAY_W - _MFD_FPL_BTN_W - pad,
+            pad + _MFD_FPL_BTN_H + _MFD_LABEL_DROP,
+            _MFD_FPL_BTN_W,
             _MFD_LABEL_H)
 
 
@@ -8002,11 +8019,11 @@ def _mfd_center_btn_rect():
     orient label so it stays visually distinct from the orient toggle
     when the map is panned.  Both are visible at the same time."""
     pad = 6
-    return (DISPLAY_W - _MFD_PFD_BTN_W - pad,
-            pad + _MFD_PFD_BTN_H + _MFD_LABEL_DROP
-                + _MFD_LABEL_H + _MFD_PFD_BTN_W,   # ← +100 px (button-width gap)
-            _MFD_PFD_BTN_W,
-            _MFD_PFD_BTN_H)
+    return (DISPLAY_W - _MFD_FPL_BTN_W - pad,
+            pad + _MFD_FPL_BTN_H + _MFD_LABEL_DROP
+                + _MFD_LABEL_H + _MFD_FPL_BTN_W,   # ← +100 px (button-width gap)
+            _MFD_FPL_BTN_W,
+            _MFD_FPL_BTN_H)
 
 
 def _mfd_center_btn_hit(x, y):
@@ -8189,11 +8206,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
               cx=cx, cy=sy + 30)
 
     # ── MFD chrome buttons ─────────────────────────────────────────────
-    # D2 (top-left), PFD (top-right), zoom-out (bottom-left, "−"),
-    # zoom-in (bottom-right, "+").
-    # Top-right PFD button
-    _action_btn(surf, DISPLAY_W - _MFD_PFD_BTN_W - pad, pad,
-                _MFD_PFD_BTN_W, _MFD_PFD_BTN_H, "PFD", "normal", r=5)
+    # D2 (top-left), FPL (top-right) opens the flight-plan editor.
+    # PFD ↔ MFD swap is the 3-finger 2-s hold (MFD_SWAP_HOLD_MS).
+    _action_btn(surf, DISPLAY_W - _MFD_FPL_BTN_W - pad, pad,
+                _MFD_FPL_BTN_W, _MFD_FPL_BTN_H, "FPL", "normal", r=5)
     # Top-left D2 button — magenta-styled when D2 is active
     d2_style = "warn" if d2 is not None else "normal"
     d2_label = (d2["ident"] if d2 else "D2")
@@ -8212,13 +8228,13 @@ def draw_mfd(surf, connected=True, data_stale=False):
               cx=DISPLAY_W // 2, cy=DISPLAY_H - 18)
 
 
-def _mfd_pfd_btn_hit(x, y):
-    """Top-right PFD button on the MFD."""
+def _mfd_fpl_btn_hit(x, y):
+    """Top-right FPL button on the MFD — opens the flight-plan editor."""
     pad = 6
-    bx = DISPLAY_W - _MFD_PFD_BTN_W - pad
+    bx = DISPLAY_W - _MFD_FPL_BTN_W - pad
     by = pad
-    return (bx <= x <= bx + _MFD_PFD_BTN_W and
-            by <= y <= by + _MFD_PFD_BTN_H)
+    return (bx <= x <= bx + _MFD_FPL_BTN_W and
+            by <= y <= by + _MFD_FPL_BTN_H)
 
 
 def _mfd_d2_btn_hit(x, y):
@@ -8325,6 +8341,41 @@ def draw_mfd_strip_setup(surf):
                   cx=bx + bw // 2, y=by + bh - 14)
 
 
+def draw_fpl_placeholder(surf):
+    """Placeholder Flight Plan screen — reached by tapping FPL on the
+    MFD chrome.  Real multi-waypoint plans + user waypoints land here;
+    for now it shows the active direct-to (if any) and an explanation."""
+    _screen_header(surf, "FLIGHT PLAN")
+    nv = disp.get("nav") or {}
+    cx = DISPLAY_W // 2
+    y = 90
+    if nv.get("ident"):
+        _text(surf, "Active direct-to:", 14, (160, 180, 210),
+              cx=cx, y=y)
+        _text(surf, nv["ident"], 36, MAGENTA, bold=True,
+              cx=cx, y=y + 22)
+        y += 88
+    else:
+        _text(surf, "No active direct-to.", 14, (160, 180, 210),
+              cx=cx, y=y)
+        y += 36
+    for line in (
+        "Multi-waypoint flight plans and",
+        "user waypoints will live on this screen.",
+        "",
+        "Tap BACK to return.",
+        "Three-finger 2-s hold to swap PFD ↔ MFD.",
+    ):
+        _text(surf, line, 13, (140, 160, 190), cx=cx, y=y)
+        y += 22
+
+
+def fpl_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    return None
+
+
 def mfd_strip_setup_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return ("back", None)
@@ -8359,7 +8410,7 @@ def _mfd_chrome_hit(x, y):
     i.e. the user can't pan / tap-airport here because some other widget
     owns the tap."""
     if _mfd_d2_btn_hit(x, y):       return True
-    if _mfd_pfd_btn_hit(x, y):      return True
+    if _mfd_fpl_btn_hit(x, y):      return True
     if _mfd_zoom_in_hit(x, y):      return True
     if _mfd_zoom_out_hit(x, y):     return True
     if _mfd_center_btn_hit(x, y):   return True
@@ -8519,6 +8570,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_screen_sync_setup(surf, disp["cs"]); return
     if mode == "mfd_strip_setup":
         draw_mfd_strip_setup(surf); return
+    if mode == "fpl":
+        draw_fpl_placeholder(surf); return
     if mode == "system_setup":
         draw_system_setup(surf); return
     if mode == "ahrs_firmware":
