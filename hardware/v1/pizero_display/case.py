@@ -147,12 +147,21 @@ PI_HOLES_DISP = [
 #   X = PI_X0_DISP + a small offset, Y = PI_Y1_DISP (Y_TOP)
 # Real Pi Zero 2W: PWR at ~12.4 mm from the camera-connector edge,
 # OTG at ~41.4 mm. We treat them as a single wide slot for cable clearance.
-USB_SLOT_W = 36.0               # wide enough to cover both micro-USBs
-USB_SLOT_H = 8.0                # vertical (Z) opening height
-USB_SLOT_X_CENTER = PI_X0_DISP + PI_Y / 2    # centred on the Pi Zero short axis
-# microSD on the -Y short edge of the Pi Zero, opposite the USBs.
-SD_SLOT_W = 14.0
-SD_SLOT_H = 4.0
+#
+# In the final PRODUCT frame (after the -90 deg Z rotation applied at the
+# end of make_case), the USB cables exit through the +Y TOP wall and the
+# microSD card lives on the +X RIGHT wall. In the BUILD frame the script
+# uses (before that rotation), those walls map to:
+#   product +Y top   = build -X wall   <- USB cutout lives here
+#   product +X right = build +Y wall   <- SD cutout lives here
+USB_SLOT_W = 45.72              # cable-relief width (= 1.8 in, matches case2)
+USB_SLOT_H = 12.7               # cable-relief height (= 0.5 in)
+USB_SLOT_PRODUCT_X = -5.0       # cutout X centre in product frame
+USB_SLOT_Z_CENTER  = 11.4       # cutout Z centre, straddles the USB connector bodies
+SD_SLOT_W = 14.0                # microSD card width clearance
+SD_SLOT_H = 4.0                 # microSD card height clearance
+SD_SLOT_PRODUCT_Y = -14.0       # cutout Y centre in product frame
+SD_SLOT_Z_CENTER  = 3.4         # below the Pi Zero PCB (SD body protrudes downward)
 
 # ─── Stack Z layout ─────────────────────────────────────────────────
 # Pi Zero PCB bottom -> Pi Zero PCB top -> 40-pin gap -> brass-post bottom
@@ -283,32 +292,41 @@ def make_case():
         )
         shell = shell.union(post).cut(bore)
 
-    # USB PWR + OTG cutout on the +Y wall, centred over the Pi Zero short edge.
-    usb_wx, _ = disp_to_world(USB_SLOT_X_CENTER, 0)
-    usb_cz = PI_TOP_Z + USB_SLOT_H / 2 - 1.0       # USB bodies straddle PCB top
+    # USB PWR + OTG cutout. Placed on the build -X wall so that, AFTER the
+    # final -90 deg Z rotation, the slot lands on the product +Y TOP wall
+    # — cables exit upward from the top of the unit.
+    #   product (X, Y) = (build_y, -build_x)  =>  build_y = product_X
+    usb_build_y = USB_SLOT_PRODUCT_X
     usb_cut = (
-        cq.Workplane("XZ", origin=(usb_wx, OUTER_Y / 2 + 0.5, usb_cz))
-        .rect(USB_SLOT_W, USB_SLOT_H)
-        .extrude(WALL + 2)
+        cq.Workplane("XY",
+                     origin=(-OUTER_X / 2, usb_build_y, USB_SLOT_Z_CENTER))
+        .box(WALL + 4, USB_SLOT_W, USB_SLOT_H)
     )
     shell = shell.cut(usb_cut)
 
-    # microSD slot on the -Y wall, centred over the Pi Zero opposite short edge.
+    # microSD slot. Placed on the build +Y wall so that, after the rotation,
+    # the slot lands on the product +X RIGHT wall (the short-edge side of
+    # the Pi Zero closest to the SD card slot, which lives on the BOTTOM
+    # of the Pi Zero PCB — hence the low Z position).
+    #   product Y = -build X   =>   build X = -product Y
+    sd_build_x = -SD_SLOT_PRODUCT_Y
     sd_cut = (
-        cq.Workplane("XZ", origin=(usb_wx, -OUTER_Y / 2 - 0.5,
-                                   PI_TOP_Z - SD_SLOT_H / 2 - 1.0))
-        .rect(SD_SLOT_W, SD_SLOT_H)
-        .extrude(-WALL - 2)
+        cq.Workplane("XY",
+                     origin=(sd_build_x, OUTER_Y / 2, SD_SLOT_Z_CENTER))
+        .box(SD_SLOT_W, WALL + 4, SD_SLOT_H)
     )
     shell = shell.cut(sd_cut)
 
     # Ventilation slats on the floor (Pi Zero side). Six narrow slots so
     # the SoC can dump heat downward when the case lies face-up.
+    pi_centre_build_x, _ = disp_to_world(
+        PI_X0_DISP + PI_Y / 2, PI_Y0_DISP + PI_X / 2
+    )
     slat_w = 2.0
     slat_l = 30.0
     slat_n = 6
     slat_pitch = 4.0
-    slat_x0 = usb_wx - (slat_n - 1) * slat_pitch / 2
+    slat_x0 = pi_centre_build_x - (slat_n - 1) * slat_pitch / 2
     for i in range(slat_n):
         sx = slat_x0 + i * slat_pitch
         vent = (
@@ -316,7 +334,6 @@ def make_case():
             .rect(slat_w, slat_l)
             .extrude(FLOOR_T + 1.0)
         )
-        # Only cut the vents where they land over the Pi Zero footprint.
         shell = shell.cut(vent)
 
     # Rotate -90 deg about Z so the GPIO-header long edge of the display
