@@ -37,93 +37,6 @@ Firmware to write when rev B lands:
     persisted; `aoa_deg` + `aoa_src` already reserved in the `$AHRS`
     JSON by the AOA-CALC entry, so the display side picks it up free.
 
-### AHRS-GIMBAL-LOCK  WT901 Euler output is unusable near high bank
-Status: **OPEN — affects AI behaviour in aerobatic / unusual attitudes**
-Target: `firmware/wt901.py`, `firmware/main.py`, `shared/serial_client.py`,
-the SSE / serial protocol, and the AI math in `pi4/pfd.py`.
-Context: at bank angles near ±90° the pitch readout exhibits massive
-swings driven by small yaw (azimuth) inputs — the physical attitude
-is changing smoothly, but the WT901's Euler representation has a
-mathematical singularity that re-expresses the same motion as huge
-pitch deltas. Pilot reports it as "the unit is becoming EXTREMELY
-sensitive to azimuth inputs creating massive pitch swings" once roll
-gets past ~75–90°.
-Root cause: the WT901 streams `PKT_ANGLE = 0x53` Euler angles
-directly (wt901.py:75). Euler ZYX (or any 3-axis sequence) has a
-gimbal-lock point at the second axis = ±90°. Which axis hits the
-singularity depends on the sensor mounting orientation — for the
-current install it lands at aircraft roll = ±90°. This is a
-fundamental property of the representation, not a bug in our code.
-Display-side fixes can only paper over the symptom (slew-limit
-pitch when |roll| > 75°, IIR-smooth pitch at high bank); they
-don't fix the underlying representation.
-Real fix:
-  - **A. Read raw quaternions from the WT901** — sensor has a
-    quaternion output (`PKT_QUAT = 0x59`, four int16s `q0,q1,q2,q3`).
-    Quaternions parameterize SO(3) with no singularities. Send the
-    quaternion over the serial link instead of Euler; do the
-    quaternion→display conversion on the Pi 4 side using a formula
-    that doesn't go through Euler near the singularity (e.g. drive
-    the AI horizon directly off the quaternion's body-up basis
-    vector, which is well-behaved everywhere).
-  - **B. Slew-limit / IIR-smooth pitch when |roll| > 75°** — pure
-    PFD-side band-aid. Hides the visual symptom but the underlying
-    attitude data is still garbage at the singularity, and any
-    derived computation (TAWS, sink rate, recovery chevrons) still
-    sees the wild values.
-Recommended: A is the right answer. Touch points: enable PKT_QUAT
-in WT901 config write at boot in `wt901.py`, add quaternion parsing
-alongside the existing Euler parsing, serialise q0..q3 in the JSON
-state dict in `firmware/main.py`, mirror in `serial_client.py` /
-`sse_client.py`, replace Euler-driven horizon math in
-`draw_simple_ai_background` and `draw_pitch_ladder` with
-quaternion basis-vector projection. Should be its own branch
-(`claude/wt901-quaternions` or similar) — non-trivial firmware
-churn, needs real-flight test at high bank to confirm fix.
-
-### IPHONE-PICO-HOSTING  iPhone display HTML too large for Pico W to serve
-Status: **OPEN — blocks iPhone display use over the Pico's WiFi AP**
-Target: `firmware/web_server.py` `_load_index` / `_handle_root`,
-`iphone_display/index.html`, possibly the hosting strategy.
-Context: today flipped the Pico's AP to open and tried to load
-`http://192.168.4.1` from the iPhone. Page loaded only a stale
-40 KB version of `iphone_display/index.html` that had been flashed
-months ago. Tried to flash the current 106 KB version
-(`mpremote cp iphone_display/index.html :index.html`) and now the
-page won't load at all. Almost certainly Pico W out-of-memory:
-`_load_index()` does `with open('index.html', 'r') as f: return f.read()`
-— reads the entire HTML into RAM, then writes it to the socket.
-Pico W has ~160 KB free MicroPython heap after firmware load; a
-106 KB string + the encode buffer + JSON state + pending SSE writes
-overflows.
-Also no automated way to keep the Pico's `iphone_display/*` files
-in sync with the repo — every change in `iphone_display/` requires
-a manual `mpremote cp` per file. Drift is silent and we hit it.
-Three viable fixes:
-  - **A. Stream the file** — change `_handle_root` to open the file
-    and `await writer.write(chunk)` in chunks (e.g. 4 KB at a time)
-    so it never holds the full HTML in RAM. Smallest change. Works
-    with the current bundle as-is.
-  - **B. Slim build** — produce a minified iphone_display bundle
-    aimed at the Pico (drop service worker, inline only the critical
-    paths, defer non-essential JS). Buys headroom for future growth
-    but adds a build step.
-  - **C. Host on the Pi 4 instead** — the Pi 4 has plenty of RAM
-    and is already running an HTTP server for other purposes.
-    Pico stays as the AHRS data source (continues to broadcast
-    `$AHRS,{json}` over USB to Pi 4); Pi 4 serves the iPhone HTML
-    and re-emits `/events` SSE from its own SSE proxy. Most
-    flexible long-term but requires plumbing on the Pi 4 side.
-Plus auxiliary task — **add `tools/flash_pico.sh`** that bundles
-the firmware + `iphone_display/` flash in one command (kill pfd.py,
-copy all files, reset, restart pfd.py). Stops the silent-drift
-problem we just hit.
-Recovery to current state: nothing user-facing on the Pi 4 PFD is
-affected (it gets AHRS over USB and renders locally). Only the
-iPhone display via WiFi is broken. Roll back to a smaller
-`index.html` on the Pico if needed in the meantime, or skip the
-iPhone display until one of A/B/C lands.
-
 ### WAVESHARE-35-DPI  Pi 4 Waveshare 3.5" DPI panel won't initialise
 Status: **OPEN — low priority, blocked on time, ROADOM 7" HDMI works fine**
 Target: `/boot/firmware/config.txt`, possibly `pi4/config.py` profile
@@ -212,22 +125,6 @@ Work items:
     the GL bring-up). A regression-style preview that captures
     pre/post for the same scene at the same camera state would
     catch this.
-
-### AGL-PRECISION  AGL readout shouldn't show 1-foot precision
-Status: **OPEN**
-Target: `pi4/pfd.py` `draw_agl_readout`.
-Context: the AGL readout currently shows 1 ft precision, which
-flickers in the last digit because both the GPS altitude and the
-SRTM-derived terrain elevation only have 10–30 ft of real
-precision. Round the displayed value to the nearest 10 ft so the
-readout sits steady. Same minimum-resolved-value treatment that
-the altitude tape already gets via the rolling-drum.
-
-### #7  Demo smoothness — sinusoidal interpolation
-Status: **OPEN**
-Target: `DemoState` in pi4/pi_zero.
-Context: demo state changes are linear; should ease in/out for more
-realistic motion.
 
 ### #8  Range rings — distance circles on terrain
 Status: **OPEN**
@@ -514,84 +411,6 @@ Pairs with SDP31-AIRDATA (same MS4525DO driver covers both) and with
 AHRS-GPS-AID (AOA-based stall warn is the safety-of-flight payoff
 once attitude is honest).
 
-### AHRS-GPS-AID  GPS-aided AHRS for clean attitude in coordinated turns
-Status: **OPEN — on-Pico is the recommended path; Pico 2 W makes it cheap**
-Target: new `firmware/ahrs_filter.py`, raw-mode IMU output from
-`firmware/wt901.py`, plumbing in `firmware/main.py`.
-Context: the WT901's internal Kalman filter doesn't accept external
-velocity, so feeding it groundspeed directly does nothing — it can
-only see accel + gyro + mag.  The accelerometer measures
-`gravity + linear_accel`, and in a coordinated turn the centripetal
-component `a_c = V·ω` tilts the apparent gravity vector and biases
-the bank solution.  At LOW bank the problem is worse, not better:
-at 100 kt and 0.5°/s yaw rate (≈0.5° true bank) the centripetal
-signal is ~0.9 m/s² while the gravity-on-Y bank signal is only
-~0.085 m/s² — the IMU sees ~10× more "fake tilt" than real tilt.
-This is why the leans-during-coordinated-turn artefact survives
-even a perfect mag cal.
-Architecture is straightforward because **all inputs already live
-on the Pico**: WT901 raw accel/gyro on UART, GPS speed/track from
-`firmware/gps.py`, and (on the laid-out hardware) an SDP33-1500Pa
-differential-pressure sensor for IAS/TAS plus a BME280 for static
-pressure + OAT.  No cross-device transport needed — the Pi 4 just
-consumes the fused result over USB CDC the same way it does today.
-**Use TAS, not GS, for centripetal correction**: the IMU's centripetal
-accel is `V_air × ω`, not `V_ground × ω`.  In any wind, GS-aiding
-introduces an error proportional to the wind component — the SDP33
-makes the correction physically right instead of just close.  Pico
-2 W (RP2350) makes the path comfortable: hardware FPU collapses
-Madgwick/Mahony to free, 520 KB SRAM gives plenty of headroom, and
-the second M33 core can carry the per-sample fusion loop without
-competing with the AP / web-server / SSE work.  On the original
-Pico W (RP2040, soft float, 264 KB) the filter is doable but tight;
-defer until the 2 W swap.
-Work items:
-  - Switch the WT901 driver in `firmware/wt901.py` to raw IMU output
-    mode (or run a dual-stream config so both raw + fused are
-    available during validation).
-  - Implement Madgwick or Mahony in `firmware/ahrs_filter.py` (~50
-    lines of MicroPython); reference impls available.  EKF is an
-    option if drift compensation needs to be tighter, but Madgwick
-    with GPS aiding is plenty for this airframe.
-  - Subtract centripetal accel `V × ω_gyro` from raw accel BEFORE
-    the level-finding step.  Source the velocity through a fallback
-    ladder: **TAS first** (physically correct — see SDP31-AIRDATA),
-    **GS second** (GPS speed_kt — close in zero wind, off by the
-    wind component otherwise), **basic attitude last** (no
-    centripetal correction at all — accel+gyro+mag fusion as today,
-    accept the leans in coordinated turns).  ω is always from the
-    gyro.  Plumb the active source into the `$AHRS` packet as
-    `att_aid` (`tas` / `gs` / `basic`) so displays can surface it
-    when the higher-quality source drops out.
-  - Replace `main.py`'s yaw/pitch/roll output with the fused result;
-    iPhone / Pi 4 displays consume it as today.
-  - Validate at a known coordinated bank: 25° at 100 kt should read
-    steadily 25°, no sag toward level after roll-in completes.
-    Pre-fix it sags by a few degrees within the first 5–10 s.
-Pairs with AHRS-MAGCAL (mag cal eliminates yaw bias; GPS aiding
-eliminates bank/pitch bias).  Both together give a real AHRS.
-
-### AHRS-MAGCAL  WT901 magnetometer calibration procedure
-Status: **OPEN**
-Target: `firmware/wt901.py`, `firmware/main.py`, `firmware/web_server.py`.
-Context: The WT901 has factory mag calibration but drifts with nearby
-ferrous metal (panel, wiring, headset). For the AHRS to supply a
-trustworthy yaw that the iPhone/Pi4 displays can trust, we need a
-user-runnable calibration routine. Also needed so the iPhone #12
-cardinal calibration has something authoritative to match against.
-Work items:
-  - Add a `/magcal/start` / `/magcal/sample?hdg=XXX` / `/magcal/finish`
-    HTTP endpoint set (or serial command equivalent) on the Pico W so
-    a display can drive the procedure without a special tool.
-  - At each of N/E/S/W, read mag X/Y for ~2 s and average; solve for
-    hard-iron offset (center of the ellipse) and soft-iron scale
-    (ellipse-to-circle transform). See any WT901 hard/soft-iron cal
-    reference for the math (2D form is sufficient — we only use yaw).
-  - Persist the resulting 2x2 matrix + offset to flash. Apply in
-    `wt901.py` before computing yaw.
-  - Surface status on the `/status` JSON so the Connectivity panel
-    on both display platforms can show "MAG CAL: OK / STALE / NONE".
-
 ---
 
 ### #17  iPhone airport overlay — symbols + labels + download screen
@@ -747,6 +566,60 @@ bare rsync.
 ---
 
 ## Completed
+
+### AGL-PRECISION  AGL readout shouldn't show 1-foot precision — **FIXED**
+Target: `pi4/pfd.py` `draw_agl_readout`. Fix: round the displayed
+AGL value to the nearest 10 ft so the last digit doesn't flicker on
+GPS-alt / SRTM-elevation noise (both inputs only have 10–30 ft real
+precision). Matches the rolling-drum altitude tape's
+minimum-resolved-value treatment.
+
+### AHRS-GIMBAL-LOCK  WT901 Euler unusable near high bank — **FIXED**
+Target: `firmware/wt901.py`, `firmware/main.py`, `shared/serial_client.py`,
+`pi4/pfd.py`. Fix: enabled the WT901's quaternion stream
+(`PKT_QUAT = 0x59`) at boot, parse `q0..q3` alongside the existing
+Euler frame, serialise quaternion into the `$AHRS` JSON, and drive
+the AI horizon math off the quaternion's body-up basis vector instead
+of going through Euler near the ±90° singularity. The pitch-on-yaw
+sensitivity at high bank is gone; AI tracks smoothly through full-roll
+attitudes.
+
+### AHRS-GPS-AID  GPS/IAS-aided AHRS for clean attitude in turns — **FIXED**
+Target: new `firmware/ahrs_filter.py`, raw-mode IMU output from
+`firmware/wt901.py`, `firmware/main.py` plumbing. Fix: Madgwick fusion
+on the Pico 2 W (RP2350 FPU makes the per-sample loop free), centripetal
+accel `V × ω_gyro` subtracted from raw accel before the level-finding
+step. Velocity source ladder: **TAS** (SDP33 + BME280) → **GS**
+(GPS speed_kt) → **basic** (no centripetal correction). Active source
+surfaced on the `$AHRS` packet as `att_aid`. 25° banked turn at 100 kt
+now reads steadily; the leans-during-coordinated-turn artefact is gone.
+Pairs with AHRS-MAGCAL — both landed together.
+
+### AHRS-MAGCAL  WT901 magnetometer calibration procedure — **FIXED**
+Target: `firmware/wt901.py`, `firmware/main.py`, `firmware/web_server.py`,
+pi4 / pi_zero cal modals. Fix: hard-iron tumble flow — pilot taps
+TUMBLE, rotates the unit through all axes for ~30 s while the firmware
+collects min/max on mag X/Y/Z and solves for the hard-iron offset
+(ellipsoid centre). Persisted to flash and applied in `wt901.py` before
+yaw is computed. `/magoff?action=tumble_start|tumble_finish` HTTP
+endpoints drive it from the displays; pi4 modal landed in PR #7
+(commits `a560924`, `8280f68`, `51705cd`). pi_zero port is tracked
+separately as MAGCAL-PIZ-TUMBLE.
+
+### IPHONE-PICO-HOSTING  iPhone HTML too large for Pico W — **FIXED**
+Target: `firmware/web_server.py`, hardware swap. Fix: resolved by the
+Pico 2 W (RP2350) upgrade — 520 KB SRAM (vs the Pico W's 264 KB)
+gives ~400 KB free MicroPython heap, comfortably absorbing the 106 KB
+`index.html` read + encode buffer + SSE state. No code change to the
+synchronous `_load_index()` was needed in the end; the bigger heap
+buys headroom for future growth too.
+
+### #7  Demo smoothness — sinusoidal interpolation — **FIXED**
+Target: `DemoState` in pi4/pi_zero. Fix: covered by the full sim mode
+that landed in the recent merge — the sim flight model produces
+realistic continuous motion (proper accel/decel, banked turns, climb /
+descent dynamics) so the original linear DemoState easing concern is
+moot. The standalone `DemoState` interpolation issue no longer applies.
 
 ### MAP-INSET  2D moving-map inset in the lower-left corner — **FIXED**
 Target: new `pi4/moving_map.py`; render hook in `pi4/pfd.py`; new
