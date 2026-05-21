@@ -8779,7 +8779,16 @@ def main():
 
         # Events
         for event in pygame.event.get():
-            result = handle_event(event, demo_mode)
+            try:
+                result = handle_event(event, demo_mode)
+            except Exception:
+                # Don't let a bad touch tear down the whole PFD — log and
+                # carry on so the pilot can back out of whatever screen
+                # tripped the handler.
+                import traceback
+                print("[PFD] handle_event crashed:", file=sys.stderr)
+                traceback.print_exc()
+                result = None
             if result is False:
                 running = False
             elif result == "toggle_demo":
