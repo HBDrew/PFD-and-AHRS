@@ -108,7 +108,14 @@ disp["fp"] = {                      # flight-profile values
     "vno":    VNO,  "vne": VNE,  "va":  VA,
     "vy":     VY,   "vx":  VX,
 }
-disp["display_mode"]  = "pfd"       # "pfd" | "mfd" (MFD not yet implemented)
+disp["display_mode"]  = "pfd"       # "pfd" | "mfd" — runtime view selector;
+                                    # user no longer toggles this directly in
+                                    # setup.  Flipped at runtime by the
+                                    # 3-finger long-press gesture (see
+                                    # MFD_SWAP_HOLD_MS) when mfd_enabled is
+                                    # True.  mfd_enabled is the setup-screen
+                                    # feature gate; display_mode is the
+                                    # which-screen-am-I-on cursor.
 disp["td"] = {                      # terrain download state
     "downloading": False,
     "compacting":  False,            # SRTM1 → SRTM3 in-place compactor
@@ -150,7 +157,11 @@ disp["ad"] = {                      # airport download/parse state
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
-    # MFD settings — only relevant when disp["display_mode"] == "mfd".
+    # MFD feature gate — when False, the runtime 3-finger swap gesture is
+    # disarmed and display_mode is pinned to "pfd".  When True the user can
+    # flip PFD ↔ MFD with a 3-finger 2 s hold without re-entering setup.
+    "mfd_enabled":      False,
+    # MFD settings — only relevant when display_mode == "mfd".
     "map_orient":       "trk",   # "trk" | "nrth"
     "map_zoom_nm":      10,      # half-extent of the inset's shorter axis
     "map_show_terrain":  True,
@@ -2421,6 +2432,10 @@ _touch_t0      = {}
 _bug_dragging  = None    # "hdg" | "alt"
 _active_fingers = {}     # finger_id → touch-down time (ms)
 _multitouch_t0  = None   # time when 2nd finger touched down
+_multitouch_max_fingers = 0   # peak finger count this gesture — disambiguates
+                              # the 2-finger setup hold (max == 2) from the
+                              # 3-finger PFD↔MFD swap hold (max >= 3) so the
+                              # two gestures don't fight at the 800 ms mark.
 
 
 def _current_str_for_kbd(target, prev_mode):
@@ -2445,7 +2460,8 @@ def _open_numpad(target):
 
 
 def handle_event(event, demo_mode):
-    global _bug_dragging, _active_fingers, _multitouch_t0, _sim_state
+    global _bug_dragging, _active_fingers, _multitouch_t0
+    global _multitouch_max_fingers, _sim_state
 
     if event.type == pygame.QUIT:
         return False
@@ -2485,6 +2501,11 @@ def handle_event(event, demo_mode):
         _active_fingers[event.finger_id] = pygame.time.get_ticks()
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
             _multitouch_t0 = pygame.time.get_ticks()
+        # Track peak finger count so the 3-finger swap gesture wins over
+        # the 2-finger setup gesture once a 3rd finger has touched, even
+        # if one of them lifts before the hold timer expires.
+        if len(_active_fingers) > _multitouch_max_fingers:
+            _multitouch_max_fingers = len(_active_fingers)
             # The first finger may have started an MFD pan / airport-tap
             # drag.  Cancel it so the eventual finger-up doesn't fire
             # _mfd_airport_tap or finish a pan from the first finger's
@@ -2495,6 +2516,7 @@ def handle_event(event, demo_mode):
         _active_fingers.pop(event.finger_id, None)
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
+            _multitouch_max_fingers = 0
 
     # ── Drag-to-scroll on setup screens ──────────────────────────────────────
     # We defer the tap-fire on BUTTONDOWN inside a drag-capable setup
@@ -2800,8 +2822,14 @@ def handle_event(event, demo_mode):
             elif action == "ahrs_firmware":
                 _ss_reset_scroll("ahrs_firmware")
                 disp["mode"] = "ahrs_firmware"
-            elif action and action.startswith("set:display_mode:"):
-                disp["display_mode"] = action.split(":")[-1]
+            elif action and action.startswith("set:mfd_enabled:"):
+                want = action.split(":")[-1] == "on"
+                disp["ds"]["mfd_enabled"] = want
+                if not want:
+                    # Disabling the feature also forces the runtime view
+                    # back to PFD — otherwise a piZ that was last left on
+                    # the MFD would still render MFD on next render.
+                    disp["display_mode"] = "pfd"
                 _settings.mark_dirty()
                 disp["mode"] = "pfd"   # exit setup so the change is visible
             elif action == "simulator":
@@ -5108,15 +5136,18 @@ def draw_system_setup(surf):
         _text(surf, k, 15, (130,150,175), x=bx+14, y=ty)
         _text(surf, v, 16, WHITE, bold=True, x=bx+310, y=ty)
 
-    # DISPLAY MODE row
-    _setting_row(surf, 0, "DISPLAY MODE", "Primary Flight Display or Multi-Function Display",
+    # ENABLE MFD row — feature gate.  When ON, the 3-finger 2 s hold
+    # gesture in the PFD/MFD view swaps between the two; when OFF the
+    # gesture is disarmed and the view is pinned to the PFD.
+    _setting_row(surf, 0, "ENABLE MFD",
+                 "Adds the Multi-Function Display · 3-finger 2 s hold to swap",
                  _y_override=mode_y)
-    cur = disp.get("display_mode", "pfd")
+    enabled = bool(disp["ds"].get("mfd_enabled", False))
     btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
     rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
     ry = mode_y + (_SS_RH - btn_h_m) // 2
-    _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "PFD", cur == "pfd")
-    _seg_btn(surf, rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m, "MFD", cur == "mfd")
+    _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "OFF", not enabled)
+    _seg_btn(surf, rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m, "ON",  enabled)
 
     # Data download tiles: TERRAIN | OBSTACLE | AIRPORT (three columns)
     third = (bw - 16) // 3
@@ -5167,15 +5198,15 @@ def system_setup_hit(x, y):
     # Shift the incoming y into logical (unscrolled) coordinates so the
     # button hit-tests still match the constants that defined the layout.
     y += _ss_scroll.get("system_setup", 0)
-    # DISPLAY MODE row — PFD / MFD toggle
+    # ENABLE MFD row — OFF / ON toggle
     btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
     rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
     ry = _SYS_MODE_Y + (_SS_RH - btn_h_m) // 2
     if ry <= y <= ry + btn_h_m:
         if rx <= x <= rx + btn_w_m:
-            return "set:display_mode:pfd"
+            return "set:mfd_enabled:off"
         if rx+btn_w_m+gap_m <= x <= rx+2*btn_w_m+gap_m:
-            return "set:display_mode:mfd"
+            return "set:mfd_enabled:on"
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
         third = (bw - 16) // 3
         if bx <= x <= bx+third:
@@ -7889,7 +7920,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_sim_setup(surf); return
 
     # ── MFD: full-screen moving map (replaces the PFD when toggled) ──────────
-    if disp.get("display_mode", "pfd") == "mfd" and mode == "pfd":
+    # Gated by mfd_enabled so a stale display_mode == "mfd" in settings.json
+    # can't strand the user on the MFD when they've disabled the feature.
+    if (disp.get("display_mode", "pfd") == "mfd"
+            and disp["ds"].get("mfd_enabled", False)
+            and mode == "pfd"):
         # Terrain / obstacle alerts work on the MFD too.  Use the
         # higher of GPS GS and IAS (when airdata_ok) so the alert
         # arms whichever speed source the pilot has selected — and
@@ -8266,6 +8301,14 @@ def main():
     # AUTO (0) is valid; only clamp negative or above-cap values.
     if saved_zoom > MFD_MAX_ZOOM_NM or saved_zoom < 0:
         disp["ds"]["map_zoom_nm"] = min(MFD_MAX_ZOOM_NM, 10)
+    # Migrate users whose settings.json predates the mfd_enabled gate.
+    # The legacy `display_mode` field was the user-toggled setting; if it
+    # was set to "mfd" they had been using the MFD before the gate
+    # existed.  Force-enable the new gate so they don't have to re-find
+    # the toggle (it moved from System Setup → DISPLAY MODE to System
+    # Setup → ENABLE MFD).
+    if disp.get("display_mode") == "mfd":
+        disp["ds"]["mfd_enabled"] = True
     _settings.start(disp, SETTINGS_PATH)
 
     # Screen-to-screen sync: start the UDP listener so we hear peers from
@@ -8605,7 +8648,7 @@ def main():
     demo       = DemoState() if demo_mode else None
     connected  = False
     data_stale = False
-    global _link_lost_t, _multitouch_t0, _active_fingers
+    global _link_lost_t, _multitouch_t0, _active_fingers, _multitouch_max_fingers
 
     if not demo_mode:
         global _sse_client
@@ -8698,14 +8741,35 @@ def main():
             connected  = True
             data_stale = False
 
-        # 2-finger hold → enter setup screen (EXIT button returns to PFD)
+        # Multi-finger long-press gestures.  Two distinct gestures share
+        # the same `_multitouch_t0` start instant; `_multitouch_max_fingers`
+        # disambiguates which one fires:
+        #   • exactly 2 fingers held LONG_PRESS_MS (800 ms)  → enter setup
+        #   • 3 or more fingers held MFD_SWAP_HOLD_MS (2 s) → swap PFD ↔ MFD
+        # The 3-finger threshold is deliberately longer so a 2-finger setup
+        # hold can't accidentally trigger the swap when the pilot grazes
+        # the screen with a 3rd finger after 800 ms.
         if (_multitouch_t0 is not None
                 and len(_active_fingers) >= 2
-                and pygame.time.get_ticks() - _multitouch_t0 >= LONG_PRESS_MS
                 and disp["mode"] == "pfd"):
-            disp["mode"] = "setup"
-            _active_fingers.clear()
-            _multitouch_t0 = None
+            dt = pygame.time.get_ticks() - _multitouch_t0
+            if (_multitouch_max_fingers >= 3
+                    and dt >= MFD_SWAP_HOLD_MS
+                    and disp["ds"].get("mfd_enabled", False)):
+                # PFD ↔ MFD swap.  Stays in the same `mode == "pfd"`
+                # event-handler state; only `display_mode` flips.
+                disp["display_mode"] = (
+                    "mfd" if disp.get("display_mode", "pfd") == "pfd"
+                    else "pfd")
+                _settings.mark_dirty()
+                _active_fingers.clear()
+                _multitouch_t0 = None
+                _multitouch_max_fingers = 0
+            elif _multitouch_max_fingers == 2 and dt >= LONG_PRESS_MS:
+                disp["mode"] = "setup"
+                _active_fingers.clear()
+                _multitouch_t0 = None
+                _multitouch_max_fingers = 0
 
         # Render
         _t0 = time.monotonic()

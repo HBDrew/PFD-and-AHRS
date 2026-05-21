@@ -93,7 +93,8 @@ SIM_PRESETS = [
 ]
 
 # ── Touch / interaction ───────────────────────────────────────────────────────
-LONG_PRESS_MS    = 800  # ms for long-press to enter setup
+LONG_PRESS_MS    = 800  # ms for 2-finger long-press to enter setup
+MFD_SWAP_HOLD_MS = 2000 # ms for 3-finger hold to swap PFD ↔ MFD on piZ
 STALE_TIMEOUT_S  = 3    # seconds after link loss before AHRS is marked failed
 
 # ── GPS heading complementary filter ─────────────────────────────────────────
