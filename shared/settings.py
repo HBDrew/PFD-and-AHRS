@@ -48,7 +48,8 @@ _PERSIST_SCALARS = [
 
 # Keys within subtrees that we deliberately do NOT persist (volatile or secret)
 _SKIP_KEYS = {
-    "cs": {"wifi_pass", "ahrs_ok", "test_msg", "apply_msg", "wifi_ok"},
+    "cs": {"wifi_pass", "ahrs_ok", "test_msg", "apply_msg", "inet_msg",
+           "wifi_ok"},
     "ad": {"downloading", "dl_status", "dl_cancel", "parsing",
            "records", "used_mb", "dl_date", "age_days", "expired"},
     "ss": {"mag_cal"},   # calibration state is runtime-only

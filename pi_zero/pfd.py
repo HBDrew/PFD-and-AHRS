@@ -195,7 +195,7 @@ disp["cs"] = {                      # connectivity settings
     "wifi_pass": "",        "wifi_ok":  False,
     "wifi_actual": "",      # SSID actually associated now (from iwgetid -r)
     "scan_state": "",   "scan_nets": [], "scan_scroll": 0, "scan_error": "",
-    "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
+    "ahrs_ok":   False,     "test_msg": "", "apply_msg": "", "inet_msg": "",
     # AHRS link diagnostics (populated by the transport client thread)
     "ahrs_transport": "",   # "usb" | "wifi" | ""
     "ahrs_port":      "",   # /dev/ttyACM0 or the SSE URL
@@ -716,6 +716,25 @@ def _test_ahrs_connection(url):
         return True, f"Reached {host}:{port} \u2713"
     except Exception as e:
         return False, str(e)[:50]
+
+
+def _test_internet():
+    """DNS + HTTPS round-trip to confirm the WiFi we just joined actually
+    reaches the wider internet (vs. associated-but-captive-portal).
+    Uses Google's generate_204 endpoint \u2014 small, fast, no body."""
+    try:
+        t0 = time.monotonic()
+        req = urllib.request.Request(
+            "https://www.google.com/generate_204",
+            headers={"User-Agent": "pfd-internet-test/1"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            ms = int((time.monotonic() - t0) * 1000)
+            if r.status in (200, 204):
+                return True, f"Internet OK ({ms} ms) \u2713"
+            return False, f"HTTP {r.status} from probe"
+    except Exception as e:
+        return False, f"Internet: {str(e)[:46]}"
 
 
 # ── Backlight control ─────────────────────────────────────────────────────────
@@ -2821,6 +2840,12 @@ def handle_event(event, demo_mode):
                     if ok:
                         _restart_sse(disp["cs"]["ahrs_url"])
                 threading.Thread(target=_do_test, daemon=True).start()
+            elif action == "test_internet":
+                disp["cs"]["inet_msg"] = "Testing internet…"
+                def _do_inet():
+                    _ok, msg = _test_internet()
+                    disp["cs"]["inet_msg"] = msg
+                threading.Thread(target=_do_inet, daemon=True).start()
             return True
 
         # ── Screen sync taps ──────────────────────────────────────────────
@@ -5010,16 +5035,18 @@ def draw_connectivity_setup(surf, cs):
 
     # Status messages from last apply / test
     for msg, col, y_off in [
-            (cs.get("apply_msg",""), (100,180,80), _CS_BTN_Y - 20),
-            (cs.get("test_msg",""),  (100,160,220), _CS_BTN_Y - 8)]:
+            (cs.get("apply_msg",""), (100,180,80),  _CS_BTN_Y - 32),
+            (cs.get("test_msg",""),  (100,160,220), _CS_BTN_Y - 20),
+            (cs.get("inet_msg",""),  (140,200,140), _CS_BTN_Y - 8)]:
         if msg:
             _text(surf, msg, 13, col, cx=DISPLAY_W//2, y=y_off)
 
-    # Action buttons (SCAN / APPLY / TEST)
-    third = (bw - 20) // 3
-    _action_btn(surf, bx,                _CS_BTN_Y, third, _CS_BTN_H, "SCAN WIFI",  "normal")
-    _action_btn(surf, bx+third+10,       _CS_BTN_Y, third, _CS_BTN_H, "APPLY WIFI", "warn")
-    _action_btn(surf, bx+2*(third+10),   _CS_BTN_Y, third, _CS_BTN_H, "TEST AHRS",  "ok")
+    # Action buttons (SCAN / APPLY / TEST AHRS / TEST INTERNET)
+    quart = (bw - 30) // 4
+    _action_btn(surf, bx,                _CS_BTN_Y, quart, _CS_BTN_H, "SCAN WIFI",  "normal")
+    _action_btn(surf, bx+1*(quart+10),   _CS_BTN_Y, quart, _CS_BTN_H, "APPLY WIFI", "warn")
+    _action_btn(surf, bx+2*(quart+10),   _CS_BTN_Y, quart, _CS_BTN_H, "TEST AHRS",  "ok")
+    _action_btn(surf, bx+3*(quart+10),   _CS_BTN_Y, quart, _CS_BTN_H, "INTERNET",   "ok")
     surf.set_clip(_prev_clip)
 
 
@@ -5035,14 +5062,16 @@ def connectivity_setup_hit(x, y, cs):
             if vbx <= x <= bx+bw-12:
                 return f"edit:{key}"
     # Action buttons
-    third = (bw - 20) // 3
+    quart = (bw - 30) // 4
     if _CS_BTN_Y <= y <= _CS_BTN_Y+_CS_BTN_H:
-        if bx <= x <= bx+third:
+        if bx <= x <= bx+quart:
             return "scan_wifi"
-        if bx+third+10 <= x <= bx+2*third+10:
+        if bx+1*(quart+10) <= x <= bx+2*quart+10:
             return "apply_wifi"
-        if bx+2*(third+10) <= x <= bx+3*third+20:
+        if bx+2*(quart+10) <= x <= bx+3*quart+20:
             return "test_ahrs"
+        if bx+3*(quart+10) <= x <= bx+4*quart+30:
+            return "test_internet"
     return None
 
 
