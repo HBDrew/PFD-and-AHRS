@@ -223,7 +223,7 @@ AHRS_ALIGN_DURATION_S     = 20.0
 #     python3 -m mpremote connect /dev/ttyACM0 | tee ahrs_debug.log
 # then roll the AHRS unit ±30° about the bench-bank axis. Set False and
 # re-flash once the bug is identified.
-AHRS_DEBUG_PRINT          = True
+AHRS_DEBUG_PRINT          = False
 AHRS_DEBUG_PRINT_DECIM    = 10     # at 50 Hz tick rate → ~5 Hz print rate
 
 # Firmware version date code — broadcast to the display so the pilot can

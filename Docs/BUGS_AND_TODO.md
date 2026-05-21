@@ -10,51 +10,6 @@ notes with enough context to pick it up cold.
 
 ## Open
 
-### AHRS-ROLL-YAW-COUPLING  Pure bank input produces significant heading change
-Status: **OPEN — regression-style; surfaced after AHRS-GPS-AID + AHRS-MAGCAL landed**
-Target: likely `firmware/ahrs_filter.py` (Madgwick / Mahony fusion math),
-`firmware/wt901.py` (raw-IMU mounting axes), possibly `firmware/main.py`
-(quaternion → Euler conversion / centripetal correction wiring).
-Context: a pure-roll input (banking with no yaw rate) is producing a
-visible heading change on the displays.  In a real airframe a pure
-bank with zero rudder DOES cause heading change over time (turn rate
-= g·tan(bank)/V), but that's a slow tens-of-seconds drift — what the
-pilot is reporting is more like an immediate yaw-on-roll, i.e. the
-fused attitude is bleeding bank into heading directly.
-Likely suspects:
-  - **Quaternion → Euler unwrap** in the new pipeline.  If yaw is
-    extracted via the standard `atan2(2(q0·q3 + q1·q2),
-    1 − 2(q2² + q3²))` formula and the body-frame axes are swapped
-    relative to NED (mounting), bank rotation appears as yaw.
-  - **Mounting axis labels in `wt901.py`** — the raw-mode swap to
-    accel/gyro/mag may have shuffled axes relative to the body-frame
-    convention the Madgwick filter expects (x = forward, y = right,
-    z = down).  A 90° mounting rotation that goes unaccounted for
-    couples bank into yaw 1:1.
-  - **Centripetal correction sign or axis** — `V × ω_gyro` subtracted
-    on the wrong axis would bleed roll-rate gyro into the heading
-    update by influencing the mag-fusion weighting.
-  - **Magnetometer not orthogonalized in roll** — if the tumble
-    cal solves a 2D ellipse in the horizontal plane but the unit is
-    banked when reading mag X/Y, the projection onto the horizontal
-    is wrong by `cos(roll)`.  Should use the full 3D mag vector
-    rotated by current attitude before computing yaw.
-Repro: place the unit on the bench, level.  Note heading.  Roll
-slowly to ±30° without rotating about the yaw axis.  Heading should
-hold; pilot reports it doesn't.
-First investigations:
-  - Dump raw quaternion, raw accel, raw gyro, raw mag, and fused
-    yaw to the serial console for a slow pure-roll sweep.  If yaw
-    moves while gyro Z is ~0, the bug is in the fusion / extraction.
-  - Cross-check the mag-derived yaw computed via
-    `tilt_compensated_yaw(mag, roll, pitch)` against the fused yaw.
-    If the tilt-compensated mag yaw is steady but fused yaw drifts,
-    the filter is leaking bank into yaw.
-Pairs with AHRS-GPS-AID / AHRS-MAGCAL — both landed recently; this
-regression is likely a consequence of one of them.  Real-flight test
-required after fix (bench doesn't fully exercise the centripetal
-correction path).
-
 ### BOARD-REV-B  Next AHRS PCB spin — index
 Status: **OPEN — sensor selection locked, layout work next**
 Locked-in decisions (see linked entries for the full rationale):
@@ -563,6 +518,43 @@ bare rsync.
 ---
 
 ## Completed
+
+### AHRS-ROLL-YAW-COUPLING  Pure bank input produces significant heading change — **FIXED**
+Target: `firmware/ahrs_filter.py`, `firmware/config.py`, `firmware/main.py`.
+Root cause from a bench debug-trace ($AHRSDBG): the Pico-side Mahony
+filter's mag fusion was over-trusting the magnetometer during fast
+rotation.  When the chip moves through a non-uniform external field
+(bench iron, panel iron, alternator gradient) the mag vector swings in
+both direction AND magnitude (saw a 22 % magnitude spike between level
+and ±30° pitch — earth's field is constant, so that swing was purely
+positional).  The mag-fusion math is correct but cannot tell "chip
+rotated" from "chip moved through clutter", so it interpreted the
+transient as a yaw error and applied a spurious correction.  With the
+original `AHRS_KP_MAG = 0.5` this drove ~9°/s of yaw drift during a
+fast roll — visible immediately as heading-on-bank coupling.
+Fix is pure tuning, no math change:
+  - **`AHRS_KP_MAG`: 0.5 → 0.10.**  WT901's own internal Kalman runs
+    gains in this ballpark; long-term yaw drift is anchored by the
+    `AHRS_GPS_TRACK_*` slaving once in flight (GS > 20 kt @ 0.02 α).
+  - **Gyro-rate mag gate.**  Mag weight ramps linearly from full at
+    `|gyro| ≤ 10°/s` to zero at `|gyro| ≥ 30°/s`.  Standard-rate turns
+    (~3°/s) and ordinary coordinated maneuvering stay well below the
+    lo gate; aggressive bench tumbling and aerobatic-grade rolls get
+    gated out, so the filter rides the gyro through the transient and
+    re-engages mag once motion settles.  Configurable via
+    `AHRS_MAG_GYRO_GATE_LO_DPS` / `AHRS_MAG_GYRO_GATE_HI_DPS`.
+  - **Diagnostic surface.**  `ahrs_filter.last_mag_weight` exposed; the
+    temporary `$AHRSDBG` print includes the active gate value so the
+    behaviour can be verified.  `AHRS_DEBUG_PRINT` flag added (default
+    `False` — was flipped True for the bench session, restored).
+Bench verification: pre-fix a single ±55° bank produced ~40° of
+sensor-yaw drift.  Post-fix the same maneuver holds within ~3°, and
+the gate is clearly seen firing in the trace (`mag_w` drops to ~0
+when gyro Y is > 25°/s and returns to 1.0 once motion settles).  Real-
+flight verification still pending — coordinated turns at standard rate
+should keep mag at full weight, so flight behaviour should be
+indistinguishable apart from a slightly slower long-term yaw
+convergence (anchored by GPS-track slaving).
 
 ### AGL-PRECISION  AGL readout shouldn't show 1-foot precision — **FIXED**
 Target: `pi4/pfd.py` `draw_agl_readout`. Fix: round the displayed
