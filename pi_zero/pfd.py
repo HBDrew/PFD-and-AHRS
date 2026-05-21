@@ -206,6 +206,8 @@ disp["cs"] = {                      # connectivity settings
     # screen with its own AHRS can still publish bugs/baro/nav to a
     # second screen, etc.  All default off; toggled in the Screen Sync
     # subscreen.
+    "sync_enabled":   True,     # master ON/OFF — when False, all sync stops
+    "sync_transport": "auto",   # "auto" | "usb" | "net"
     "sync_publish_bugs": False, "sync_consume_bugs": False,
     "sync_publish_baro": False, "sync_consume_baro": False,
     "sync_publish_nav":  False, "sync_consume_nav":  False,
@@ -264,9 +266,14 @@ def _ssync_kinds_from_cs(direction):
 
 
 def _ssync_refresh_kinds():
-    """Push current disp["cs"] sync toggles into the live ScreenSync."""
+    """Push every screen-sync setting from disp["cs"] into the live
+    ScreenSync — enable flag, transport selector, and the 10 TX/RX
+    category toggles.  Called whenever the user changes any of them."""
     if _screen_sync is None:
         return
+    cs = disp.get("cs", {})
+    _screen_sync.set_enabled(cs.get("sync_enabled", True))
+    _screen_sync.set_transport(cs.get("sync_transport", "auto"))
     _screen_sync.set_publish_kinds(_ssync_kinds_from_cs("publish"))
     _screen_sync.set_consume_kinds(_ssync_kinds_from_cs("consume"))
 
@@ -2853,6 +2860,15 @@ def handle_event(event, demo_mode):
             action = screen_sync_setup_hit(x, y, disp["cs"])
             if action == "back":
                 disp["mode"] = "setup"
+            elif action == "toggle_enable":
+                disp["cs"]["sync_enabled"] = not disp["cs"].get(
+                    "sync_enabled", True)
+                _settings.mark_dirty()
+                _ssync_refresh_kinds()
+            elif action and action.startswith("transport:"):
+                disp["cs"]["sync_transport"] = action.split(":", 1)[1]
+                _settings.mark_dirty()
+                _ssync_refresh_kinds()
             elif action and action.startswith(("toggle_publish:",
                                                 "toggle_consume:")):
                 head, kind = action.split(":", 1)
@@ -3792,7 +3808,7 @@ _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "connectivity_setup": 6,
     "flight_profile":     8,
     "ahrs_firmware":      5,
-    "screen_sync_setup":  6,    # 1 peer-status + 5 categories
+    "screen_sync_setup":  9,    # enable + transport + peer + ifaces + 5 categories
 }
 _dispatch_replay = False   # guard against infinite recursion in the
                            # deferred-tap replay path
@@ -5094,6 +5110,20 @@ _SCS_PILL_W = 86
 _SCS_PILL_H = 36
 _SCS_PILL_GAP = 6
 
+# Layout: rows 0 (enable), 1 (transport), 2 (peer), 3 (ifaces),
+# then 4..8 for the five category TX/RX rows.
+_SCS_ROW_ENABLE    = 0
+_SCS_ROW_TRANSPORT = 1
+_SCS_ROW_PEER      = 2
+_SCS_ROW_IFACES    = 3
+_SCS_ROW_KINDS_OFS = 4
+
+_SCS_TRANSPORTS = (
+    ("auto", "AUTO"),
+    ("usb",  "USB"),
+    ("net",  "NET"),
+)
+
 
 def _scs_pill_rects(by, bh):
     """Return (tx_rect, rx_rect) for the right side of a sync row."""
@@ -5105,20 +5135,64 @@ def _scs_pill_rects(by, bh):
             (rx, py, _SCS_PILL_W, _SCS_PILL_H))
 
 
+def _scs_enable_rect(by, bh):
+    """ON/OFF pill on the right side of the master-enable row."""
+    bw = DISPLAY_W - 2 * _SS_MX
+    pw = _SCS_PILL_W
+    px = _SS_MX + bw - _SS_MX - pw
+    py = by + (bh - _SCS_PILL_H) // 2
+    return (px, py, pw, _SCS_PILL_H)
+
+
+def _scs_transport_rects(by, bh):
+    """Three segmented buttons (AUTO / USB / NET) on the transport row."""
+    bw = DISPLAY_W - 2 * _SS_MX
+    seg_w = 72
+    gap   = _SCS_PILL_GAP
+    total = 3 * seg_w + 2 * gap
+    rx_right = _SS_MX + bw - _SS_MX
+    base_x = rx_right - total
+    py = by + (bh - _SCS_PILL_H) // 2
+    rects = []
+    for i in range(3):
+        rects.append((base_x + i * (seg_w + gap), py, seg_w, _SCS_PILL_H))
+    return rects
+
+
 def draw_screen_sync_setup(surf, cs):
     _screen_header(surf, "SCREEN SYNC")
     _prev_clip = _ss_clip_to_content(surf)
 
-    # Row 0: peer status
-    bx, by, bw, bh = _setting_row(surf, 0, "PEER",
+    enabled = cs.get("sync_enabled", True)
+    transport = cs.get("sync_transport", "auto")
+
+    # Row 0: master enable
+    bx, by, bw, bh = _setting_row(surf, _SCS_ROW_ENABLE, "SYNC",
+                                   "Master enable for all screen sync")
+    er = _scs_enable_rect(by, bh)
+    _seg_btn(surf, *er, "ON" if enabled else "OFF", enabled)
+
+    # Row 1: transport selector
+    bx, by, bw, bh = _setting_row(surf, _SCS_ROW_TRANSPORT, "TRANSPORT",
+                                   "AUTO sends on every link · USB or NET "
+                                   "forces one")
+    for rect, (val, lbl) in zip(_scs_transport_rects(by, bh),
+                                 _SCS_TRANSPORTS):
+        _seg_btn(surf, *rect, lbl, transport == val)
+
+    # Row 2: peer status
+    bx, by, bw, bh = _setting_row(surf, _SCS_ROW_PEER, "PEER",
                                    "Other PFD seen on this network")
-    if _screen_sync is None:
+    if _screen_sync is None or not enabled:
         n, age = 0, None
         peer_id = ""
     else:
         n, age = _screen_sync.peer_status()
         peer_id = _screen_sync.first_peer_id()
-    if n > 0:
+    if not enabled:
+        col = (130, 130, 130)
+        lbl = "SYNC OFF"
+    elif n > 0:
         age_s = f"{age:.1f}s" if age is not None else "—"
         col   = (60, 220, 80)
         lbl   = f"PEER {peer_id}  ·  last {age_s} ago"
@@ -5129,8 +5203,34 @@ def draw_screen_sync_setup(surf, cs):
     _text(surf, lbl, 16, col, bold=True,
           x=bx + bw - 226, y=by + bh // 2 - 9)
 
-    # Rows 1-5: per-category TX/RX toggles
-    for i, (kind, label, sub) in enumerate(_SCS_KINDS, start=1):
+    # Row 3: per-interface diagnostics — shows which links are actually
+    # carrying packets so the user can see "USB rx 0 tx 142" and know
+    # the gadget link isn't delivering anything from the peer.
+    bx, by, bw, bh = _setting_row(surf, _SCS_ROW_IFACES, "LINKS",
+                                   "Per-interface packet counts")
+    stats = _screen_sync.iface_stats() if _screen_sync is not None else []
+    if not stats:
+        _text(surf, "(no interfaces enumerated)", 11, (140, 140, 140),
+              x=bx + 14, y=by + bh - 22)
+    else:
+        line_y = [by + 30, by + 44]
+        for idx, s in enumerate(stats[:2]):
+            cat = s["category"].upper()
+            mark = "●" if s["eligible"] else "○"
+            txt = (f"{mark} {s['name']:<6} [{cat:<3}]  "
+                   f"rx {s['rx']:<5} tx {s['tx']:<5}  {s['baddr']}")
+            col = (190, 210, 230) if s["eligible"] else (110, 120, 140)
+            _text(surf, txt, 11, col, bold=True,
+                  x=bx + 14, y=line_y[idx])
+        if len(stats) > 2:
+            tail = "  ".join(f"{s['name']}({s['rx']}/{s['tx']})"
+                              for s in stats[2:])
+            _text(surf, tail, 10, (140, 150, 170),
+                  x=bx + 14, y=by + bh - 14)
+
+    # Rows 4-8: per-category TX/RX toggles.
+    for i, (kind, label, sub) in enumerate(_SCS_KINDS,
+                                            start=_SCS_ROW_KINDS_OFS):
         bx2, by2, bw2, bh2 = _setting_row(surf, i, label, sub)
         tx_rect, rx_rect = _scs_pill_rects(by2, bh2)
         _seg_btn(surf, *tx_rect, "TX",
@@ -5144,7 +5244,26 @@ def draw_screen_sync_setup(surf, cs):
 def screen_sync_setup_hit(x, y, cs):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
-    for i, (kind, _, _sub) in enumerate(_SCS_KINDS, start=1):
+
+    # Master enable
+    by = _ss_row_y(_SCS_ROW_ENABLE)
+    if by <= y <= by + _SS_RH:
+        ex, ey, ew, eh = _scs_enable_rect(by, _SS_RH)
+        if ex <= x <= ex + ew and ey <= y <= ey + eh:
+            return "toggle_enable"
+
+    # Transport selector
+    by = _ss_row_y(_SCS_ROW_TRANSPORT)
+    if by <= y <= by + _SS_RH:
+        for rect, (val, _lbl) in zip(_scs_transport_rects(by, _SS_RH),
+                                      _SCS_TRANSPORTS):
+            tx, ty, tw, th = rect
+            if tx <= x <= tx + tw and ty <= y <= ty + th:
+                return f"transport:{val}"
+
+    # Per-category TX/RX pills
+    for i, (kind, _, _sub) in enumerate(_SCS_KINDS,
+                                         start=_SCS_ROW_KINDS_OFS):
         by = _ss_row_y(i)
         if not (by <= y <= by + _SS_RH):
             continue
@@ -8458,7 +8577,9 @@ def main():
     global _screen_sync
     _screen_sync = _ssync_mod.ScreenSync(
         publish_kinds=_ssync_kinds_from_cs("publish"),
-        consume_kinds=_ssync_kinds_from_cs("consume"))
+        consume_kinds=_ssync_kinds_from_cs("consume"),
+        enabled=disp["cs"].get("sync_enabled", True),
+        transport=disp["cs"].get("sync_transport", "auto"))
     _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
     _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
     _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
