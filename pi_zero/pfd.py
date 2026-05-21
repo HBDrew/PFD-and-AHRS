@@ -739,6 +739,20 @@ def _test_ahrs_connection(url):
 _BL_PWM_DUTY     = "/sys/class/pwm/pwmchip0/pwm0/duty_cycle"
 _BL_PWM_PERIOD_F = "/sys/class/pwm/pwmchip0/pwm0/period"
 
+# Slider level (1-10) → PWM duty cycle in % of period.
+#
+# The Waveshare 3.5" DPI panel's backlight LED driver doesn't conduct
+# below ~22 % duty cycle — anything dimmer is indistinguishable from off.
+# So the bottom of the slider lives at the LED's minimum conduction
+# point, and the curve is intentionally non-linear: small steps at the
+# dim end (1-4) where the user wants fine control for a night cockpit,
+# larger steps at the bright end (7-10) where each click should make
+# a noticeable difference in daylight.
+#
+# Hand-tuned, not a gamma formula, so each level can be nudged
+# independently if a future panel revision behaves differently.
+_BL_DUTY_PCT = (22, 26, 30, 35, 44, 55, 67, 78, 89, 100)
+
 _BACKLIGHT_PATHS = [
     "/sys/class/backlight/rpi_backlight/brightness",
     "/sys/class/backlight/10-0045/brightness",
@@ -789,8 +803,8 @@ def _set_backlight(level: int):
     """
     if _BL_TRANSPORT == "pwm":
         try:
-            duty = max(0, min(_BL_PWM_PERIOD_NS,
-                              int(_BL_PWM_PERIOD_NS * (level - 1) / 9.0)))
+            lv = max(1, min(10, int(level)))
+            duty = int(_BL_PWM_PERIOD_NS * _BL_DUTY_PCT[lv - 1] / 100)
             with open(_BL_PWM_DUTY, "w") as f:
                 f.write(str(duty))
         except OSError:
