@@ -3617,6 +3617,11 @@ _MAG_CAL_CARDINALS = [("N",   0.0), ("NE",  45.0),
 _MCAL_W   = 460
 _MCAL_H   = 290
 _MCAL_BTN_H = 44
+# Max acceptable spread (max − min) in degrees between the 8 cardinal
+# captures for the alignment auto-apply to fire.  Looser values would
+# auto-push a stale alignment if the pilot bumped the aircraft between
+# captures; tighter values can be hard to hit even in steady cruise.
+_ALIGN_MAX_SPREAD_DEG = 1.0
 
 
 def _apply_mag_cal(raw_hdg, deltas):
@@ -3684,6 +3689,16 @@ def _mag_cal_capture():
     my = float(disp.get("my", 0.0))
     mz = float(disp.get("mz", 0.0))
     wiz.setdefault("mag_samples", []).append((mx, my, mz))
+    # Attitude sample for the level-flight alignment auto-capture.  Use
+    # the displayed pitch/roll minus the Pico's trim so the value
+    # reflects the FILTER OUTPUT (post-remap, pre-trim) — which is the
+    # residual after any existing alignment is applied.  Averaging
+    # these across the 8 cardinals gives the additional alignment
+    # rotation needed; the spread across captures tells us whether the
+    # aircraft was actually stable enough to trust the result.
+    pitch_raw = float(disp.get("pitch", 0.0)) - float(disp.get("pitch_trim", 0.0))
+    roll_raw  = float(disp.get("roll",  0.0)) - float(disp.get("roll_trim",  0.0))
+    wiz.setdefault("att_samples", []).append((pitch_raw, roll_raw))
     wiz["step"] = step + 1
     wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
     if wiz["step"] >= len(_MAG_CAL_CARDINALS):
@@ -3714,11 +3729,44 @@ def _mag_cal_capture():
         _settings.mark_dirty()
         _push_magcal_to_pico(table)   # 36-pt deviation table
         _push_magoff_to_pico(offset)  # hard-iron offsets
+        # Level-flight alignment auto-capture.  Mean of the 8 residual
+        # pitch/roll readings gives the additional input-side rotation
+        # needed; spread tells us whether the readings were consistent
+        # enough to trust.  Skipped (with reason) if either spread
+        # exceeds _ALIGN_MAX_SPREAD_DEG — the aircraft was either not
+        # level enough at each cardinal, or the AHRS itself wasn't
+        # held still between captures.
+        att = wiz.get("att_samples", [])
+        align_msg = ""
+        if len(att) >= 4:
+            ps = [s[0] for s in att]; rs = [s[1] for s in att]
+            mean_p = sum(ps) / len(ps)
+            mean_r = sum(rs) / len(rs)
+            sp_p = max(ps) - min(ps)
+            sp_r = max(rs) - min(rs)
+            if sp_p > _ALIGN_MAX_SPREAD_DEG or sp_r > _ALIGN_MAX_SPREAD_DEG:
+                align_msg = (f"  alignment SKIPPED — spread "
+                             f"P {sp_p:.1f}° / R {sp_r:.1f}° "
+                             f"(need ≤{_ALIGN_MAX_SPREAD_DEG:.1f}°);"
+                             f" re-level aircraft or AHRS mount")
+            else:
+                cur_p = float(disp["ss"].get("pitch_align", 0.0))
+                cur_r = float(disp["ss"].get("roll_align",  0.0))
+                new_p = max(-10.0, min(10.0, round(cur_p + mean_p, 1)))
+                new_r = max(-10.0, min(10.0, round(cur_r + mean_r, 1)))
+                disp["ss"]["pitch_align"] = new_p
+                disp["ss"]["roll_align"]  = new_r
+                _push_align_to_pico(new_p, new_r)
+                align_msg = (f"  alignment applied: pitch {new_p:+.1f}°, "
+                             f"roll {new_r:+.1f}° (spread "
+                             f"P {sp_p:.1f}° / R {sp_r:.1f}°)")
         wiz["msg"] = (f"Saved locally — sending to AHRS… "
-                      f"(hard-iron: {offset[0]:+.0f},{offset[1]:+.0f},{offset[2]:+.0f})")
+                      f"(hard-iron: {offset[0]:+.0f},{offset[1]:+.0f},{offset[2]:+.0f})"
+                      + align_msg)
         wiz["step"]    = 0
         wiz["samples"] = []
         wiz["mag_samples"] = []
+        wiz["att_samples"] = []
 
 
 def _mag_cal_tumble_toggle():
@@ -3766,6 +3814,7 @@ def _mag_cal_restart():
     wiz["step"] = 0
     wiz["samples"] = []
     wiz["mag_samples"] = []
+    wiz["att_samples"] = []
     wiz["msg"] = "Restarted."
 
 
@@ -3784,6 +3833,7 @@ def _mag_cal_reset():
     wiz["step"] = 0
     wiz["samples"] = []
     wiz["mag_samples"] = []
+    wiz["att_samples"] = []
     wiz["msg"] = "Calibration cleared."
 
 
