@@ -2869,6 +2869,13 @@ def handle_event(event, demo_mode):
                 disp["cs"]["sync_transport"] = action.split(":", 1)[1]
                 _settings.mark_dirty()
                 _ssync_refresh_kinds()
+            elif action and action.startswith("set_mode:"):
+                # AHRS/GPS mutex selector: one of off / tx / rx.
+                _, kind, mode = action.split(":", 2)
+                disp["cs"][f"sync_publish_{kind}"] = (mode == "tx")
+                disp["cs"][f"sync_consume_{kind}"] = (mode == "rx")
+                _settings.mark_dirty()
+                _ssync_refresh_kinds()
             elif action and action.startswith(("toggle_publish:",
                                                 "toggle_consume:")):
                 head, kind = action.split(":", 1)
@@ -5102,9 +5109,14 @@ _SCS_KINDS = (
     ("bugs", "BUGS",     "alt / spd / hdg / vs"),
     ("baro", "BARO",     "altimeter setting"),
     ("nav",  "NAV (D2)", "waypoint ident + activation point"),
-    ("ahrs", "AHRS",     "pitch / roll / yaw — local only when off"),
-    ("gps",  "GPS",      "lat / lon / alt / speed / track"),
+    ("ahrs", "AHRS",     "pitch / roll / yaw — pick one direction"),
+    ("gps",  "GPS",      "lat / lon / alt / speed / track — pick one"),
 )
+# Stream sensors: exactly one of OFF/TX/RX.  See pi4/pfd.py for the
+# rationale — both-on creates a publish→receive→republish echo loop
+# on streaming sensor data.  Bugs/baro/nav don't have this problem
+# (they only publish on user edits, gated by _ssync_suppress_publish).
+_SCS_MUTEX_KINDS = {"ahrs", "gps"}
 
 _SCS_PILL_W = 86
 _SCS_PILL_H = 36
@@ -5133,6 +5145,34 @@ def _scs_pill_rects(by, bh):
     py = by + (bh - _SCS_PILL_H) // 2
     return ((tx, py, _SCS_PILL_W, _SCS_PILL_H),
             (rx, py, _SCS_PILL_W, _SCS_PILL_H))
+
+
+def _scs_mutex_rects(by, bh):
+    """Return (off_rect, tx_rect, rx_rect) for the three-pill OFF/TX/RX
+    selector used on AHRS and GPS rows (mutually-exclusive direction)."""
+    bw  = DISPLAY_W - 2 * _SS_MX
+    pw  = _SCS_PILL_W
+    gap = _SCS_PILL_GAP
+    rx_x  = _SS_MX + bw - _SS_MX - pw
+    tx_x  = rx_x  - gap - pw
+    off_x = tx_x  - gap - pw
+    py = by + (bh - _SCS_PILL_H) // 2
+    return ((off_x, py, pw, _SCS_PILL_H),
+            (tx_x,  py, pw, _SCS_PILL_H),
+            (rx_x,  py, pw, _SCS_PILL_H))
+
+
+def _scs_mutex_mode(cs, kind):
+    """Reduce the two stored toggles to a single 'off' | 'tx' | 'rx'
+    mode.  If both were on (legacy state) we treat as TX so the user's
+    publishing intent wins."""
+    pub = cs.get(f"sync_publish_{kind}", False)
+    con = cs.get(f"sync_consume_{kind}", False)
+    if pub:
+        return "tx"
+    if con:
+        return "rx"
+    return "off"
 
 
 def _scs_enable_rect(by, bh):
@@ -5228,15 +5268,25 @@ def draw_screen_sync_setup(surf, cs):
             _text(surf, tail, 10, (140, 150, 170),
                   x=bx + 14, y=by + bh - 14)
 
-    # Rows 4-8: per-category TX/RX toggles.
+    # Rows 4-8: per-category direction controls.  AHRS and GPS use a
+    # mutex three-pill (OFF/TX/RX) because both-on would create a
+    # publish→receive→republish echo loop on the streaming sensor
+    # data.  Bugs/baro/nav stay as independent TX + RX pills.
     for i, (kind, label, sub) in enumerate(_SCS_KINDS,
                                             start=_SCS_ROW_KINDS_OFS):
         bx2, by2, bw2, bh2 = _setting_row(surf, i, label, sub)
-        tx_rect, rx_rect = _scs_pill_rects(by2, bh2)
-        _seg_btn(surf, *tx_rect, "TX",
-                 cs.get(f"sync_publish_{kind}", False))
-        _seg_btn(surf, *rx_rect, "RX",
-                 cs.get(f"sync_consume_{kind}", False))
+        if kind in _SCS_MUTEX_KINDS:
+            mode = _scs_mutex_mode(cs, kind)
+            off_r, tx_r, rx_r = _scs_mutex_rects(by2, bh2)
+            _seg_btn(surf, *off_r, "OFF", mode == "off")
+            _seg_btn(surf, *tx_r,  "TX",  mode == "tx")
+            _seg_btn(surf, *rx_r,  "RX",  mode == "rx")
+        else:
+            tx_rect, rx_rect = _scs_pill_rects(by2, bh2)
+            _seg_btn(surf, *tx_rect, "TX",
+                     cs.get(f"sync_publish_{kind}", False))
+            _seg_btn(surf, *rx_rect, "RX",
+                     cs.get(f"sync_consume_{kind}", False))
 
     surf.set_clip(_prev_clip)
 
@@ -5261,11 +5311,21 @@ def screen_sync_setup_hit(x, y, cs):
             if tx <= x <= tx + tw and ty <= y <= ty + th:
                 return f"transport:{val}"
 
-    # Per-category TX/RX pills
+    # Per-category direction controls.  Mutex kinds (AHRS, GPS) emit
+    # set_mode:<kind>:<off|tx|rx>; others emit toggle_publish /
+    # toggle_consume as before.
     for i, (kind, _, _sub) in enumerate(_SCS_KINDS,
                                          start=_SCS_ROW_KINDS_OFS):
         by = _ss_row_y(i)
         if not (by <= y <= by + _SS_RH):
+            continue
+        if kind in _SCS_MUTEX_KINDS:
+            off_r, tx_r, rx_r = _scs_mutex_rects(by, _SS_RH)
+            for rect, m in ((off_r, "off"), (tx_r, "tx"), (rx_r, "rx")):
+                rx_, ry_, rw_, rh_ = rect
+                if (rx_ <= x <= rx_ + rw_
+                        and ry_ <= y <= ry_ + rh_):
+                    return f"set_mode:{kind}:{m}"
             continue
         tx_rect, rx_rect = _scs_pill_rects(by, _SS_RH)
         tx_x, tx_y, tx_w, tx_h = tx_rect
