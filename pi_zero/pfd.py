@@ -7179,18 +7179,29 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
 
 
 # ── Boot splash ───────────────────────────────────────────────────────────────
-_BOOT_SPLASH_PATH = os.path.join(os.path.dirname(__file__), "assets",
-                                 "boot_splash.jpg")
+_BOOT_SPLASH_DIR = os.path.join(os.path.dirname(__file__), "assets")
+
+
+def _find_boot_splash():
+    """First boot_splash.* in pi_zero/assets/ (jpg, png, bmp, …).
+    Lets the user drop in whatever format they have without renaming."""
+    if not os.path.isdir(_BOOT_SPLASH_DIR):
+        return None
+    for name in sorted(os.listdir(_BOOT_SPLASH_DIR)):
+        if name.startswith("boot_splash."):
+            return os.path.join(_BOOT_SPLASH_DIR, name)
+    return None
 
 
 def _show_boot_splash(surf, flip_fn, hold_s=2.5):
     """Cover the screen with the boot splash image while airports/obstacles
     finish loading in the background. No-op if the asset is missing —
     the PFD just falls through to its first real frame as before."""
-    if not os.path.exists(_BOOT_SPLASH_PATH):
+    path = _find_boot_splash()
+    if not path:
         return
     try:
-        img = pygame.image.load(_BOOT_SPLASH_PATH)
+        img = pygame.image.load(path)
     except pygame.error as e:
         print(f"[PFD] boot splash load failed: {e}", file=sys.stderr)
         return
