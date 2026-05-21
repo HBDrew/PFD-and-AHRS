@@ -49,6 +49,18 @@ regen_pi4() {
     echo "================================================================"
     echo " Regenerating pi4 previews (with GL SVT terrain)"
     echo "================================================================"
+    # Refuse to run on a piZ — the offline GL renderer needs the V3D
+    # driver, which doesn't exist on the Pi Zero 2W.  Failing here with
+    # a clear message beats letting capture_pi4_previews.sh die ten
+    # lines into the EGL setup.
+    local model
+    model="$(grep -i '^Model' /proc/cpuinfo 2>/dev/null | head -1 | sed 's/^Model.*: //')"
+    if echo "$model" | grep -qi 'Zero'; then
+        echo "ERROR: pi4 preview regen needs a Pi 4 (V3D / EGL).  This host is: $model"
+        echo "       Run this on the pi4 instead.  The piZ-side previews are"
+        echo "       independent — regen them with: ./tools/regen_previews.sh piz"
+        return 1
+    fi
     if [ ! -f "$REPO_DIR/tools/capture_pi4_previews.sh" ]; then
         echo "ERROR: tools/capture_pi4_previews.sh missing — can't regenerate pi4 previews."
         return 1
