@@ -411,16 +411,19 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
 
 
 def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
-                    project_fn, color):
+                    cx, cy, px_per_nm, sin_r, cos_r, color):
     """Draw a Natural Earth polyline cache (admin_0 or admin_1) inside
     the inset bbox.
 
-    Uses each polyline's stored bbox to skip anything fully outside a
-    generous lat/lon window around the aircraft (1.6× the nominal range
-    on each axis — covers track-up rotation + the inset's longer axis).
-    Polylines that survive culling are projected through the caller's
-    project_fn (same rotation/translation used by every other vector
-    layer) and stroked as a single pygame.draw.lines call per ring.
+    Two-stage filtering:
+      (1) vectorised bbox-vs-window AABB cull on every polyline's stored
+          bbox, rejects ~99 % of the world's polylines in microseconds.
+      (2) full numpy projection of each surviving ring's (lon, lat)
+          vertex array to screen (x, y) in one vector pass per ring —
+          no Python per-vertex function call overhead.  Replaces the
+          original `[project_fn(la, lo) for lo, la in ring]` list
+          comprehension that dominated frame cost at wide zooms where
+          admin_1 polylines have hundreds of vertices each.
     """
     if lines is None or not HAS_NUMPY:
         return
@@ -447,23 +450,40 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
     if visible_idx.size == 0:
         return
 
+    # Per-frame projection constants — fold the lat/lon → nm conversion
+    # and the nm → pixel scaling together so the per-ring numpy pass is
+    # just a few vector ops on N points.  Rotation is always applied;
+    # when rot_deg == 0 the (sin_r, cos_r) = (0, 1) values reduce it to
+    # the identity, no branch needed.
+    lon_scale = _NM_PER_DEG_LAT * cos_lat * px_per_nm
+    lat_scale = _NM_PER_DEG_LAT * px_per_nm
+    sx, sy, sw, sh = surf.get_clip()
+    sx_max = sx + sw
+    sy_max = sy + sh
+
     for idx in visible_idx:
         s = int(seg_starts[idx])
         e = int(seg_starts[idx + 1])
         if e - s < 2:
             continue
         ring = points[s:e]
-        pts = [project_fn(float(la), float(lo)) for lo, la in ring]
-        # Quick screen-bbox reject: if every projected point is offscreen
-        # on the same side, skip the draw call entirely.
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
-        sx, sy, sw, sh = surf.get_clip()
-        if max(xs) < sx or min(xs) > sx + sw or \
-           max(ys) < sy or min(ys) > sy + sh:
+        # Vectorised projection: lat/lon (N×2 float32) → screen x,y in a
+        # single numpy pass.  Same math as the closure `_project()` used
+        # by every other vector layer, just whole-array.
+        e_px = (ring[:, 0] - lon) * lon_scale
+        n_px = (ring[:, 1] - lat) * lat_scale
+        xs = cx + e_px * cos_r - n_px * sin_r
+        ys = cy - (e_px * sin_r + n_px * cos_r)
+        # Screen-bbox reject — also vectorised.
+        if xs.max() < sx or xs.min() > sx_max:
             continue
-        pygame.draw.lines(surf, color, False,
-                          [(int(px), int(py)) for px, py in pts], 1)
+        if ys.max() < sy or ys.min() > sy_max:
+            continue
+        # pygame.draw.lines wants a sequence of 2-element sequences;
+        # column_stack + tolist gives a Python list of [x, y] pairs
+        # without a per-vertex Python loop.
+        pts = np.column_stack([xs, ys]).astype(np.int32).tolist()
+        pygame.draw.lines(surf, color, False, pts, 1)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -663,12 +683,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             and settings.get("map_show_state_lines", True)
             and range_nm >= 20):
         _draw_polylines(surf, state_lines, range_nm, lat, lon, cos_lat,
-                        _project, _STATE_LINE)
+                        cx, cy, px_per_nm, sin_r, cos_r, _STATE_LINE)
     if (country_lines is not None
             and settings.get("map_show_country_lines", True)
             and range_nm >= 20):
         _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
-                        _project, _COUNTRY_LINE)
+                        cx, cy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
 
     # ── Runways ──────────────────────────────────────────────────────────────
     # Runway rectangles only carry useful detail at terminal-area zooms —
