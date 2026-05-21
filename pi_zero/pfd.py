@@ -4905,7 +4905,7 @@ def draw_wifi_scan(surf, cs):
 
 def wifi_scan_hit(x, y, cs):
     ws_btn_y = DISPLAY_H - _WS_BTN_H - 8
-    if _back_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
     bw = DISPLAY_W - 2*_SS_MX
     if ws_btn_y <= y <= ws_btn_y + _WS_BTN_H and _SS_MX <= x <= _SS_MX + bw:
