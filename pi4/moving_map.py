@@ -732,10 +732,20 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         # ground speed; below 3 kt (taxi threshold) the ETE is unstable
         # so we render dashes rather than a noise-driven number.
         if direct_to is not None and direct_to.get("ident"):
-            n_nm = (direct_to["lat"] - lat) * _NM_PER_DEG_LAT
-            e_nm = ((direct_to["lon"] - lon)
-                    * _NM_PER_DEG_LAT * cos_lat)
-            d_nm = math.hypot(n_nm, e_nm)
+            # Great-circle distance to the waypoint.  The earlier
+            # flat-earth approximation (Pythagorean on lat/lon × NM
+            # per deg) overestimates by ~4 % at 700 nm leg lengths
+            # — visible as a ~15 min ETE delta against pi_zero's GC
+            # calc on the same flight plan.
+            phi1 = math.radians(lat)
+            phi2 = math.radians(direct_to["lat"])
+            dphi = phi2 - phi1
+            dlam = math.radians(direct_to["lon"] - lon)
+            _a = (math.sin(dphi * 0.5) ** 2
+                  + math.cos(phi1) * math.cos(phi2)
+                  * math.sin(dlam * 0.5) ** 2)
+            d_nm = 3440.065 * 2.0 * math.atan2(
+                math.sqrt(_a), math.sqrt(1.0 - _a))
             if gs_kt >= 3.0 and d_nm > 0.0:
                 hours = d_nm / gs_kt
                 if hours < 1.0:

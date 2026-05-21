@@ -5998,6 +5998,10 @@ def _sl_load_cache():
 
 
 _state_lines = None  # populated on startup by _sl_load_cache(); rebound after
+                     # WATER MASKS download completes, or lazy-reloaded on
+                     # MFD render if the .npz appears after startup (e.g.
+                     # rsync from a pi4 already holding the cache).
+_state_lines_last_try = 0.0  # monotonic clock of last lazy-load attempt
                      # the water/state worker finishes building the cache.
 
 
@@ -7403,6 +7407,16 @@ def draw_mfd(surf, connected=True, data_stale=False):
     """Full-screen moving map.  Reuses pi_zero's already-loaded airport +
     obstacle + terrain caches; pulls the active direct-to from disp["nav"]
     so the magenta course line / waypoint diamond paints when D2 is set."""
+    # Lazy-retry state-lines cache load: if the .npz didn't exist at
+    # startup but lands later (rsync from pi4, or background build), pick
+    # it up without requiring a restart or mode flip.  Capped at one
+    # disk-stat every 5 s when the cache is still None.
+    global _state_lines, _state_lines_last_try
+    if _state_lines is None:
+        _now = time.monotonic()
+        if _now - _state_lines_last_try > 5.0:
+            _state_lines_last_try = _now
+            _state_lines = _sl_load_cache()
     surf.fill((0, 0, 0))
     rect = (0, 0, DISPLAY_W, DISPLAY_H)
     ac_lat = disp.get("lat", DEMO_LAT)
@@ -7633,16 +7647,34 @@ def _mfd_chrome_hit(x, y):
 
 def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
     """Hit-test airports against a screen tap.  Uses the same projection
-    moving_map.render() uses.  Returns True if an airport was hit (and
-    the nav_confirm modal was opened)."""
+    moving_map.render() uses, and matches its drawing gates so taps
+    only consider airports that are actually visible on screen:
+    no airports drawn past 40 nm (no taps); type-filtered by zoom band
+    above 5 nm (same filter the draw loop uses).  Returns True if an
+    airport was hit (and the nav_confirm modal was opened)."""
     if _airports is None:
         return False
+    range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+    # Past 40 nm moving_map skips airports entirely — accept no tap
+    # there so a finger landing on empty terrain doesn't D2 to an
+    # invisible airport (most often hit while reaching for the orient
+    # toggle at top-right of the MFD).
+    if range_nm > 40 or range_nm <= 0:
+        return False
+    # Zoom-band type filter mirrors moving_map's drawing logic.
+    if range_nm > 20:
+        allowed_band = {"L"}
+    elif range_nm > 10:
+        allowed_band = {"M", "L"}
+    elif range_nm > 5:
+        allowed_band = {"S", "M", "L"}
+    else:
+        allowed_band = None    # all visible types
     rect = (0, 0, DISPLAY_W, DISPLAY_H)
     cen_lat, cen_lon = _mfd_effective_center()
     hdg = disp.get("yaw", 0.0)
     track = disp.get("track", hdg)
     orient = disp["ds"].get("map_orient", "trk")
-    range_nm = int(disp["ds"].get("map_zoom_nm", 10))
     project, _ = _mfd_map.make_projector(
         rect, cen_lat, cen_lon, orient, range_nm, hdg, track)
     apt_types = {
@@ -7660,8 +7692,16 @@ def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
     best_d2 = (tap_px + 1) ** 2
     best = None
     if hasattr(nearby, "dtype"):
+        # Same MAX_AIRPORTS_DRAWN cap as the renderer — taps can't pick
+        # an airport that was decimated out of the visible list.
+        max_considered = 40
+        considered = 0
         for i in range(len(nearby)):
+            if considered >= max_considered:
+                break
             atype = str(nearby["atype"][i])
+            if allowed_band is not None and atype not in allowed_band:
+                continue
             if not apt_types.get(atype, False):
                 continue
             sx, sy = project(float(nearby["lat"][i]),
@@ -7670,15 +7710,23 @@ def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
             if d2 < best_d2:
                 best_d2 = d2
                 best = str(nearby["ident"][i])
+            considered += 1
     else:
+        considered = 0
         for r in nearby:
-            if not apt_types.get(getattr(r, "atype", ""), False):
+            if considered >= 40:
+                break
+            atype = getattr(r, "atype", "")
+            if allowed_band is not None and atype not in allowed_band:
+                continue
+            if not apt_types.get(atype, False):
                 continue
             sx, sy = project(float(r.lat), float(r.lon))
             d2 = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
             if d2 < best_d2:
                 best_d2 = d2
                 best = r.ident
+            considered += 1
     if best is None:
         return False
     _nav_open_confirm(best, "pfd")
