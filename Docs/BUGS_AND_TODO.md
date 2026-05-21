@@ -10,6 +10,51 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### AHRS-ROLL-YAW-COUPLING  Pure bank input produces significant heading change
+Status: **OPEN — regression-style; surfaced after AHRS-GPS-AID + AHRS-MAGCAL landed**
+Target: likely `firmware/ahrs_filter.py` (Madgwick / Mahony fusion math),
+`firmware/wt901.py` (raw-IMU mounting axes), possibly `firmware/main.py`
+(quaternion → Euler conversion / centripetal correction wiring).
+Context: a pure-roll input (banking with no yaw rate) is producing a
+visible heading change on the displays.  In a real airframe a pure
+bank with zero rudder DOES cause heading change over time (turn rate
+= g·tan(bank)/V), but that's a slow tens-of-seconds drift — what the
+pilot is reporting is more like an immediate yaw-on-roll, i.e. the
+fused attitude is bleeding bank into heading directly.
+Likely suspects:
+  - **Quaternion → Euler unwrap** in the new pipeline.  If yaw is
+    extracted via the standard `atan2(2(q0·q3 + q1·q2),
+    1 − 2(q2² + q3²))` formula and the body-frame axes are swapped
+    relative to NED (mounting), bank rotation appears as yaw.
+  - **Mounting axis labels in `wt901.py`** — the raw-mode swap to
+    accel/gyro/mag may have shuffled axes relative to the body-frame
+    convention the Madgwick filter expects (x = forward, y = right,
+    z = down).  A 90° mounting rotation that goes unaccounted for
+    couples bank into yaw 1:1.
+  - **Centripetal correction sign or axis** — `V × ω_gyro` subtracted
+    on the wrong axis would bleed roll-rate gyro into the heading
+    update by influencing the mag-fusion weighting.
+  - **Magnetometer not orthogonalized in roll** — if the tumble
+    cal solves a 2D ellipse in the horizontal plane but the unit is
+    banked when reading mag X/Y, the projection onto the horizontal
+    is wrong by `cos(roll)`.  Should use the full 3D mag vector
+    rotated by current attitude before computing yaw.
+Repro: place the unit on the bench, level.  Note heading.  Roll
+slowly to ±30° without rotating about the yaw axis.  Heading should
+hold; pilot reports it doesn't.
+First investigations:
+  - Dump raw quaternion, raw accel, raw gyro, raw mag, and fused
+    yaw to the serial console for a slow pure-roll sweep.  If yaw
+    moves while gyro Z is ~0, the bug is in the fusion / extraction.
+  - Cross-check the mag-derived yaw computed via
+    `tilt_compensated_yaw(mag, roll, pitch)` against the fused yaw.
+    If the tilt-compensated mag yaw is steady but fused yaw drifts,
+    the filter is leaking bank into yaw.
+Pairs with AHRS-GPS-AID / AHRS-MAGCAL — both landed recently; this
+regression is likely a consequence of one of them.  Real-flight test
+required after fix (bench doesn't fully exercise the centripetal
+correction path).
+
 ### BOARD-REV-B  Next AHRS PCB spin — index
 Status: **OPEN — sensor selection locked, layout work next**
 Locked-in decisions (see linked entries for the full rationale):
@@ -495,16 +540,6 @@ and README don't yet cover:
   - Heading-source AUTO + 3 kt threshold
 README needs the deploy story from DEPLOY-RSYNC once that's nailed.
 
-### STATE-LINES-COUNTRIES  Add admin_0 country lines layer
-Status: **OPEN**
-Today we only fetch + render `ne_10m_admin_1_states_provinces`.  Inside
-the US, admin_1 polygons happen to include the international borders
-along the perimeter, so the Canada/Mexico borders draw for free.  For
-international flying (Japan, EU, etc.) we want admin_0 explicitly.
-~30 min of work: clone the admin_1 fetch / NPZ-build / render path
-in pi_zero/pfd.py + pi_zero/moving_map.py to a parallel admin_0
-implementation.  Toggleable on the Display setup MAP LAYERS row.
-
 ### PI4-ETE-LATENCY  pi4 inset ETE takes a beat to populate
 Status: **OPEN — investigate**
 PiZ data-strip ETE updates instantly when a D2 is activated; pi4's
@@ -604,6 +639,22 @@ already understands. Ordering validation (Vs0 < Vs1 < Vfe ≤ Vno < Vne)
 surfaces an inline error instead of silently storing bad values.
 Header reads "V-SPEEDS (knots)" matching pi4 so the unit is explicit
 even when the speed tape is on mph.
+
+### STATE-LINES-COUNTRIES  Add admin_0 country lines layer — **FIXED**
+Target: `pi_zero/pfd.py`, `pi4/pfd.py`, `pi_zero/moving_map.py`,
+`pi4/moving_map.py`. Fix: refactored the three `_sl_*` Natural Earth
+helpers into generic `_ne_ensure_shapefile`, `_ne_build_cache`,
+`_ne_load_cache` (each takes the shapefile / npz name as arg), then
+added parallel `_country_lines` cache + `_CL_NE_NAME =
+"ne_10m_admin_0_countries"` constants on top. Download thread fetches
+admin_0 after admin_1; pi_zero gets the same 5 s lazy-load throttle so
+an rsync'd npz lands without a restart; pi4 loads both at startup.
+moving_map's `_draw_state_lines` generalised to `_draw_polylines(...,
+color)` and the render() public API gains a `country_lines=` kwarg.
+New "CTRY" pill on the MAP LAYERS row (default ON), new `(200, 180,
+140)` warm-tan colour distinct from the state-line slate-blue so the
+two layers stack visibly where admin_1 perimeters happen to match a
+country border. Same `range_nm >= 20` gating as state lines.
 
 ### MAP-INSET  2D moving-map inset in the lower-left corner — **FIXED**
 Target: new `pi4/moving_map.py`; render hook in `pi4/pfd.py`; new

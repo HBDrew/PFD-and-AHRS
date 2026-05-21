@@ -91,8 +91,13 @@ _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
 _D2_MAGENTA  = (220, 0, 220)
 _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
-_STATE_LINE  = (110, 130, 160)      # muted slate-blue: visible over tint
-                                    # without competing with airports / D2
+_STATE_LINE  = (110, 130, 160)      # muted slate-blue: admin_1 boundaries
+                                    # — visible over tint without competing
+                                    # with airports / D2
+_COUNTRY_LINE = (200, 180, 140)     # warm tan: admin_0 boundaries — distinct
+                                    # from state lines so the two layers can
+                                    # overlap (e.g. US states + Canada border)
+                                    # and still read as separate features
 
 
 # ── Hypsometric terrain tint cache ────────────────────────────────────────────
@@ -405,23 +410,24 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     return None, None
 
 
-def _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
-                      project_fn):
-    """Draw admin_1 boundary polylines visible inside the inset bbox.
+def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
+                    project_fn, color):
+    """Draw a Natural Earth polyline cache (admin_0 or admin_1) inside
+    the inset bbox.
 
     Uses each polyline's stored bbox to skip anything fully outside a
     generous lat/lon window around the aircraft (1.6× the nominal range
     on each axis — covers track-up rotation + the inset's longer axis).
     Polylines that survive culling are projected through the caller's
     project_fn (same rotation/translation used by every other vector
-    layer) and stroked as a single pygame.draw.lines call.
+    layer) and stroked as a single pygame.draw.lines call per ring.
     """
-    if state_lines is None or not HAS_NUMPY:
+    if lines is None or not HAS_NUMPY:
         return
 
-    seg_starts = state_lines["seg_starts"]
-    seg_bboxes = state_lines["seg_bboxes"]   # (M, 4) lon_min, lat_min, lon_max, lat_max
-    points     = state_lines["points"]       # (N, 2) lon, lat
+    seg_starts = lines["seg_starts"]
+    seg_bboxes = lines["seg_bboxes"]   # (M, 4) lon_min, lat_min, lon_max, lat_max
+    points     = lines["points"]       # (N, 2) lon, lat
     if len(seg_starts) <= 1:
         return
 
@@ -456,7 +462,7 @@ def _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
         if max(xs) < sx or min(xs) > sx + sw or \
            max(ys) < sy or min(ys) > sy + sh:
             continue
-        pygame.draw.lines(surf, _STATE_LINE, False,
+        pygame.draw.lines(surf, color, False,
                           [(int(px), int(py)) for px, py in pts], 1)
 
 
@@ -520,7 +526,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
-           range_label=None, state_lines=None,
+           range_label=None, state_lines=None, country_lines=None,
            own_lat=None, own_lon=None, draw_corner_labels=True):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
@@ -646,16 +652,23 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         _veil_cache[(w, h)] = veil
     surf.blit(veil, (x, y))
 
-    # ── State / province lines ──────────────────────────────────────────────
+    # ── State / province lines + country lines ─────────────────────────────
     # Only useful once the inset is showing whole-region context; at close
     # ranges they're indistinguishable noise and never within the visible
     # bbox.  Bbox-culled in lat/lon space so the per-frame cost stays
-    # microseconds at any range.
+    # microseconds at any range.  Country lines paint after state lines so
+    # international borders stack visibly on top of admin_1 polygons that
+    # happen to share the perimeter (e.g. US/Canada).
     if (state_lines is not None
             and settings.get("map_show_state_lines", True)
             and range_nm >= 20):
-        _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
-                          _project)
+        _draw_polylines(surf, state_lines, range_nm, lat, lon, cos_lat,
+                        _project, _STATE_LINE)
+    if (country_lines is not None
+            and settings.get("map_show_country_lines", True)
+            and range_nm >= 20):
+        _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
+                        _project, _COUNTRY_LINE)
 
     # ── Runways ──────────────────────────────────────────────────────────────
     # Runway rectangles only carry useful detail at terminal-area zooms —
