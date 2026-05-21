@@ -43,6 +43,7 @@ from config import (
     AHRS_GPS_TRACK_ENABLE, AHRS_GPS_TRACK_MIN_KT,
     AHRS_GPS_TRACK_INTERVAL_S, AHRS_GPS_TRACK_ALPHA,
     AHRS_FWD_IN_SENSOR, AHRS_ALIGN_DURATION_S, FW_VERSION,
+    AHRS_DEBUG_PRINT, AHRS_DEBUG_PRINT_DECIM,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
 from wt901        import WT901
@@ -715,6 +716,40 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                 state['ay']      = ahrs.ay * WT901_AY_SIGN
                 state['att_src'] = 'mahony'
                 last_ahrs_ms     = utime.ticks_ms()
+
+                # TEMPORARY — debug-print for the roll→yaw coupling bug.
+                # Capture: stop pfd.service on the Pi, run
+                #   python3 -m mpremote connect /dev/ttyACM0 | tee ahrs_debug.log
+                # roll the unit slowly ±30° about the bench-bank axis, then
+                # grep ahrs_debug.log for '$AHRSDBG'.  Set AHRS_DEBUG_PRINT
+                # = False in config.py and re-flash to silence.
+                if (AHRS_DEBUG_PRINT
+                        and tick % AHRS_DEBUG_PRINT_DECIM == 0):
+                    fq = ahrs_filter
+                    try:
+                        print('$AHRSDBG,'
+                              'q={:.4f},{:.4f},{:.4f},{:.4f},'
+                              'sf_rpy={:.2f},{:.2f},{:.2f},'
+                              'bdy_rpy={:.2f},{:.2f},{:.2f},'
+                              'acc={:.3f},{:.3f},{:.3f},'
+                              'gyr={:.2f},{:.2f},{:.2f},'
+                              'mag={:.0f},{:.0f},{:.0f},'
+                              'mag_err={:.4f},{:.4f},{:.4f},'
+                              'acc_w={:.2f},a_c_g={:.3f}'
+                              .format(fq.q0, fq.q1, fq.q2, fq.q3,
+                                      f_roll, f_pitch, f_yaw,
+                                      state['roll'], state['pitch'],
+                                      state['yaw'],
+                                      ahrs.ax, ahrs.ay, ahrs.az,
+                                      ahrs.wx, ahrs.wy, ahrs.wz,
+                                      ahrs.mx, ahrs.my, ahrs.mz,
+                                      fq.last_mag_err_x,
+                                      fq.last_mag_err_y,
+                                      fq.last_mag_err_z,
+                                      fq.last_accel_weight,
+                                      state.get('_a_centri_g', 0.0)))
+                    except Exception:
+                        pass
 
                 # GPS-track yaw slaving — low-rate nudge so short-term gyro
                 # dynamics still dominate. Target is in the filter's sensor

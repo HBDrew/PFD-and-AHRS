@@ -63,6 +63,12 @@ class Mahony:
         # of the post-correction accel after centripetal subtraction
         self.last_accel_weight = 0.0
         self.last_mag_used     = False
+        # Diagnostic: last mag cross-product error vector (body frame).
+        # ez_m is the smoking gun for roll-into-yaw coupling — should stay
+        # near zero during a pure-roll bench input if mag fusion is honest.
+        self.last_mag_err_x    = 0.0
+        self.last_mag_err_y    = 0.0
+        self.last_mag_err_z    = 0.0
 
     # ----------------------------------------------------------------------
     def update(self, gx, gy, gz, ax, ay, az,
@@ -140,6 +146,9 @@ class Mahony:
                 ey_m = (mz_n*wx - mx_n*wz)
                 ez_m = (mx_n*wy - my_n*wx)
         self.last_mag_used = (m_w > 0.0)
+        self.last_mag_err_x = ex_m
+        self.last_mag_err_y = ey_m
+        self.last_mag_err_z = ez_m
 
         # ── Weighted error and gyro-bias integration ──
         ex = self.kp_acc * a_w * ex_a + self.kp_mag * m_w * ex_m

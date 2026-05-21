@@ -197,6 +197,20 @@ AHRS_GPS_TRACK_ALPHA      = 0.02   # fraction of yaw error closed per call
 # bench/flight startup — filter is visibly still settling at 10 s.
 AHRS_ALIGN_DURATION_S     = 20.0
 
+# ── AHRS debug-print (TEMPORARY — investigating roll→yaw coupling) ──────────
+# When True, the firmware emits a $AHRSDBG,... line over USB serial every
+# AHRS_DEBUG_PRINT_DECIM sensor ticks. Each line carries the filter quaternion,
+# sensor-frame Euler, body-frame Euler (post-remap), raw accel/gyro/mag, the
+# mag cross-product error vector (ez_m is the smoking gun for roll-into-yaw
+# coupling), the active accel weight, and the centripetal correction
+# magnitude. Capture from a host with:
+#     sudo systemctl stop pfd.service
+#     python3 -m mpremote connect /dev/ttyACM0 | tee ahrs_debug.log
+# then roll the AHRS unit ±30° about the bench-bank axis. Set False and
+# re-flash once the bug is identified.
+AHRS_DEBUG_PRINT          = True
+AHRS_DEBUG_PRINT_DECIM    = 10     # at 50 Hz tick rate → ~5 Hz print rate
+
 # Firmware version date code — broadcast to the display so the pilot can
 # verify which build is running on the AHRS. Bump manually on each
 # meaningful release. YYYY-MM-DD format keeps it sortable and obvious.
