@@ -515,6 +515,44 @@ DEPLOY-RSYNC story; included here as a standalone item in case it
 gets implemented as an in-app "Sync from pi4" button instead of a
 bare rsync.
 
+### MAP-POLYLINE-WIDE-ZOOM  Inset/MFD still not snappy at 160 nm
+Status: **OPEN — acceptable for now, revisit if it bites**
+After 2bbb7fe (vectorised polyline projection in `_draw_polylines`,
+both `pi4/moving_map.py` and `pi_zero/moving_map.py`), zoom levels
+20–80 nm are snappy and 160 nm is "better, not amazing".  Bench
+note: at 160 nm the AI was previously laggy across all three axes
+because the polyline layer was dropping the render loop below 30 FPS;
+that's gone now, but 160 nm still has visible cost from the surviving
+admin_1 and admin_0 vertex counts inside the cull window.
+
+Next lever (one-line change, no quality loss at extreme zoom because
+inset is ~1.5 px/nm there → vertices closer than ~3 nm are sub-pixel):
+add stride decimation inside the `for idx in visible_idx:` loop,
+between the `ring = points[s:e]` line and the vectorised projection:
+  ```python
+  stride = 1 if range_nm < 80 else (2 if range_nm < 160 else 4)
+  if stride > 1:
+      ring = ring[::stride]
+  ```
+Keep the threshold conservative — at 80 nm the inset is still ~3 px/nm
+so stride=1 is right there.  Only kick in at ≥80 nm.
+
+If even that isn't enough, the *next* lever would be moving the
+per-polyline draw call into a single `pygame.draw.lines` flush over
+all visible rings (with `None`-terminated breaks) — but pygame doesn't
+expose that primitive, so it'd mean dropping to `pygame.gfxdraw` or
+keeping the per-ring call.  Don't go there until stride decimation
+has been tried and proven insufficient.
+
+LOD caches were considered and explicitly rejected — see commit
+message on 2bbb7fe and the design discussion in chat: the rasterised
+water-mask pipeline already covers the "huge vertex count, fill
+rendering" case (lakes + ocean via `tools/build_water_tiles.py` +
+`pi4/svt_renderer_gl.py`'s fragment shader sample), so the only
+remaining vector-line layer (state + country borders) doesn't have
+enough vertex count to justify a build-time LOD pipeline once
+vectorisation removes the Python per-vertex overhead.
+
 ---
 
 ## Completed
@@ -631,6 +669,22 @@ already understands. Ordering validation (Vs0 < Vs1 < Vfe ≤ Vno < Vne)
 surfaces an inline error instead of silently storing bad values.
 Header reads "V-SPEEDS (knots)" matching pi4 so the unit is explicit
 even when the speed tape is on mph.
+
+### MAP-POLYLINE-VECTORISE  Vectorise polyline projection — **FIXED**
+Target: `_draw_polylines` in `pi4/moving_map.py` and
+`pi_zero/moving_map.py`. Fix: commit `2bbb7fe`. The hot loop was
+`pts = [project_fn(float(la), float(lo)) for lo, la in ring]` —
+~1 µs of Python call overhead per vertex, multiplied by hundreds of
+vertices per admin_1 polyline and ~5–10 visible polylines at wide
+zoom = 5–10 ms per frame on the polyline layer alone, dropping the
+render loop below 30 FPS and making the AI visibly lag across all
+three axes on the AHRS bench. Replaced with whole-array numpy ops:
+`e_px = (ring[:, 0] - lon) * lon_scale` etc.; rotation always applied
+(identity when `rot_deg = 0`); `column_stack + tolist` builds the
+pygame point list in one pass. Bench result: 20–80 nm now snappy,
+160 nm "better, not amazing" (see MAP-POLYLINE-WIDE-ZOOM for the
+next lever — stride decimation, deferred). No quality loss, no
+NPZ format change.
 
 ### STATE-LINES-COUNTRIES  Add admin_0 country lines layer — **FIXED**
 Target: `pi_zero/pfd.py`, `pi4/pfd.py`, `pi_zero/moving_map.py`,
