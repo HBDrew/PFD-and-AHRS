@@ -141,23 +141,6 @@ Context: when `AP_SSID = "AHRS-Link-DEBUG"` or similar diagnostic
 values, the AP doesn't come up. Works with default SSID. Possible
 channel/password-length edge case.
 
-### #12b  iPhone compass GPS-track auto-cal
-Status: **OPEN** (cardinal walk-through landed — see Completed §#12a)
-Target: `iphone_display/index.html` `_onOrient`, `applyPhoneSensors`,
-`COMPASS_CAL`.
-Context: with the cardinal walk-through in place, a second auto-cal
-mode would let a pilot keep the offset accurate without taxiing four
-cardinals. When GPS groundspeed > 15 kt for ≥10 s and the compass is
-live, compute `offset = gps_track − compass` (unwrapped, averaged over
-the sample window). Roll into `COMPASS_CAL.offset` with a low-pass
-filter so wind/crab doesn't bias it; require straight-and-level
-(|roll| < 5°) to include a sample. Surface a "CAL: AUTO" badge so the
-pilot can see when it's actively learning vs. holding the previous
-offset.
-Pairs with firmware item AHRS-MAGCAL below — when the firmware-side
-mag cal also lands, the iPhone compass and the AHRS compass will both
-converge on the GPS track and stay aligned.
-
 ### SDP31-AIRDATA  SDP33-1500Pa airspeed driver + air-data computer
 Status: **FIRMWARE LANDED — waiting on hardware install + in-flight calibration**
 Target: new `firmware/sdp31.py`, additions to `firmware/main.py`,
@@ -470,29 +453,6 @@ Work items:
 
 ---
 
-### #15  iPhone V-speeds editor UI
-Status: **OPEN**
-Target: `iphone_display/index.html` setup menu — new "V-SPEEDS" panel.
-Context: V-speeds (Vs0, Vs1, Va, Vfe, Vno, Vne, Vy, Vx) drive the
-speed-tape colour bands and the V-speed labels. Defaults match
-Cessna 172S POH and the only way to change them today is to hand-edit
-`localStorage['vspeeds']` from the browser console — the comment in
-`index.html:956` explicitly notes "Edits to these will eventually
-come from a flight-profile UI". Pi4 already has a Flight Profile
-screen; iPhone doesn't.
-Work items:
-  - Add a "V-SPEEDS" button to the setup menu (alongside TERRAIN /
-    BAROMETER / TRIM / SENSORS).
-  - Panel with eight numpad-driven entries (Vs0, Vs1, Va, Vfe, Vno,
-    Vne, Vy, Vx); reuse the existing bug-edit numpad style.
-  - Save to `localStorage['vspeeds']` in the same JSON shape the
-    init reader already understands.
-  - Validate ordering on commit (Vs0 < Vs1 < Vfe ≤ Vno < Vne, etc.)
-    and surface an inline error rather than silently storing bad
-    values.
-  - Match pi4's "V-SPEEDS (knots)" header so the unit convention is
-    explicit even when the speed tape is showing mph.
-
 ### MAGCAL-PIZ-TUMBLE  Port pi4's hard-iron tumble mag-cal flow to pi_zero
 Status: **OPEN — pi4 done, pi_zero pending**
 The hard-iron tumble pass (PR #7 / commits a560924, 8280f68, 51705cd)
@@ -622,6 +582,28 @@ that landed in the recent merge — the sim flight model produces
 realistic continuous motion (proper accel/decel, banked turns, climb /
 descent dynamics) so the original linear DemoState easing concern is
 moot. The standalone `DemoState` interpolation issue no longer applies.
+
+### #12b  iPhone compass GPS-track auto-cal — **FIXED**
+Target: `iphone_display/index.html` `_onOrient`, `applyPhoneSensors`,
+`COMPASS_CAL`. Fix: auto-cal mode landed alongside the cardinal
+walk-through (#12a). When GPS groundspeed > 15 kt and the compass is
+live, the iPhone now folds `gps_track − compass` into
+`COMPASS_CAL.offset` through a low-pass filter (straight-and-level
+gate on |roll| < 5° to keep crab / wind from biasing the sample), and
+surfaces a "CAL: AUTO" badge while it's actively learning. Pairs with
+the AHRS-MAGCAL firmware tumble cal so both compasses converge on
+GPS track in flight.
+
+### #15  iPhone V-speeds editor UI — **FIXED**
+Target: `iphone_display/index.html` setup menu. Fix: new V-SPEEDS
+panel alongside TERRAIN / BAROMETER / TRIM / SENSORS. Eight
+numpad-driven entries (Vs0, Vs1, Va, Vfe, Vno, Vne, Vy, Vx) reusing
+the existing bug-edit numpad style; commits write through to
+`localStorage['vspeeds']` in the same JSON shape the init reader
+already understands. Ordering validation (Vs0 < Vs1 < Vfe ≤ Vno < Vne)
+surfaces an inline error instead of silently storing bad values.
+Header reads "V-SPEEDS (knots)" matching pi4 so the unit is explicit
+even when the speed tape is on mph.
 
 ### MAP-INSET  2D moving-map inset in the lower-left corner — **FIXED**
 Target: new `pi4/moving_map.py`; render hook in `pi4/pfd.py`; new
