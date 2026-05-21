@@ -44,23 +44,35 @@ echo "[usb-sync] cmdline.txt: $CMDLINE_TXT"
 # autodetect mode and hangs at boot the moment a USB host appears on
 # the other end of the cable.  Symptom: kernel never finishes init,
 # console stops at "Loading initial ramdisk".
+#
+# CRITICAL: must be appended under a fresh [all] filter at the END of
+# the file.  The OS-shipped config.txt has a stock dtoverlay=dwc2 line
+# inside the [cm5] section — modifying that line in place leaves it
+# scoped to Compute Module 5 boards only, so the overlay never applies
+# on a Pi Zero 2 W (silent failure: kernel falls back to the legacy
+# dwc_otg host driver, /sys/class/udc/ stays empty, g_ether logs
+# "couldn't find an available UDC").  We instead delete any existing
+# dtoverlay=dwc2* line and add our own under [all].
 OVERLAY_LINE='dtoverlay=dwc2,dr_mode=peripheral'
-if grep -qE '^[[:space:]]*dtoverlay=dwc2(,|$)' "$CONFIG_TXT"; then
-    # Existing dtoverlay=dwc2 line.  Replace it so dr_mode is correct.
-    if ! grep -qE '^[[:space:]]*dtoverlay=dwc2,dr_mode=peripheral[[:space:]]*$' "$CONFIG_TXT"; then
-        echo "[usb-sync] upgrading dtoverlay=dwc2 line to include dr_mode=peripheral"
-        sed -i -E "s|^[[:space:]]*dtoverlay=dwc2.*$|$OVERLAY_LINE|" "$CONFIG_TXT"
-    else
-        echo "[usb-sync] dtoverlay=dwc2,dr_mode=peripheral already present"
-    fi
-else
-    echo "[usb-sync] adding $OVERLAY_LINE to $CONFIG_TXT"
-    {
-        echo ""
-        echo "# pfd-usb-sync: USB-ethernet gadget on USB data port"
-        echo "$OVERLAY_LINE"
-    } >> "$CONFIG_TXT"
+
+# Strip any pre-existing dtoverlay=dwc2* lines anywhere in the file —
+# regardless of section — so the overlay is governed only by what we
+# add at the bottom.
+if grep -qE '^[[:space:]]*dtoverlay=dwc2([,[:space:]].*|$)' "$CONFIG_TXT"; then
+    echo "[usb-sync] removing pre-existing dtoverlay=dwc2 line(s) from $CONFIG_TXT"
+    sed -i -E '/^[[:space:]]*dtoverlay=dwc2([,[:space:]].*|$)/d' "$CONFIG_TXT"
 fi
+
+# Append our line under a fresh [all] section at end-of-file.  Adding
+# a second [all] header is valid — config.txt is order-sensitive but
+# repeated filter headers just start a new scope.
+echo "[usb-sync] adding $OVERLAY_LINE under [all] at end of $CONFIG_TXT"
+{
+    echo ""
+    echo "# pfd-usb-sync: USB-ethernet gadget on USB data port"
+    echo "[all]"
+    echo "$OVERLAY_LINE"
+} >> "$CONFIG_TXT"
 
 # ── 2. modules-load=dwc2,g_ether in cmdline.txt ──────────────────────────
 # cmdline.txt is a single line; inject after `rootwait` if not already
