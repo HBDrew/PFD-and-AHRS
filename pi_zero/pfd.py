@@ -3256,15 +3256,21 @@ def handle_event(event, demo_mode):
                         return True
                     if target == "fpl_here_ident":
                         # + HERE: appends with the lat/lon stashed when
-                        # the button was tapped.  No airport-DB lookup
-                        # — any user-typed name is accepted.
+                        # the button was tapped.  Validates the typed
+                        # name against the FPL and airport DB so a
+                        # user-waypoint can't clobber an existing ident.
                         if not buf:
                             disp["kbd_buf"]   = ""
                             disp["kbd_error"] = ""
                             disp["mode"] = "fpl"
                             return True
+                        candidate = buf.upper()[:6]
+                        _f, vmsg = _fpl_validate_user_ident(candidate)
+                        if _f:
+                            disp["kbd_error"] = vmsg.upper()
+                            return True
                         n = disp["fpl_new"]
-                        if _fpl_add_waypoint(buf.upper()[:6],
+                        if _fpl_add_waypoint(candidate,
                                               n["lat"], n["lon"],
                                               elev_ft=0.0, user=True):
                             disp["kbd_buf"]   = ""
@@ -9006,6 +9012,29 @@ def fpl_latlon_entry_hit(x, y):
     return (None, None)
 
 
+def _fpl_validate_user_ident(ident):
+    """Return ('', '') if `ident` is safe to use as a new user waypoint
+    name, otherwise ('field', 'message').  Two collision checks:
+
+      1. Already in the current FPL — would create two rows with the
+         same ident and break the polyline / D2 readouts.
+      2. Already an airport ident in the database — using a real ICAO
+         code as a user-waypoint name would confuse routing and a
+         later + ICAO entry of the same code.
+
+    Airport waypoints (+ ICAO path) are intentionally allowed to repeat
+    in the plan (out-and-back through the same field is valid)."""
+    ident = (ident or "").strip().upper()
+    if not ident:
+        return ("ident", "ident is required")
+    for i, wp in enumerate(disp["fpl"]["waypoints"]):
+        if str(wp.get("ident", "")).upper() == ident:
+            return ("ident", f"'{ident}' already in plan (row {i+1})")
+    if _nav_lookup_ident(ident) is not None:
+        return ("ident", f"'{ident}' is an airport ident — pick another")
+    return ("", "")
+
+
 def _fpl_open_here_keyboard():
     """+ HERE: stash the current aircraft position and open the keyboard
     so the pilot can name the waypoint.  ENTER appends the stored
@@ -9056,8 +9085,9 @@ def _fpl_commit_latlon():
     success, ('field', 'msg') on validation failure."""
     n = disp["fpl_new"]
     ident = n["ident"].strip().upper()
-    if not ident:
-        return ("ident", "ident is required")
+    field, msg = _fpl_validate_user_ident(ident)
+    if field:
+        return (field, msg)
     lat, err = _fpl_parse_latlon(n["lat_str"], "lat")
     if lat is None:
         return ("lat", err)
