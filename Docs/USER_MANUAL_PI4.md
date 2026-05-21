@@ -385,6 +385,7 @@ The period and colon keys are useful for entering URLs (e.g. `http://192.168.4.1
 | **ALERT VOLUME** | 1 – 10 | 8 | Callout volume scale. 0 is effectively muted; 10 is unity. Applied live to the pygame mixer; takes effect on the next callout. |
 | **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §16D. |
 | **MAP RANGE** | 1/2/5/10/20/40/80/160 NM · AUTO | 5 NM | Default inset radius; AUTO fits to the active direct-to. |
+| **MAP LAYERS** | TER · WTR · APT · OBS · STA · CTRY (independent pills) | all ON | Per-layer visibility for the moving-map inset. **TER** terrain tint; **WTR** ocean/lake water mask; **APT** airport / heliport / seaplane symbols; **OBS** FAA DOF obstacles; **STA** state / province boundary lines (Natural Earth admin_1, slate-blue, fades in at ≥ 20 NM); **CTRY** country boundary lines (Natural Earth admin_0, tan, also ≥ 20 NM). Toggles are independent and persist in `data/settings.json`. |
 | **SUN POSITION** | FIXED / REAL | REAL | SVT terrain lighting: FIXED uses a SE mid-morning sun; REAL pulls UTC + GPS lat/lon through the NOAA solar formulas. |
 
 ### Backlight transports
@@ -547,14 +548,15 @@ The TERRAIN DATA screen now manages three layered datasets in one place:
 
 - **SRTM elevation tiles** (`pi4/data/srtm/*.hgt`) — ground texture for the SVT background and the TAWS proximity check. Without these the AI shows a plain blue/brown split and the `NO TER` badge appears.
 - **Water masks** (`pi4/data/water/*.npy`) — rasterised Natural Earth ocean + lake polygons so the SVT mesh and the moving-map inset paint water blue rather than terrain-coloured. ~12 MB worldwide, downloaded once.
-- **State / province boundary polylines** (`pi4/data/natural_earth/admin_1_*`) — used by the moving-map inset at wide zoom levels to give context (set boundaries fade in around 20 NM range). Downloaded automatically alongside the water masks as a free side-effect.
+- **State / province boundary polylines** (`pi4/data/natural_earth/admin_1_*`) — used by the moving-map inset at wide zoom levels to give context (boundaries fade in around 20 NM range, slate-blue). Downloaded automatically alongside the water masks as a free side-effect.
+- **Country boundary polylines** (`pi4/data/natural_earth/admin_0_*`) — same Natural Earth source, country-level (admin_0) outlines. Drawn in tan so they're distinguishable from the slate-blue state lines when both layers overlap (e.g. the US-Canada border draws once as state, once as country). Same 20 NM gate. Fetched in the same download pass as admin_1.
 
 ### Top row — DOWNLOAD CURRENT AREA · DOWNLOAD WATER MASKS
 
 Two side-by-side full-width tiles at the top of the screen.
 
 - **DOWNLOAD CURRENT AREA** — downloads a 5°×5° SRTM box (≈ 25 tiles, ~35 MB) centred on the current GPS position. Requires a GPS fix. This is the fastest way to get flying in an unfamiliar area: one tap and the tiles you actually need are on disk a minute later.
-- **DOWNLOAD WATER MASKS** — rasterises Natural Earth's 10 m ocean + lake vectors against every SRTM tile already on disk, then fetches the admin-1 (state / province) line set in the same run. ~12 MB for the global vector source, plus a small per-tile cache. Re-tap any time you've added new SRTM tiles — the rasteriser skips masks that are already on disk and only builds the new ones.
+- **DOWNLOAD WATER MASKS** — rasterises Natural Earth's 10 m ocean + lake vectors against every SRTM tile already on disk, then fetches the admin-1 (state / province) + admin-0 (country) line sets in the same run. ~12 MB for the global vector source, plus a small per-tile cache. Re-tap any time you've added new SRTM tiles — the rasteriser skips masks that are already on disk and only builds the new ones.
 
 ### Preset regions
 
@@ -820,7 +822,7 @@ When the simulator is in **FOLLOW FLT PLAN** with an approach active (see §18),
 
 ## 16D. Moving-Map Inset
 
-A 2D top-down moving map sits at the lower-left of the AI. Off by default — turn it on in DISPLAY setup (`MAP INSET`). When enabled it draws hypsometric terrain, water, state lines, runways, airports, obstacles, and the active direct-to course line over a black backplate, with own-ship pinned to the centre and the map rotating in either **TRK↑** or **N↑**.
+A 2D top-down moving map sits at the lower-left of the AI. Off by default — turn it on in DISPLAY setup (`MAP INSET`). When enabled it draws hypsometric terrain, water, state and country boundary lines, runways, airports, obstacles, and the active direct-to course line over a black backplate, with own-ship pinned to the centre and the map rotating in either **TRK↑** or **N↑**.
 
 ![Moving-map inset on a long direct-to leg at AUTO range — magenta great-circle line passes through ownship, set boundaries faded in around the leg](../pi4/previews/preview_inset_long_d2.png)
 
@@ -853,7 +855,7 @@ Tap-zones inside the inset:
 - **Pinch** (two-finger spread / pinch) → also walks the snap-points if the touch driver surfaces FINGERMOTION events. Single-tap is the reliable fallback.
 - **Tap the orientation label** in the chrome (`TRK↑` / `N↑`) → toggle between the two. The toggle is inert at 80 NM and above (the inset is locked to N↑ there).
 
-Defaults for range and orientation are set in DISPLAY setup (`MAP RANGE`, `MAP INSET` orientation pair). Per-layer visibility (terrain / water / state lines / airports / runways / obstacles / direct-to) is toggleable from the same setup screen.
+Defaults for range and orientation are set in DISPLAY setup (`MAP RANGE`, `MAP INSET` orientation pair). Per-layer visibility (terrain / water / airports / runways / obstacles / state lines / country lines / direct-to) is toggleable from the same setup screen via the `MAP LAYERS` row of pills.
 
 ---
 

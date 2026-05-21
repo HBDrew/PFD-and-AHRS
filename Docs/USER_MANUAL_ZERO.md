@@ -259,11 +259,22 @@ Two-finger press-and-hold anywhere on the PFD for 0.8 seconds.
 | Tile | Screen |
 |------|--------|
 | FLIGHT PROFILE | V-speeds, callsign |
-| DISPLAY | Units, brightness |
+| DISPLAY | Units, brightness, map layers |
 | AHRS / SENSORS | Trim, mounting, heading/airspeed source |
 | CONNECTIVITY | AHRS URL, WiFi |
-| SYSTEM | Version, terrain/obstacle data, simulator |
+| SYSTEM | Version, ENABLE MFD, terrain/obstacle data, simulator |
 | EXIT | Return to PFD |
+
+### Gestures — multi-finger holds
+
+Two distinct multi-finger gestures exist on the PFD/MFD view; the count of fingers held disambiguates them. The number of fingers is locked in by the *peak* count during the hold, so a stray third finger after 0.8 s won't accidentally fire the setup hold.
+
+| Gesture | Duration | Effect |
+|---------|---------:|--------|
+| 2-finger hold | 0.8 s | Enter Setup menu (this screen) |
+| 3-finger hold | 2.0 s | Swap PFD ↔ MFD view (only when ENABLE MFD is ON — see §13) |
+
+A short, deliberate gesture for entering setup and a longer, harder-to-misfire gesture for the in-flight view swap. The MFD's own top-right **PFD** button is still a valid tap-back; the gesture is the workflow-friendly version that works from either side without hunting for a button.
 
 ---
 
@@ -315,7 +326,39 @@ Action row: **CANCEL**, hyphen (`-`), **SPACE**, **DONE**. The period (`.`) and 
 **inHg** or **hPa**.
 
 ### Brightness
-Tap **−** or **+** to step between levels 1–10.
+Tap **−** or **+** to step between levels 1–10. Routed to a hardware-PWM channel on **GPIO 18** (configured by the `dtoverlay=pwm,pin=18,func=2` line in `/boot/firmware/config.txt`); `pfd.service`'s `ExecStartPre` block runs as root once at boot to export the channel, set the period (1 kHz) and polarity (inversed — the Waveshare 3.5" DPI backlight is active-low), and hand a group-writable `duty_cycle` node to the unprivileged PFD process. The slider value is persisted in `data/settings.json` and restored on every boot.
+
+The 1–10 scale maps to PWM duty via a hand-tuned non-linear curve, not a linear ramp: the LED driver in the Waveshare panel doesn't conduct below ~22 % duty (anything dimmer is indistinguishable from off), so level 1 lives at the conduction floor and the bottom of the slider has 4–5 % steps for fine control in a dim cockpit. The top half steps at ~11 % so each click is daylight-visible.
+
+| Level | Duty | Use |
+|------:|-----:|-----|
+| 1 | 22 % | Dimmest visible — night cockpit floor |
+| 2 | 26 % | |
+| 3 | 30 % | |
+| 4 | 35 % | |
+| 5 | 44 % | |
+| 6 | 55 % | |
+| 7 | 67 % | |
+| 8 | 78 % | Default |
+| 9 | 89 % | |
+| 10 | 100 % | Full bright — daylight |
+
+If the slider doesn't change panel output, check `journalctl -u pfd.service -b | grep '\[BL\]'`. The expected line is `[BL] Using PWM backlight: /sys/class/pwm/pwmchip0/pwm0/duty_cycle (period=1000000 ns)`. If you see `[BL] No backlight control available` instead, either the `dtoverlay=pwm,...` line isn't in `config.txt` or `pfd.service` was installed before the backlight-PWM patch landed (re-run `sudo bash pi_zero/setup.sh`).
+
+### MAP LAYERS
+
+A row of six toggle pills that gate which optional layers render on the MFD (and, in future, the moving-map inset). Each pill is independently on/off and persists in `data/settings.json`.
+
+| Pill | Layer |
+|------|-------|
+| **TER** | Hypsometric terrain tint (SRTM elevation → colour ramp) |
+| **WTR** | Water mask (oceans + lakes rasterised from Natural Earth, painted blue) |
+| **APT** | Airport / heliport / seaplane base symbols |
+| **OBS** | FAA DOF obstacles (towers, antennas, wind turbines) |
+| **STA** | State / province boundary polylines (Natural Earth admin_1), appears at ≥ 20 NM range |
+| **CTRY** | Country boundary polylines (Natural Earth admin_0), tan colour distinct from STA's slate-blue, also ≥ 20 NM |
+
+Toggling a pill takes effect on the next frame. Layers that aren't available because their data hasn't been downloaded yet (e.g. CTRY before the first water-mask download) silently no-op — the pill stays in whatever state you left it.
 
 ---
 
@@ -386,7 +429,20 @@ Issues a one-shot HTTP GET to the AHRS URL and reports success/failure. Use afte
 
 Shows firmware version, build date, display resolution, platform, terrain/obstacle status. Buttons for DIAGNOSTICS (future), RESET DEFAULTS, and FLIGHT SIMULATOR.
 
-All configurable settings — V-speeds, tail number, units, backlight brightness, colour scheme, heading-source mode, Wi-Fi SSID, airport display filters, and the runway/centerline overlay toggles — persist across power cycles in `pi_zero/data/settings.json`. The file is written atomically on a background thread with a 1.5 s debounce, so rapid successive taps produce a single write with no UI stutter. The Wi-Fi password is intentionally *not* stored — it must be re-entered when joining a new network.
+### ENABLE MFD
+
+A single OFF / ON toggle row that gates the Multi-Function Display feature. The MFD is a full-screen 2D moving-map view (terrain, airports, obstacles, state + country boundaries) that replaces the AI horizon when active.
+
+- **OFF** (default): the 3-finger swap gesture (§8) is disarmed and `display_mode` is pinned to `pfd`. The MFD is unreachable.
+- **ON**: the 3-finger 2 s hold on either the PFD or the MFD flips between them. Once enabled the gesture is the day-to-day mode swap — you don't need to come back into Setup to change views.
+
+The default is OFF so a fresh install boots straight to the PFD. If an older settings file already had `display_mode = "mfd"` (the legacy toggle), the system auto-migrates it to `mfd_enabled = True` on first boot after upgrade so existing piZ users don't have to re-find the option.
+
+Disabling ENABLE MFD also forces the runtime view back to PFD immediately — a stale "I was on the MFD when I last shut down" state can't strand you in a view the feature gate now says shouldn't exist.
+
+### Persistence
+
+All configurable settings — V-speeds, tail number, units, backlight brightness, colour scheme, heading-source mode, Wi-Fi SSID, airport display filters, runway/centerline overlay toggles, ENABLE MFD, MAP LAYERS — persist across power cycles in `pi_zero/data/settings.json`. The file is written atomically on a background thread with a 1.5 s debounce, so rapid successive taps produce a single write with no UI stutter. The Wi-Fi password is intentionally *not* stored — it must be re-entered when joining a new network.
 
 ---
 

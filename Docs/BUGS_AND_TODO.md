@@ -670,6 +670,49 @@ surfaces an inline error instead of silently storing bad values.
 Header reads "V-SPEEDS (knots)" matching pi4 so the unit is explicit
 even when the speed tape is on mph.
 
+### DOCS-SWEEP  Refresh user manuals + previews infrastructure — **FIXED**
+Target: `Docs/USER_MANUAL_PI4.md`, `Docs/USER_MANUAL_ZERO.md`,
+`pi4/previews/README.md`, `pi_zero/previews/README.md`, new
+`tools/regen_previews.sh`.
+
+**piZ manual gaps closed** (USER_MANUAL_ZERO.md):
+  - §8 Setup Menu — added the multi-finger gestures table:
+    2-finger 0.8 s → setup; 3-finger 2 s → swap PFD ↔ MFD.
+  - §10 Display Settings — BRIGHTNESS now documents the actual GPIO 18
+    PWM transport, ExecStartPre setup, the non-linear duty-cycle table
+    (level 1 = 22 % conduction floor, level 10 = 100 %), and the
+    journalctl one-liner to diagnose a no-op slider.  New MAP LAYERS
+    section with the six-pill table (TER / WTR / APT / OBS / STA / CTRY).
+  - §13 System — new ENABLE MFD subsection covering the gate, the
+    migration from legacy `display_mode == "mfd"`, and the
+    forced-PFD-on-disable behaviour.  Persistence paragraph now lists
+    `mfd_enabled` + MAP LAYERS in the saved-settings list.
+
+**pi4 manual gaps closed** (USER_MANUAL_PI4.md):
+  - §10 Display Settings table — added MAP LAYERS row with the six
+    pills documented (matches piZ).
+  - §14 Terrain Data — water-mask download now also fetches admin_0
+    (country) lines, not just admin_1.  Added a country-lines bullet
+    in the dataset list at line 550, distinct tan colour from the
+    slate-blue admin_1 lines.
+  - §16D Moving-Map Inset — layer list now includes country lines, and
+    the per-layer-visibility paragraph points at the MAP LAYERS row.
+
+**Previews infrastructure**:
+  - `tools/regen_previews.sh` — new single-entry script that takes
+    `pi4`, `piz`, or `all` (or auto-detects from `/proc/cpuinfo`).
+    Wraps `tools/capture_pi4_previews.sh` for the GL-heavy pi4 path;
+    runs `pi_zero/pfd.py --screenshots ...` for the pure-pygame piZ
+    path.  Stops `pfd.service` for the duration so SDL doesn't fight
+    over the framebuffer; restores it on exit (trap on RETURN).
+  - Both previews/README.md files updated with the regen command.
+
+Out of scope (intentional skip):
+  - README.md V7 roadmap mention — aspirational, not stale.
+  - TEST_PROCEDURE_*.md — internal QA docs, not user-facing.
+  - REQUIREMENTS_*.md — architectural docs, separate concern.
+  - USER_MANUAL_IPHONE.md — audited, no user-visible changes today.
+
 ### MAP-POLYLINE-VECTORISE  Vectorise polyline projection — **FIXED**
 Target: `_draw_polylines` in `pi4/moving_map.py` and
 `pi_zero/moving_map.py`. Fix: commit `2bbb7fe`. The hot loop was
