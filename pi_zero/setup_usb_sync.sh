@@ -40,15 +40,26 @@ echo "[usb-sync] config.txt:  $CONFIG_TXT"
 echo "[usb-sync] cmdline.txt: $CMDLINE_TXT"
 
 # ── 1. dwc2 overlay in config.txt ────────────────────────────────────────
-if ! grep -qE '^[[:space:]]*dtoverlay=dwc2' "$CONFIG_TXT"; then
-    echo "[usb-sync] adding dtoverlay=dwc2 to $CONFIG_TXT"
+# dr_mode=peripheral is REQUIRED — without it, dwc2 stays in OTG
+# autodetect mode and hangs at boot the moment a USB host appears on
+# the other end of the cable.  Symptom: kernel never finishes init,
+# console stops at "Loading initial ramdisk".
+OVERLAY_LINE='dtoverlay=dwc2,dr_mode=peripheral'
+if grep -qE '^[[:space:]]*dtoverlay=dwc2(,|$)' "$CONFIG_TXT"; then
+    # Existing dtoverlay=dwc2 line.  Replace it so dr_mode is correct.
+    if ! grep -qE '^[[:space:]]*dtoverlay=dwc2,dr_mode=peripheral[[:space:]]*$' "$CONFIG_TXT"; then
+        echo "[usb-sync] upgrading dtoverlay=dwc2 line to include dr_mode=peripheral"
+        sed -i -E "s|^[[:space:]]*dtoverlay=dwc2.*$|$OVERLAY_LINE|" "$CONFIG_TXT"
+    else
+        echo "[usb-sync] dtoverlay=dwc2,dr_mode=peripheral already present"
+    fi
+else
+    echo "[usb-sync] adding $OVERLAY_LINE to $CONFIG_TXT"
     {
         echo ""
-        echo "# pfd-usb-sync: enable USB-ethernet gadget on USB data port"
-        echo "dtoverlay=dwc2"
+        echo "# pfd-usb-sync: USB-ethernet gadget on USB data port"
+        echo "$OVERLAY_LINE"
     } >> "$CONFIG_TXT"
-else
-    echo "[usb-sync] dtoverlay=dwc2 already present"
 fi
 
 # ── 2. modules-load=dwc2,g_ether in cmdline.txt ──────────────────────────
