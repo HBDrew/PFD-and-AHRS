@@ -2836,8 +2836,8 @@ def handle_event(event, demo_mode):
             action = mag_cal_hit(x, y)
             if action == "capture":
                 _mag_cal_capture()
-            elif action == "restart":
-                _mag_cal_restart()
+            elif action == "tumble":
+                _mag_cal_tumble_toggle()
             elif action == "reset":
                 _mag_cal_reset()
             elif action == "cancel":
@@ -4486,11 +4486,33 @@ def _mag_cal_capture():
     raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0)))
     expected = _MAG_CAL_CARDINALS[step][1]
     wiz.setdefault("samples", []).append((expected, raw))
+    # Capture raw mag vector at this cardinal too — the 8 points are
+    # spread evenly around yaw, so (max+min)/2 per axis gives a decent
+    # hard-iron offset even without a separate tumble pass.
+    mx = float(disp.get("mx", 0.0))
+    my = float(disp.get("my", 0.0))
+    mz = float(disp.get("mz", 0.0))
+    wiz.setdefault("mag_samples", []).append((mx, my, mz))
     wiz["step"] = step + 1
     wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
     if wiz["step"] >= len(_MAG_CAL_CARDINALS):
         table = _build_magdev_table(wiz["samples"])
+        # Hard-iron offsets from the 8-cardinal mag vectors.  Won't
+        # cover Z-tilt as thoroughly as a full tumble cal — the TUMBLE
+        # button is the right tool for that — but it's a useful first
+        # pass that costs the pilot nothing extra.
+        mag_samples = wiz.get("mag_samples", [])
+        if len(mag_samples) >= 2:
+            mxs = [s[0] for s in mag_samples]
+            mys = [s[1] for s in mag_samples]
+            mzs = [s[2] for s in mag_samples]
+            offset = (0.5 * (max(mxs) + min(mxs)),
+                      0.5 * (max(mys) + min(mys)),
+                      0.5 * (max(mzs) + min(mzs)))
+        else:
+            offset = (0.0, 0.0, 0.0)
         disp["ss"]["pi_zero_magdev"] = table
+        disp["ss"]["pi_zero_mag_offset"] = list(offset)
         disp["ss"]["mag_cal_deltas"] = [
             ((e - r + 540) % 360) - 180 for e, r in wiz["samples"]
         ]
@@ -4498,21 +4520,66 @@ def _mag_cal_capture():
         disp["ss"]["mag_cal"] = "done"
         _settings.mark_dirty()
         _push_magcal_to_pico(table)
-        wiz["msg"] = "Saved locally — sending to AHRS…"
-        wiz["step"]    = 0
-        wiz["samples"] = []
+        _push_magoff_to_pico(offset)
+        wiz["msg"] = (f"Saved locally — sending to AHRS… "
+                      f"(hard-iron: {offset[0]:+.0f},{offset[1]:+.0f},{offset[2]:+.0f})")
+        wiz["step"]        = 0
+        wiz["samples"]     = []
+        wiz["mag_samples"] = []
+
+
+def _mag_cal_tumble_toggle():
+    """First press → start tumble cal (Pico tracks raw mag min/max).
+    Second press → finish, Pico computes (min+max)/2 per axis and stores."""
+    wiz = disp.get("mag_cal_wiz") or {}
+    if wiz.get("tumble_active"):
+        _push_magoff_tumble("FINISH")
+        wiz["tumble_active"] = False
+        wiz["msg"] = "Tumble cal finished — offsets sent to AHRS."
+        wiz["tumble_started_ms"] = None
+    else:
+        _push_magoff_tumble("START")
+        wiz["tumble_active"] = True
+        wiz["tumble_started_ms"] = pygame.time.get_ticks()
+        wiz["tumble_min"] = [None, None, None]
+        wiz["tumble_max"] = [None, None, None]
+        wiz["msg"] = ("Rotate AHRS slowly through ALL orientations — "
+                      "pitch, roll, yaw — for ~30 s. Press STOP TUMBLE when done.")
+
+
+def _mag_cal_tumble_tick():
+    """Mirror the Pico's min/max tracking locally while a tumble session
+    is active, so the display can show progress (spread per axis)."""
+    wiz = disp.get("mag_cal_wiz") or {}
+    if not wiz.get("tumble_active"):
+        return
+    mx = float(disp.get("mx", 0.0))
+    my = float(disp.get("my", 0.0))
+    mz = float(disp.get("mz", 0.0))
+    mn = wiz.get("tumble_min") or [None, None, None]
+    mx_arr = wiz.get("tumble_max") or [None, None, None]
+    for i, v in enumerate((mx, my, mz)):
+        if mn[i] is None or v < mn[i]: mn[i] = v
+        if mx_arr[i] is None or v > mx_arr[i]: mx_arr[i] = v
+    wiz["tumble_min"] = mn
+    wiz["tumble_max"] = mx_arr
 
 
 def _mag_cal_restart():
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
     wiz["samples"] = []
+    wiz["mag_samples"] = []
     wiz["msg"] = "Restarted."
 
 
 def _mag_cal_reset():
+    """Wipe both the deviation table and the hard-iron offsets, locally
+    and on the Pico."""
     _push_magcal_clear_to_pico()
+    _push_magoff_clear_to_pico()
     disp["ss"].pop("pi_zero_magdev", None)
+    disp["ss"].pop("pi_zero_mag_offset", None)
     disp["ss"]["mag_cal_deltas"] = [0.0] * 4
     disp["ss"].pop("mag_cal_offset", None)
     disp["ss"]["mag_cal"] = "idle"
@@ -4520,6 +4587,7 @@ def _mag_cal_reset():
     wiz = disp.get("mag_cal_wiz") or {}
     wiz["step"] = 0
     wiz["samples"] = []
+    wiz["mag_samples"] = []
     wiz["msg"] = "Calibration cleared."
 
 
@@ -4616,6 +4684,87 @@ def _push_magcal_clear_to_pico():
     threading.Thread(target=_worker, daemon=True, name="MagCalClear").start()
 
 
+def _push_magoff_tumble(action):
+    """$MAGOFF,START / $MAGOFF,FINISH bracket a tumble-cal session: the
+    Pico tracks per-axis mag min/max while the pilot rotates the unit
+    through all orientations.  On FINISH the Pico computes the
+    hard-iron offset (midpoint of min/max) and stores it locally."""
+    payload = f"$MAGOFF,{action}\n".encode()
+    http_action = "tumble_start" if action == "START" else "tumble_finish"
+
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(payload)
+                print(f"[PFD] magoff {action} sent via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff {action} serial failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action={http_action}"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print(f"[PFD] magoff {action} sent via HTTP")
+        except Exception as e:
+            print(f"[PFD] magoff {action} HTTP failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name=f"MagOff{action}").start()
+
+
+def _push_magoff_to_pico(offset):
+    """Send a hard-iron offset triple to the Pico ($MAGOFF,<mx>,<my>,<mz>).
+    Subtracted from raw mag before the Mahony filter sees it."""
+    v_str = ",".join(f"{v:.1f}" for v in offset)
+
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(f"$MAGOFF,{v_str}\n".encode())
+                print(f"[PFD] magoff sent via USB serial ({v_str})")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff serial write failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action=set&v={v_str}"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print(f"[PFD] magoff sent via HTTP ({v_str})")
+        except Exception as e:
+            print(f"[PFD] magoff HTTP push failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagOffPush").start()
+
+
+def _push_magoff_clear_to_pico():
+    """Clear the Pico's hard-iron offsets."""
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(b"$MAGOFF,CLEAR\n")
+                print("[PFD] magoff cleared via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magoff serial clear failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magoff?action=clear"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print("[PFD] magoff cleared via HTTP")
+        except Exception as e:
+            print(f"[PFD] magoff HTTP clear failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagOffClear").start()
+
+
 def _push_orient_to_pico(connector, mounting):
     """Send orientation + mounting to the Pico via USB serial.
     Retries every 2 s (up to 6 attempts) until the Pico echoes the new
@@ -4706,12 +4855,32 @@ def draw_mag_cal(surf):
               else (60, 220, 80)
         _text(surf, msg, 14, col, cx=bx + _MCAL_W // 2, cy=by + 270)
 
+    # Tumble-cal live progress — visible whenever a tumble session is
+    # running.  Spread = max − min per axis; the tighter the spread the
+    # less of the mag ellipse the pilot has covered.  Hide above the
+    # button row so it doesn't overlap CAPTURE.
+    if wiz.get("tumble_active"):
+        _mag_cal_tumble_tick()
+        mn = wiz.get("tumble_min") or [None, None, None]
+        mx_arr = wiz.get("tumble_max") or [None, None, None]
+        spread = [(mx_arr[i] - mn[i])
+                  if (mx_arr[i] is not None and mn[i] is not None) else 0
+                  for i in range(3)]
+        elapsed_ms = pygame.time.get_ticks() - (wiz.get("tumble_started_ms") or 0)
+        _text(surf, f"TUMBLE  {elapsed_ms/1000:.0f}s  "
+                    f"spread X:{int(spread[0])}  Y:{int(spread[1])}  Z:{int(spread[2])}",
+              13, (255, 200, 80),
+              cx=bx + _MCAL_W // 2, cy=by + 294)
+
     in_progress = step > 0 and step < len(_MAG_CAL_CARDINALS)
     left_lbl   = "CANCEL" if in_progress else "EXIT"
     left_style = "danger" if in_progress else "ok"
-    _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, left_lbl, left_style)
-    _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",    "warn")
-    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, "RESTART",  "warn")
+    tumble_active = bool(wiz.get("tumble_active"))
+    tumble_lbl   = "STOP TUMBLE" if tumble_active else "TUMBLE"
+    tumble_style = "danger"      if tumble_active else "warn"
+    _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, left_lbl,    left_style)
+    _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",     "warn")
+    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, tumble_lbl,  tumble_style)
     _action_btn(surf, btn_xs[3], btn_y, btn_w, _MCAL_BTN_H,
                 f"⊕ CAPTURE {card_name}", "ok")
 
@@ -4721,7 +4890,7 @@ def mag_cal_hit(x, y):
     if not (bx <= x <= bx + _MCAL_W and by <= y <= by + _MCAL_H):
         return None
     if btn_y <= y <= btn_y + _MCAL_BTN_H:
-        for i, action in enumerate(("cancel", "reset", "restart", "capture")):
+        for i, action in enumerate(("cancel", "reset", "tumble", "capture")):
             if btn_xs[i] <= x <= btn_xs[i] + btn_w:
                 return action
     return "noop"
