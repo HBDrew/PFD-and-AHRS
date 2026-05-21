@@ -71,7 +71,9 @@ class AirportRecord:
 def _parse_csv(csv_path: str):
     """Parse OurAirports CSV.  Returns list of tuples suitable for numpy array.
 
-    Each tuple: (ident, atype, lat, lon, elev_ft)
+    Each tuple: (ident, atype, lat, lon, elev_ft, name, region)
+    where `region` is the 2-3 char ISO region suffix (e.g. "AZ" from
+    "US-AZ") for the FPL row subtitle.
     """
     records = []
     with open(csv_path, "r", encoding="utf-8", errors="ignore", newline="") as fh:
@@ -95,21 +97,35 @@ def _parse_csv(csv_path: str):
                     elev = float(elev_s) if elev_s else 0.0
                 except ValueError:
                     elev = 0.0
-                records.append((ident, _TYPE_MAP[atype_full], lat, lon, elev))
+                # Name + region for FPL row subtitles.  Cap name length
+                # so the structured-array dtype stays compact; "US-AZ"
+                # becomes "AZ", but non-US identifiers keep the full
+                # region tag for context.
+                name = (row.get("name") or "").strip()[:48]
+                reg  = (row.get("iso_region") or "").strip()
+                if "-" in reg:
+                    reg = reg.split("-", 1)[1]
+                reg = reg[:4]
+                records.append((ident, _TYPE_MAP[atype_full],
+                                lat, lon, elev, name, reg))
             except (ValueError, TypeError):
                 continue
     return records
 
 
+_DTYPE_V2 = [("ident",   "U7"),
+             ("atype",   "U1"),
+             ("lat",     "f4"),
+             ("lon",     "f4"),
+             ("elev_ft", "f4"),
+             ("name",    "U48"),
+             ("region",  "U4")]
+
+
 def _build_cache(csv_path: str, cache_path: str):
     records = _parse_csv(csv_path)
     if HAS_NUMPY and records:
-        arr = np.array(records,
-                       dtype=[("ident",   "U7"),
-                              ("atype",   "U1"),
-                              ("lat",     "f4"),
-                              ("lon",     "f4"),
-                              ("elev_ft", "f4")])
+        arr = np.array(records, dtype=_DTYPE_V2)
         # Sort by lat so query_nearby can binary-search the lat band.
         arr = arr[np.argsort(arr["lat"], kind="stable")]
         np.save(cache_path, arr)
@@ -123,7 +139,13 @@ def load(data_dir: str):
 
     The array is sorted by latitude so spatial queries can binary-search
     the lat band.  Existing un-sorted caches are sorted in memory at
-    load (cheap)."""
+    load (cheap).
+
+    Self-upgrades caches that pre-date the name/region fields: if the
+    loaded cache is missing 'name', we rebuild from CSV (if present).
+    When the CSV isn't available we still use the old cache so the
+    airport DB keeps working — FPL row subtitles just won't show the
+    airport name until a CSV refresh runs."""
     csv_path   = os.path.join(data_dir, CSV_FILENAME)
     cache_path = os.path.join(data_dir, CACHE_FILENAME)
 
@@ -132,6 +154,12 @@ def load(data_dir: str):
                 os.path.getmtime(cache_path) >= os.path.getmtime(csv_path)):
             try:
                 arr = np.load(cache_path, allow_pickle=False)
+                if "name" not in (arr.dtype.names or ()):
+                    # Pre-name-field cache.  Rebuild if we can.
+                    if os.path.exists(csv_path):
+                        return _build_cache(csv_path, cache_path)
+                    # No CSV — degrade gracefully, just keep using the
+                    # old cache (callers tolerate missing 'name').
                 if len(arr) > 1 and not (np.diff(arr["lat"]) >= 0).all():
                     arr = arr[np.argsort(arr["lat"], kind="stable")]
                 return arr
@@ -205,7 +233,11 @@ def query_nearby(airports, lat: float, lon: float, radius_nm: float = 20.0):
 
     results = []
     for rec in airports:
-        rident, ratype, rlat, rlon, relev = rec
+        # Records are 7-tuples (incl. name + region) under the v2
+        # cache; tolerate 5-tuples from older parses by unpacking the
+        # head and defaulting trailing fields.
+        rident, ratype, rlat, rlon, relev = rec[:5]
+        rname = rec[5] if len(rec) > 5 else ""
         if abs(rlat - lat) > dlat or abs(rlon - lon) > dlon:
             continue
         dlat_r = rlat - lat
@@ -215,7 +247,7 @@ def query_nearby(airports, lat: float, lon: float, radius_nm: float = 20.0):
         if dist_nm <= radius_nm:
             results.append((dist_nm, AirportRecord(
                 ident=rident, atype=ratype,
-                lat=rlat, lon=rlon, elev_ft=relev,
+                lat=rlat, lon=rlon, elev_ft=relev, name=rname,
             )))
     results.sort(key=lambda t: t[0])
     return [r for _, r in results]

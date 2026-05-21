@@ -3246,8 +3246,11 @@ def handle_event(event, demo_mode):
                         if hit is None:
                             disp["kbd_error"] = f"UNKNOWN WAYPOINT  {candidate}"
                             return True
-                        ident, lat, lon, elev_ft = hit
-                        if _fpl_add_waypoint(ident, lat, lon, elev_ft):
+                        ident, lat, lon, elev_ft = hit[:4]
+                        name = hit[4] if len(hit) > 4 else ""
+                        region = hit[5] if len(hit) > 5 else ""
+                        if _fpl_add_waypoint(ident, lat, lon, elev_ft,
+                                              name=name, region=region):
                             disp["kbd_buf"]   = ""
                             disp["kbd_error"] = ""
                             disp["mode"] = "fpl"
@@ -4827,13 +4830,22 @@ def _fpl_deactivate():
     _settings.mark_dirty()
 
 
-def _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=False):
-    """Append a waypoint; clamped to _FPL_MAX_WAYPOINTS."""
+def _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=False,
+                       name="", region=""):
+    """Append a waypoint; clamped to _FPL_MAX_WAYPOINTS.
+
+    `name` and `region` are stored for the FPL row subtitle (e.g.
+    "Sedona Airport · AZ") when available — empty strings for user
+    waypoints or older airport caches without those fields."""
     wps = disp["fpl"]["waypoints"]
     if len(wps) >= _FPL_MAX_WAYPOINTS:
         return False
-    wps.append({"ident": str(ident), "lat": float(lat), "lon": float(lon),
-                "elev_ft": float(elev_ft), "user": bool(user)})
+    wps.append({"ident": str(ident),
+                "lat": float(lat), "lon": float(lon),
+                "elev_ft": float(elev_ft),
+                "user": bool(user),
+                "name":   str(name),
+                "region": str(region)})
     _settings.mark_dirty()
     return True
 
@@ -5087,8 +5099,10 @@ def _nav_set_nearest() -> bool:
 
 
 def _nav_lookup_ident(ident: str):
-    """Return (ident, lat, lon, elev_ft) for the first matching airport,
-    or None."""
+    """Return (ident, lat, lon, elev_ft, name, region) for the first
+    matching airport, or None.  `name` and `region` are empty strings
+    when the airport cache pre-dates those fields (graceful fallback
+    used by older Pi installs whose cache hasn't been rebuilt yet)."""
     if _airports is None or not ident:
         return None
     if hasattr(_airports, "dtype"):
@@ -5097,11 +5111,18 @@ def _nav_lookup_ident(ident: str):
         if len(rows) == 0:
             return None
         row = rows[0]
+        has_name = "name" in (_airports.dtype.names or ())
+        name   = str(row["name"])   if has_name else ""
+        region = str(row["region"]) if has_name else ""
         return (str(row["ident"]), float(row["lat"]),
-                float(row["lon"]), float(row["elev_ft"]))
+                float(row["lon"]), float(row["elev_ft"]),
+                name, region)
     for rec in _airports:
         if rec[0] == ident:
-            return (rec[0], float(rec[2]), float(rec[3]), float(rec[4]))
+            name = rec[5] if len(rec) > 5 else ""
+            reg  = rec[6] if len(rec) > 6 else ""
+            return (rec[0], float(rec[2]), float(rec[3]),
+                    float(rec[4]), name, reg)
     return None
 
 
@@ -5112,7 +5133,7 @@ def _nav_set_by_ident(ident: str) -> bool:
         return False
     lat = disp.get("lat", 0.0)
     lon = disp.get("lon", 0.0)
-    ai, alat, alon, aelev = hit
+    ai, alat, alon, aelev = hit[:4]
     disp["nav"]["ident"]   = ai
     disp["nav"]["lat"]     = alat
     disp["nav"]["lon"]     = alon
@@ -8821,21 +8842,43 @@ def draw_fpl(surf):
         pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=5)
         pygame.draw.rect(surf, oc, (bx, by, bw, bh),
                          width=2 if is_this_active else 1, border_radius=5)
-        # Row number
+        # Row number (full-row centred vertically)
         _text(surf, f"{i+1}", 14, (160, 180, 200), bold=True,
               x=bx + 10, cy=by + bh // 2)
-        # Ident — bigger
+        # Ident — top half so the subtitle can sit underneath
         ident_col = MAGENTA if is_this_active else WHITE
-        _text(surf, wp.get("ident", ""), 24, ident_col, bold=True,
-              x=bx + 42, cy=by + bh // 2)
-        # ACTIVE badge
+        _text(surf, wp.get("ident", ""), 22, ident_col, bold=True,
+              x=bx + 42, y=by + 4)
+        # Subtitle — airport name + region, or USER · lat/lon
+        wp_name   = str(wp.get("name", "") or "")
+        wp_region = str(wp.get("region", "") or "")
+        wp_user   = bool(wp.get("user"))
+        if wp_user:
+            sub = f"USER  ·  {wp['lat']:.4f}, {wp['lon']:.4f}"
+            sub_col = (200, 180, 130)
+        elif wp_name:
+            if wp_region:
+                sub = f"{wp_name}, {wp_region}"
+            else:
+                sub = wp_name
+            sub_col = (150, 175, 205)
+        else:
+            # Airport with no cached name (old DB) — show lat/lon as
+            # a graceful fallback so the row stays informative.
+            sub = f"{wp['lat']:.4f}, {wp['lon']:.4f}"
+            sub_col = (130, 150, 180)
+        # Crop subtitle to fit the available width before the icons.
+        max_sub_x = bx + bw - 6 - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 14
+        # Trim characters until it fits — coarse but cheap.
+        font = _get_font(13, bold=False)
+        while sub and font.size(sub)[0] > (max_sub_x - (bx + 42)):
+            sub = sub[:-1]
+        _text(surf, sub, 13, sub_col, x=bx + 42, y=by + bh - 18)
+        # ACTIVE badge — top-right of the ident line
         if is_this_active:
             _text(surf, "● ACTIVE", 11, (60, 220, 100), bold=True,
-                  x=bx + 180, cy=by + bh // 2)
-        # User-waypoint marker (small "U" pip in the corner)
-        if wp.get("user"):
-            _text(surf, "U", 10, (200, 200, 110), bold=True,
-                  x=bx + 30, y=by + 4)
+                  x=bx + bw - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 78,
+                  y=by + 6)
         # Reorder / delete icons
         up_r, dn_r, del_r = _fpl_row_icon_rects((bx, by, bw, bh))
         _fpl_icon_btn(surf, up_r, "↑", dim=(i == 0))
