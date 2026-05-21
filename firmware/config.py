@@ -173,8 +173,23 @@ AHRS_KI_ACC             = 0.001   # accel integral gain — estimates gyro bias.
                                   # error (centripetal mismatch, sensor noise)
                                   # winds the integrator up. Bench tested: 0.001
                                   # gives <0.05° drift over 5 min at 5° bank.
-AHRS_KP_MAG             = 0.5     # mag proportional gain (yaw correction)
+AHRS_KP_MAG             = 0.10    # mag proportional gain (yaw correction).
+                                  # Lowered from 0.5 after AHRS-ROLL-YAW-COUPLING
+                                  # showed the higher gain was over-trusting mag
+                                  # transients during fast rotation through
+                                  # non-uniform fields (bench clutter, panel iron
+                                  # gradients).  Long-term yaw drift is anchored
+                                  # by AHRS_GPS_TRACK_* slaving once in flight.
 AHRS_ACCEL_GATE_G       = 0.20    # accel weight = 0 outside |a|=1g ± this band
+
+# Gyro-rate mag gate.  Mag weight ramps linearly from full at |gyro| <=
+# AHRS_MAG_GYRO_GATE_LO_DPS to zero at |gyro| >= AHRS_MAG_GYRO_GATE_HI_DPS.
+# Suppresses mag corrections when the chip is rotating fast enough to be
+# sweeping through position-dependent field gradients (bench tumble,
+# aerobatic-grade rolls).  Standard-rate turns (~3°/s) stay well below
+# the lo gate, so normal coordinated maneuvering is unaffected.
+AHRS_MAG_GYRO_GATE_LO_DPS = 10.0
+AHRS_MAG_GYRO_GATE_HI_DPS = 30.0
 
 # Use the WT901 magnetometer (PKT_MAG 0x54) in the Mahony correction. If the
 # WT901 isn't outputting mag packets the filter falls back to gyro-only yaw,

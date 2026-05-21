@@ -42,11 +42,23 @@ class Mahony:
                  kp_acc=1.0,
                  ki_acc=0.01,
                  kp_mag=0.5,
-                 accel_gate_g=0.20):
+                 accel_gate_g=0.20,
+                 mag_gyro_gate_lo_dps=10.0,
+                 mag_gyro_gate_hi_dps=30.0):
         self.kp_acc = kp_acc
         self.ki_acc = ki_acc
         self.kp_mag = kp_mag
         self.accel_gate_g = accel_gate_g
+        # Gyro-rate mag gate: linear ramp from full weight at |gyro| <
+        # gate_lo to zero weight at |gyro| > gate_hi.  Suppresses mag
+        # corrections during fast rotation, where the chip is sweeping
+        # through a position-dependent field faster than the mag fusion
+        # can follow.  Standard-rate turns (~3°/s) and most coordinated
+        # maneuvering stay well below the lo gate, so flight behaviour
+        # is unchanged; aggressive bench tumbling and aerobatic-grade
+        # rolls get gated out.
+        self.mag_gyro_gate_lo = math.radians(mag_gyro_gate_lo_dps)
+        self.mag_gyro_gate_hi = math.radians(mag_gyro_gate_hi_dps)
 
         # Quaternion: sensor-to-world (initially identity)
         self.q0 = 1.0
@@ -69,6 +81,9 @@ class Mahony:
         self.last_mag_err_x    = 0.0
         self.last_mag_err_y    = 0.0
         self.last_mag_err_z    = 0.0
+        # Diagnostic: effective mag weight after the gyro-rate gate
+        # (0..1).  Drops toward 0 during fast rotation.
+        self.last_mag_weight   = 0.0
 
     # ----------------------------------------------------------------------
     def update(self, gx, gy, gz, ax, ay, az,
@@ -118,7 +133,21 @@ class Mahony:
         if mx is not None and my is not None and mz is not None:
             m_mag = math.sqrt(mx*mx + my*my + mz*mz)
             if m_mag > 1e-6:
-                m_w = 1.0
+                # Gyro-rate mag gate: full weight at |gyro| <= gate_lo,
+                # linearly ramping to zero at |gyro| >= gate_hi.  During
+                # fast rotation the chip can move through a non-uniform
+                # external field faster than the orientation rotates it,
+                # so the mag-fusion correction interprets the field
+                # change as a yaw error.  Trust the gyro through the
+                # transient and let mag re-engage once motion settles.
+                gyro_mag = math.sqrt(gx*gx + gy*gy + gz*gz)
+                if gyro_mag <= self.mag_gyro_gate_lo:
+                    m_w = 1.0
+                elif gyro_mag >= self.mag_gyro_gate_hi:
+                    m_w = 0.0
+                else:
+                    span = self.mag_gyro_gate_hi - self.mag_gyro_gate_lo
+                    m_w = 1.0 - (gyro_mag - self.mag_gyro_gate_lo) / span
                 mx_n = mx / m_mag
                 my_n = my / m_mag
                 mz_n = mz / m_mag
@@ -149,6 +178,7 @@ class Mahony:
         self.last_mag_err_x = ex_m
         self.last_mag_err_y = ey_m
         self.last_mag_err_z = ez_m
+        self.last_mag_weight = m_w
 
         # ── Weighted error and gyro-bias integration ──
         ex = self.kp_acc * a_w * ex_a + self.kp_mag * m_w * ex_m

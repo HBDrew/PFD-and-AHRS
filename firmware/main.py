@@ -40,6 +40,7 @@ from config import (
     AHRS_CONNECTOR, AHRS_MOUNTING,
     AHRS_FILTER_ENABLE, AHRS_KP_ACC, AHRS_KI_ACC, AHRS_KP_MAG,
     AHRS_ACCEL_GATE_G, AHRS_USE_MAG,
+    AHRS_MAG_GYRO_GATE_LO_DPS, AHRS_MAG_GYRO_GATE_HI_DPS,
     AHRS_GPS_TRACK_ENABLE, AHRS_GPS_TRACK_MIN_KT,
     AHRS_GPS_TRACK_INTERVAL_S, AHRS_GPS_TRACK_ALPHA,
     AHRS_FWD_IN_SENSOR, AHRS_ALIGN_DURATION_S, FW_VERSION,
@@ -735,7 +736,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                               'gyr={:.2f},{:.2f},{:.2f},'
                               'mag={:.0f},{:.0f},{:.0f},'
                               'mag_err={:.4f},{:.4f},{:.4f},'
-                              'acc_w={:.2f},a_c_g={:.3f}'
+                              'acc_w={:.2f},mag_w={:.2f},a_c_g={:.3f}'
                               .format(fq.q0, fq.q1, fq.q2, fq.q3,
                                       f_roll, f_pitch, f_yaw,
                                       state['roll'], state['pitch'],
@@ -747,6 +748,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                                       fq.last_mag_err_y,
                                       fq.last_mag_err_z,
                                       fq.last_accel_weight,
+                                      fq.last_mag_weight,
                                       state.get('_a_centri_g', 0.0)))
                     except Exception:
                         pass
@@ -1220,13 +1222,16 @@ async def main():
     ahrs_filter = None
     if AHRS_FILTER_ENABLE:
         ahrs_filter = Mahony(
-            kp_acc       = AHRS_KP_ACC,
-            ki_acc       = AHRS_KI_ACC,
-            kp_mag       = AHRS_KP_MAG,
-            accel_gate_g = AHRS_ACCEL_GATE_G,
+            kp_acc               = AHRS_KP_ACC,
+            ki_acc               = AHRS_KI_ACC,
+            kp_mag               = AHRS_KP_MAG,
+            accel_gate_g         = AHRS_ACCEL_GATE_G,
+            mag_gyro_gate_lo_dps = AHRS_MAG_GYRO_GATE_LO_DPS,
+            mag_gyro_gate_hi_dps = AHRS_MAG_GYRO_GATE_HI_DPS,
         )
         print(f'Mahony AHRS filter enabled  Kp_acc={AHRS_KP_ACC} '
               f'Ki_acc={AHRS_KI_ACC} Kp_mag={AHRS_KP_MAG}'
+              f'  mag_gate={AHRS_MAG_GYRO_GATE_LO_DPS}..{AHRS_MAG_GYRO_GATE_HI_DPS}°/s'
               f'  use_mag={AHRS_USE_MAG}  gps_track_aid={AHRS_GPS_TRACK_ENABLE}')
     else:
         print('Mahony filter disabled — using WT901 PKT_ANGLE Euler output')
