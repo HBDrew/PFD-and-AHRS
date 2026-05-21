@@ -672,6 +672,78 @@ Work items:
   - Match pi4's "V-SPEEDS (knots)" header so the unit convention is
     explicit even when the speed tape is showing mph.
 
+### MAGCAL-PIZ-TUMBLE  Port pi4's hard-iron tumble mag-cal flow to pi_zero
+Status: **OPEN — pi4 done, pi_zero pending**
+The hard-iron tumble pass (PR #7 / commits a560924, 8280f68, 51705cd)
+landed on pi4 + firmware in last session's main merge.  pi_zero's cal
+modal still has the older 8-cardinal-only flow with no TUMBLE button.
+Needed:
+  - Cal modal: replace RESTART button with TUMBLE / STOP TUMBLE
+  - Live elapsed + per-axis spread readout during tumble
+  - Wire /magoff?action=tumble_start|tumble_finish HTTP endpoints
+    (or the same over USB serial) — the Pico side already exists
+  - State plumbing: _magtumble_active gate + _mag_cal_tumble_tick
+Reference: pi4 implementation in pi4/pfd.py and firmware/main.py.
+
+### DEPLOY-RSYNC  Friend-friendly deploy story (rsync recipe)
+Status: **OPEN**
+Multiple friends will be setting up displays — current workflow has too
+many manual steps.  Consolidate into one place:
+  - SRTM3 hand-off: `tools/compact_srtm.py --output-dir` on pi4 →
+    rsync to pi_zero (already implemented; document the recipe)
+  - Water masks hand-off: rsync pi4's `data/water/` → pi_zero
+  - State-lines cache: rsync pi4's `data/natural_earth/` → pi_zero
+    (pi_zero won't need pyshp at all in this mode)
+  - Single bootstrap script that takes a pi4 hostname and does all
+    three rsyncs end-to-end
+End-state: friend boots a fresh pi_zero, runs one command, has
+working terrain + water + state lines without doing any Mapzen
+downloads.
+
+### DOCS-SWEEP  README + user manual refresh
+Status: **OPEN — recurring**
+Last session landed PR #8 (77 commits, screen sync, MFD parity, Pico
+2W, IAS enable, mag-cal tumble, terrain backdrop, etc.).  Manuals
+and README don't yet cover:
+  - Screen sync setup + per-category TX/RX UX
+  - MFD MAP LAYERS row + AIRPORT DATA type filters
+  - Pico 2W (RP2350) BOOTSEL + UF2 flow
+  - COMPACT button + tools/compact_srtm.py
+  - TUMBLE mag-cal flow + when to use it
+  - Updated zoom ladder (1/2/5/10/20/40/80/160/AUTO) on pi_zero MFD
+  - Heading-source AUTO + 3 kt threshold
+README needs the deploy story from DEPLOY-RSYNC once that's nailed.
+
+### STATE-LINES-COUNTRIES  Add admin_0 country lines layer
+Status: **OPEN**
+Today we only fetch + render `ne_10m_admin_1_states_provinces`.  Inside
+the US, admin_1 polygons happen to include the international borders
+along the perimeter, so the Canada/Mexico borders draw for free.  For
+international flying (Japan, EU, etc.) we want admin_0 explicitly.
+~30 min of work: clone the admin_1 fetch / NPZ-build / render path
+in pi_zero/pfd.py + pi_zero/moving_map.py to a parallel admin_0
+implementation.  Toggleable on the Display setup MAP LAYERS row.
+
+### PI4-ETE-LATENCY  pi4 inset ETE takes a beat to populate
+Status: **OPEN — investigate**
+PiZ data-strip ETE updates instantly when a D2 is activated; pi4's
+inset ETE shows `--:--` for a noticeable interval before catching up.
+Both code paths now use great-circle distance (per PR #8 ETE fix),
+so it's not a math thing — likely a stale-cache or projector-recompute
+in the inset draw path on pi4.  Check whether pi4's inset uses a
+quantised render cycle that delays first-frame ETE pickup.
+
+### SYNC-CACHES-PI4-TO-PIZ  Push water + state-line caches pi4 → piZ
+Status: **OPEN — covered by DEPLOY-RSYNC but worth tracking**
+On users who have both displays, pi4 already does the heavy lift
+(downloading Natural Earth, pyshp water-mask rasterisation, etc.).
+Pi_zero should be able to pull the cooked `data/water/` and
+`data/natural_earth/` from pi4 over the network — no need to repeat
+the work or even install pyshp on pi_zero.  Subset of the
+DEPLOY-RSYNC story; included here as a standalone item in case it
+gets implemented as an in-app "Sync from pi4" button instead of a
+bare rsync.
+
 ---
 
 ## Completed
