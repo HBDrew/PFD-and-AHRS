@@ -30,16 +30,29 @@ apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     python3-pygame \
     python3-numpy \
+    python3-serial \
+    python3-pyshp \
     libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev \
     fonts-dejavu-core \
-    git curl \
-    2>/dev/null
+    git curl
 
 echo "[3/8] Verifying Python packages…"
 # pygame and numpy are installed via apt (python3-pygame, python3-numpy) above.
 # No pip install needed — avoids PEP 668 "externally managed environment" error
 # on Bookworm+.
 python3 -c "import pygame; import numpy; print(f'  → pygame {pygame.ver}, numpy {numpy.__version__}')"
+# pyshp powers the water-mask + state-line download path on the Terrain Data
+# screen.  apt's python3-pyshp doesn't exist on every RPi OS variant, so fall
+# back to pip if the import still fails after the apt step above.
+if ! python3 -c "import shapefile" 2>/dev/null; then
+    echo "  → pyshp not present via apt — installing via pip"
+    pip3 install --break-system-packages pyshp || \
+        sudo -u "$RUN_USER" pip3 install --break-system-packages --user pyshp || {
+            echo "  ! WARNING: pyshp install failed — water masks + state lines will not work"
+            echo "    Run manually:  sudo pip3 install --break-system-packages pyshp"
+        }
+fi
+python3 -c "import shapefile; print(f'  → pyshp {shapefile.__version__}')" 2>/dev/null || true
 
 echo "[4/8] Configuring Waveshare 3.5\" DPI LCD…"
 # Waveshare 3.5inch DPI LCD: 640×480, DPI parallel RGB interface, I2C touch
@@ -75,14 +88,20 @@ After=network.target
 
 [Service]
 User=$RUN_USER
+SupplementaryGroups=video render input dialout
 WorkingDirectory=$ZERO_DIR
-Environment="SDL_FBDEV=/dev/fb0"
-Environment="SDL_VIDEODRIVER=fbcon"
+# kmsdrm is required when the panel is driven via vc4-kms-DPI-35inch
+# (the new Waveshare 3.5" DPI overlay).  fbcon was correct only for
+# legacy framebuffer-console mode, which the KMS overlay disables —
+# SDL would silently fail to init video and the PFD would crash on
+# the first pygame call.
+Environment="SDL_VIDEODRIVER=kmsdrm"
 Environment="DISPLAY="
 Environment="PYTHONPATH=$SHARED_DIR"
 ExecStart=/usr/bin/python3 $ZERO_DIR/pfd.py
 Restart=always
 RestartSec=5
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target

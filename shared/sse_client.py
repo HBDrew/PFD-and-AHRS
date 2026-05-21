@@ -28,6 +28,14 @@ class SSEClient(threading.Thread):
         self.reconnect_delay = reconnect_delay
         self.connected      = False
         self.paused         = False  # when True, skip state.update so sim/demo win
+        # Diagnostic counters mirror SerialClient's interface so the
+        # AHRS LINK row on the Connectivity screen shows real numbers
+        # regardless of which transport is active.  Without these,
+        # getattr(client, "rx_count", 0) returned 0 forever on WiFi —
+        # which looks identical to a dead link.
+        self.rx_count        = 0     # SSE data: events parsed OK
+        self.err_count       = 0     # JSON / I/O errors
+        self.last_err        = ""    # most recent error message
         self._stop_event    = threading.Event()
 
     def stop(self):
@@ -38,7 +46,9 @@ class SSEClient(threading.Thread):
             try:
                 self._connect_and_read()
             except Exception as e:
-                print(f"[SSE] Error: {e}")
+                self.err_count += 1
+                self.last_err = f"{type(e).__name__}: {e}"
+                print(f"[SSE] Error: {self.last_err}")
             self.connected = False
             if not self._stop_event.is_set():
                 print(f"[SSE] Reconnecting in {self.reconnect_delay}s…")
@@ -107,8 +117,10 @@ class SSEClient(threading.Thread):
                             with self.lock:
                                 self.state.update(update)
                         self.connected = True
-                    except json.JSONDecodeError:
-                        pass
+                        self.rx_count += 1
+                    except json.JSONDecodeError as e:
+                        self.err_count += 1
+                        self.last_err = f"JSON: {e.msg} @ col {e.colno}"
 
         finally:
             sock.close()

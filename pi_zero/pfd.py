@@ -36,11 +36,23 @@ import pygame.gfxdraw
 
 from config import *   # noqa: F403
 from sse_client import SSEClient
-from terrain import get_elevation_ft   # elevation lookup only — no SVT renderer
+from terrain import (
+    get_elevation_ft, get_elevation_ft_combined,
+    coarse_tile_list, coarse_tile_url, coarse_tile_path, coarse_disk_stats,
+    set_resolution_preference as _srtm_set_resolution_preference,
+)   # elevation lookup only — no SVT renderer
+
+# Pi Zero 2W only has 512 MB RAM and the tint samples ~2300 elevation
+# points anyway — SRTM1 (25 MB / 52 MB-in-RAM per tile) is wasteful
+# and contributed to OOM-reboots at wider zooms.  Tell the shared
+# tile loader to treat any SRTM1 .hgt files as missing so it falls
+# through to SRTM3 (5.8 MB-in-RAM per tile).
+_srtm_set_resolution_preference("srtm3")
 import obstacles as obs_mod
 import airports as apt_mod
-import runways as rwy_mod
+import water as water_mod
 import settings as _settings
+import screen_sync as _ssync_mod
 
 DEG = math.pi / 180
 
@@ -60,6 +72,7 @@ TAPE_BG    = (  0,   8,  22, 195)
 DIMGREY    = ( 80,  80,  90)
 LTGREY     = (180, 180, 190)
 MAGENTA    = (220,   0, 220)
+AMBER      = (255, 190,  30)   # warmer than YELLOW; used for degraded sources
 
 # ── Shared state ─────────────────────────────────────────────────────────────
 _state_lock = threading.Lock()
@@ -88,6 +101,7 @@ disp["numpad_prev"]   = "pfd"       # mode to return to on cancel/enter
 disp["kbd_target"]    = ""          # field being edited in keyboard mode
 disp["kbd_buf"]       = ""          # text entered so far
 disp["kbd_prev"]      = "flight_profile"  # mode to return to on DONE/CANCEL
+disp["kbd_error"]     = ""          # error string shown on the keyboard (nav: UNKNOWN WAYPOINT)
 disp["fp"] = {                      # flight-profile values
     "tail":   "N12345", "actype": "C172S",
     "vs0":    VS0,  "vs1": VS1,  "vfe": VFE,
@@ -97,6 +111,7 @@ disp["fp"] = {                      # flight-profile values
 disp["display_mode"]  = "pfd"       # "pfd" | "mfd" (MFD not yet implemented)
 disp["td"] = {                      # terrain download state
     "downloading": False,
+    "compacting":  False,            # SRTM1 → SRTM3 in-place compactor
     "dl_region":   "",
     "dl_current":  0,
     "dl_total":    0,
@@ -116,7 +131,6 @@ disp["od"] = {                      # obstacle download/parse state
 }
 _obstacles = None           # loaded obstacle array (module-level)
 _airports  = None           # loaded airport array (module-level)
-_runways   = None           # loaded runway array (module-level)
 disp["ad"] = {                      # airport download/parse state
     "downloading": False,
     "dl_status":   "",
@@ -132,19 +146,37 @@ disp["ad"] = {                      # airport download/parse state
     "show_heli":     True,
     "show_seaplane": False,
     "show_other":    False,
-    # Runway polygons + extended centerlines
-    "show_runways":     True,
-    "show_centerlines": True,
 }
 disp["ds"] = {                      # display settings
     "spd_unit":  "kt",   "alt_unit":   "ft",
     "baro_unit": "inhg", "brightness": 8,  "night_mode": False,
+    # MFD settings — only relevant when disp["display_mode"] == "mfd".
+    "map_orient":       "trk",   # "trk" | "nrth"
+    "map_zoom_nm":      10,      # half-extent of the inset's shorter axis
+    "map_show_terrain":  True,
+    "map_show_water":    True,
+    "map_show_airports": True,
+    "map_show_obstacles": True,
+    "map_show_state_lines": True,
 }
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
     "mag_cal":       "idle", "mounting": "normal",
-    "hdg_src":       "mag",   # "mag" | "gps"  — heading source (magnetic or GPS track)
+    "hdg_src":       "auto",  # "mag" | "trk" | "auto" — heading source preference
     "airspeed_src":  "gps",   # "gps" | "ias"  — speed source (GPS groundspeed or IAS sensor)
+}
+disp["wd"] = {                      # water-mask download / rasterise state
+    "downloading": False,
+    "dl_status":   "",
+    "dl_current":  0,
+    "dl_total":    0,
+    "dl_cancel":   False,
+}
+disp["fw"] = {                      # AHRS firmware loader state
+    "push_state":  "",   # ""|"pushing"|"done"|"error"
+    "push_msg":    "",
+    "flash_state": "",   # ""|"flashing"|"done"|"error"
+    "flash_msg":   "",
 }
 disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
@@ -158,6 +190,27 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_rx":        0,    # count of $AHRS, lines parsed OK
     "ahrs_err":       0,    # count of parse / IO errors
     "ahrs_last_err":  "",   # most recent error message
+    # Screen-to-screen sync.  Each category is opt-in per direction so a
+    # screen with its own AHRS can still publish bugs/baro/nav to a
+    # second screen, etc.  All default off; toggled in the Screen Sync
+    # subscreen.
+    "sync_publish_bugs": False, "sync_consume_bugs": False,
+    "sync_publish_baro": False, "sync_consume_baro": False,
+    "sync_publish_nav":  False, "sync_consume_nav":  False,
+    "sync_publish_ahrs": False, "sync_consume_ahrs": False,
+    "sync_publish_gps":  False, "sync_consume_gps":  False,
+}
+disp["nav"] = {                     # direct-to navigation
+    "ident":   "",      # ICAO/local ID of active waypoint, "" = none
+    "lat":     0.0,
+    "lon":     0.0,
+    "elev_ft": 0.0,
+    "act_lat": 0.0,     # aircraft lat at activation (CDI course reference)
+    "act_lon": 0.0,
+}
+disp["mfd_pan"] = {                 # MFD pan offset
+    "lat": None,        # None → map follows aircraft
+    "lon": None,
 }
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
@@ -176,12 +229,283 @@ _sse_client  = None
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
+# ── Screen-to-screen sync ────────────────────────────────────────────────────
+# Created in main() once disp["cs"] has been restored from settings.json.
+_screen_sync = None
+# When a remote update arrives we want to mark it as applied without
+# bouncing it back out as a fresh broadcast.  Bumped by listener
+# callbacks, checked by _ssync_publish_*.
+_ssync_suppress_publish = 0
+
+
+def _ssync_kinds_from_cs(direction):
+    """Build the set of categories whose `direction` ("publish" / "consume")
+    toggle is on in disp["cs"]."""
+    out = set()
+    cs = disp.get("cs", {})
+    for k in (_ssync_mod.KIND_BUGS, _ssync_mod.KIND_BARO,
+              _ssync_mod.KIND_NAV,  _ssync_mod.KIND_AHRS,
+              _ssync_mod.KIND_GPS):
+        if cs.get(f"sync_{direction}_{k}", False):
+            out.add(k)
+    return out
+
+
+def _ssync_refresh_kinds():
+    """Push current disp["cs"] sync toggles into the live ScreenSync."""
+    if _screen_sync is None:
+        return
+    _screen_sync.set_publish_kinds(_ssync_kinds_from_cs("publish"))
+    _screen_sync.set_consume_kinds(_ssync_kinds_from_cs("consume"))
+
+
+def _ssync_publish_bugs():
+    """Broadcast current bug values to peer screens (no-op when neither
+    sync is running nor publish-bugs is enabled)."""
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    _screen_sync.publish(_ssync_mod.KIND_BUGS, {
+        "alt_bug": float(disp.get("alt_bug", 0.0)),
+        "spd_bug": float(disp.get("spd_bug", 0.0)),
+        "hdg_bug": float(disp.get("hdg_bug", 0.0)),
+        "vs_bug":  float(disp.get("vs_bug",  0.0)),
+    })
+
+
+def _ssync_apply_bugs(data):
+    """Listener callback: apply incoming bug values from a peer.  Sets
+    the suppression flag so the assignment doesn't echo back out."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if "alt_bug" in data:
+            disp["alt_bug"] = float(data["alt_bug"])
+        if "spd_bug" in data:
+            disp["spd_bug"] = float(data["spd_bug"])
+        if "hdg_bug" in data:
+            disp["hdg_bug"] = float(data["hdg_bug"])
+        if "vs_bug" in data:
+            disp["vs_bug"] = float(data["vs_bug"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_baro():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    _screen_sync.publish(_ssync_mod.KIND_BARO, {
+        "baro_hpa": float(disp.get("baro_hpa", BARO_DEFAULT_HPA)),
+    })
+
+
+def _ssync_apply_baro(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if "baro_hpa" in data:
+            new_hpa = float(data["baro_hpa"])
+            disp["baro_hpa"] = new_hpa
+            # Mirror the numpad-commit path: keep shared state in lock-step
+            # and push the new altimeter setting to the Pico if connected.
+            try:
+                with _state_lock:
+                    state["baro_hpa"] = new_hpa
+                _push_baro_to_pico(new_hpa)
+            except Exception:
+                pass
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_nav():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    nav = disp.get("nav", {})
+    _screen_sync.publish(_ssync_mod.KIND_NAV, {
+        "ident":   nav.get("ident", ""),
+        "lat":     float(nav.get("lat", 0.0)),
+        "lon":     float(nav.get("lon", 0.0)),
+        "elev_ft": float(nav.get("elev_ft", 0.0)),
+        "act_lat": float(nav.get("act_lat", 0.0)),
+        "act_lon": float(nav.get("act_lon", 0.0)),
+    })
+
+
+_ssync_last_ahrs_t = 0.0
+_ssync_last_gps_t  = 0.0
+_SSYNC_AHRS_MIN_DT = 0.05    # 20 Hz upper bound
+_SSYNC_GPS_MIN_DT  = 0.20    # 5 Hz upper bound
+
+
+def _ssync_publish_ahrs():
+    """Broadcast attitude at most 20 Hz."""
+    global _ssync_last_ahrs_t
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    if not _screen_sync.publish_enabled(_ssync_mod.KIND_AHRS):
+        return
+    now = time.monotonic()
+    if now - _ssync_last_ahrs_t < _SSYNC_AHRS_MIN_DT:
+        return
+    _ssync_last_ahrs_t = now
+    _screen_sync.publish(_ssync_mod.KIND_AHRS, {
+        "pitch":    float(disp.get("pitch", 0.0)),
+        "roll":     float(disp.get("roll",  0.0)),
+        "yaw":      float(disp.get("yaw",   0.0)),
+        # Include health so the receiving screen can mark its attitude
+        # indicator as live (no red X) when a peer's Pico is sourcing it.
+        "ahrs_ok":  bool(disp.get("ahrs_ok", False)),
+    })
+
+
+def _ssync_apply_ahrs(data):
+    """Inject remote attitude into the shared state dict so the normal
+    smoothing path picks it up.  Only useful when this screen has no
+    local AHRS source — otherwise the local writer just bashes it back
+    on the next sensor sample."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        with _state_lock:
+            if "pitch" in data:
+                state["pitch"] = float(data["pitch"])
+            if "roll" in data:
+                state["roll"]  = float(data["roll"])
+            if "yaw" in data:
+                state["yaw"]   = float(data["yaw"])
+            if "ahrs_ok" in data:
+                state["ahrs_ok"] = bool(data["ahrs_ok"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_gps():
+    """Broadcast GPS + altitude + airspeed sensor outputs at most 5 Hz.
+
+    The "gps" category is the convenience bucket for everything the
+    Pico produces that isn't attitude — position, fused altitude / VS,
+    baro source flag, MS4525/SDP3x air-data.  On a setup where one
+    screen has the Pico and the other shadows it, RX of this category
+    is what makes the altimeter tape and airspeed source work without
+    a local sensor.
+    """
+    global _ssync_last_gps_t
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    if not _screen_sync.publish_enabled(_ssync_mod.KIND_GPS):
+        return
+    now = time.monotonic()
+    if now - _ssync_last_gps_t < _SSYNC_GPS_MIN_DT:
+        return
+    _ssync_last_gps_t = now
+    _screen_sync.publish(_ssync_mod.KIND_GPS, {
+        # Position
+        "lat":         float(disp.get("lat", 0.0)),
+        "lon":         float(disp.get("lon", 0.0)),
+        "gps_alt":     float(disp.get("gps_alt", 0.0)),
+        "speed":       float(disp.get("speed", 0.0)),
+        "track":       float(disp.get("track", 0.0)),
+        "gps_ok":      bool(disp.get("gps_ok", False)),
+        "fix":         int(disp.get("fix", 0)),
+        "sats":        int(disp.get("sats", 0)),
+        # Altitude / vertical
+        "alt":         float(disp.get("alt", 0.0)),
+        "vspeed":      float(disp.get("vspeed", 0.0)),
+        "baro_src":    str(disp.get("baro_src", "gps")),
+        "baro_ok":     bool(disp.get("baro_ok", False)),
+        # Air data
+        "ias_kt":      float(disp.get("ias_kt", 0.0)),
+        "tas_kt":      float(disp.get("tas_kt", 0.0)),
+        "airdata_ok":  bool(disp.get("airdata_ok", False)),
+    })
+
+
+def _ssync_apply_gps(data):
+    """Inject remote GPS + altitude + airspeed into shared state."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        with _state_lock:
+            for k in ("lat", "lon", "gps_alt", "speed", "track",
+                      "alt", "vspeed", "ias_kt", "tas_kt"):
+                if k in data:
+                    state[k] = float(data[k])
+            if "gps_ok" in data:
+                state["gps_ok"] = bool(data["gps_ok"])
+            if "fix" in data:
+                state["fix"] = int(data["fix"])
+            if "sats" in data:
+                state["sats"] = int(data["sats"])
+            if "baro_src" in data:
+                state["baro_src"] = str(data["baro_src"])
+            if "baro_ok" in data:
+                state["baro_ok"] = bool(data["baro_ok"])
+            if "airdata_ok" in data:
+                state["airdata_ok"] = bool(data["airdata_ok"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_apply_nav(data):
+    """Apply a remote D2 update.  Empty ident clears D2 (matches the
+    CANCEL D2 button on the keyboard)."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        ident = str(data.get("ident", ""))
+        if not ident:
+            disp["nav"]["ident"]   = ""
+            disp["nav"]["lat"]     = 0.0
+            disp["nav"]["lon"]     = 0.0
+            disp["nav"]["elev_ft"] = 0.0
+            disp["nav"]["act_lat"] = 0.0
+            disp["nav"]["act_lon"] = 0.0
+        else:
+            disp["nav"]["ident"]   = ident
+            disp["nav"]["lat"]     = float(data.get("lat", 0.0))
+            disp["nav"]["lon"]     = float(data.get("lon", 0.0))
+            disp["nav"]["elev_ft"] = float(data.get("elev_ft", 0.0))
+            disp["nav"]["act_lat"] = float(data.get("act_lat", 0.0))
+            disp["nav"]["act_lon"] = float(data.get("act_lon", 0.0))
+    finally:
+        _ssync_suppress_publish -= 1
+
 # ── GPS-slaved heading complementary filter ───────────────────────────────────
 # Propagate heading using the AHRS gyro yaw-rate (smooth, 30 Hz) and
 # slowly slave the absolute reference toward the GPS ground track (1–5 Hz,
 # noisy).  This mirrors how real GPS/IRS heading modes work.
 _gps_hdg      = None   # current complementary-filter output (degrees, 0–360)
 _prev_yaw_disp = None  # disp["yaw"] value from the previous frame
+
+HDG_TRK_MIN_KT = 3.0   # below this speed, GPS track is unreliable
+
+
+def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
+    """Resolve the user's preference (hdg_src in {"mag","trk","auto"}) +
+    runtime conditions into the active source.  Mirrors pi4's
+    _resolve_hdg_source so the two displays use identical UX.
+
+    Returns (use_track: bool, label: str, color: tuple).
+    """
+    track_ok = gps_ok and (speed_kt or 0.0) > HDG_TRK_MIN_KT
+    mag_ok   = ahrs_ok
+
+    if hdg_src_pref == "mag":
+        if mag_ok:
+            return False, "M", WHITE
+        return False, "M?", AMBER
+    if hdg_src_pref == "trk":
+        if track_ok:
+            return True, "G", MAGENTA
+        if mag_ok:
+            return False, "G?", AMBER
+        return False, "?", AMBER
+    # auto: prefer TRK when GPS is moving, fall back to MAG
+    if track_ok:
+        return True, "G", MAGENTA
+    if mag_ok:
+        return False, "M", WHITE
+    return False, "?", AMBER
 
 
 # ── GPS heading complementary filter ─────────────────────────────────────────
@@ -358,6 +682,11 @@ def _restart_sse(url):
     sse_url = url.rstrip("/") + "/events"
     _sse_client = SSEClient(sse_url, state, _state_lock)
     _sse_client.start()
+    # Keep the AHRS LINK row's transport label honest — TEST AHRS / a
+    # WiFi-side restart needs to overwrite whatever USB labels were set
+    # at boot, otherwise the screen lies about which transport is live.
+    disp["cs"]["ahrs_transport"] = "wifi"
+    disp["cs"]["ahrs_port"]      = sse_url
     print(f"[PFD] SSE → {sse_url}")
 
 
@@ -416,8 +745,10 @@ def smooth_state():
     """Copy live state → display values with IIR smoothing for analogue fields."""
     with _state_lock:
         snap = dict(state)
-    for k in ("roll", "pitch", "ay", "speed", "alt", "vspeed"):
-        disp[k] = disp[k] * (1 - SMOOTH_K) + snap[k] * SMOOTH_K
+    for k in ("roll", "pitch", "ay", "speed", "alt", "vspeed",
+              "ias_kt", "tas_kt"):
+        if k in snap:
+            disp[k] = disp.get(k, 0.0) * (1 - SMOOTH_K) + snap[k] * SMOOTH_K
     # Heading: handle 0/360 wraparound
     dh = ((snap["yaw"] - disp["yaw"] + 180) % 360) - 180
     disp["yaw"] = (disp["yaw"] + dh * SMOOTH_K) % 360
@@ -428,9 +759,10 @@ def smooth_state():
     # whenever the SSE stream carried a stale QNH echo back from the firmware.
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
-              "ahrs_ok", "gps_ok", "baro_ok",
+              "ahrs_ok", "gps_ok", "baro_ok", "airdata_ok",
               "pitch_trim", "roll_trim", "yaw_trim"):
-        disp[k] = snap[k]
+        if k in snap:
+            disp[k] = snap[k]
 
 
 # ── Font helpers ──────────────────────────────────────────────────────────────
@@ -464,10 +796,30 @@ def _get_font(size: int, bold: bool = False):
     return _fonts[key]
 
 
+# LRU cache of rendered text surfaces.  pi_zero calls _text dozens of
+# times per frame (tape ticks, readouts, status labels) and font.render
+# allocates a fresh SDL surface each call — at 12 fps that was a major
+# source of memory churn, contributing to OOM-reboots during sustained
+# high-FPS scenes like a steep turn.  The cache caps at 512 entries
+# (~3 MB worst case for typical label sizes), evicting LRU on overflow.
+import collections as _collections_text
+_TEXT_CACHE_MAX = 512
+_text_cache: "_collections_text.OrderedDict" = _collections_text.OrderedDict()
+
+
 def _text(surf, txt, size, colour, cx=None, cy=None, x=None, y=None, bold=False):
     """Render text centred on (cx,cy) or top-left at (x,y)."""
-    fnt = _get_font(size, bold)
-    img = fnt.render(str(txt), True, colour)
+    txt_s = str(txt)
+    key = (txt_s, size, colour, bold)
+    img = _text_cache.get(key)
+    if img is None:
+        fnt = _get_font(size, bold)
+        img = fnt.render(txt_s, True, colour)
+        _text_cache[key] = img
+        if len(_text_cache) > _TEXT_CACHE_MAX:
+            _text_cache.popitem(last=False)
+    else:
+        _text_cache.move_to_end(key)
     if cx is not None:
         rx = cx - img.get_width() // 2
     else:
@@ -657,23 +1009,44 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     surf.set_clip(pygame.Rect(ax, ay, aw, ah))
 
     cx  = ax + aw // 2
-    cy  = ay + ah // 2
-    pitch_py = int(pitch * px_per_deg)
+    # Anchor the horizon at TAPE_MID — same reference centre the pitch
+    # ladder uses for its zero-pitch line.  Using the rect's geometric
+    # centre (ay + ah/2) put the horizon ~11 px above TAPE_MID for
+    # _full_ai = (0, 0, W, HDG_Y), producing a visible ~1° gap between
+    # the white horizon line drawn here and the pitch-ladder horizon.
+    cy  = TAPE_MID
 
-    # Horizon passes through (hcx, hcy) tilted by roll
-    hcx = cx
-    hcy = cy - pitch_py
     roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
 
-    # Extend horizon line well beyond the rect so clipping takes care of edges
+    # Horizon point: the point on the horizon line closest to the camera
+    # centre. Sign convention must match draw_pitch_ladder's _rv() which
+    # rotates body coords (0, pitch_px) to screen (cx + pitch_px*sin_r,
+    # cy + pitch_px*cos_r) — so the sky/ground polygon, the horizon
+    # line, and the pitch-ladder 0° line all draw at the same point for
+    # any pitch / roll combination.
+    pitch_offset = pitch * px_per_deg
+    hcx = cx + pitch_offset * sin_r
+    hcy = cy + pitch_offset * cos_r
+
+    # Extend horizon line well beyond the rect so clipping takes care of edges.
+    # Line direction in pygame Y-down is (cos_r, -sin_r); for positive roll
+    # (right bank) that's "right and up" → LEFT-DOWN, RIGHT-UP, matching the
+    # pitch-ladder white horizon line.
     R  = aw + ah
     h1 = (hcx - R * cos_r, hcy + R * sin_r)
     h2 = (hcx + R * cos_r, hcy - R * sin_r)
 
-    # Classify each corner: sky side = dot product with "up" normal > 0
+    # Classify each corner relative to the (h1, h2) line. The implicit
+    # equation of that line is sin_r*(px-hcx) + cos_r*(py-hcy) = 0; sky is
+    # the side where py is "above" (smaller y in pygame), giving
+    #     sky_side(p) = (hcy - py)*cos_r + (hcx - px)*sin_r > 0.
+    # The older form used (px - hcx) which flipped the sin term and
+    # silently classified points against a different line — visible only at
+    # non-zero roll, where the polygon edge and the drawn h1-h2 white line
+    # disagreed.
     def _sky_side(px, py):
-        return (hcy - py) * cos_r + (px - hcx) * sin_r > 0
+        return (hcy - py) * cos_r + (hcx - px) * sin_r > 0
 
     corners = [(ax, ay), (ax + aw, ay), (ax + aw, ay + ah), (ax, ay + ah)]
 
@@ -688,9 +1061,9 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
             sky_poly.append(c)
         if c_sky != nc_sky:
             dx, dy = nc[0] - c[0], nc[1] - c[1]
-            denom  = -dy * cos_r + dx * sin_r
+            denom  = dy * cos_r + dx * sin_r
             if abs(denom) > 1e-6:
-                t  = (-(hcy - c[1]) * cos_r - (c[0] - hcx) * sin_r) / denom
+                t  = ((hcy - c[1]) * cos_r + (hcx - c[0]) * sin_r) / denom
                 sky_poly.append((c[0] + t * dx, c[1] + t * dy))
 
     # Fill ground first (covers whole rect), then paint sky polygon on top
@@ -704,6 +1077,125 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     pygame.draw.line(surf, WHITE,
                      (int(h1[0]), int(h1[1])), (int(h2[0]), int(h2[1])), 2)
 
+    surf.set_clip(old_clip)
+
+
+# ── Above-horizon terrain silhouette ──────────────────────────────────────────
+# Pi Zero 2W can't afford the full SVT mesh that pi4 runs through OpenGL —
+# the per-quad math + draw cost over ~200 polygons leaves no frame budget
+# at 30 fps. Instead we ray-cast forward across the AI's horizontal FOV,
+# look up the SRTM peak along each ray, and draw a single silhouette
+# polygon for any terrain rising above the visual horizon. ~3-5 ms/frame
+# on a Pi Zero 2W.
+_AHT_N_RAYS         = 41
+_AHT_HALF_FOV_DEG   = 33.0                    # ±33° covers the full 640 px display width at
+                                              # 10 px/deg with margin for roll-induced edge growth
+_AHT_DIST_NM        = (0.5, 1.0, 2.0, 4.0, 7.0, 12.0, 20.0)
+_AHT_PX_PER_DEG     = 10.0                    # match draw_simple_ai_background + draw_pitch_ladder
+                                              # (NOT the 8.0 obstacles use — caused a 20 px gap
+                                              # between the silhouette base and the horizon line)
+
+# Silhouette fill colour by worst-case clearance (terrain above us is red,
+# borderline-above is orange, comfortably-below would be brown but the
+# polygon only renders when peaks exceed the eye-level horizon).
+def _aht_fill_colour(min_clearance_ft):
+    if min_clearance_ft < TERRAIN_WARNING_FT:
+        return (170,  35,  30)   # red — peak at or above aircraft alt
+    if min_clearance_ft < TERRAIN_CAUTION_FT:
+        return (180, 100,  30)   # orange — peak within 700 ft
+    return (140,  85,  35)       # dark brown — peak comfortably below
+
+
+def draw_above_horizon_terrain(surf, ai_rect, lat, lon, alt_ft,
+                               hdg_deg, pitch_deg, roll_deg):
+    """Ray-cast forward across the AI's FOV, find each ray's max SRTM
+    elevation, and draw the resulting peak silhouette as a single
+    polygon between the silhouette curve and the visual horizon line.
+
+    No-op when SRTM tiles aren't loaded (TAWS banner covers that case).
+    Colour reflects the worst clearance across the visible peaks.
+    """
+    import numpy as _np
+
+    if not _has_terrain:
+        return
+
+    ax, ay_r, aw, ah = ai_rect
+    cx = ax + aw // 2
+    # Same TAPE_MID anchor as draw_simple_ai_background / draw_pitch_ladder
+    # so the silhouette base sits exactly on the horizon line.
+    cy = TAPE_MID
+
+    nm_per_deg_lat = 60.0
+    nm_per_deg_lon = max(1.0, 60.0 * math.cos(math.radians(lat)))
+
+    # Ray bearings, relative to nose
+    rays_rel_brg = _np.linspace(-_AHT_HALF_FOV_DEG, _AHT_HALF_FOV_DEG, _AHT_N_RAYS)
+    abs_brg_rad  = _np.radians((hdg_deg + rays_rel_brg) % 360.0)
+
+    # Per-ray peak elevation (ft, MSL) — start at "no peak"
+    peak_elev = _np.full(_AHT_N_RAYS, -9999.0, dtype=_np.float64)
+    peak_dist = _np.full(_AHT_N_RAYS,    0.0,  dtype=_np.float64)
+
+    for d_nm in _AHT_DIST_NM:
+        sample_lats = lat + d_nm * _np.cos(abs_brg_rad) / nm_per_deg_lat
+        sample_lons = lon + d_nm * _np.sin(abs_brg_rad) / nm_per_deg_lon
+        for i in range(_AHT_N_RAYS):
+            elev = get_elevation_ft_combined(SRTM_DIR, COARSE_DIR,
+                                             float(sample_lats[i]),
+                                             float(sample_lons[i]))
+            if elev > peak_elev[i]:
+                peak_elev[i] = elev
+                peak_dist[i] = d_nm
+
+    # Visual elevation angle of each peak from the aircraft (positive =
+    # peak rises above eye level).  Use the per-ray distance the peak
+    # was sampled at — closer peaks loom larger for the same elevation.
+    dist_ft  = peak_dist * 6076.0
+    dist_ft  = _np.maximum(dist_ft, 1.0)
+    peak_deg = _np.degrees(_np.arctan2(peak_elev - alt_ft, dist_ft))
+
+    # Cull when no ray has terrain rising above horizon
+    if not (peak_deg > 0.1).any():
+        return
+
+    # Project to screen in the same convention as draw_pitch_ladder (the
+    # silhouette polygon then rotates with roll exactly like the
+    # horizon line and the obstacle symbols).
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
+
+    sxr     = rays_rel_brg * _AHT_PX_PER_DEG
+    # peak_deg clamped at 0 so non-visible rays sit flush on the
+    # horizon — they contribute zero polygon height at that bearing.
+    syr_top = (pitch_deg - _np.maximum(peak_deg, 0.0)) * _AHT_PX_PER_DEG
+    syr_hor = pitch_deg * _AHT_PX_PER_DEG
+
+    # Rotation must match draw_pitch_ladder._rv() so the silhouette
+    # rotates with the horizon line (not against it). Body coord (x, y)
+    # → screen (cx + x*cos_r + y*sin_r, cy - x*sin_r + y*cos_r).
+    sx_top = (cx + sxr * cos_r + syr_top * sin_r).astype(_np.int32)
+    sy_top = (cy - sxr * sin_r + syr_top * cos_r).astype(_np.int32)
+    sx_hor = (cx + sxr * cos_r + syr_hor * sin_r).astype(_np.int32)
+    sy_hor = (cy - sxr * sin_r + syr_hor * cos_r).astype(_np.int32)
+
+    # Polygon: silhouette curve left→right, then horizon line right→left
+    polygon = list(zip(sx_top.tolist(), sy_top.tolist())) \
+            + list(zip(sx_hor[::-1].tolist(), sy_hor[::-1].tolist()))
+
+    # Colour by worst clearance among visible peaks
+    visible = peak_deg > 0.1
+    worst_clearance = float((alt_ft - peak_elev[visible]).min())
+    fill = _aht_fill_colour(worst_clearance)
+
+    old_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
+    pygame.draw.polygon(surf, fill, polygon)
+    # Ridge line (slightly lighter) for visual depth
+    ridge_col = tuple(min(255, c + 35) for c in fill)
+    ridge_pts = list(zip(sx_top.tolist(), sy_top.tolist()))
+    if len(ridge_pts) >= 2:
+        pygame.draw.lines(surf, ridge_col, False, ridge_pts, 1)
     surf.set_clip(old_clip)
 
 
@@ -876,7 +1368,6 @@ def draw_roll_arc(surf, roll):
 
 
 # ── Aircraft symbol ───────────────────────────────────────────────────────────
-AMBER      = (255, 190,  30)   # slightly warmer than YELLOW for symbol fill
 AMBER_DARK = (180, 120,   0)   # shadow/outline
 
 def draw_aircraft_symbol(surf):
@@ -946,6 +1437,8 @@ def alt_y(ft, alt):  return int(TAPE_MID - (ft - alt)  * PX_PER_FT)
 
 _spd_tape_bg = None   # cached speed-tape background surface
 _alt_tape_bg = None   # cached alt-tape background surface
+_hdg_tape_bg = None   # cached heading-tape background surface
+_red_x_overlays = {}  # cached red-X overlay panels keyed by (w, h)
 
 
 def draw_speed_tape(surf, speed, gs_bug=None,
@@ -1002,8 +1495,13 @@ def draw_speed_tape(surf, speed, gs_bug=None,
                   x=SPD_X + tl + 2, y=vy - 9)
 
     # GS/IAS bug — color reflects source: magenta=GPS groundspeed, cyan=IAS sensor.
+    # When the bug is above the visible tape range the chevron parks with its
+    # CENTRE at the bug-readout box's bottom edge (y=2+HDG_H=46) so half of
+    # the chevron hides behind the box — mirroring how the bottom park puts
+    # the chevron half behind the heading-tape bug box at TAPE_BOT.
     if gs_bug is not None:
-        gby = max(TAPE_TOP, min(TAPE_BOT, spd_y(gs_bug, speed)))
+        _spd_bug_park_top = 2 + HDG_H
+        gby = max(_spd_bug_park_top, min(TAPE_BOT, spd_y(gs_bug, speed)))
         gb = [(SPD_X,      gby - 17),
               (SPD_X + 14, gby - 17), (SPD_X + 14, gby - 5), (SPD_X + 7, gby),
               (SPD_X + 14, gby + 5),  (SPD_X + 14, gby + 17), (SPD_X, gby + 17)]
@@ -1012,23 +1510,25 @@ def draw_speed_tape(surf, speed, gs_bug=None,
         pygame.draw.polygon(surf, spd_bug_col, gb)
         surf.set_clip(None)
 
-    # Speed readout box — stepped Veeder-Root style (from SVG spec)
-    # Layout: pointer(15) → inner section(32) → drum section(19) = 66px total
+    # Speed readout box — Veeder-Root style.  Geometry scaled 1.5× from the
+    # original SVG spec so the digits are legible at arm's length on the
+    # 3.5" Waveshare panel.  Total width 99 px (was 66), height ±44 (was ±29).
+    # Layout: pointer(22) → inner section(48) → drum section(29) = 99 px total.
     pts_s = _chamfer([(SPD_X,      TAPE_MID),
-                      (SPD_X + 15, TAPE_MID - 15), (SPD_X + 47, TAPE_MID - 15),
-                      (SPD_X + 47, TAPE_MID - 29), (SPD_X + 66, TAPE_MID - 29),
-                      (SPD_X + 66, TAPE_MID + 29),
-                      (SPD_X + 47, TAPE_MID + 29), (SPD_X + 47, TAPE_MID + 15),
-                      (SPD_X + 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7})
+                      (SPD_X + 22, TAPE_MID - 22), (SPD_X + 70, TAPE_MID - 22),
+                      (SPD_X + 70, TAPE_MID - 44), (SPD_X + 99, TAPE_MID - 44),
+                      (SPD_X + 99, TAPE_MID + 44),
+                      (SPD_X + 70, TAPE_MID + 44), (SPD_X + 70, TAPE_MID + 22),
+                      (SPD_X + 22, TAPE_MID + 22)], {2, 3, 4, 5, 6, 7})
     pygame.gfxdraw.filled_polygon(surf, pts_s, (0, 10, 30))
     spd_col = RED if speed > vne else (YELLOW if speed > vno else WHITE)
-    # Inner: hundreds + tens at same font as drum, cascade-rolling
-    _rolling_drum(surf, SPD_X + 16, TAPE_MID - 14, 30, 28, speed, 2, spd_col, 24,
+    # Inner: hundreds + tens, cascade-rolling
+    _rolling_drum(surf, SPD_X + 24, TAPE_MID - 21, 45, 42, speed, 2, spd_col, 36,
                   power_offset=1, suppress_leading=True)
     # Drum: units digit, adjacent digits ~50% visible
-    _rolling_drum(surf, SPD_X + 48, TAPE_MID - 28, 17, 56, speed, 1, spd_col, 24,
-                  show_adjacent=True, adj_slot_h=23)
-    _drum_shade(surf,   SPD_X + 48, TAPE_MID - 28, 17, 56)
+    _rolling_drum(surf, SPD_X + 72, TAPE_MID - 42, 25, 84, speed, 1, spd_col, 36,
+                  show_adjacent=True, adj_slot_h=34)
+    _drum_shade(surf,   SPD_X + 72, TAPE_MID - 42, 25, 84)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
     pygame.draw.polygon(surf, WHITE, pts_s, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_s, WHITE)
@@ -1036,7 +1536,8 @@ def draw_speed_tape(surf, speed, gs_bug=None,
     # GS bug button — top strip of speed tape; color matches bug triangle
     gs_str = f"{round(gs_bug):3d}" if gs_bug is not None else "---"
     spd_box_col = MAGENTA if airspeed_src == "gps" else CYAN
-    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=22, col=spd_box_col)
+    _cyan_box(surf, gs_str, x=SPD_X, y=2, w=SPD_W, h=HDG_H,
+              font_sz=24, col=spd_box_col)
 
 
 # ── Altitude tape ──────────────────────────────────────────────────────────────
@@ -1080,11 +1581,6 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
                 _text(surf, s, 13, (230, 230, 230), bold=True,
                       x=ALT_X + ALT_W - tl - 2 - lw, y=fy - 8)
 
-    # ALT bug button — top strip of alt tape; color matches bug triangle
-    alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
-    alt_box_col = CYAN if baro_ok else MAGENTA
-    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=22, col=alt_box_col)
-
     # VS bar — 5px wide on the outer (right) edge of the alt tape.
     # Visible whenever climbing/descending; covered by alt bug only when at bug altitude.
     # 2000 fpm ≡ 200 ft on the tape scale.
@@ -1100,8 +1596,13 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         pygame.draw.rect(surf, MAGENTA, (ALT_X + ALT_W - 5, _vsy1, 5, _vsy2 - _vsy1))
 
     # Altitude bug — color reflects source: cyan=baro/pressure transducer, magenta=GPS alt (baro failed).
+    # Park bound: chevron centre at the alt-bug-readout box's bottom edge so
+    # half of the chevron tucks behind the box (symmetric with TAPE_BOT park).
+    # MUST be drawn BEFORE the top _cyan_box so the box overlays the chevron's
+    # top half when parked (matches the speed-tape draw order).
     if alt_bug is not None:
-        aby = max(TAPE_TOP, min(TAPE_BOT, ay2(alt_bug)))
+        _alt_bug_park_top = 2 + HDG_H
+        aby = max(_alt_bug_park_top, min(TAPE_BOT, ay2(alt_bug)))
         bug = [(ALT_X + ALT_W,      aby - 17),
                (ALT_X + ALT_W - 14, aby - 17), (ALT_X + ALT_W - 14, aby - 5), (ALT_X + ALT_W - 7, aby),
                (ALT_X + ALT_W - 14, aby + 5),  (ALT_X + ALT_W - 14, aby + 17), (ALT_X + ALT_W, aby + 17)]
@@ -1110,24 +1611,33 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
         pygame.draw.polygon(surf, alt_bug_col, bug)
         surf.set_clip(None)
 
-    # Altitude readout box — stepped Veeder-Root style (from SVG spec)
-    # Layout: inner section(42) → drum section(24) → pointer(15) = 81px total
+    # ALT bug button — top strip of alt tape; color matches bug triangle.
+    # Drawn AFTER the chevron so a parked chevron's top half hides behind
+    # the box.
+    alt_str = f"{round(alt_bug):5d}" if alt_bug is not None else "-----"
+    alt_box_col = CYAN if baro_ok else MAGENTA
+    _cyan_box(surf, alt_str, x=ALT_X + 1, y=2, w=ALT_W - 1, h=HDG_H,
+              font_sz=22, col=alt_box_col)
+
+    # Altitude readout box — Veeder-Root style scaled 1.5× from the SVG spec.
+    # Layout: inner section(63) → drum section(36) → pointer(22) = 121px total.
     R = ALT_X + ALT_W   # right edge = 640
     pts_a = _chamfer([(R,      TAPE_MID),
-                      (R - 15, TAPE_MID - 15), (R - 15, TAPE_MID - 29),
-                      (R - 39, TAPE_MID - 29), (R - 39, TAPE_MID - 15),
-                      (R - 81, TAPE_MID - 15),
-                      (R - 81, TAPE_MID + 15),
-                      (R - 39, TAPE_MID + 15), (R - 39, TAPE_MID + 29),
-                      (R - 15, TAPE_MID + 29), (R - 15, TAPE_MID + 15)], {2, 3, 4, 5, 6, 7, 8, 9})
+                      (R - 22, TAPE_MID - 22), (R - 22, TAPE_MID - 44),
+                      (R - 58, TAPE_MID - 44), (R - 58, TAPE_MID - 22),
+                      (R - 121, TAPE_MID - 22),
+                      (R - 121, TAPE_MID + 22),
+                      (R - 58, TAPE_MID + 22), (R - 58, TAPE_MID + 44),
+                      (R - 22, TAPE_MID + 44), (R - 22, TAPE_MID + 22)],
+                     {2, 3, 4, 5, 6, 7, 8, 9})
     pygame.gfxdraw.filled_polygon(surf, pts_a, (0, 10, 30))
 
     # VSI readout — drawn BEFORE the outline so the 2px white line frames shared edges
-    _R39  = ALT_X + ALT_W - 39    # 601 = left edge of drum section
-    _nx   = ALT_X                  # 566 — flush with tape left edge
-    _ny   = TAPE_MID + 15          # 244 — flush with inner-box bottom path
-    _nw   = _R39 - ALT_X          # 35  — flush with drum-section left path
-    _nh   = 22                     # extends 7px below outer box bottom for readability
+    _R58  = ALT_X + ALT_W - 58    # left edge of drum section
+    _nx   = ALT_X                  # flush with tape left edge
+    _ny   = TAPE_MID + 22          # flush with inner-box bottom path
+    _nw   = _R58 - ALT_X          # flush with drum-section left path
+    _nh   = 22                     # readability strip below outer box
     if abs(vspeed) > 30:
         _varr = "▲" if vspeed > 0 else "▼"
         _vstr = f"{_varr}{abs(vspeed)/1000:.1f}"
@@ -1140,25 +1650,24 @@ def draw_alt_tape(surf, alt, vspeed, baro_hpa, baro_src, alt_bug=None, baro_ok=T
     _text(surf, _vstr, 13, _vcol, bold=True, cx=_nx + _nw // 2, cy=_ny + _nh // 2)
 
     # Inner: cascade from drum; carry starts when drum_pos > 4 (last 20 ft before rollover)
+    # Geometry scaled 1.5× from the SVG spec to match the new outer box.
     carry_frac = max(0.0, (alt % 100) / 20 - 4.0)
     alt_inner  = float(alt // 100) + carry_frac
-    # round() (not int()) so IIR-smoothed alt of e.g. 9999.99 still
-    # picks the 3-drum branch that renders the leading "1" at 10000.
     inner_int  = round(alt_inner)
     if inner_int < 10:                      # alt < 1,000 ft — hundreds only
-        _rolling_drum(surf, R - 80, TAPE_MID - 14, 41, 28, alt_inner, 1, WHITE, 24)
-    elif inner_int < 100:                   # 1,000–9,999 ft — thousands (24pt) + hundreds (22pt)
-        _rolling_drum(surf, R - 66, TAPE_MID - 14, 14, 28, alt_inner, 1, WHITE, 24,
+        _rolling_drum(surf, R - 120, TAPE_MID - 21, 62, 42, alt_inner, 1, WHITE, 36)
+    elif inner_int < 100:                   # 1,000–9,999 ft — thousands + hundreds
+        _rolling_drum(surf, R - 99, TAPE_MID - 21, 21, 42, alt_inner, 1, WHITE, 36,
                       power_offset=1)
-        _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
+        _rolling_drum(surf, R - 78, TAPE_MID - 21, 18, 42, alt_inner, 1, WHITE, 33)
     else:                                   # alt ≥ 10,000 ft
-        _rolling_drum(surf, R - 80, TAPE_MID - 14, 28, 28, alt_inner, 2, WHITE, 22,
+        _rolling_drum(surf, R - 120, TAPE_MID - 21, 42, 42, alt_inner, 2, WHITE, 33,
                       suppress_leading=True, power_offset=1)
-        _rolling_drum(surf, R - 52, TAPE_MID - 14, 12, 28, alt_inner, 1, WHITE, 22)
+        _rolling_drum(surf, R - 78, TAPE_MID - 21, 18, 42, alt_inner, 1, WHITE, 33)
     # Drum: 20-ft labels scroll together, adjacent labels half-visible
-    _rolling_drum_alt20(surf, R - 38, TAPE_MID - 28, 22, 56, alt, WHITE, 18,
-                        show_adjacent=True, adj_slot_h=18)
-    _drum_shade(surf,   R - 38, TAPE_MID - 28, 22, 56)
+    _rolling_drum_alt20(surf, R - 57, TAPE_MID - 42, 33, 84, alt, WHITE, 27,
+                        show_adjacent=True, adj_slot_h=27)
+    _drum_shade(surf,   R - 57, TAPE_MID - 42, 33, 84)
     # Border drawn LAST so drum shade doesn't cover the inner pixels
     pygame.draw.polygon(surf, WHITE, pts_a, width=2)
     pygame.gfxdraw.aapolygon(surf, pts_a, WHITE)
@@ -1176,7 +1685,14 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
     pointer is suppressed (it would just sit at centre) and the readout box
     shows a small "TRK" sub-label instead of "MAG".
     """
-    hdg_surf = pygame.Surface((DISPLAY_W, HDG_H), pygame.SRCALPHA)
+    # Cache the background plate — at 12+ fps on Pi Zero 2W the repeated
+    # SDL surface alloc + free here was a significant memory churn,
+    # especially in a sustained turn when the tape is repainted every
+    # frame.  Allocate once, fill each call.
+    global _hdg_tape_bg
+    if _hdg_tape_bg is None:
+        _hdg_tape_bg = pygame.Surface((DISPLAY_W, HDG_H), pygame.SRCALPHA)
+    hdg_surf = _hdg_tape_bg
     hdg_surf.fill((0, 8, 22, 210))
     surf.blit(hdg_surf, (0, HDG_Y))
     pygame.draw.line(surf, (255, 255, 255, 80), (0, HDG_Y), (DISPLAY_W, HDG_Y), 1)
@@ -1207,14 +1723,14 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
         bug = [(hbx - 17, HDG_Y + 14), (hbx - 17, HDG_Y),
                (hbx - 5,  HDG_Y), (hbx, HDG_Y + 7), (hbx + 5, HDG_Y),
                (hbx + 17, HDG_Y), (hbx + 17, HDG_Y + 14)]
-        hdg_bug_col = MAGENTA if hdg_src == "gps" else CYAN
+        hdg_bug_col = MAGENTA if hdg_src == "trk" else CYAN
         pygame.gfxdraw.filled_polygon(surf, bug, hdg_bug_col)
         pygame.gfxdraw.aapolygon(surf, bug, hdg_bug_col)
 
     # GPS track pointer (magenta, when GPS OK and heading source is MAG)
     # Suppressed in GPS TRK mode — hdg is already the track value.
     # Also suppressed when track ≈ hdg (within 1°) to avoid clutter at centre.
-    if gps_ok and track is not None and hdg_src != "gps":
+    if gps_ok and track is not None and hdg_src != "trk":
         off = ((track - hdg + 180) % 360) - 180
         if abs(off) > 1.0:  # only show when there's visible wind/crab angle
             tx = int(CX + off * PX_PER_DEG)
@@ -1222,13 +1738,13 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
                 pygame.draw.polygon(surf, (220, 60, 220),
                     [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
-    # Heading box — 66×28px: wider to give G/M outboard room to the right of °.
-    # GPS TRK mode → magenta (matches track-pointer colour). MAG mode → white.
-    hdg_col = MAGENTA if hdg_src == "gps" else WHITE
-    bw, bh = 66, 28
+    # Heading box — 99×42 (scaled 1.5x from 66×28). Triangle pointer
+    # also scaled. GPS TRK mode → magenta. MAG mode → white.
+    hdg_col = MAGENTA if hdg_src == "trk" else WHITE
+    bw, bh = 99, 42
     bx, by2 = CX - bw // 2, HDG_Y - bh - 2
-    th = bw // 3           # triangle base width ≈ 22px
-    td = 14                # fixed triangle depth
+    th = bw // 3           # triangle base width ≈ 33px
+    td = 21                # triangle depth (was 14)
     tx = CX - th // 2      # triangle left base x
     pts_h = _chamfer([(bx,      by2),
                       (bx + bw, by2),
@@ -1243,13 +1759,13 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False, hdg_src
     # Three-digit readout — perfectly centred in the box
     num_str  = f"{round(hdg) % 360:03d}"
     full_str = num_str + "\u00b0"
-    f17      = _get_font(17)
-    _text(surf, full_str, 17, hdg_col, cx=CX, cy=by2 + bh // 2)
+    f_hdg    = _get_font(26)
+    _text(surf, full_str, 26, hdg_col, cx=CX, cy=by2 + bh // 2)
     # G/M subscript — outboard of the ° glyph, lower-right area of box
-    full_w   = f17.size(full_str)[0]
-    deg_right = CX + full_w // 2 + 2      # 2px outboard of ° right edge
-    src_lbl  = "G" if hdg_src == "gps" else "M"
-    _text(surf, src_lbl, 8, hdg_col, x=deg_right, y=by2 + bh - 10)
+    full_w   = f_hdg.size(full_str)[0]
+    deg_right = CX + full_w // 2 + 2
+    src_lbl  = "G" if hdg_src == "trk" else "M"
+    _text(surf, src_lbl, 12, hdg_col, x=deg_right, y=by2 + bh - 15)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────
@@ -1410,7 +1926,7 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
         _text(surf, text, 10, fg, x=rx + 5, y=5)
 
     # GPS-slaved heading mode indicator — magenta badge (matches track-pointer colour)
-    if hdg_src == "gps" and gps_ok:
+    if hdg_src == "trk" and gps_ok:
         badge_r("GPS TRK", (70, 0, 70), (220, 80, 220))
 
     # Show GPS ALT only when baro sensor is absent (pilot needs to know alt source)
@@ -1431,8 +1947,16 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
 # ── Red-X failure overlays ────────────────────────────────────────────────────
 def draw_red_x(surf, x, y, w, h, label):
     """Semi-transparent dark overlay with red X and label."""
-    ov = pygame.Surface((w, h), pygame.SRCALPHA)
-    ov.fill((20, 0, 0, 160))
+    # Cache by (w, h) — there are only ~4 overlay sizes (attitude / hdg /
+    # speed / alt) so the dict stays small.  Repeated alloc + free of
+    # SRCALPHA surfaces was a hot allocator during sustained AHRS-fail
+    # overlays (e.g. NO LINK during data_stale).
+    key = (int(w), int(h))
+    ov = _red_x_overlays.get(key)
+    if ov is None:
+        ov = pygame.Surface((w, h), pygame.SRCALPHA)
+        ov.fill((20, 0, 0, 160))
+        _red_x_overlays[key] = ov
     surf.blit(ov, (x, y))
     pygame.draw.line(surf, RED, (x + 4, y + 4), (x + w - 4, y + h - 4), 3)
     pygame.draw.line(surf, RED, (x + w - 4, y + 4), (x + 4, y + h - 4), 3)
@@ -1543,11 +2067,18 @@ class SimFlyState:
             state["gps_ok"]  = True
             state["baro_ok"] = False
             state["baro_src"] = "gps"
+            # Faux air-data so the airspeed tape responds when the
+            # pilot picks IAS as the speed source in sim: IAS == GS
+            # (still air assumption), TAS scaled for ISA altitude.
+            state["ias_kt"]     = sim["init_spd"]
+            state["tas_kt"]     = sim["init_spd"]
+            state["airdata_ok"] = True
         # Seed bugs so the aircraft holds its initial state
         disp["hdg_bug"] = sim["init_hdg"]
         disp["alt_bug"] = sim["init_alt"]
         if disp.get("spd_bug") is None:
             disp["spd_bug"] = sim["init_spd"]
+        _ssync_publish_bugs()
 
     def tick(self):
         now = time.monotonic()
@@ -1593,6 +2124,11 @@ class SimFlyState:
             spd_err = tgt_spd - spd
             d_spd   = max(-2.0 * dt, min(2.0 * dt, spd_err * 0.5))
             state["speed"] = max(0.0, spd + d_spd)
+            # Faux IAS/TAS track GS in sim (still air assumption) so the
+            # airspeed tape moves when the pilot has IAS as the source.
+            state["ias_kt"]     = state["speed"]
+            state["tas_kt"]     = state["speed"]
+            state["airdata_ok"] = True
 
             # ── Position ───────────────────────────────────────────────────────
             nm_s           = state["speed"] / 3600.0
@@ -1925,27 +2461,106 @@ def handle_event(event, demo_mode):
         if disp["mode"] == "pfd":
             if event.key == pygame.K_UP:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 + 100
+                _ssync_publish_bugs()
             if event.key == pygame.K_DOWN:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 - 100
+                _ssync_publish_bugs()
             if event.key == pygame.K_LEFT:
                 disp["hdg_bug"] = (round(disp["hdg_bug"]) - 10) % 360
+                _ssync_publish_bugs()
             if event.key == pygame.K_RIGHT:
                 disp["hdg_bug"] = (round(disp["hdg_bug"]) + 10) % 360
+                _ssync_publish_bugs()
             if event.key in (pygame.K_PLUS, pygame.K_EQUALS):
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 + 1) / 100
+                _ssync_publish_baro()
             if event.key == pygame.K_MINUS:
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 - 1) / 100
+                _ssync_publish_baro()
 
     # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────
+    global _mfd_drag
     if event.type == pygame.FINGERDOWN:
         _active_fingers[event.finger_id] = pygame.time.get_ticks()
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
             _multitouch_t0 = pygame.time.get_ticks()
+            # The first finger may have started an MFD pan / airport-tap
+            # drag.  Cancel it so the eventual finger-up doesn't fire
+            # _mfd_airport_tap or finish a pan from the first finger's
+            # path.  Lets a two-finger hold cleanly enter setup mode.
+            _mfd_drag = None
 
     if event.type == pygame.FINGERUP:
         _active_fingers.pop(event.finger_id, None)
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
+
+    # ── Drag-to-scroll on setup screens ──────────────────────────────────────
+    # We defer the tap-fire on BUTTONDOWN inside a drag-capable setup
+    # screen, watch MOTION to detect a scroll-drag, and on BUTTONUP either
+    # consume the drag (no action fires) or replay the tap at the up
+    # position so the underlying row-hit code runs as if nothing happened.
+    global _ss_drag, _dispatch_replay
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        x, y = pos
+        dy = y - _ss_drag["down_y"]
+        if not _ss_drag["is_drag"] and abs(dy) > _SS_DRAG_THRESHOLD:
+            _ss_drag["is_drag"] = True
+        if _ss_drag["is_drag"]:
+            mode = _ss_drag["mode"]
+            n_rows = _SS_DRAG_MODES.get(mode, 5)
+            max_s = _ss_max_scroll(n_rows)
+            new_scroll = _ss_drag["scroll_at_down"] - dy
+            _ss_scroll[mode] = max(0, min(max_s, new_scroll))
+        _ss_drag["pos"] = (x, y)
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _ss_drag is not None:
+        d = _ss_drag
+        _ss_drag = None
+        if not d["is_drag"]:
+            # Replay the tap at the UP position as a synthetic
+            # MOUSEBUTTONDOWN so the existing dispatch logic runs once.
+            _dispatch_replay = True
+            try:
+                fake = pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN,
+                    {"pos": d["pos"], "button": 1})
+                handle_event(fake, demo_mode)
+            finally:
+                _dispatch_replay = False
+        return True
+
+    # ── MFD pan / airport-tap drag handler ──────────────────────────────────
+    # Same defer-replay pattern as scroll-drag: DOWN over the MFD's map
+    # area is held until MOTION exceeds the threshold (→ pan) or UP fires
+    # with no significant motion (→ airport hit-test).
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _mfd_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        x, y = pos
+        dx = x - _mfd_drag["down_x"]
+        dy = y - _mfd_drag["down_y"]
+        if (not _mfd_drag["is_drag"]
+                and (abs(dx) > _MFD_DRAG_THRESHOLD
+                     or abs(dy) > _MFD_DRAG_THRESHOLD)):
+            _mfd_drag["is_drag"] = True
+        if _mfd_drag["is_drag"]:
+            _mfd_apply_drag(_mfd_drag, dx, dy)
+        _mfd_drag["pos"] = (x, y)
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _mfd_drag is not None:
+        d = _mfd_drag
+        _mfd_drag = None
+        if not d["is_drag"]:
+            # Tap: try airport hit-test.  If nothing nearby, the tap is a
+            # no-op (no fall-through to chrome — chrome was already filtered
+            # out at DOWN time).
+            _mfd_airport_tap(*d["pos"])
+        return True
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
@@ -1959,19 +2574,49 @@ def handle_event(event, demo_mode):
 
         mode = disp["mode"]
 
+        # Defer this tap on drag-capable setup screens — except taps inside
+        # the title bar (back button), which still fire immediately so the
+        # user can always escape.
+        if (not _dispatch_replay
+                and mode in _SS_DRAG_MODES
+                and y >= _SS_TITLE_BAR_H):
+            _ss_drag = {
+                "mode":           mode,
+                "down_x":         x,
+                "down_y":         y,
+                "pos":            (x, y),
+                "scroll_at_down": _ss_scroll.get(mode, 0),
+                "is_drag":        False,
+            }
+            return True
+
         # ── Setup screen taps ─────────────────────────────────────────────
         if mode == "setup":
             idx = setup_hit(x, y)
-            if   idx == 5: disp["mode"] = "pfd"
-            elif idx == 0: disp["mode"] = "flight_profile"
-            elif idx == 1: disp["mode"] = "display_setup"
-            elif idx == 2: disp["mode"] = "ahrs_setup"
+            # Indices follow _SETUP_ITEMS row-major order: 0 FLIGHT, 1 DISPLAY,
+            # 2 AHRS, 3 CONNECTIVITY, 4 SCREEN SYNC, 5 SYSTEM, 6 EXIT.
+            if   idx == 6: disp["mode"] = "pfd"
+            elif idx == 0:
+                _ss_reset_scroll("flight_profile")
+                disp["mode"] = "flight_profile"
+            elif idx == 1:
+                _ss_reset_scroll("display_setup")
+                disp["mode"] = "display_setup"
+            elif idx == 2:
+                _ss_reset_scroll("ahrs_setup")
+                disp["mode"] = "ahrs_setup"
             elif idx == 3:
                 actual = disp["cs"].get("wifi_actual", "")
                 if actual:
                     disp["cs"]["wifi_ssid"] = actual
+                _ss_reset_scroll("connectivity_setup")
                 disp["mode"] = "connectivity_setup"
-            elif idx == 4: disp["mode"] = "system_setup"
+            elif idx == 4:
+                _ss_reset_scroll("screen_sync_setup")
+                disp["mode"] = "screen_sync_setup"
+            elif idx == 5:
+                _ss_reset_scroll("system_setup")
+                disp["mode"] = "system_setup"
             return True
 
         # ── Display settings taps ─────────────────────────────────────────
@@ -1981,7 +2626,12 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "setup"
             elif action and action.startswith("set:"):
                 _, key, val_str = action.split(":", 2)
-                disp["ds"][key] = (val_str == "True") if key == "night_mode" else val_str
+                # Convert "True" / "False" strings back to bools for any
+                # boolean-valued setting (night_mode + all map_show_*).
+                if val_str in ("True", "False"):
+                    disp["ds"][key] = (val_str == "True")
+                else:
+                    disp["ds"][key] = val_str
                 _settings.mark_dirty()
             elif action and action.startswith("inc:brightness:"):
                 delta = int(action.split(":")[-1])
@@ -1999,12 +2649,51 @@ def handle_event(event, demo_mode):
                 _, key, delta_str = action.split(":")
                 disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
                 _settings.mark_dirty()
-            elif action == "mag_cal":
-                disp["ss"]["mag_cal"] = "running"
+            elif action == "mag_cal_open":
+                _mag_cal_open("ahrs_setup")
+            elif action and action.startswith("set:orientation:"):
+                new_ori = action.split(":", 2)[2]
+                disp["ss"]["orientation"] = new_ori
+                _push_orient_to_pico(new_ori,
+                                     disp["ss"].get("mounting",
+                                                    state.get("mounting", "normal")))
+                _settings.mark_dirty()
+                return True
+            elif action and action.startswith("set:mounting:"):
+                new_mnt = action.split(":", 2)[2]
+                disp["ss"]["mounting"] = new_mnt
+                _push_orient_to_pico(
+                    disp["ss"].get("orientation",
+                                   state.get("orientation", "right")),
+                    new_mnt)
+                _settings.mark_dirty()
+                return True
             elif action and action.startswith("set:"):
                 _, key, val = action.split(":", 2)
                 disp["ss"][key] = val
                 _settings.mark_dirty()
+            return True
+
+        # ── Nav-confirm modal taps ────────────────────────────────────────
+        if mode == "nav_confirm":
+            action = nav_confirm_hit(x, y)
+            if action == "activate":
+                _nav_confirm_apply()
+            elif action == "cancel":
+                _nav_confirm_cancel()
+            return True
+
+        # ── Mag-cal modal taps ────────────────────────────────────────────
+        if mode == "mag_cal":
+            action = mag_cal_hit(x, y)
+            if action == "capture":
+                _mag_cal_capture()
+            elif action == "restart":
+                _mag_cal_restart()
+            elif action == "reset":
+                _mag_cal_reset()
+            elif action == "cancel":
+                _mag_cal_close()
             return True
 
         # ── Connectivity taps ─────────────────────────────────────────────
@@ -2036,6 +2725,21 @@ def handle_event(event, demo_mode):
                     if ok:
                         _restart_sse(disp["cs"]["ahrs_url"])
                 threading.Thread(target=_do_test, daemon=True).start()
+            return True
+
+        # ── Screen sync taps ──────────────────────────────────────────────
+        if mode == "screen_sync_setup":
+            action = screen_sync_setup_hit(x, y, disp["cs"])
+            if action == "back":
+                disp["mode"] = "setup"
+            elif action and action.startswith(("toggle_publish:",
+                                                "toggle_consume:")):
+                head, kind = action.split(":", 1)
+                direction = head.split("_", 1)[1]    # "publish" or "consume"
+                key = f"sync_{direction}_{kind}"
+                disp["cs"][key] = not disp["cs"].get(key, False)
+                _settings.mark_dirty()
+                _ssync_refresh_kinds()
             return True
 
         # ── WiFi scan screen taps ─────────────────────────────────────────────
@@ -2071,6 +2775,17 @@ def handle_event(event, demo_mode):
             return True
 
         # ── System screen taps ────────────────────────────────────────────────────────────────────
+        # ── AHRS firmware screen taps ─────────────────────────────────────
+        if mode == "ahrs_firmware":
+            action = ahrs_firmware_hit(x, y)
+            if action == "back":
+                disp["mode"] = "system_setup"
+            elif action == "push_scripts":
+                _do_push_scripts()
+            elif action == "flash_uf2":
+                _do_flash_uf2()
+            return True
+
         if mode == "system_setup":
             action = system_setup_hit(x, y)
             if action == "back":
@@ -2081,6 +2796,13 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "obstacle_data"
             elif action == "airport_data":
                 disp["mode"] = "airport_data"
+            elif action == "ahrs_firmware":
+                _ss_reset_scroll("ahrs_firmware")
+                disp["mode"] = "ahrs_firmware"
+            elif action and action.startswith("set:display_mode:"):
+                disp["display_mode"] = action.split(":")[-1]
+                _settings.mark_dirty()
+                disp["mode"] = "pfd"   # exit setup so the change is visible
             elif action == "simulator":
                 disp["mode"] = "sim_setup"
             elif action == "quit":
@@ -2180,12 +2902,30 @@ def handle_event(event, demo_mode):
             if action == "back":
                 disp["mode"] = "system_setup"
             elif action == "cancel":
-                disp["td"]["dl_cancel"] = True
+                if disp["td"].get("downloading"):
+                    disp["td"]["dl_cancel"] = True
+                if disp["wd"].get("downloading"):
+                    disp["wd"]["dl_cancel"] = True
+                if disp["td"].get("compacting"):
+                    disp["td"]["dl_cancel"] = True
             elif action == "current_area":
-                if not disp["td"]["downloading"]:
+                if not (disp["td"].get("downloading")
+                        or disp["td"].get("compacting")):
                     _td_start_current_area()
+            elif action == "global_coarse":
+                if not (disp["td"].get("downloading")
+                        or disp["td"].get("compacting")):
+                    _tdc_start_download()
+            elif action == "water_masks":
+                if not disp["wd"].get("downloading"):
+                    _wd_start_download()
+            elif action == "compact":
+                if not (disp["td"].get("downloading")
+                        or disp["td"].get("compacting")):
+                    _td_start_compact()
             elif action and action.startswith("region:"):
-                if not disp["td"]["downloading"]:
+                if not (disp["td"].get("downloading")
+                        or disp["td"].get("compacting")):
                     idx = int(action.split(":")[1])
                     _td_start_download(_TD_REGIONS[idx])
             return True
@@ -2225,15 +2965,62 @@ def handle_event(event, demo_mode):
                     ch = ' ' if lbl == 'SPACE' else lbl
                     if len(disp["kbd_buf"]) < max_len:
                         disp["kbd_buf"] += ch
+                    disp["kbd_error"] = ""
                 elif sty == 'del':            # backspace
                     disp["kbd_buf"] = disp["kbd_buf"][:-1]
+                    disp["kbd_error"] = ""
                 elif sty in ('shift', 'shift_on'):
                     disp["kbd_shift"] = not disp.get("kbd_shift", False)
                 elif sty == 'x':              # CANCEL
                     disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
+                    disp["mode"] = disp["kbd_prev"]
+                elif sty == 'nrst':           # DIRECT TO NEAREST
+                    nearest = _nav_lookup_nearest()
+                    prev = disp["kbd_prev"]
+                    disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
+                    if not _nav_open_confirm(nearest, prev):
+                        disp["mode"] = prev
+                elif sty == 'clrfp':          # CANCEL D2
+                    _nav_clear()
+                    disp["kbd_buf"] = ""
+                    disp["kbd_error"] = ""
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'ok':             # DONE
                     buf = disp["kbd_buf"].strip()
+                    if target == "nav_ident":
+                        # Direct-to entry — three paths (pi4 parity):
+                        #   1. Empty buf + active waypoint → re-confirm
+                        #      so the magenta line redraws from current pos.
+                        #   2. Typed buf resolves to a known airport →
+                        #      open the nav_confirm modal.
+                        #   3. Typed buf doesn't resolve → stay on the
+                        #      keyboard with an UNKNOWN WAYPOINT error.
+                        cur_ident = disp.get("nav", {}).get("ident", "")
+                        if buf:
+                            candidate = buf.upper()
+                            if _nav_lookup_ident(candidate):
+                                disp["nav_confirm_ident"] = candidate
+                                disp["nav_confirm_prev"]  = disp["kbd_prev"]
+                                disp["kbd_buf"] = ""
+                                disp["kbd_error"] = ""
+                                disp["mode"] = "nav_confirm"
+                            else:
+                                disp["kbd_error"] = f"UNKNOWN WAYPOINT  {candidate}"
+                            return True
+                        if cur_ident:
+                            disp["nav_confirm_ident"] = cur_ident
+                            disp["nav_confirm_prev"]  = disp["kbd_prev"]
+                            disp["kbd_buf"] = ""
+                            disp["kbd_error"] = ""
+                            disp["mode"] = "nav_confirm"
+                            return True
+                        # Empty buf with no active waypoint → close.
+                        disp["kbd_buf"]   = ""
+                        disp["kbd_error"] = ""
+                        disp["mode"] = disp["kbd_prev"]
+                        return True
                     if buf:
                         if disp["kbd_prev"] == "connectivity_setup":
                             disp["cs"][target] = buf
@@ -2276,10 +3063,13 @@ def handle_event(event, demo_mode):
                                       "m":  0.3048}.get(ds.get("alt_unit", "ft"), 1.0)
                         if target == "alt_bug":
                             disp["alt_bug"] = float(val * 100) / alt_factor
+                            _ssync_publish_bugs()
                         elif target == "hdg_bug":
                             disp["hdg_bug"] = float(val % 360)
+                            _ssync_publish_bugs()
                         elif target == "spd_bug":
                             disp["spd_bug"] = float(val) / spd_factor
+                            _ssync_publish_bugs()
                         elif target == "baro_hpa":
                             baro_unit = ds.get("baro_unit", "inhg")
                             if baro_unit == "hpa":
@@ -2290,6 +3080,7 @@ def handle_event(event, demo_mode):
                             with _state_lock:
                                 state["baro_hpa"] = new_hpa
                             _push_baro_to_pico(new_hpa)
+                            _ssync_publish_baro()
                         elif target == "sim_init_alt":
                             disp["sim"]["init_alt"] = float(val * 100) / alt_factor
                         elif target == "sim_init_hdg":
@@ -2303,7 +3094,75 @@ def handle_event(event, demo_mode):
                     disp["numpad_buf"] = ""
             return True
 
+        # ── MFD taps (display_mode == "mfd" while mode == "pfd") ──────────
+        if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+            if _mfd_pfd_btn_hit(x, y):
+                # Flip back to the PFD view without going through SETUP.
+                disp["display_mode"] = "pfd"
+                _settings.mark_dirty()
+                return True
+            if _mfd_d2_btn_hit(x, y):
+                # Open the existing keyboard for waypoint entry.
+                _mfd_open_d2_keyboard()
+                return True
+            if _mfd_zoom_in_hit(x, y):
+                cur = int(disp["ds"].get("map_zoom_nm", 10))
+                disp["ds"]["map_zoom_nm"] = _mfd_map.zoom_in(cur)
+                _settings.mark_dirty()
+                return True
+            if _mfd_zoom_out_hit(x, y):
+                cur = int(disp["ds"].get("map_zoom_nm", 10))
+                new = _mfd_map.zoom_out(
+                    cur, allow_auto=bool(disp.get("nav", {}).get("ident")))
+                # AUTO is 0 — let it through.  Otherwise clamp to the
+                # cap so a saved range never exceeds what pi_zero can
+                # render safely.
+                if new > 0 and new > MFD_MAX_ZOOM_NM:
+                    new = MFD_MAX_ZOOM_NM
+                disp["ds"]["map_zoom_nm"] = new
+                _settings.mark_dirty()
+                return True
+            if _mfd_center_btn_hit(x, y):
+                _mfd_clear_pan()
+                return True
+            if _mfd_orient_label_hit(x, y):
+                cur = disp["ds"].get("map_orient", "trk")
+                disp["ds"]["map_orient"] = "nrth" if cur == "trk" else "trk"
+                _settings.mark_dirty()
+                return True
+            # Anywhere else over the map → start a pan/tap drag.  MOTION
+            # converts to pan; UP without motion runs airport hit-test.
+            if not _dispatch_replay and not _mfd_chrome_hit(x, y):
+                cen_lat, cen_lon = _mfd_effective_center()
+                hdg = disp.get("yaw", 0.0)
+                track = disp.get("track", hdg)
+                orient = disp["ds"].get("map_orient", "trk")
+                range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+                rot_deg = _mfd_map._rot_deg_for(orient, hdg, track)
+                px_per_nm = min(DISPLAY_W, DISPLAY_H) / 2.0 / max(0.5, range_nm)
+                _mfd_drag = {
+                    "down_x":   x,
+                    "down_y":   y,
+                    "pos":      (x, y),
+                    "is_drag":  False,
+                    "base_lat": cen_lat,
+                    "base_lon": cen_lon,
+                    "rot_deg":  rot_deg,
+                    "px_per_nm": px_per_nm,
+                }
+                return True
+
         # ── PFD taps ──────────────────────────────────────────────────────
+        # Tap on the CDI strip → open the keyboard for waypoint entry.
+        # Matches pi4 behaviour; the keyboard ENTER handler routes through
+        # the nav_confirm modal.
+        if (mode == "pfd"
+                and disp.get("display_mode", "pfd") == "pfd"
+                and disp.get("gps_ok", False)
+                and _cdi_hit(x, y)):
+            _mfd_open_d2_keyboard()
+            return True
+
         # Tap on SIM watermark → open sim controls overlay
         if _sim_state is not None and mode == "pfd":
             if CX - 30 <= x <= CX + 30 and CY - 30 <= y <= CY - 10:
@@ -2330,10 +3189,12 @@ def handle_event(event, demo_mode):
         if ALT_X <= x <= DISPLAY_W and TAPE_TOP <= y <= TAPE_BOT:
             ft = round(disp["alt"] + (TAPE_MID - y) / PX_PER_FT)
             disp["alt_bug"] = round(ft / 100) * 100
+            _ssync_publish_bugs()
         # Tap on heading tape → adjust hdg bug by position
         if HDG_Y <= y <= DISPLAY_H:
             off = (x - CX) / PX_PER_DEG
             disp["hdg_bug"] = round(disp["yaw"] + off) % 360
+            _ssync_publish_bugs()
 
     return True
 
@@ -2345,14 +3206,18 @@ _SETUP_ITEMS = [
     (1, 0, "DISPLAY",         "Units · Brightness · Night mode"),
     (0, 1, "AHRS / SENSORS",  "Trim · Mag cal · Mounting"),
     (1, 1, "CONNECTIVITY",    "WiFi · AHRS link"),
-    (0, 2, "SYSTEM",          "Version · Diagnostics · Reset"),
-    (1, 2, "EXIT",            "Return to PFD"),
+    (0, 2, "SCREEN SYNC",     "Share bugs · baro · nav · AHRS"),
+    (1, 2, "SYSTEM",          "Version · Diagnostics · Reset"),
+    (0, 3, "EXIT",            "Return to PFD"),
 ]
-_S_MX=15; _S_MY=50; _S_GX=10; _S_GY=12
+_S_MX=15; _S_MY=50; _S_GX=10; _S_GY=10
 _S_BW = (DISPLAY_W - 2*_S_MX - _S_GX) // 2
-_S_BH = (DISPLAY_H - _S_MY - 14 - 2*_S_GY) // 3
+_S_BH = (DISPLAY_H - _S_MY - 14 - 3*_S_GY) // 4
 _S_COLS = [_S_MX, _S_MX + _S_BW + _S_GX]
-_S_ROWS = [_S_MY, _S_MY + _S_BH + _S_GY, _S_MY + 2*(_S_BH + _S_GY)]
+_S_ROWS = [_S_MY,
+           _S_MY + _S_BH + _S_GY,
+           _S_MY + 2*(_S_BH + _S_GY),
+           _S_MY + 3*(_S_BH + _S_GY)]
 
 
 def _setup_button(surf, bx, by, bw, bh, label, subtitle="", exit_btn=False, r=8):
@@ -2538,22 +3403,29 @@ def _fp_field(surf, bx, by, bw, bh, label, value, units="", r=6):
         gc = (int(15+t*35), int(20+t*50), int(40+t*80))
         pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
     pygame.draw.rect(surf, WHITE, (bx, by, bw, bh), width=2, border_radius=r)
-    _text(surf, label, 11, (155,170,190), x=bx+10, y=by+6)
+    # Two-line label when the V-speed code is followed by an em-dash and
+    # description (e.g. "VS0 — Stall flaps"); single-line for simple
+    # labels like "TAIL NUMBER".  Keeps the long descriptive label off
+    # the value field on the right.
+    em_dash = " — "
+    if em_dash in label:
+        code, desc = label.split(em_dash, 1)
+        _text(surf, code, 20, (180,195,220), bold=True, x=bx+14, y=by+6)
+        _text(surf, desc, 13, (140,160,185), x=bx+14, y=by+bh-20)
+    else:
+        _text(surf, label, 20, (180,195,220), bold=True, x=bx+14, y=by+8)
     val_str = str(value) if value not in (None, "", 0) else "---"
     if units and val_str != "---":
         val_str = f"{val_str} {units}"
-    _text(surf, val_str, 18, WHITE, bold=True,
-          cx=bx+bw - _get_font(18,bold=True).size(val_str)[0]//2 - 12,
+    _text(surf, val_str, 26, WHITE, bold=True,
+          cx=bx+bw - _get_font(26,bold=True).size(val_str)[0]//2 - 14,
           cy=by+bh//2)
 
 
 def draw_flight_profile(surf, fp_vals):
     """Full-screen Flight Profile setup screen."""
-    surf.fill((0, 8, 22))
-    pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
-    pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
-    _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
-    _text(surf, "FLIGHT PROFILE", 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+    _screen_header(surf, "FLIGHT PROFILE")
+    _prev_clip = _ss_clip_to_content(surf)
 
     MX=_FP_MX; GAP=_FP_GAP
     FW = DISPLAY_W - 2*MX
@@ -2569,8 +3441,8 @@ def draw_flight_profile(surf, fp_vals):
     y += 2
     pygame.draw.line(surf, (40,60,90), (MX, y), (DISPLAY_W-MX, y), 1)
     y += 4
-    _text(surf, "V-SPEEDS  (knots) \u2014 tap to edit", 11, (120,140,165), x=MX, y=y)
-    y += 18
+    _text(surf, "V-SPEEDS  (knots) \u2014 tap to edit", 14, (140,160,185), x=MX, y=y)
+    y += 22
 
     # V-speed grid: 4 rows × 2 cols
     V_KEYS = [k for k,*_ in _FP_FIELDS if k not in ("tail","actype")]
@@ -2581,6 +3453,7 @@ def draw_flight_profile(surf, fp_vals):
         _, label, units, _, _ = next(f for f in _FP_FIELDS if f[0]==key)
         bx = COLS[i%2]; by = y + (i//2)*(BH+GAP)
         _fp_field(surf, bx, by, BW, BH, label, fp_vals.get(key,"---"), units)
+    surf.set_clip(_prev_clip)
 
 
 def flight_profile_hit(x, y, fp_vals):
@@ -2596,7 +3469,7 @@ def flight_profile_hit(x, y, fp_vals):
             return key
         fy += _FP_H1+GAP
     # V-speed grid
-    fy += 26   # divider + label
+    fy += 30   # divider + label (must match the draw-side y bump above)
     V_KEYS = [k for k,*_ in _FP_FIELDS if k not in ("tail","actype")]
     BW = (FW-GAP)//2; BH = (DISPLAY_H-fy-GAP*3-4)//4
     COLS = [MX, MX+BW+GAP]
@@ -2640,6 +3513,34 @@ def _current_kb_rows():
 
 _KB_ROW_H=66; _KB_GAP_Y=6; _KB_GAP_X=4; _KB_Y0=112
 
+# Nav-ident extras row: NEAREST · CANCEL D2 below the QWERTY when the
+# keyboard is open for waypoint entry.  Compresses the row height so the
+# two action buttons fit on the 480-px Pi Zero panel.
+_KB_NAV_ROW_H  = 58
+_KB_NAV_BTN_H  = 38
+
+
+def _kb_nav_extras_visible():
+    return disp.get("kbd_target") == "nav_ident"
+
+
+def _kb_row_h():
+    return _KB_NAV_ROW_H if _kb_nav_extras_visible() else _KB_ROW_H
+
+
+def _kb_nav_extras_y():
+    rh = _kb_row_h()
+    return _KB_Y0 + 5 * rh + 4 * _KB_GAP_Y + 8
+
+
+def _kb_nav_extras_geometry():
+    """(bx_l, bx_r, btn_w) for the two nav-ident extras buttons:
+    DIRECT TO NEAREST · CANCEL D2."""
+    pad = 12
+    gap = 8
+    btn_w = (DISPLAY_W - 2 * pad - gap) // 2
+    return pad, pad + btn_w + gap, btn_w
+
 
 def _kb_row_x0(row):
     total = sum(w for _,w,_ in row) + _KB_GAP_X*(len(row)-1)
@@ -2673,7 +3574,8 @@ def _kb_key(surf, bx, by, bw, bh, label, style, r=6):
     _text(surf, label, fs, tc, bold=True, cx=bx+bw//2, cy=by+bh//2)
 
 
-def draw_keyboard(surf, title, current_val, entered="", transparent=False):
+def draw_keyboard(surf, title, current_val, entered="", transparent=False,
+                  error=""):
     """Full-screen QWERTY keyboard for text entry."""
     if not transparent:
         surf.fill((0,8,22))
@@ -2686,27 +3588,53 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False):
     pygame.draw.rect(surf,(0,15,38),(10,50,DISPLAY_W-21,50),border_radius=6)
     pygame.draw.rect(surf,WHITE,(10,50,DISPLAY_W-21,50),width=1,border_radius=6)
     _text(surf,disp_str,28,CYAN,bold=True,cx=DISPLAY_W//2,cy=75)
-    _text(surf,f"Current: {current_val}",10,(110,120,140),cx=DISPLAY_W//2,cy=104)
+    if error:
+        _text(surf, error, 12, (255, 90, 90), bold=True,
+              cx=DISPLAY_W//2, cy=104)
+    else:
+        _text(surf, f"Current: {current_val}", 10, (110, 120, 140),
+              cx=DISPLAY_W//2, cy=104)
+    rh = _kb_row_h()
     y = _KB_Y0
     for row in _current_kb_rows():
         x = _kb_row_x0(row)
         for label,kw,style in row:
-            _kb_key(surf,x,y,kw,_KB_ROW_H,label,style)
+            _kb_key(surf,x,y,kw,rh,label,style)
             x += kw+_KB_GAP_X
-        y += _KB_ROW_H+_KB_GAP_Y
+        y += rh+_KB_GAP_Y
+
+    if _kb_nav_extras_visible():
+        bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+        by = _kb_nav_extras_y()
+        nrst = _nav_lookup_nearest()
+        nrst_lbl = f"DIRECT TO {nrst}" if nrst else "DIRECT TO NEAREST"
+        _action_btn(surf, bx_l, by, btn_w, _KB_NAV_BTN_H, nrst_lbl, "ok")
+        _action_btn(surf, bx_r, by, btn_w, _KB_NAV_BTN_H, "CANCEL D2", "danger")
 
 
 def keyboard_hit(x, y):
-    """Return (label, style) of the tapped key, or None."""
+    """Return (label, style) of the tapped key, or None.
+
+    Style 'nrst' / 'clrfp' are synthetic \u2014 emitted by the nav-ident
+    extras buttons (NEAREST, CANCEL D2)."""
+    if _kb_nav_extras_visible():
+        by = _kb_nav_extras_y()
+        if by <= y <= by + _KB_NAV_BTN_H:
+            bx_l, bx_r, btn_w = _kb_nav_extras_geometry()
+            if bx_l <= x <= bx_l + btn_w:
+                return ("NRST", "nrst")
+            if bx_r <= x <= bx_r + btn_w:
+                return ("CLRFP", "clrfp")
+    rh = _kb_row_h()
     ky = _KB_Y0
     for row in _current_kb_rows():
-        if ky <= y <= ky+_KB_ROW_H:
+        if ky <= y <= ky+rh:
             kx = _kb_row_x0(row)
             for label,kw,style in row:
                 if kx <= x <= kx+kw:
                     return (label, style)
                 kx += kw+_KB_GAP_X
-        ky += _KB_ROW_H+_KB_GAP_Y
+        ky += rh+_KB_GAP_Y
     return None
 
 
@@ -2714,12 +3642,72 @@ def keyboard_hit(x, y):
 
 _SS_MX  = 12     # side margin
 _SS_Y0  = 52     # first row top (44px title bar + 8px gap)
-_SS_RH  = 62     # row height (62 lets 6 rows fit in 480px)
+_SS_RH  = 62     # row height (62 lets 6 rows fit in 480px without scroll)
 _SS_GAP = 6      # gap between rows
+
+# Per-setup-screen scroll offsets (in pixels). Keyed by disp["mode"].
+# Used when a screen's content exceeds the 436 px of vertical area below
+# the title bar.
+_ss_scroll = {}
+
+_SS_TITLE_BAR_H = 44     # taps in this band belong to the header, not rows
+
+# Drag-to-scroll state. Set on MOUSEBUTTONDOWN/FINGERDOWN inside a drag-
+# capable setup screen, cleared on UP. Motion exceeding _SS_DRAG_THRESHOLD
+# converts the touch from "tap" to "drag" — taps still fire (replayed at
+# UP), drags scroll without firing.
+_ss_drag = None
+_SS_DRAG_THRESHOLD = 8     # px before tap becomes drag
+_SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
+    "ahrs_setup":         7,
+    "display_setup":      6,    # 5 standard rows + MAP LAYERS
+    "system_setup":       9,
+    "connectivity_setup": 6,
+    "flight_profile":     8,
+    "ahrs_firmware":      5,
+    "screen_sync_setup":  6,    # 1 peer-status + 5 categories
+}
+_dispatch_replay = False   # guard against infinite recursion in the
+                           # deferred-tap replay path
+
+# MFD drag/pan state — set on DOWN inside the map, cleared on UP.
+# Motion exceeding _MFD_DRAG_THRESHOLD converts a tap into a pan-drag.
+_mfd_drag = None
+_MFD_DRAG_THRESHOLD = 8
 
 
 def _ss_row_y(i):
-    return _SS_Y0 + i * (_SS_RH + _SS_GAP)
+    """Top-of-row pixel y for row index i, accounting for the active mode's
+    scroll offset. Both the draw and hit-test paths share this helper so
+    they stay in lock-step under scrolling."""
+    base = _SS_Y0 + i * (_SS_RH + _SS_GAP)
+    return base - _ss_scroll.get(disp.get("mode", ""), 0)
+
+
+def _ss_content_h(n_rows):
+    """Total pixel height of n_rows of setting rows (no trailing gap)."""
+    return _SS_Y0 + n_rows * (_SS_RH + _SS_GAP) - _SS_GAP
+
+
+def _ss_max_scroll(n_rows):
+    """Scroll cap so the LAST row's bottom just touches the screen edge."""
+    visible = DISPLAY_H - _SS_TITLE_BAR_H
+    return max(0, _ss_content_h(n_rows) - _SS_TITLE_BAR_H - visible)
+
+
+def _ss_clip_to_content(surf):
+    """set_clip the surface to the content area (below title bar). Returns
+    the previous clip so the caller can restore via set_clip(prev)."""
+    prev = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, _SS_TITLE_BAR_H,
+                              DISPLAY_W, DISPLAY_H - _SS_TITLE_BAR_H))
+    return prev
+
+
+def _ss_reset_scroll(mode):
+    """Clear scroll for the named mode — call when entering a setup screen
+    so the user always starts at the top."""
+    _ss_scroll.pop(mode, None)
 
 
 def _screen_header(surf, title):
@@ -2727,7 +3715,7 @@ def _screen_header(surf, title):
     pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
     pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
     _setup_button(surf, 8, 6, 72, 31, "\u2190 BACK", r=5)
-    _text(surf, title, 20, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+    _text(surf, title, 24, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
 
 
 def _setting_row(surf, row_i, label, sub="", _y_override=None):
@@ -2741,9 +3729,9 @@ def _setting_row(surf, row_i, label, sub="", _y_override=None):
         gc = (int(15+t*25), int(20+t*40), int(40+t*65))
         pygame.draw.line(surf, gc, (bx+6, by+1+i), (bx+bw-6, by+1+i))
     pygame.draw.rect(surf, (55, 75, 105), (bx, by, bw, bh), width=1, border_radius=6)
-    _text(surf, label, 14, WHITE, bold=True, x=bx+14, y=by+10)
+    _text(surf, label, 20, WHITE, bold=True, x=bx+14, y=by+6)
     if sub:
-        _text(surf, sub, 10, (120, 135, 155), x=bx+14, y=by+32)
+        _text(surf, sub, 14, (155, 170, 195), x=bx+14, y=by+34)
     return bx, by, bw, bh
 
 
@@ -2760,7 +3748,7 @@ def _seg_btn(surf, bx, by, bw, bh, label, active, r=5):
             gc = (int(t*20), int(60+t*40), int(70+t*50))
             pygame.draw.line(surf, gc, (bx+r, by+1+i), (bx+bw-r, by+1+i))
     pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=2, border_radius=r)
-    _text(surf, label, 14, tc, bold=active, cx=bx+bw//2, cy=by+bh//2)
+    _text(surf, label, 18, tc, bold=active, cx=bx+bw//2, cy=by+bh//2)
 
 
 def _step_btn(surf, bx, by, bw, bh, label):
@@ -2818,6 +3806,30 @@ _DSP_ROWS = [
      [False, True],      ["OFF","ON"],        100),
 ]
 
+# MAP LAYERS multi-toggle row — mirrors pi4's _DSP_MAP_LAYERS so the
+# Display setup screen has the same per-layer control across both
+# displays.  Five small pills packed into one row; tapping each toggles
+# the matching map_show_* boolean in disp["ds"].  moving_map.render
+# already gates each layer on these flags.  No RWY pill because the
+# pi_zero MFD doesn't render runways (passes runways_arr=None).
+_DSP_MAP_LAYERS = [
+    ("map_show_terrain",     "TER"),
+    ("map_show_water",       "WTR"),
+    ("map_show_airports",    "APT"),
+    ("map_show_obstacles",   "OBS"),
+    ("map_show_state_lines", "STA"),
+]
+_DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
+_DSP_LAYERS_BTN_W     = 70
+_DSP_LAYERS_BTN_G     = 6
+
+
+def _dsp_layers_geom(bx, bw):
+    """Right-aligned x of the first map-layer pill in the row."""
+    n = len(_DSP_MAP_LAYERS)
+    total = n * _DSP_LAYERS_BTN_W + (n - 1) * _DSP_LAYERS_BTN_G
+    return bx + bw - total - 14
+
 
 def _dsp_rx(row, bx, bw):
     """Left x of control group (right-aligned, 14 px margin)."""
@@ -2831,6 +3843,7 @@ def _dsp_rx(row, bx, bw):
 
 def draw_display_setup(surf, ds):
     _screen_header(surf, "DISPLAY")
+    _prev_clip = _ss_clip_to_content(surf)
     for ri, row in enumerate(_DSP_ROWS):
         key, label, sub, opts_v, opts_l, bw_each = row
         is_night = (key == "night_mode")
@@ -2856,6 +3869,19 @@ def draw_display_setup(surf, ds):
             cur = ds.get(key, opts_v[0])
             for i, (v, lbl) in enumerate(zip(opts_v, opts_l)):
                 _seg_btn(surf, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
+
+    # MAP LAYERS — packed multi-toggle row drawn after the standard ones.
+    bx, by, bw, bh = _setting_row(surf, _DSP_LAYERS_ROW_INDEX,
+                                  "MAP LAYERS",
+                                  "Per-layer visibility on the MFD")
+    ry = by + (bh - _DSP_BTN_H) // 2
+    rx = _dsp_layers_geom(bx, bw)
+    for i, (key, lbl) in enumerate(_DSP_MAP_LAYERS):
+        active = bool(ds.get(key, True))
+        _seg_btn(surf,
+                 rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
+                 ry, _DSP_LAYERS_BTN_W, _DSP_BTN_H, lbl, active)
+    surf.set_clip(_prev_clip)
 
 
 def display_setup_hit(x, y, ds):
@@ -2885,6 +3911,19 @@ def display_setup_hit(x, y, ds):
                 bx_b = rx + i*(bw_each+_DSP_BTN_G)
                 if bx_b <= x <= bx_b+bw_each:
                     return f"set:{key}:{v}"
+
+    # MAP LAYERS multi-toggle row
+    by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
+    if by <= y <= by + _SS_RH:
+        bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+        ry = by + (_SS_RH - _DSP_BTN_H) // 2
+        if ry <= y <= ry + _DSP_BTN_H:
+            rx = _dsp_layers_geom(bx, bw)
+            for i, (key, _lbl) in enumerate(_DSP_MAP_LAYERS):
+                bx_b = rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
+                if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
+                    new_val = not bool(ds.get(key, True))
+                    return f"set:{key}:{new_val}"
     return None
 
 
@@ -2920,96 +3959,143 @@ def _trim_stepper(surf, bx, by, bw, bh, val, key):
 
 def draw_ahrs_setup(surf, ss):
     _screen_header(surf, "AHRS / SENSORS")
+    _prev_clip = _ss_clip_to_content(surf)
 
-    # Row 0: Pitch trim
-    bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction")
+    # Row 0: Pitch trim — 0.1° per step (was 0.5°)
+    bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction (0.1° / tap)")
     _trim_stepper(surf, bx, by, bw, bh, ss.get("pitch_trim", 0.0), "pitch_trim")
 
-    # Row 1: Roll trim
-    bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction")
+    # Row 1: Roll trim — 0.1° per step
+    bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction (0.1° / tap)")
     _trim_stepper(surf, bx, by, bw, bh, ss.get("roll_trim", 0.0), "roll_trim")
 
-    # Row 2: Magnetometer calibration (greyed out — not yet implemented)
+    # Row 2: Magnetometer calibration — CALIBRATE button opens the
+    # 8-point walk-through wizard.  Active button (was greyed out).
     bx, by, bw, bh = _setting_row(surf, 2, "MAGNETOMETER", "Compass calibration")
     cal = ss.get("mag_cal", "idle")
     state_lbl, state_col = _SS_MAG_LABELS.get(cal, ("?", WHITE))
-    _text(surf, state_lbl, 13, state_col, bold=True, x=bx+220, y=by+(bh-18)//2)
-    # Draw disabled button (dim, no interaction)
-    cbx = bx+bw-138-14; cby = by+(bh-36)//2
-    pygame.draw.rect(surf, (18,18,20), (cbx, cby, 138, 36), border_radius=6)
-    pygame.draw.rect(surf, (55,55,65), (cbx, cby, 138, 36), width=2, border_radius=6)
-    _text(surf, "CALIBRATE", 15, (75,75,88), bold=False, cx=cbx+69, cy=cby+18)
-    _text(surf, "future", 9, (60,60,72), cx=cbx+69, cy=cby+29)
+    _text(surf, state_lbl, 14, state_col, bold=True, x=bx+260, y=by+(bh-18)//2)
+    cur_deltas = ss.get("mag_cal_deltas") or []
+    if cur_deltas and any(abs(d) > 0.05 for d in cur_deltas):
+        peak = max(abs(d) for d in cur_deltas)
+        _text(surf, f"max |Δ| {peak:.1f}°", 12, (140, 160, 190),
+              x=bx+260, y=by+(bh-18)//2 + 22)
+    cbx = bx+bw-138-14; cby = by+(bh-_DSP_BTN_H)//2
+    _action_btn(surf, cbx, cby, 138, _DSP_BTN_H, "CALIBRATE", "ok")
 
-    # Row 3: Mounting orientation
-    bx, by, bw, bh = _setting_row(surf, 3, "MOUNTING", "Board orientation")
-    cur = ss.get("mounting", "normal")
+    # Row 3: Connector orientation (FWD / LEFT / RIGHT / AFT) — defines
+    # which side of the AHRS board the connector points toward when
+    # viewed from the pilot's seat.  The Pico applies the correct
+    # body-axis swap before broadcasting orientation, so changing this
+    # remaps pitch and roll axes correctly without per-display tuning.
+    pico_ori = state.get("orientation", "right")
+    sel_ori  = ss.get("orientation", pico_ori)
+    if sel_ori != pico_ori:
+        ori_sub = f"Connector direction  (AHRS: {pico_ori} — sending…)"
+    else:
+        ori_sub = f"Connector direction  (AHRS: {pico_ori})"
+    bx, by, bw, bh = _setting_row(surf, 3, "ORIENTATION", ori_sub)
+    opts_ori = [("forward", "FWD"), ("left", "LEFT"),
+                ("right",   "RIGHT"), ("aft", "AFT")]
+    seg_w = 88
+    total_ori = 4 * seg_w + 3 * _DSP_BTN_G
+    rx = bx + bw - total_ori - 14
+    ry = by + (bh - _DSP_BTN_H) // 2
+    for i, (v, lbl) in enumerate(opts_ori):
+        _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
+                 lbl, v == pico_ori)   # highlight = Pico-confirmed value
+
+    # Row 4: Mounting (right-side-up vs inverted)
+    pico_mnt = state.get("mounting", "normal")
+    sel_mnt  = ss.get("mounting", pico_mnt)
+    if sel_mnt != pico_mnt:
+        mnt_sub = f"Right-side-up or inverted  (AHRS: {pico_mnt} — sending…)"
+    else:
+        mnt_sub = f"Right-side-up or inverted  (AHRS: {pico_mnt})"
+    bx, by, bw, bh = _setting_row(surf, 4, "MOUNTING", mnt_sub)
     opts = [("normal","NORMAL"),("inverted","INVERTED")]
     total = 2*120 + _DSP_BTN_G
     rx = bx + bw - total - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts):
-        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur)
+        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==pico_mnt)
 
-    # Row 4: Heading source (MAG compass vs GPS track)
-    bx, by, bw, bh = _setting_row(surf, 4, "HEADING SOURCE",
-                                   "Primary heading reference")
-    cur_src = ss.get("hdg_src", "mag")
-    opts_src = [("mag", "MAG"), ("gps", "GPS TRK")]
-    total_src = 2*120 + _DSP_BTN_G
+    # Row 5: Heading source (MAG / TRK / AUTO)
+    # AUTO uses TRK in motion (groundspeed > threshold) and MAG when stationary.
+    bx, by, bw, bh = _setting_row(
+        surf, 5, "HEADING SOURCE",
+        "MAG=compass  TRK=GPS track  AUTO=TRK in motion / MAG stationary")
+    cur_src = ss.get("hdg_src", "auto")
+    opts_src = [("mag", "MAG"), ("trk", "TRK"), ("auto", "AUTO")]
+    seg_w = 96
+    total_src = 3 * seg_w + 2 * _DSP_BTN_G
     rx = bx + bw - total_src - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts_src):
-        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v==cur_src)
+        _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
+                 lbl, v == cur_src)
 
-    # Row 5: Airspeed source (GPS groundspeed vs dedicated IAS sensor)
-    bx, by, bw, bh = _setting_row(surf, 5, "AIRSPEED SOURCE",
-                                   "GPS groundspeed or IAS sensor")
+    # Row 6: Airspeed source (GPS GS vs IAS sensor).  When IAS is
+    # selected but airdata_ok is False (sensor missing or stale), the
+    # speed tape auto-falls back to GPS GS so the display never blanks.
+    bx, by, bw, bh = _setting_row(surf, 6, "AIRSPEED SOURCE",
+                                   "GPS groundspeed or IAS sensor (auto-falls back to GS without air data)")
     cur_as = ss.get("airspeed_src", "gps")
     opts_as = [("gps", "GPS GS"), ("ias", "IAS SENSOR")]
     total_as = 2*120 + _DSP_BTN_G
     rx = bx + bw - total_as - 14
     ry = by + (bh - _DSP_BTN_H) // 2
     for i, (v, lbl) in enumerate(opts_as):
-        active = v == cur_as
-        if v == "ias":
-            # IAS sensor not yet wired — show as future/disabled
-            pygame.draw.rect(surf, (18, 18, 20),
-                             (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), border_radius=6)
-            pygame.draw.rect(surf, (55, 55, 65),
-                             (rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H), width=2, border_radius=6)
-            _text(surf, lbl, 13, (75, 75, 88), bold=False,
-                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2-7)
-            _text(surf, "future", 9, (60, 60, 72),
-                  cx=rx+i*(120+_DSP_BTN_G)+60, cy=ry+_DSP_BTN_H//2+8)
-        else:
-            _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, active)
+        _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v == cur_as)
+
+    surf.set_clip(_prev_clip)
 
 
 def ahrs_setup_hit(x, y, ss):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
+    # Don't let scrolled-up rows whose y now falls inside the title bar
+    # absorb taps that the user meant for the header.
+    if y < _SS_TITLE_BAR_H:
+        return None
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(5):
+    for ri in range(7):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
         bx = _SS_MX
         if ri in (0, 1):
+            # Trim: ±0.1° per tap (was ±0.5° — pi4 convention)
             key = "pitch_trim" if ri == 0 else "roll_trim"
             ry = by + (_SS_RH - _SS_TRIM_H) // 2
             if not (ry <= y <= ry+_SS_TRIM_H):
                 continue
             if rx_trim <= x <= rx_trim+_SS_TRIM_SW:
-                return f"trim:{key}:-0.5"
+                return f"trim:{key}:-0.1"
             plus_x = rx_trim + _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G
             if plus_x <= x <= plus_x+_SS_TRIM_SW:
-                return f"trim:{key}:+0.5"
+                return f"trim:{key}:+0.1"
         elif ri == 2:
-            pass  # CALIBRATE is greyed out (future feature)
+            # CALIBRATE button — opens mag_cal wizard (stub in phase A;
+            # phase B wires the full 8-point walkthrough)
+            cbx = _SS_MX + bw - 138 - 14
+            cby = by + (_SS_RH - _DSP_BTN_H) // 2
+            if cbx <= x <= cbx + 138 and cby <= y <= cby + _DSP_BTN_H:
+                return "mag_cal_open"
         elif ri == 3:
+            # ORIENTATION: FWD / LEFT / RIGHT / AFT
+            seg_w = 88
+            total_o = 4 * seg_w + 3 * _DSP_BTN_G
+            rx = bx + bw - total_o - 14
+            ry = by + (_SS_RH - _DSP_BTN_H) // 2
+            for i, v in enumerate(("forward", "left", "right", "aft")):
+                xi = rx + i * (seg_w + _DSP_BTN_G)
+                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:orientation:{v}"
+        elif ri == 4:
+            # MOUNTING: NORMAL / INVERTED
             total_m = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_m - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
@@ -3017,23 +4103,574 @@ def ahrs_setup_hit(x, y, ss):
                 if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
                     if ry <= y <= ry+_DSP_BTN_H:
                         return f"set:mounting:{v}"
-        elif ri == 4:
-            total_src = 2*120 + _DSP_BTN_G
+        elif ri == 5:
+            # HEADING SOURCE: MAG / TRK / AUTO
+            seg_w = 96
+            total_src = 3 * seg_w + 2 * _DSP_BTN_G
             rx = bx + bw - total_src - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            for i, v in enumerate(("mag", "gps")):
-                if rx+i*(120+_DSP_BTN_G) <= x <= rx+i*(120+_DSP_BTN_G)+120:
-                    if ry <= y <= ry+_DSP_BTN_H:
-                        return f"set:hdg_src:{v}"
-        elif ri == 5:
+            for i, v in enumerate(("mag", "trk", "auto")):
+                xi = rx + i * (seg_w + _DSP_BTN_G)
+                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:hdg_src:{v}"
+        elif ri == 6:
+            # AIRSPEED SOURCE: GPS GS / IAS SENSOR — both tappable now.
             total_as = 2*120 + _DSP_BTN_G
             rx = bx + bw - total_as - 14
             ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            # Only GPS GS (index 0) is active; IAS SENSOR (index 1) is future/disabled
-            if rx <= x <= rx+120:
-                if ry <= y <= ry+_DSP_BTN_H:
-                    return "set:airspeed_src:gps"
+            for i, v in enumerate(("gps", "ias")):
+                xi = rx + i * (120 + _DSP_BTN_G)
+                if xi <= x <= xi + 120 and ry <= y <= ry + _DSP_BTN_H:
+                    return f"set:airspeed_src:{v}"
     return None
+
+
+# ── Magnetometer calibration wizard ──────────────────────────────────────────
+# 8-point walk-through (N / NE / E / SE / S / SW / W / NW) builds a 36-slot
+# deviation table that we push to the Pico over the same transport the
+# display is using (USB serial preferred, HTTP fallback) so every display
+# reads the same calibrated heading from the AHRS broadcast.  Pi4 carries
+# the canonical implementation; this is a verbatim port sized for the
+# 640×480 panel.
+
+_MAG_CAL_CARDINALS = [("N",   0.0), ("NE",  45.0),
+                      ("E",  90.0), ("SE", 135.0),
+                      ("S", 180.0), ("SW", 225.0),
+                      ("W", 270.0), ("NW", 315.0)]
+
+_MCAL_W     = 600         # modal width  (640 px panel, 20 px chrome each side)
+_MCAL_H     = 430         # modal height (480 px panel — leaves 25 px chrome)
+_MCAL_BTN_H = 56
+
+
+def _mcal_geom():
+    bx = (DISPLAY_W - _MCAL_W) // 2
+    by = (DISPLAY_H - _MCAL_H) // 2
+    btn_y = by + _MCAL_H - _MCAL_BTN_H - 14
+    btn_w = (_MCAL_W - 14 - 14 - 3 * 8) // 4
+    btn_xs = [bx + 14 + i * (btn_w + 8) for i in range(4)]
+    return bx, by, btn_y, btn_w, btn_xs
+
+
+def _mag_cal_open(prev_mode: str):
+    disp["mag_cal_wiz"] = {"step": 0, "samples": [], "msg": "",
+                           "prev": prev_mode}
+    disp["mode"] = "mag_cal"
+
+
+def _mag_cal_capture():
+    wiz = disp.get("mag_cal_wiz") or {}
+    step = wiz.get("step", 0)
+    if step >= len(_MAG_CAL_CARDINALS):
+        return
+    raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0)))
+    expected = _MAG_CAL_CARDINALS[step][1]
+    wiz.setdefault("samples", []).append((expected, raw))
+    wiz["step"] = step + 1
+    wiz["msg"] = f"Captured {_MAG_CAL_CARDINALS[step][0]}."
+    if wiz["step"] >= len(_MAG_CAL_CARDINALS):
+        table = _build_magdev_table(wiz["samples"])
+        disp["ss"]["pi_zero_magdev"] = table
+        disp["ss"]["mag_cal_deltas"] = [
+            ((e - r + 540) % 360) - 180 for e, r in wiz["samples"]
+        ]
+        disp["ss"].pop("mag_cal_offset", None)
+        disp["ss"]["mag_cal"] = "done"
+        _settings.mark_dirty()
+        _push_magcal_to_pico(table)
+        wiz["msg"] = "Saved locally — sending to AHRS…"
+        wiz["step"]    = 0
+        wiz["samples"] = []
+
+
+def _mag_cal_restart():
+    wiz = disp.get("mag_cal_wiz") or {}
+    wiz["step"] = 0
+    wiz["samples"] = []
+    wiz["msg"] = "Restarted."
+
+
+def _mag_cal_reset():
+    _push_magcal_clear_to_pico()
+    disp["ss"].pop("pi_zero_magdev", None)
+    disp["ss"]["mag_cal_deltas"] = [0.0] * 4
+    disp["ss"].pop("mag_cal_offset", None)
+    disp["ss"]["mag_cal"] = "idle"
+    _settings.mark_dirty()
+    wiz = disp.get("mag_cal_wiz") or {}
+    wiz["step"] = 0
+    wiz["samples"] = []
+    wiz["msg"] = "Calibration cleared."
+
+
+def _mag_cal_close():
+    wiz = disp.get("mag_cal_wiz") or {}
+    disp["mode"] = wiz.get("prev", "ahrs_setup")
+
+
+def _build_magdev_table(samples):
+    """Build a 36-point (10°/slot) deviation table from (expected, raw) pairs."""
+    pts = sorted(
+        [{"a": r % 360.0, "c": ((e - r + 180 + 360) % 360) - 180}
+         for e, r in samples],
+        key=lambda p: p["a"],
+    )
+    return [_magdev_interp(i * 10.0, pts) for i in range(36)]
+
+
+def _magdev_interp(target, pts):
+    if not pts:
+        return 0.0
+    if len(pts) == 1:
+        return pts[0]["c"]
+    lo, hi = pts[-1], pts[0]
+    for p in pts:
+        if p["a"] <= target:
+            lo = p
+        else:
+            hi = p
+            break
+    hi_a = hi["a"] + (360.0 if hi["a"] <= lo["a"] else 0.0)
+    span = hi_a - lo["a"] or 360.0
+    tgt  = target + 360.0 if target < lo["a"] else target
+    dc   = hi["c"] - lo["c"]
+    if dc > 180:   dc -= 360
+    elif dc < -180: dc += 360
+    return lo["c"] + (tgt - lo["a"]) / span * dc
+
+
+def _push_magcal_to_pico(table):
+    """Send the 36-point deviation table to the Pico.  USB serial preferred,
+    HTTP fallback. Background thread; updates the modal status line."""
+    t_str = ",".join(f"{v:.3f}" for v in table)
+
+    def _worker():
+        sent_ok = False
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(f"$MAGDEV,{t_str}\n".encode())
+                print(f"[PFD] magcal sent via USB serial ({len(table)} pts)")
+                sent_ok = True
+            except Exception as e:
+                print(f"[PFD] magcal serial write failed: {e}")
+        if not sent_ok:
+            base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+            url = f"{base}/magcal?action=set&t={t_str}"
+            try:
+                import urllib.request
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    resp.read()
+                print(f"[PFD] magcal sent via HTTP ({len(table)} pts)")
+                sent_ok = True
+            except Exception as e:
+                print(f"[PFD] magcal HTTP push failed: {e}")
+        wiz = disp.get("mag_cal_wiz") or {}
+        wiz["msg"] = ("Saved locally + sent to AHRS ✓" if sent_ok
+                      else "Saved locally only (AHRS unreachable)")
+
+    threading.Thread(target=_worker, daemon=True, name="MagCalPush").start()
+
+
+def _push_magcal_clear_to_pico():
+    """Clear the Pico's deviation table.  USB serial preferred, HTTP fallback."""
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(b"$MAGDEV,CLEAR\n")
+                print("[PFD] magcal cleared via USB serial")
+                return
+            except Exception as e:
+                print(f"[PFD] magcal serial clear failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url = f"{base}/magcal?action=clear"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                resp.read()
+            print("[PFD] magcal cleared via HTTP")
+        except Exception as e:
+            print(f"[PFD] magcal HTTP clear failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="MagCalClear").start()
+
+
+def _push_orient_to_pico(connector, mounting):
+    """Send orientation + mounting to the Pico via USB serial.
+    Retries every 2 s (up to 6 attempts) until the Pico echoes the new
+    orientation back in $AHRS, confirming receipt."""
+    import time as _time
+    def _worker():
+        for attempt in range(6):
+            client = _sse_client
+            if client is None or not hasattr(client, "write"):
+                print("[PFD] orient push: no serial client available")
+                return
+            try:
+                client.write(f"$ORIENT,{connector},{mounting}\n".encode())
+                print(f"[PFD] orient sent (attempt {attempt + 1}) ({connector},{mounting})")
+            except Exception as e:
+                print(f"[PFD] orient serial write failed: {e}")
+                return
+            for _ in range(20):
+                _time.sleep(0.1)
+                with _state_lock:
+                    pico_ori = state.get("orientation")
+                    pico_mnt = state.get("mounting")
+                if pico_ori == connector and pico_mnt == mounting:
+                    print(f"[PFD] orient confirmed by Pico ({connector},{mounting})")
+                    return
+        print(f"[PFD] orient push gave up after 6 attempts ({connector},{mounting})")
+
+    threading.Thread(target=_worker, daemon=True, name="OrientPush").start()
+
+
+def draw_mag_cal(surf):
+    """Compass-calibration modal — cardinal walk-through."""
+    wiz = disp.get("mag_cal_wiz") or {"step": 0, "samples": [], "msg": ""}
+    step = wiz.get("step", 0)
+    card_name, card_exp = _MAG_CAL_CARDINALS[min(step,
+                                                  len(_MAG_CAL_CARDINALS) - 1)]
+    bx, by, btn_y, btn_w, btn_xs = _mcal_geom()
+
+    _draw_veil(surf)
+    panel = pygame.Surface((_MCAL_W, _MCAL_H), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _MCAL_W, _MCAL_H),
+                     width=2, border_radius=10)
+
+    _text(surf, "COMPASS CAL", 18, (160, 200, 230), bold=True,
+          cx=bx + _MCAL_W // 2, cy=by + 28)
+
+    instr = (f"Step {step + 1} of {len(_MAG_CAL_CARDINALS)} — "
+             f"point aircraft {card_name} ({int(card_exp):03d}°)")
+    _text(surf, instr, 15, WHITE, cx=bx + _MCAL_W // 2, cy=by + 70)
+
+    raw = float(disp.get("_yaw_uncal", disp.get("yaw", 0.0))) % 360.0
+    cal = float(disp.get("_yaw_cal",   disp.get("yaw", 0.0))) % 360.0
+
+    _text(surf, "RAW HDG", 12, (200, 190, 100), bold=True,
+          x=bx + 40, y=by + 108)
+    _text(surf, f"{raw:6.1f}°", 22, (240, 220, 80), bold=True,
+          x=bx + 40, y=by + 124)
+    _text(surf, "CAL HDG", 12, (100, 200, 130), bold=True,
+          x=bx + 200, y=by + 108)
+    _text(surf, f"{cal:6.1f}°", 22, (80, 230, 120), bold=True,
+          x=bx + 200, y=by + 124)
+
+    # 8-point capture results — two rows of 4 (N NE E SE / S SW W NW)
+    wiz_samples = wiz.get("samples", [])
+    col_xs = [bx + 60 + c * (_MCAL_W - 120) // 3 for c in range(4)]
+    for row in range(2):
+        row_y = by + 188 + row * 36
+        for col in range(4):
+            i = row * 4 + col
+            name, exp = _MAG_CAL_CARDINALS[i]
+            cx_card = col_xs[col]
+            lbl_col = (170, 185, 210) if i >= len(wiz_samples) else (100, 200, 255)
+            _text(surf, name, 12, lbl_col, bold=True, cx=cx_card, cy=row_y)
+            if i < len(wiz_samples):
+                _exp, rawv = wiz_samples[i]
+                d = ((_exp - rawv + 540) % 360) - 180
+                _text(surf, f"{d:+.1f}°", 14, WHITE, bold=True,
+                      cx=cx_card, cy=row_y + 18)
+            else:
+                _text(surf, "—", 14, (110, 120, 140), bold=True,
+                      cx=cx_card, cy=row_y + 18)
+
+    msg = wiz.get("msg", "") or ""
+    if msg:
+        col = (255, 180, 60) if ("WARNING" in msg or "FAILED" in msg or "failed" in msg) \
+              else (60, 220, 80)
+        _text(surf, msg, 14, col, cx=bx + _MCAL_W // 2, cy=by + 270)
+
+    in_progress = step > 0 and step < len(_MAG_CAL_CARDINALS)
+    left_lbl   = "CANCEL" if in_progress else "EXIT"
+    left_style = "danger" if in_progress else "ok"
+    _action_btn(surf, btn_xs[0], btn_y, btn_w, _MCAL_BTN_H, left_lbl, left_style)
+    _action_btn(surf, btn_xs[1], btn_y, btn_w, _MCAL_BTN_H, "RESET",    "warn")
+    _action_btn(surf, btn_xs[2], btn_y, btn_w, _MCAL_BTN_H, "RESTART",  "warn")
+    _action_btn(surf, btn_xs[3], btn_y, btn_w, _MCAL_BTN_H,
+                f"⊕ CAPTURE {card_name}", "ok")
+
+
+def mag_cal_hit(x, y):
+    bx, by, btn_y, btn_w, btn_xs = _mcal_geom()
+    if not (bx <= x <= bx + _MCAL_W and by <= y <= by + _MCAL_H):
+        return None
+    if btn_y <= y <= btn_y + _MCAL_BTN_H:
+        for i, action in enumerate(("cancel", "reset", "restart", "capture")):
+            if btn_xs[i] <= x <= btn_xs[i] + btn_w:
+                return action
+    return "noop"
+
+
+# ── CDI strip helpers (great-circle math + draw) ────────────────────────────
+
+_CDI_FULL_SCALE_NM = 1.0      # ±1 nm full-scale en-route / D2
+_EARTH_R_NM        = 3440.065 # Earth mean radius (nautical miles)
+
+
+def _nav_geo_dist_brg(la1, lo1, la2, lo2):
+    """Great-circle distance (nm) and initial bearing (deg) from 1 to 2."""
+    phi1 = math.radians(la1); phi2 = math.radians(la2)
+    dphi = math.radians(la2 - la1); dlam = math.radians(lo2 - lo1)
+    a = (math.sin(dphi * 0.5) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam * 0.5) ** 2)
+    dist = 2.0 * _EARTH_R_NM * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    y = math.sin(dlam) * math.cos(phi2)
+    x = (math.cos(phi1) * math.sin(phi2)
+         - math.sin(phi1) * math.cos(phi2) * math.cos(dlam))
+    brg = math.degrees(math.atan2(y, x)) % 360.0
+    return dist, brg
+
+
+def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
+    """Signed great-circle cross-track distance (nm).  + = right of course."""
+    d13, brg13 = _nav_geo_dist_brg(act_lat, act_lon, cur_lat, cur_lon)
+    _,   brg12 = _nav_geo_dist_brg(act_lat, act_lon, wpt_lat, wpt_lon)
+    if d13 < 1e-6:
+        return 0.0
+    return _EARTH_R_NM * math.asin(
+        math.sin(d13 / _EARTH_R_NM) * math.sin(math.radians(brg13 - brg12))
+    )
+
+
+def draw_cdi(surf):
+    """Course Deviation Indicator strip above the heading readout box.
+    Always painted when GPS_OK so the strip is tappable; bare bar + a
+    "DIRECT →" affordance when no waypoint is active so the pilot has
+    a fixed entry point for the keyboard."""
+    nv = disp.get("nav", {}) or {}
+    ident = nv.get("ident", "")
+    have_wpt = bool(ident)
+
+    bar_w = max(140, int(DISPLAY_W * 0.32))
+    bar_h = 6
+    bar_y = HDG_Y - 56
+    bar_x = CX - bar_w // 2
+
+    plate = pygame.Surface((bar_w + 36, 48), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 190))
+    surf.blit(plate, (bar_x - 18, bar_y - 34))
+
+    pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
+                     border_radius=2)
+    for frac in (-1.0, -0.5, 0.0, 0.5, 1.0):
+        tx = bar_x + int((frac + 1.0) * 0.5 * bar_w)
+        if frac == 0.0:
+            pygame.draw.line(surf, WHITE,
+                             (tx, bar_y - 5), (tx, bar_y + bar_h + 5), 2)
+        else:
+            pygame.draw.circle(surf, (180, 200, 220),
+                               (tx, bar_y + bar_h // 2), 2)
+
+    if have_wpt:
+        lat = disp.get("lat", 0.0); lon = disp.get("lon", 0.0)
+        wpt_lat = float(nv["lat"]); wpt_lon = float(nv["lon"])
+        dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
+        act_lat = float(nv.get("act_lat", lat))
+        act_lon = float(nv.get("act_lon", lon))
+        xtk = _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, lat, lon)
+        full_scale = _CDI_FULL_SCALE_NM
+        xtk_clamped = max(-1.0, min(1.0, xtk / full_scale))
+        dx = -int(xtk_clamped * (bar_w / 2))
+        dcx = CX + dx
+        dcy = bar_y + bar_h // 2
+        dpts = [(dcx, dcy - 10), (dcx + 9, dcy), (dcx, dcy + 10), (dcx - 9, dcy)]
+        pygame.draw.polygon(surf, MAGENTA, dpts)
+        readout = f"{ident}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
+        _text(surf, readout, 18, MAGENTA, bold=True, cx=CX, cy=bar_y - 22)
+    else:
+        _text(surf, "DIRECT  →", 18, MAGENTA, bold=True, cx=CX, cy=bar_y - 22)
+
+
+def _cdi_hit(x, y):
+    """Tap on the CDI strip opens the keyboard for waypoint entry."""
+    bar_w = max(140, int(DISPLAY_W * 0.32))
+    bar_y = HDG_Y - 56
+    bar_x = CX - bar_w // 2
+    return (bar_x - 18 <= x <= bar_x + bar_w + 18 and
+            bar_y - 34 <= y <= bar_y + 14)
+
+
+# ── Direct-to navigation + confirm modal ─────────────────────────────────────
+# Lookup-by-ident and a small "Activate Direct to XXXX?" modal that gates
+# the actual activation.  Verbatim port of pi4's flow — the plumbing the
+# MFD work consumes for D2 routing.  No PFD-side entry point on pi_zero
+# yet; the keyboard hands off into _nav_open_confirm once the MFD lands.
+
+_NAVCNF_W     = 360
+_NAVCNF_H     = 170
+_NAVCNF_BTN_H = 48
+
+
+def _navcnf_geom():
+    bx = (DISPLAY_W - _NAVCNF_W) // 2
+    by = (DISPLAY_H - _NAVCNF_H) // 2
+    btn_y = by + _NAVCNF_H - _NAVCNF_BTN_H - 14
+    btn_w = (_NAVCNF_W - 14 - 14 - 12) // 2
+    bx_l  = bx + 14
+    bx_r  = bx + _NAVCNF_W - 14 - btn_w
+    return bx, by, btn_y, btn_w, bx_l, bx_r
+
+
+def draw_nav_confirm(surf):
+    """Centred "Activate Direct to XXXX?" modal."""
+    ident = disp.get("nav_confirm_ident", "")
+    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
+
+    _draw_veil(surf)
+    panel = pygame.Surface((_NAVCNF_W, _NAVCNF_H), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _NAVCNF_W, _NAVCNF_H),
+                     width=2, border_radius=10)
+
+    _text(surf, "DIRECT TO", 14, (170, 200, 230), bold=True,
+          cx=bx + _NAVCNF_W // 2, cy=by + 24)
+    _text(surf, ident or "—", 36, MAGENTA, bold=True,
+          cx=bx + _NAVCNF_W // 2, cy=by + 68)
+    _text(surf, "Activate?", 15, (210, 220, 240),
+          cx=bx + _NAVCNF_W // 2, cy=by + 102)
+
+    _action_btn(surf, bx_l, btn_y, btn_w, _NAVCNF_BTN_H, "CANCEL",   "danger")
+    _action_btn(surf, bx_r, btn_y, btn_w, _NAVCNF_BTN_H, "ACTIVATE", "ok")
+
+
+def nav_confirm_hit(x, y):
+    """Return 'activate' / 'cancel' / 'noop' / None for a tap on the modal."""
+    bx, by, btn_y, btn_w, bx_l, bx_r = _navcnf_geom()
+    if not (bx <= x <= bx + _NAVCNF_W and by <= y <= by + _NAVCNF_H):
+        return None
+    if btn_y <= y <= btn_y + _NAVCNF_BTN_H:
+        if bx_l <= x <= bx_l + btn_w:
+            return "cancel"
+        if bx_r <= x <= bx_r + btn_w:
+            return "activate"
+    return "noop"
+
+
+_nav_nearest_cache = {"lat": None, "lon": None, "ident": "", "ts": 0.0}
+
+
+def _nav_lookup_nearest():
+    """Return the ident of the nearest public airport (S/M/L) within
+    100 nm, or "" if no airports / no fix.  Cached so the keyboard's
+    per-frame redraw doesn't hammer the spatial query."""
+    if _airports is None:
+        return ""
+    lat = disp.get("lat", 0.0)
+    lon = disp.get("lon", 0.0)
+    rlat = round(lat, 2)
+    rlon = round(lon, 2)
+    now = time.monotonic()
+    c = _nav_nearest_cache
+    if (rlat == c["lat"] and rlon == c["lon"]
+            and now - c["ts"] < 2.0):
+        return c["ident"]
+    nearby = apt_mod.query_nearby(_airports, lat, lon, radius_nm=100.0)
+    ident = ""
+    if nearby is not None and len(nearby) > 0:
+        if hasattr(nearby, "dtype"):
+            for i in range(len(nearby)):
+                if str(nearby["atype"][i]) in ("S", "M", "L"):
+                    ident = str(nearby["ident"][i])
+                    break
+        else:
+            for apt in nearby:
+                if apt.atype in ("S", "M", "L"):
+                    ident = apt.ident
+                    break
+    c["lat"] = rlat
+    c["lon"] = rlon
+    c["ts"]  = now
+    c["ident"] = ident
+    return ident
+
+
+def _nav_set_nearest() -> bool:
+    """Activate direct-to to the nearest public airport (S/M/L)."""
+    ident = _nav_lookup_nearest()
+    if not ident:
+        return False
+    return _nav_set_by_ident(ident)
+
+
+def _nav_lookup_ident(ident: str):
+    """Return (ident, lat, lon, elev_ft) for the first matching airport,
+    or None."""
+    if _airports is None or not ident:
+        return None
+    if hasattr(_airports, "dtype"):
+        mask = _airports["ident"] == ident
+        rows = _airports[mask]
+        if len(rows) == 0:
+            return None
+        row = rows[0]
+        return (str(row["ident"]), float(row["lat"]),
+                float(row["lon"]), float(row["elev_ft"]))
+    for rec in _airports:
+        if rec[0] == ident:
+            return (rec[0], float(rec[2]), float(rec[3]), float(rec[4]))
+    return None
+
+
+def _nav_set_by_ident(ident: str) -> bool:
+    """Activate direct-to to the airport with this ident.  Returns True on hit."""
+    hit = _nav_lookup_ident(ident)
+    if hit is None:
+        return False
+    lat = disp.get("lat", 0.0)
+    lon = disp.get("lon", 0.0)
+    ai, alat, alon, aelev = hit
+    disp["nav"]["ident"]   = ai
+    disp["nav"]["lat"]     = alat
+    disp["nav"]["lon"]     = alon
+    disp["nav"]["elev_ft"] = aelev
+    disp["nav"]["act_lat"] = lat
+    disp["nav"]["act_lon"] = lon
+    _settings.mark_dirty()
+    _ssync_publish_nav()
+    return True
+
+
+def _nav_clear() -> None:
+    disp["nav"]["ident"]   = ""
+    disp["nav"]["lat"]     = 0.0
+    disp["nav"]["lon"]     = 0.0
+    disp["nav"]["elev_ft"] = 0.0
+    disp["nav"]["act_lat"] = 0.0
+    disp["nav"]["act_lon"] = 0.0
+    _ssync_publish_nav()
+    _settings.mark_dirty()
+
+
+def _nav_open_confirm(ident: str, prev_mode: str) -> bool:
+    """Switch to the nav_confirm modal for `ident`.  Returns False if
+    the ident is empty (caller falls through to its no-op path)."""
+    if not ident:
+        return False
+    disp["nav_confirm_ident"] = ident
+    disp["nav_confirm_prev"]  = prev_mode
+    disp["mode"] = "nav_confirm"
+    return True
+
+
+def _nav_confirm_apply():
+    """Activate the pending direct-to and dismiss the modal."""
+    ident = disp.get("nav_confirm_ident", "")
+    if ident:
+        _nav_set_by_ident(ident)
+    disp["nav_confirm_ident"] = ""
+    disp["mode"] = disp.get("nav_confirm_prev", "pfd")
+
+
+def _nav_confirm_cancel():
+    disp["nav_confirm_ident"] = ""
+    disp["mode"] = disp.get("nav_confirm_prev", "pfd")
 
 
 # ── WiFi network scan ─────────────────────────────────────────────────────────
@@ -3211,6 +4848,7 @@ def _cs_val_box(surf, bx, by, bw, bh, key, val):
 
 def draw_connectivity_setup(surf, cs):
     _screen_header(surf, "CONNECTIVITY")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
 
     # Rows 0-2: editable fields (URL / SSID / password)
@@ -3238,7 +4876,7 @@ def draw_connectivity_setup(surf, cs):
                 lbl = f"WiFi: {actual}"
         cy  = by + bh//4 + i*bh//2
         pygame.draw.circle(surf, col, (bx2+238, cy), 6)
-        _text(surf, lbl, 13, col, bold=True, x=bx2+252, y=cy-9)
+        _text(surf, lbl, 16, col, bold=True, x=bx2+252, y=cy-10)
 
     # AHRS transport diagnostics — shown on a separate row under STATUS.
     # Visible even when ahrs_ok=False so the user can tell WHY the link
@@ -3272,13 +4910,14 @@ def draw_connectivity_setup(surf, cs):
             (cs.get("apply_msg",""), (100,180,80), _CS_BTN_Y - 20),
             (cs.get("test_msg",""),  (100,160,220), _CS_BTN_Y - 8)]:
         if msg:
-            _text(surf, msg, 10, col, cx=DISPLAY_W//2, y=y_off)
+            _text(surf, msg, 13, col, cx=DISPLAY_W//2, y=y_off)
 
     # Action buttons (SCAN / APPLY / TEST)
     third = (bw - 20) // 3
     _action_btn(surf, bx,                _CS_BTN_Y, third, _CS_BTN_H, "SCAN WIFI",  "normal")
     _action_btn(surf, bx+third+10,       _CS_BTN_Y, third, _CS_BTN_H, "APPLY WIFI", "warn")
     _action_btn(surf, bx+2*(third+10),   _CS_BTN_Y, third, _CS_BTN_H, "TEST AHRS",  "ok")
+    surf.set_clip(_prev_clip)
 
 
 def connectivity_setup_hit(x, y, cs):
@@ -3304,6 +4943,89 @@ def connectivity_setup_hit(x, y, cs):
     return None
 
 
+# ── Screen Sync subscreen ─────────────────────────────────────────────────────
+# One row per category (BUGS / BARO / NAV / AHRS / GPS).  Each row has two
+# segmented pills: TX (publish to peers) and RX (consume from peers).  Tap
+# either pill to toggle.  A peer-status header row shows whether anyone
+# is on the wire so the user can confirm the link works before flipping
+# their first toggle.
+
+_SCS_KINDS = (
+    ("bugs", "BUGS",     "alt / spd / hdg / vs"),
+    ("baro", "BARO",     "altimeter setting"),
+    ("nav",  "NAV (D2)", "waypoint ident + activation point"),
+    ("ahrs", "AHRS",     "pitch / roll / yaw — local only when off"),
+    ("gps",  "GPS",      "lat / lon / alt / speed / track"),
+)
+
+_SCS_PILL_W = 86
+_SCS_PILL_H = 36
+_SCS_PILL_GAP = 6
+
+
+def _scs_pill_rects(by, bh):
+    """Return (tx_rect, rx_rect) for the right side of a sync row."""
+    bw = DISPLAY_W - 2 * _SS_MX
+    rx = _SS_MX + bw - _SS_MX - _SCS_PILL_W
+    tx = rx - _SCS_PILL_GAP - _SCS_PILL_W
+    py = by + (bh - _SCS_PILL_H) // 2
+    return ((tx, py, _SCS_PILL_W, _SCS_PILL_H),
+            (rx, py, _SCS_PILL_W, _SCS_PILL_H))
+
+
+def draw_screen_sync_setup(surf, cs):
+    _screen_header(surf, "SCREEN SYNC")
+    _prev_clip = _ss_clip_to_content(surf)
+
+    # Row 0: peer status
+    bx, by, bw, bh = _setting_row(surf, 0, "PEER",
+                                   "Other PFD seen on this network")
+    if _screen_sync is None:
+        n, age = 0, None
+        peer_id = ""
+    else:
+        n, age = _screen_sync.peer_status()
+        peer_id = _screen_sync.first_peer_id()
+    if n > 0:
+        age_s = f"{age:.1f}s" if age is not None else "—"
+        col   = (60, 220, 80)
+        lbl   = f"PEER {peer_id}  ·  last {age_s} ago"
+    else:
+        col   = (180, 90, 90)
+        lbl   = "NO PEER"
+    pygame.draw.circle(surf, col, (bx + bw - 240, by + bh // 2), 7)
+    _text(surf, lbl, 16, col, bold=True,
+          x=bx + bw - 226, y=by + bh // 2 - 9)
+
+    # Rows 1-5: per-category TX/RX toggles
+    for i, (kind, label, sub) in enumerate(_SCS_KINDS, start=1):
+        bx2, by2, bw2, bh2 = _setting_row(surf, i, label, sub)
+        tx_rect, rx_rect = _scs_pill_rects(by2, bh2)
+        _seg_btn(surf, *tx_rect, "TX",
+                 cs.get(f"sync_publish_{kind}", False))
+        _seg_btn(surf, *rx_rect, "RX",
+                 cs.get(f"sync_consume_{kind}", False))
+
+    surf.set_clip(_prev_clip)
+
+
+def screen_sync_setup_hit(x, y, cs):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    for i, (kind, _, _sub) in enumerate(_SCS_KINDS, start=1):
+        by = _ss_row_y(i)
+        if not (by <= y <= by + _SS_RH):
+            continue
+        tx_rect, rx_rect = _scs_pill_rects(by, _SS_RH)
+        tx_x, tx_y, tx_w, tx_h = tx_rect
+        rx_x, rx_y, rx_w, rx_h = rx_rect
+        if tx_x <= x <= tx_x + tx_w and tx_y <= y <= tx_y + tx_h:
+            return f"toggle_publish:{kind}"
+        if rx_x <= x <= rx_x + rx_w and rx_y <= y <= rx_y + rx_h:
+            return f"toggle_consume:{kind}"
+    return None
+
+
 # ── System screen ─────────────────────────────────────────────────────────────
 
 _SYS_VERSION = "0.1.0"
@@ -3312,7 +5034,7 @@ _SYS_INFO_Y  = 56
 _SYS_INFO_LH = 28
 
 
-_SYS_N_LINES = 5
+_SYS_N_LINES = 7
 _SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
 _SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # DISPLAY MODE row top
 _SYS_TERRAIN_Y = _SYS_MODE_Y + _SS_RH + 8         # TERRAIN DATA row top
@@ -3344,39 +5066,60 @@ def _sys_data_tile(surf, bx, by, bw, bh, label, sub, active=True):
 
 def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    _gps_ok   = disp.get("gps_ok", False)
+    _gps_comm = disp.get("gps_comm", False)
+    _gps_sats = int(disp.get("sats", 0) or 0)
+    if _gps_ok:
+        _gps_status = f"fix \u00b7 {_gps_sats} sat{'s' if _gps_sats != 1 else ''}"
+    elif _gps_comm:
+        _gps_status = "no fix \u00b7 acquiring"
+    else:
+        _gps_status = "no signal"
+    _ahrs_xport = disp.get("cs", {}).get("ahrs_transport", "wifi")
+    _ahrs_port  = disp.get("cs", {}).get("ahrs_port", "\u2014")
+    _ahrs_lbl   = (f"USB \u00b7 {_ahrs_port}" if _ahrs_xport == "usb"
+                   else f"WiFi \u00b7 {_ahrs_port}")
     lines = [
         ("Firmware version",  _SYS_VERSION),
         ("Build date",        _SYS_BUILD),
         ("Display",           f"{DISPLAY_W}\u00d7{DISPLAY_H}  DPI"),
         ("Hardware",          "Pi Zero 2W + Pico W"),
+        ("GPS",               _gps_status),
+        ("AHRS link",         _ahrs_lbl),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
-    pygame.draw.rect(surf, (0,12,32), (bx, _SYS_INFO_Y, bw, _SYS_IH), border_radius=6)
-    pygame.draw.rect(surf, (55,75,105), (bx, _SYS_INFO_Y, bw, _SYS_IH), width=1, border_radius=6)
+    # SYSTEM uses absolute Y positions (not _ss_row_y), so apply the
+    # drag-scroll offset manually here.  Without this, the new GPS / AHRS
+    # link rows pushed QUIT PFD off the bottom of the panel with no way
+    # to reach it.
+    _sy = _ss_scroll.get("system_setup", 0)
+    info_y    = _SYS_INFO_Y    - _sy
+    mode_y    = _SYS_MODE_Y    - _sy
+    terrain_y = _SYS_TERRAIN_Y - _sy
+    btn_y     = _SYS_BTN_Y     - _sy
+    pygame.draw.rect(surf, (0,12,32), (bx, info_y, bw, _SYS_IH), border_radius=6)
+    pygame.draw.rect(surf, (55,75,105), (bx, info_y, bw, _SYS_IH), width=1, border_radius=6)
     for i, (k, v) in enumerate(lines):
-        ty = _SYS_INFO_Y + 10 + i*_SYS_INFO_LH
-        _text(surf, k, 12, (120,140,165), x=bx+14, y=ty)
-        _text(surf, v, 13, WHITE, bold=True, x=bx+310, y=ty)
+        ty = info_y + 10 + i*_SYS_INFO_LH
+        _text(surf, k, 15, (130,150,175), x=bx+14, y=ty)
+        _text(surf, v, 16, WHITE, bold=True, x=bx+310, y=ty)
 
     # DISPLAY MODE row
     _setting_row(surf, 0, "DISPLAY MODE", "Primary Flight Display or Multi-Function Display",
-                 _y_override=_SYS_MODE_Y)
+                 _y_override=mode_y)
     cur = disp.get("display_mode", "pfd")
     btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
     rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
-    ry = _SYS_MODE_Y + (_SS_RH - btn_h_m) // 2
+    ry = mode_y + (_SS_RH - btn_h_m) // 2
     _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "PFD", cur == "pfd")
-    # MFD — disabled placeholder
-    pygame.draw.rect(surf, (0,8,18), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), border_radius=5)
-    pygame.draw.rect(surf, (35,45,60), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), width=2, border_radius=5)
-    _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
-    _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
+    _seg_btn(surf, rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m, "MFD", cur == "mfd")
 
     # Data download tiles: TERRAIN | OBSTACLE | AIRPORT (three columns)
     third = (bw - 16) // 3
     n_tiles, used_mb = _td_disk_stats()
-    _sys_data_tile(surf, bx,              _SYS_TERRAIN_Y, third, _SS_RH,
+    _sys_data_tile(surf, bx,              terrain_y, third, _SS_RH,
                    "TERRAIN",
                    f"{n_tiles} tile{'s' if n_tiles != 1 else ''}  \u00b7  {used_mb:.1f} MB",
                    active=True)
@@ -3390,7 +5133,7 @@ def draw_system_setup(surf):
             od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB"
     else:
         od_sub = "Tap to download"
-    _sys_data_tile(surf, bx+third+8,      _SYS_TERRAIN_Y, third, _SS_RH,
+    _sys_data_tile(surf, bx+third+8,      terrain_y, third, _SS_RH,
                    "OBSTACLE", od_sub, active=True)
     ad_cnt     = disp["ad"].get("records", 0)
     ad_expired = disp["ad"].get("expired", False)
@@ -3401,21 +5144,36 @@ def draw_system_setup(surf):
             ad_sub = f"{ad_cnt:,} airports"
     else:
         ad_sub = "Tap to download"
-    _sys_data_tile(surf, bx+2*(third+8),  _SYS_TERRAIN_Y, third, _SS_RH,
+    _sys_data_tile(surf, bx+2*(third+8),  terrain_y, third, _SS_RH,
                    "AIRPORTS", ad_sub, active=True)
 
     half_w = (bw - 10) // 2
-    _action_btn(surf, bx,            _SYS_BTN_Y, half_w, _SYS_BTN_H, "SIMULATOR", "ok")
-    _action_btn(surf, bx+half_w+10,  _SYS_BTN_Y, half_w, _SYS_BTN_H, "RESET DEFAULTS", "danger")
-
-    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
-    _action_btn(surf, bx, quit_y, bw, _SYS_BTN_H, "QUIT PFD", "danger")
+    # Layout: AHRS FIRMWARE (full-width), SIMULATOR+RESET (half-width), QUIT
+    sim_y  = btn_y + _SYS_BTN_H + 10
+    quit_y = sim_y + _SYS_BTN_H + 10
+    _action_btn(surf, bx,           btn_y,  bw,     _SYS_BTN_H, "AHRS FIRMWARE",  "normal")
+    _action_btn(surf, bx,           sim_y,  half_w, _SYS_BTN_H, "SIMULATOR",       "ok")
+    _action_btn(surf, bx+half_w+10, sim_y,  half_w, _SYS_BTN_H, "RESET DEFAULTS",  "danger")
+    _action_btn(surf, bx,           quit_y, bw,     _SYS_BTN_H, "QUIT PFD",        "danger")
+    surf.set_clip(_prev_clip)
 
 
 def system_setup_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    # Shift the incoming y into logical (unscrolled) coordinates so the
+    # button hit-tests still match the constants that defined the layout.
+    y += _ss_scroll.get("system_setup", 0)
+    # DISPLAY MODE row — PFD / MFD toggle
+    btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
+    rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
+    ry = _SYS_MODE_Y + (_SS_RH - btn_h_m) // 2
+    if ry <= y <= ry + btn_h_m:
+        if rx <= x <= rx + btn_w_m:
+            return "set:display_mode:pfd"
+        if rx+btn_w_m+gap_m <= x <= rx+2*btn_w_m+gap_m:
+            return "set:display_mode:mfd"
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
         third = (bw - 16) // 3
         if bx <= x <= bx+third:
@@ -3425,14 +5183,297 @@ def system_setup_hit(x, y):
         if bx+2*(third+8) <= x <= bx+2*(third+8)+third:
             return "airport_data"
     half_w = (bw - 10) // 2
-    if _SYS_BTN_Y <= y <= _SYS_BTN_Y+_SYS_BTN_H:
-        if bx <= x <= bx+half_w:
+    sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
+    quit_y = sim_y       + _SYS_BTN_H + 10
+    # AHRS FIRMWARE (full-width, top button row)
+    if _SYS_BTN_Y <= y <= _SYS_BTN_Y + _SYS_BTN_H and bx <= x <= bx + bw:
+        return "ahrs_firmware"
+    # SIMULATOR + RESET DEFAULTS (half-width)
+    if sim_y <= y <= sim_y + _SYS_BTN_H:
+        if bx <= x <= bx + half_w:
             return "simulator"
-        if bx+half_w+10 <= x <= bx+half_w+10+half_w:
+        if bx + half_w + 10 <= x <= bx + half_w + 10 + half_w:
             return "reset_defaults"
-    quit_y = _SYS_BTN_Y + _SYS_BTN_H + 10
-    if quit_y <= y <= quit_y+_SYS_BTN_H and bx <= x <= bx+bw:
+    # QUIT PFD (full-width)
+    if quit_y <= y <= quit_y + _SYS_BTN_H and bx <= x <= bx + bw:
         return "quit"
+    return None
+
+
+# ── AHRS firmware loader / flasher ───────────────────────────────────────────
+# Pushes the firmware/*.py files to a running Pico over USB-CDC (via mpremote)
+# and, optionally, copies a MicroPython .uf2 to a Pico booted into BOOTSEL
+# (RPI-RP2 mass-storage device).  Verbatim port of the pi4 implementation.
+
+_FW_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
+_FW_SCRIPTS = ["main.py", "config.py", "web_server.py", "wt901.py",
+               "bme280.py", "gps.py", "airdata.py", "sdp31.py",
+               "ms4525.py", "ahrs_filter.py"]
+_IPHONE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "iphone_display")
+_FW_WEB     = ["index.html", "terrain.js", "sw.js", "manifest.webmanifest", "icon-192.png"]
+_FW_ROW_H   = 76
+_FW_Y0      = 56
+
+_pico_serial_cache  = (0.0, None)
+_pico_bootsel_cache = (0.0, None)
+_PICO_CACHE_TTL = 2.0
+
+
+def _find_pico_serial():
+    """Return first /dev/ttyACM* or /dev/ttyUSB* path, or None (cached 2 s)."""
+    global _pico_serial_cache
+    now = time.time()
+    if now - _pico_serial_cache[0] < _PICO_CACHE_TTL:
+        return _pico_serial_cache[1]
+    import glob
+    result = None
+    for pat in ["/dev/ttyACM*", "/dev/ttyUSB*"]:
+        ports = sorted(glob.glob(pat))
+        if ports:
+            result = ports[0]
+            break
+    _pico_serial_cache = (now, result)
+    return result
+
+
+def _find_pico_bootsel():
+    """Return the Pico BOOTSEL mount path, auto-mounting via udisksctl
+    if needed (cached 2 s).  Handles both chip families:
+        Pico W  (RP2040)  → label "RPI-RP2"
+        Pico 2W (RP2350)  → label "RP2350"
+    """
+    global _pico_bootsel_cache
+    now = time.time()
+    if now - _pico_bootsel_cache[0] < _PICO_CACHE_TTL:
+        return _pico_bootsel_cache[1]
+    import glob
+    _LABELS = ("RPI-RP2", "RP2350")
+    _mount_pats = [p
+                   for lbl in _LABELS
+                   for p in (f"/media/*/{lbl}",
+                             f"/run/media/*/{lbl}",
+                             f"/mnt/{lbl}")]
+    for pat in _mount_pats:
+        mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
+        if mounts:
+            _pico_bootsel_cache = (now, mounts[0])
+            return mounts[0]
+    try:
+        r = subprocess.run(
+            ["lsblk", "-o", "NAME,LABEL", "--noheadings", "--raw"],
+            capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] in _LABELS:
+                label   = parts[1]
+                devpath = f"/dev/{parts[0]}"
+                mr = subprocess.run(["udisksctl", "mount", "-b", devpath],
+                                    capture_output=True, timeout=10)
+                if mr.returncode != 0:
+                    subprocess.run(["sudo", "mkdir", "-p", f"/mnt/{label}"],
+                                   capture_output=True, timeout=5)
+                    uid = os.getuid(); gid = os.getgid()
+                    subprocess.run(["sudo", "mount", "-o", f"uid={uid},gid={gid}",
+                                    devpath, f"/mnt/{label}"],
+                                   capture_output=True, timeout=10)
+                for pat in _mount_pats:
+                    mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
+                    if mounts:
+                        _pico_bootsel_cache = (now, mounts[0])
+                        return mounts[0]
+    except Exception:
+        pass
+    _pico_bootsel_cache = (now, None)
+    return None
+
+
+def _find_uf2():
+    """Return first .uf2 file in firmware/ dir, or None."""
+    import glob
+    files = sorted(glob.glob(os.path.join(_FW_DIR, "*.uf2")))
+    return files[0] if files else None
+
+
+def _do_push_scripts():
+    disp["fw"]["push_state"] = "pushing"
+    disp["fw"]["push_msg"]   = "Starting…"
+    def _worker():
+        global _sse_client
+        released_serial_port = None
+        prev_client = _sse_client
+        try:
+            from serial_client import SerialClient as _SC
+            if isinstance(prev_client, _SC):
+                released_serial_port = prev_client.port
+                disp["fw"]["push_msg"] = "Releasing serial port…"
+                prev_client.stop()
+                _sse_client = None
+                global _pico_serial_cache
+                _pico_serial_cache = (0.0, None)
+                time.sleep(1.5)
+        except ImportError:
+            pass
+
+        port = _find_pico_serial()
+        if not port:
+            disp["fw"]["push_msg"]   = "Pico not detected — check USB cable"
+            disp["fw"]["push_state"] = "error"
+            return
+        cmd = ["python3", "-m", "mpremote", "connect", port]
+        first = True
+        all_files = (
+            [(name, os.path.join(_FW_DIR, name))     for name in _FW_SCRIPTS] +
+            [(name, os.path.join(_IPHONE_DIR, name)) for name in _FW_WEB]
+        )
+        for name, src_path in all_files:
+            if not os.path.isfile(src_path):
+                continue
+            if not first:
+                cmd.append("+")
+            first = False
+            cmd += ["cp", src_path, f":{name}"]
+        cmd += ["+", "reset"]
+        try:
+            disp["fw"]["push_msg"] = "Copying files…"
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout).strip()
+                disp["fw"]["push_msg"]   = err[:80] if err else "mpremote failed"
+                disp["fw"]["push_state"] = "error"
+            else:
+                disp["fw"]["push_msg"]   = "All scripts pushed — Pico rebooting"
+                disp["fw"]["push_state"] = "done"
+        except FileNotFoundError:
+            disp["fw"]["push_msg"]   = "mpremote not found — pip3 install mpremote --break-system-packages"
+            disp["fw"]["push_state"] = "error"
+        except subprocess.TimeoutExpired:
+            disp["fw"]["push_msg"]   = "Timed out — check connection"
+            disp["fw"]["push_state"] = "error"
+        except Exception as e:
+            disp["fw"]["push_msg"]   = str(e)[:80]
+            disp["fw"]["push_state"] = "error"
+        finally:
+            if released_serial_port and _sse_client is None:
+                try:
+                    from serial_client import SerialClient as _SC
+                    time.sleep(3)
+                    new_client = _SC(released_serial_port, state, _state_lock)
+                    new_client.start()
+                    _sse_client = new_client
+                    disp["cs"]["ahrs_transport"] = "usb"
+                    disp["cs"]["ahrs_port"]      = released_serial_port
+                except Exception:
+                    pass
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _do_flash_uf2():
+    disp["fw"]["flash_state"] = "flashing"
+    disp["fw"]["flash_msg"]   = "Starting…"
+    def _worker():
+        uf2 = _find_uf2()
+        if not uf2:
+            disp["fw"]["flash_msg"]   = "No .uf2 file in firmware/ — add one first"
+            disp["fw"]["flash_state"] = "error"
+            return
+        mount = _find_pico_bootsel()
+        if not mount:
+            disp["fw"]["flash_msg"]   = "Pico BOOTSEL not mounted — hold BOOTSEL then plug USB"
+            disp["fw"]["flash_state"] = "error"
+            return
+        try:
+            import shutil
+            dest = os.path.join(mount, os.path.basename(uf2))
+            disp["fw"]["flash_msg"] = f"Writing {os.path.basename(uf2)}…"
+            shutil.copy(uf2, dest)
+            disp["fw"]["flash_msg"]   = "Flashed — Pico will auto-reboot"
+            disp["fw"]["flash_state"] = "done"
+        except Exception as e:
+            disp["fw"]["flash_msg"]   = str(e)[:80]
+            disp["fw"]["flash_state"] = "error"
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def draw_ahrs_firmware(surf):
+    _screen_header(surf, "AHRS FIRMWARE")
+    _prev_clip = _ss_clip_to_content(surf)
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    fw = disp["fw"]
+
+    # ── Device status row ────────────────────────────────────────────────
+    row_y = _FW_Y0
+    pygame.draw.rect(surf, (0,12,32), (bx, row_y, bw, _FW_ROW_H), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, row_y, bw, _FW_ROW_H), width=1, border_radius=6)
+    _text(surf, "DEVICE STATUS", 13, (130,160,190), bold=True, x=bx+14, y=row_y+8)
+
+    serial = _find_pico_serial()
+    s_col  = (60,220,80) if serial else (90,100,115)
+    s_lbl  = serial if serial else "not detected"
+    pygame.draw.circle(surf, s_col, (bx+22, row_y+44), 7)
+    _text(surf, f"USB Serial:  {s_lbl}", 15, s_col, bold=bool(serial),
+          x=bx+38, y=row_y+34)
+
+    bootsel = _find_pico_bootsel()
+    b_col   = (60,220,80) if bootsel else (90,100,115)
+    b_lbl   = bootsel if bootsel else "not mounted"
+    pygame.draw.circle(surf, b_col, (bx + bw//2 + 8, row_y+44), 7)
+    _text(surf, f"BOOTSEL:  {b_lbl}", 15, b_col, bold=bool(bootsel),
+          x=bx + bw//2 + 22, y=row_y+34)
+
+    # ── Push scripts row ─────────────────────────────────────────────────
+    row_y += _FW_ROW_H + 8
+    pygame.draw.rect(surf, (0,12,32), (bx, row_y, bw, _FW_ROW_H), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, row_y, bw, _FW_ROW_H), width=1, border_radius=6)
+    _text(surf, "PUSH SCRIPTS", 16, WHITE, bold=True, x=bx+14, y=row_y+8)
+    files_lbl = "  ".join(_FW_SCRIPTS)
+    if _get_font(12).size(files_lbl)[0] > bw - 28:
+        files_lbl = "main.py  config.py  web_server.py  + 3 more"
+    _text(surf, files_lbl, 12, (130,150,180), x=bx+14, y=row_y+30)
+    ps = fw.get("push_state", "")
+    pm = fw.get("push_msg",   "")
+    p_col = (60,220,80) if ps=="done" else (220,80,80) if ps=="error" else (180,180,100)
+    if pm:
+        _text(surf, pm, 13, p_col, bold=True, x=bx+14, y=row_y+52)
+
+    # ── Flash .uf2 row ───────────────────────────────────────────────────
+    row_y += _FW_ROW_H + 8
+    pygame.draw.rect(surf, (0,12,32), (bx, row_y, bw, _FW_ROW_H), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, row_y, bw, _FW_ROW_H), width=1, border_radius=6)
+    _text(surf, "FLASH MICROPYTHON  (.uf2)", 16, WHITE, bold=True, x=bx+14, y=row_y+8)
+    uf2 = _find_uf2()
+    uf2_lbl = os.path.basename(uf2) if uf2 else "no .uf2 found in firmware/"
+    _text(surf, uf2_lbl, 12, (130,150,180) if uf2 else (180,120,70),
+          x=bx+14, y=row_y+30)
+    fs = fw.get("flash_state", "")
+    fm = fw.get("flash_msg",   "")
+    f_col = (60,220,80) if fs=="done" else (220,80,80) if fs=="error" else (180,180,100)
+    if fm:
+        _text(surf, fm, 13, f_col, bold=True, x=bx+14, y=row_y+52)
+    else:
+        _text(surf, "Hold BOOTSEL + connect USB, then tap FLASH .UF2",
+              12, (130,145,165), x=bx+14, y=row_y+52)
+
+    # ── Action buttons ───────────────────────────────────────────────────
+    btn_y  = row_y + _FW_ROW_H + 14
+    half   = (bw - 10) // 2
+    push_style  = "normal" if fw.get("push_state")  != "pushing"  else "warn"
+    flash_style = "normal" if fw.get("flash_state") != "flashing" else "warn"
+    _action_btn(surf, bx,          btn_y, half, 56, "PUSH SCRIPTS TO PICO", push_style)
+    _action_btn(surf, bx+half+10,  btn_y, half, 56, "FLASH .UF2",           flash_style)
+    surf.set_clip(_prev_clip)
+
+
+def ahrs_firmware_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    btn_y = _FW_Y0 + 3 * (_FW_ROW_H + 8) + 14
+    half  = (bw - 10) // 2
+    if btn_y <= y <= btn_y + 56:
+        if bx <= x <= bx + half:
+            return "push_scripts"
+        if bx + half + 10 <= x <= bx + half + 10 + half:
+            return "flash_uf2"
     return None
 
 
@@ -3565,6 +5606,684 @@ def _td_start_current_area():
     t.start()
 
 
+# ── SRTM1 → SRTM3 compactor ────────────────────────────────────────────────
+# One-shot maintenance op: walks SRTM_DIR, decimates every SRTM1 .hgt to
+# SRTM3 in place.  Same atomic-rewrite logic as tools/compact_srtm.py so
+# an interrupted run can't leave half-written files.  Reuses the download
+# progress overlay — only one of {downloading, compacting} runs at a
+# time, gated in the UI.
+
+_SRTM1_BYTES = 3601 * 3601 * 2
+_SRTM3_BYTES = 1201 * 1201 * 2
+
+
+def _td_count_srtm1():
+    """Return (n_srtm1, total_reclaimable_bytes) over SRTM_DIR."""
+    if not os.path.isdir(SRTM_DIR):
+        return 0, 0
+    n = 0
+    saved = 0
+    for fname in os.listdir(SRTM_DIR):
+        if not fname.endswith(".hgt"):
+            continue
+        try:
+            sz = os.path.getsize(os.path.join(SRTM_DIR, fname))
+        except OSError:
+            continue
+        if sz == _SRTM1_BYTES:
+            n += 1
+            saved += _SRTM1_BYTES - _SRTM3_BYTES
+    return n, saved
+
+
+def _td_compact_worker():
+    """Background thread: decimate every SRTM1 .hgt to SRTM3 in place."""
+    td = disp["td"]
+    td["compacting"]   = True
+    td["dl_cancel"]    = False
+    td["dl_region"]    = "Compact SRTM"
+    try:
+        import numpy as np
+    except ImportError:
+        td["dl_status"]   = "numpy required"
+        td["compacting"]  = False
+        return
+    candidates = []
+    if os.path.isdir(SRTM_DIR):
+        for fname in sorted(os.listdir(SRTM_DIR)):
+            if fname.endswith(".hgt"):
+                candidates.append(fname)
+    td["dl_total"]   = len(candidates)
+    td["dl_current"] = 0
+    n_done = n_skip = n_err = 0
+    bytes_saved = 0
+    for i, fname in enumerate(candidates):
+        if td.get("dl_cancel"):
+            td["dl_status"] = (f"Cancelled  ({n_done} compacted, "
+                               f"{bytes_saved/1e9:.2f} GB freed)")
+            td["compacting"] = False
+            return
+        td["dl_current"] = i
+        path = os.path.join(SRTM_DIR, fname)
+        try:
+            sz = os.path.getsize(path)
+        except OSError:
+            n_err += 1
+            continue
+        if sz != _SRTM1_BYTES:
+            n_skip += 1
+            continue
+        td["dl_status"] = f"Compacting {fname}…"
+        try:
+            raw = np.fromfile(path, dtype='>i2').reshape(3601, 3601)
+            small = raw[::3, ::3].copy()
+            del raw
+            tmp = path + ".tmp"
+            small.astype('>i2').tofile(tmp)
+            if os.path.getsize(tmp) != _SRTM3_BYTES:
+                os.remove(tmp)
+                raise RuntimeError("size mismatch on write")
+            os.replace(tmp, path)
+            n_done += 1
+            bytes_saved += _SRTM1_BYTES - _SRTM3_BYTES
+        except Exception as exc:
+            td["dl_status"] = f"Error {fname}: {exc}"
+            n_err += 1
+    td["dl_current"]  = len(candidates)
+    td["dl_status"]   = (f"Done ✓  {n_done} compacted, "
+                         f"{bytes_saved/1e9:.2f} GB freed"
+                         + (f", {n_skip} already SRTM3" if n_skip else "")
+                         + (f", {n_err} errors" if n_err else ""))
+    td["compacting"]  = False
+    # Refresh the load_tile in-memory cache so the next render reads the
+    # now-smaller files (otherwise the cache holds float32 arrays built
+    # from the old SRTM1 read path until LRU evicts them naturally).
+    try:
+        from terrain import _tile_cache
+        _tile_cache.clear()
+    except (ImportError, AttributeError):
+        pass
+
+
+def _td_start_compact():
+    """Kick off the SRTM1 → SRTM3 compactor in the background."""
+    t = threading.Thread(target=_td_compact_worker, daemon=True,
+                         name="SRTMCompact")
+    t.start()
+
+
+def _tdc_download_thread():
+    """Background download of all Mapzen Terrarium PNG coarse tiles for
+    lat -60° to +75° at zoom 5 — ~576 tiles, ~8 MB total.  Matches the
+    iPhone PFD's downloadCoarse() behaviour."""
+    td = disp["td"]
+    td["downloading"] = True
+    td["dl_region"]   = "Global Low-Res"
+    tiles = coarse_tile_list()
+    td["dl_total"]    = len(tiles)
+    td["dl_current"]  = 0
+    td["dl_cancel"]   = False
+    os.makedirs(COARSE_DIR, exist_ok=True)
+    ok = skip = err = 0
+    for i, (z, x, y) in enumerate(tiles):
+        if td["dl_cancel"]:
+            td["dl_status"] = f"Cancelled  ({ok} new, {skip} skipped)"
+            td["downloading"] = False
+            return
+        td["dl_current"] = i
+        dest = coarse_tile_path(COARSE_DIR, z, x, y)
+        if os.path.exists(dest):
+            skip += 1
+            continue
+        url = coarse_tile_url(z, x, y)
+        td["dl_status"] = f"Downloading {z}/{x}/{y}.png"
+        try:
+            with urllib.request.urlopen(url, timeout=20) as resp:
+                data = resp.read()
+            with open(dest + ".tmp", "wb") as f:
+                f.write(data)
+            os.replace(dest + ".tmp", dest)
+            ok += 1
+        except Exception as exc:
+            td["dl_status"] = f"Error {z}/{x}/{y}: {exc}"
+            err += 1
+    td["dl_current"] = len(tiles)
+    td["dl_status"]  = (f"Done ✓  {ok} downloaded"
+                        + (f", {skip} skipped" if skip else "")
+                        + (f", {err} errors"   if err  else ""))
+    td["downloading"] = False
+    global _has_terrain
+    _has_terrain = _check_terrain()
+
+
+def _tdc_start_download():
+    """Kick off the global-coarse download in a background thread."""
+    t = threading.Thread(target=_tdc_download_thread, daemon=True)
+    t.start()
+
+
+# ── Water-mask download ───────────────────────────────────────────────────────
+# Companion to the SRTM download flow: pulls the Natural Earth 10m ocean +
+# lakes shapefiles once (~12 MB combined), then for each existing .hgt tile
+# rasterises a 1201×1201 binary water mask in-process using pyshp + pygame's
+# C-based polygon fill.  Runs in a daemon thread so the UI stays responsive;
+# status reported via disp["wd"].
+#
+# Speed vs the old gdal_rasterize subprocess flow:
+#   - shapefiles parsed ONCE per process (cached at module level), not once
+#     per tile per shapefile.
+#   - pygame.draw.polygon is a single C scanline fill, no subprocess startup.
+#   - bbox prefilter discards inland tiles in microseconds.
+# Typical 25-tile "current area": old ~3 minutes, new ~5 seconds.
+
+_WD_NE_FILES   = ("ne_10m_ocean", "ne_10m_lakes")
+_WD_NE_PRIMARY = "https://naciscdn.org/naturalearth/10m/physical"
+_WD_NE_MIRROR  = ("https://github.com/nvkelso/natural-earth-vector/"
+                  "raw/master/zips/10m_physical")
+_WD_TILE_RES   = 1201
+
+# Per-shapefile cache of (bbox, [ring, ...]) tuples; built lazily on first use.
+_wd_shapes_cache = {}
+
+
+def _wd_shapes_dir():
+    """Where Natural Earth .shp files live (alongside data/srtm/)."""
+    return os.path.join(os.path.dirname(SRTM_DIR), "natural_earth")
+
+
+def _wd_ensure_shapefiles(wd):
+    """Download + unzip the Natural Earth shapefiles if not present.
+    Returns the list of shapefile names found, or None on failure."""
+    import zipfile as _zipfile
+    sdir = _wd_shapes_dir()
+    os.makedirs(sdir, exist_ok=True)
+    found = []
+    for name in _WD_NE_FILES:
+        shp_path = os.path.join(sdir, name + ".shp")
+        if os.path.exists(shp_path):
+            found.append(name)
+            continue
+        zip_path = os.path.join(sdir, name + ".zip")
+        wd["dl_status"] = f"Downloading {name}.zip…"
+        urls = (f"{_WD_NE_PRIMARY}/{name}.zip",
+                f"{_WD_NE_MIRROR}/{name}.zip")
+        ok = False
+        for url in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=30) as resp:
+                    blob = resp.read()
+                with open(zip_path, "wb") as f:
+                    f.write(blob)
+                ok = True
+                break
+            except Exception as e:
+                wd["dl_status"] = f"  retry: {e}"
+        if not ok:
+            wd["dl_status"] = f"Failed to download {name}.zip"
+            return None
+        try:
+            with _zipfile.ZipFile(zip_path) as z:
+                z.extractall(sdir)
+            os.remove(zip_path)
+        except Exception as e:
+            wd["dl_status"] = f"Unzip failed: {e}"
+            return None
+        if not os.path.exists(shp_path):
+            wd["dl_status"] = f"{name}.shp missing after unzip"
+            return None
+        found.append(name)
+    return found
+
+
+def _wd_load_shapes(name, wd):
+    """Return cached parsed shapefile for `name`.  Cached as a dict with
+    flat numpy arrays (much smaller + faster than nested Python lists),
+    persisted to disk as .npz so subsequent runs skip the slow shapefile
+    parse entirely:
+
+        {'points':       (N, 2) float32,    flat list of all (lon, lat)
+         'ring_starts':  (M+1,) int32,       indices into points[] per ring
+         'ring_bboxes':  (M, 4) float32}     (lon_min, lat_min, lon_max, lat_max)
+
+    Pure numpy means the worker thread never has to touch pygame/SDL
+    (which has global locks that can deadlock the render thread when a
+    huge polygon is being filled in C).
+    """
+    import numpy as _np
+    if name in _wd_shapes_cache:
+        return _wd_shapes_cache[name]
+
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, name + ".npz")
+
+    # Fast path: previously-parsed cache on disk.
+    if os.path.exists(npz_path):
+        wd["dl_status"] = f"Loading cached {name}…"
+        try:
+            with _np.load(npz_path, allow_pickle=False) as z:
+                cache = {
+                    "points":      z["points"],
+                    "ring_starts": z["ring_starts"],
+                    "ring_bboxes": z["ring_bboxes"],
+                }
+            _wd_shapes_cache[name] = cache
+            return cache
+        except Exception:
+            pass   # fall through to re-parse
+
+    # Slow path: parse the .shp.  Big shapefiles (ocean has 600 K points)
+    # can take 30 s the first time; cache to .npz makes the second run
+    # instant.
+    import shapefile as _shapefile   # pyshp
+    shp_path = os.path.join(sdir, name + ".shp")
+    wd["dl_status"] = f"Parsing {name}.shp (one-time, ~30 s)…"
+
+    all_pts = []
+    ring_starts = [0]
+    ring_bboxes = []
+    cum = 0
+    with _shapefile.Reader(shp_path) as sf:
+        for shp in sf.iterShapes():
+            parts = list(shp.parts) + [len(shp.points)]
+            for i in range(len(parts) - 1):
+                ring = shp.points[parts[i]:parts[i + 1]]
+                if len(ring) < 3:
+                    continue
+                arr = _np.asarray(ring, dtype=_np.float32)
+                all_pts.append(arr)
+                cum += len(arr)
+                ring_starts.append(cum)
+                ring_bboxes.append((arr[:, 0].min(), arr[:, 1].min(),
+                                    arr[:, 0].max(), arr[:, 1].max()))
+
+    if not all_pts:
+        cache = {
+            "points":      _np.zeros((0, 2), dtype=_np.float32),
+            "ring_starts": _np.zeros((1,), dtype=_np.int32),
+            "ring_bboxes": _np.zeros((0, 4), dtype=_np.float32),
+        }
+    else:
+        cache = {
+            "points":      _np.concatenate(all_pts, axis=0).astype(_np.float32),
+            "ring_starts": _np.asarray(ring_starts, dtype=_np.int32),
+            "ring_bboxes": _np.asarray(ring_bboxes, dtype=_np.float32),
+        }
+
+    # Persist cache for next time.
+    try:
+        _np.savez(npz_path,
+                  points=cache["points"],
+                  ring_starts=cache["ring_starts"],
+                  ring_bboxes=cache["ring_bboxes"])
+    except OSError:
+        pass
+
+    _wd_shapes_cache[name] = cache
+    return cache
+
+
+# ── State / province boundary lines ───────────────────────────────────────────
+# Companion to the water-mask download.  Pulls Natural Earth's 10m admin-1
+# (states / provinces) shapefile, parses its polygons as a flat polyline cache
+# the inset can scan with bbox culling, persists the parsed result as a small
+# .npz alongside the water shapefiles so subsequent boots load in ~10 ms.
+
+_SL_NE_NAME       = "ne_10m_admin_1_states_provinces"
+_SL_NE_PRIMARY    = "https://naciscdn.org/naturalearth/10m/cultural"
+_SL_NE_MIRROR     = ("https://github.com/nvkelso/natural-earth-vector/"
+                     "raw/master/zips/10m_cultural")
+_SL_NPZ_NAME      = _SL_NE_NAME + "_lines.npz"
+
+
+def _sl_ensure_shapefile(wd):
+    """Download + unzip the admin_1 shapefile if missing.  Status text reuses
+    disp["wd"] so it shows up in the existing water-mask progress strip."""
+    import zipfile as _zipfile
+    sdir = _wd_shapes_dir()
+    os.makedirs(sdir, exist_ok=True)
+    shp_path = os.path.join(sdir, _SL_NE_NAME + ".shp")
+    if os.path.exists(shp_path):
+        return shp_path
+    zip_path = os.path.join(sdir, _SL_NE_NAME + ".zip")
+    wd["dl_status"] = f"Downloading {_SL_NE_NAME}.zip…"
+    urls = (f"{_SL_NE_PRIMARY}/{_SL_NE_NAME}.zip",
+            f"{_SL_NE_MIRROR}/{_SL_NE_NAME}.zip")
+    for url in urls:
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                blob = resp.read()
+            with open(zip_path, "wb") as f:
+                f.write(blob)
+            break
+        except Exception as e:
+            wd["dl_status"] = f"  state-lines retry: {e}"
+    else:
+        wd["dl_status"] = f"Failed to download {_SL_NE_NAME}.zip"
+        return None
+    try:
+        with _zipfile.ZipFile(zip_path) as z:
+            z.extractall(sdir)
+        os.remove(zip_path)
+    except Exception as e:
+        wd["dl_status"] = f"Unzip failed: {e}"
+        return None
+    return shp_path if os.path.exists(shp_path) else None
+
+
+def _sl_build_cache(wd):
+    """Parse the admin_1 shapefile into a flat polyline cache and persist
+    it as .npz.  Returns the cache dict, or None on failure.
+
+        {'points':     (N, 2) float32   flat (lon, lat) for every vertex
+         'seg_starts': (M+1,) int32     indices into points[] per polyline
+         'seg_bboxes': (M, 4) float32   (lon_min, lat_min, lon_max, lat_max)}
+
+    State borders ship as polygons in the shapefile; we copy each ring's
+    vertices verbatim and let the renderer draw it as a closed polyline.
+    No simplification — the file is small (~3000 rings, ~500 K points) and
+    bbox culling skips everything outside the inset bbox in microseconds."""
+    import numpy as _np
+    try:
+        import shapefile as _shapefile
+    except ImportError:
+        wd["dl_status"] = ("Install pyshp: sudo pip3 install "
+                           "--break-system-packages pyshp")
+        return None
+
+    shp_path = _sl_ensure_shapefile(wd)
+    if shp_path is None:
+        return None
+
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, _SL_NPZ_NAME)
+
+    wd["dl_status"] = f"Parsing {_SL_NE_NAME}.shp (one-time)…"
+    all_pts, seg_starts, seg_bboxes = [], [0], []
+    cum = 0
+    with _shapefile.Reader(shp_path) as sf:
+        for shp in sf.iterShapes():
+            parts = list(shp.parts) + [len(shp.points)]
+            for i in range(len(parts) - 1):
+                ring = shp.points[parts[i]:parts[i + 1]]
+                if len(ring) < 2:
+                    continue
+                arr = _np.asarray(ring, dtype=_np.float32)
+                all_pts.append(arr)
+                cum += len(arr)
+                seg_starts.append(cum)
+                seg_bboxes.append((arr[:, 0].min(), arr[:, 1].min(),
+                                   arr[:, 0].max(), arr[:, 1].max()))
+
+    if not all_pts:
+        return None
+    cache = {
+        "points":     _np.concatenate(all_pts, axis=0).astype(_np.float32),
+        "seg_starts": _np.asarray(seg_starts, dtype=_np.int32),
+        "seg_bboxes": _np.asarray(seg_bboxes, dtype=_np.float32),
+    }
+    try:
+        _np.savez(npz_path,
+                  points=cache["points"],
+                  seg_starts=cache["seg_starts"],
+                  seg_bboxes=cache["seg_bboxes"])
+    except OSError:
+        pass
+    return cache
+
+
+def _sl_load_cache():
+    """Load the parsed state-lines .npz if it exists.  Returns the cache
+    dict or None.  Called once at startup and again after the worker
+    finishes a fresh download/parse."""
+    import numpy as _np
+    sdir = _wd_shapes_dir()
+    npz_path = os.path.join(sdir, _SL_NPZ_NAME)
+    if not os.path.exists(npz_path):
+        return None
+    try:
+        with _np.load(npz_path, allow_pickle=False) as z:
+            return {
+                "points":     z["points"],
+                "seg_starts": z["seg_starts"],
+                "seg_bboxes": z["seg_bboxes"],
+            }
+    except Exception:
+        return None
+
+
+_state_lines = None  # populated on startup by _sl_load_cache(); rebound after
+                     # WATER MASKS download completes, or lazy-reloaded on
+                     # MFD render if the .npz appears after startup (e.g.
+                     # rsync from a pi4 already holding the cache).
+_state_lines_last_try = 0.0  # monotonic clock of last lazy-load attempt
+                     # the water/state worker finishes building the cache.
+
+
+def _wd_fill_ring(out, ring_xy_px):
+    """Burn one polygon ring (N×2 float pixel coords) into out (H, W)
+    uint8 array via numpy scanline fill.  Even–odd fill rule means
+    polygon-with-holes (e.g. ocean cut by continents) renders correctly
+    when outer + inner rings are passed in.
+    """
+    import numpy as _np
+    n = len(ring_xy_px)
+    if n < 3:
+        return
+    H, W = out.shape
+
+    x1 = ring_xy_px[:, 0]
+    y1 = ring_xy_px[:, 1]
+    x2 = _np.roll(x1, -1)
+    y2 = _np.roll(y1, -1)
+
+    # Edge prefilter: drop edges entirely above or below the tile in Y.
+    # Do NOT prefilter in X — closed polygons whose perimeter lies far
+    # east/west of the tile (e.g. the Pacific Ocean ring's antimeridian
+    # and Asian-coast edges for an offshore CONUS tile) still contribute
+    # scanline-crossing parity.  Their xs values land outside [0, W) and
+    # are clipped during fill, but keeping them is what makes the
+    # even–odd count even on every scanline.
+    keep = ~(((y1 < 0) & (y2 < 0)) | ((y1 >= H) & (y2 >= H)))
+    if not keep.any():
+        return
+    x1 = x1[keep]; y1 = y1[keep]
+    x2 = x2[keep]; y2 = y2[keep]
+
+    y_min = max(0, int(_np.floor(min(y1.min(), y2.min()))))
+    y_max = min(H - 1, int(_np.ceil(max(y1.max(), y2.max()))))
+    if y_min > y_max:
+        return
+
+    for y in range(y_min, y_max + 1):
+        # Edges crossing scanline y (top-inclusive, bottom-exclusive)
+        crosses = ((y1 <= y) & (y < y2)) | ((y2 <= y) & (y < y1))
+        if not crosses.any():
+            continue
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            xs = x1[crosses] + (y - y1[crosses]) * \
+                 (x2[crosses] - x1[crosses]) / (y2[crosses] - y1[crosses])
+        xs = _np.sort(xs)
+        # Even–odd fill between successive intersection pairs
+        for k in range(0, len(xs) - 1, 2):
+            x_start = max(0, int(_np.ceil(xs[k])))
+            x_end   = min(W, int(xs[k + 1]) + 1)
+            if x_start < x_end:
+                out[y, x_start:x_end] ^= 1   # XOR for even–odd
+
+
+def _wd_rasterise_tile(lat_int, lon_int, shape_names, wd):
+    """Build a (res×res) uint8 0/1 water mask for the 1°×1° tile at
+    (lat_int, lon_int).  Pure numpy — no pygame/SDL on the worker
+    thread, so the main render loop stays unblocked even on a huge
+    polygon."""
+    import numpy as _np
+    res = _WD_TILE_RES
+    out = _np.zeros((res, res), dtype=_np.uint8)
+
+    tile_lon0 = float(lon_int)
+    tile_lon1 = float(lon_int + 1)
+    tile_lat0 = float(lat_int)
+    tile_lat1 = float(lat_int + 1)
+    scale = float(res - 1)
+
+    for name in shape_names:
+        cache = _wd_load_shapes(name, wd)
+        ring_starts = cache["ring_starts"]
+        bboxes      = cache["ring_bboxes"]
+        points      = cache["points"]
+        if len(bboxes) == 0:
+            continue
+
+        # Vectorised per-ring bbox prefilter
+        keep_rings = ~((bboxes[:, 2] < tile_lon0) | (bboxes[:, 0] > tile_lon1) |
+                       (bboxes[:, 3] < tile_lat0) | (bboxes[:, 1] > tile_lat1))
+        ring_idx = _np.flatnonzero(keep_rings)
+        if ring_idx.size == 0:
+            continue
+
+        for ri in ring_idx:
+            s = ring_starts[ri]
+            e = ring_starts[ri + 1]
+            ring = points[s:e]
+            # Convert lon/lat → pixel coords (col 0 = west, row 0 = north).
+            xy = _np.empty_like(ring)
+            xy[:, 0] = (ring[:, 0] - tile_lon0) * scale
+            xy[:, 1] = (tile_lat1 - ring[:, 1]) * scale
+            _wd_fill_ring(out, xy)
+
+    # XOR fill produced 0/1 pixels but inner rings (continents inside
+    # ocean) flip back to 0, which is what we want — water=1 only.
+    return out
+
+
+def _wd_existing_srtm_tiles():
+    """Enumerate (lat_int, lon_int) for every .hgt file in SRTM_DIR."""
+    tiles = []
+    if not os.path.isdir(SRTM_DIR):
+        return tiles
+    for f in os.listdir(SRTM_DIR):
+        if not f.endswith(".hgt") or len(f) < 11:
+            continue
+        try:
+            ns = f[0]
+            lat_int = int(f[1:3]) * (1 if ns == "N" else -1)
+            ew = f[3]
+            lon_int = int(f[4:7]) * (1 if ew == "E" else -1)
+        except ValueError:
+            continue
+        tiles.append((lat_int, lon_int))
+    return sorted(tiles)
+
+
+def _wd_target_tiles(buffer_deg=1):
+    """SRTM tiles plus a `buffer_deg` border in every direction.
+
+    Adding buffer tiles means the rasteriser also produces water masks
+    for offshore tiles where the SRTM coverage stops (e.g. just east of
+    the Florida coast, or west of California).  Those tiles have no
+    .hgt file but a valid .water mask — Natural Earth's ocean polygon
+    fills them entirely with water — so the SVT outer mesh paints
+    Pacific/Atlantic blue instead of defaulting to flat brown."""
+    have = set(_wd_existing_srtm_tiles())
+    extended = set(have)
+    for lat_int, lon_int in have:
+        for dlat in range(-buffer_deg, buffer_deg + 1):
+            for dlon in range(-buffer_deg, buffer_deg + 1):
+                la = lat_int + dlat
+                lo = lon_int + dlon
+                if -90 <= la <= 89 and -180 <= lo <= 179:
+                    extended.add((la, lo))
+    return sorted(extended)
+
+
+def _wd_download_thread():
+    """Background worker: download Natural Earth + rasterise per-tile masks."""
+    from water import save_tile, _tile_key as _water_tile_key
+
+    wd = disp["wd"]
+    wd["downloading"] = True
+    wd["dl_cancel"]   = False
+    wd["dl_current"]  = 0
+    wd["dl_total"]    = 0
+
+    # Pure-python path: needs pyshp.  If missing, tell the user how to
+    # install it without forcing them to install gdal-bin (heavy + slow).
+    try:
+        import shapefile  # noqa: F401
+    except ImportError:
+        wd["dl_status"] = ("Install pyshp: sudo pip3 install "
+                           "--break-system-packages pyshp")
+        wd["downloading"] = False
+        return
+
+    wd["dl_status"] = "Loading Natural Earth shapefiles…"
+    found = _wd_ensure_shapefiles(wd)
+    if found is None:
+        wd["downloading"] = False
+        return
+
+    tiles = _wd_target_tiles(buffer_deg=1)
+    if not tiles:
+        wd["dl_status"] = "No SRTM tiles on disk — download terrain first"
+        wd["downloading"] = False
+        return
+
+    os.makedirs(WATER_DIR, exist_ok=True)
+    wd["dl_total"] = len(tiles)
+    ok = skip = err = 0
+    try:
+        for i, (lat_int, lon_int) in enumerate(tiles):
+            if wd["dl_cancel"]:
+                wd["dl_status"] = (f"Cancelled  ({ok} new, "
+                                   f"{skip} skipped, {err} errors)")
+                return
+            wd["dl_current"] = i
+            key = _water_tile_key(lat_int, lon_int)
+            out_path = os.path.join(WATER_DIR, key)
+            if os.path.exists(out_path):
+                skip += 1
+                continue
+            wd["dl_status"] = f"Rasterising {key}…"
+            try:
+                arr = _wd_rasterise_tile(lat_int, lon_int, found, wd)
+                save_tile(out_path, arr)
+                ok += 1
+            except Exception as e:
+                wd["dl_status"] = f"{key}: {e}"
+                err += 1
+        wd["dl_current"] = len(tiles)
+        wd["dl_status"]  = (f"Done ✓  {ok} new"
+                            + (f", {skip} skipped" if skip else "")
+                            + (f", {err} errors"   if err   else ""))
+
+        # State / province boundary polylines.  Downloaded + parsed once
+        # alongside the water shapefiles so the inset can paint state
+        # context at the wider zoom levels.  Best-effort: if pyshp /
+        # network fail the rest of the water flow still completes.
+        global _state_lines
+        if _sl_load_cache() is None:
+            wd["dl_status"] = "Fetching state boundaries…"
+            built = _sl_build_cache(wd)
+            if built is not None:
+                _state_lines = built
+                wd["dl_status"] = (f"Done ✓  {ok} new"
+                                   + (f", {skip} skipped" if skip else "")
+                                   + (f", {err} errors"   if err   else "")
+                                   + "  · state lines ready")
+        else:
+            _state_lines = _sl_load_cache()
+    finally:
+        wd["downloading"] = False
+
+
+def _wd_start_download():
+    """Kick off the water-mask rasterise in a daemon thread."""
+    if disp["wd"]["downloading"]:
+        return
+    t = threading.Thread(target=_wd_download_thread, daemon=True,
+                         name="WaterMaskDL")
+    t.start()
+
 # ── Obstacle data download ─────────────────────────────────────────────────────
 
 def _od_load_obstacles():
@@ -3686,7 +6405,7 @@ def draw_obstacle_data(surf, od):
     else:
         stat_str = "No obstacle data on disk"
         stat_col = YELLOW
-    _text(surf, stat_str, 12, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+    _text(surf, stat_str, 15, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
 
     downloading = od.get("downloading", False)
     parsing     = od.get("parsing", False)
@@ -3792,16 +6511,18 @@ def obstacle_data_hit(x, y, od):
 _AD_MX = 12
 
 def _ad_load_airports():
-    """(Re-)load the airport + runway caches into module-level arrays."""
-    global _airports, _runways
+    """(Re-)load the airport cache into the module-level array.
+
+    pi_zero deliberately omits the runway cache (and the runway / extended-
+    centerline AI overlays) — the small panel is too cluttered to make use
+    of them.  Obstacles + airport symbols / signposts remain.
+    """
+    global _airports
     os.makedirs(AIRPORT_DIR, exist_ok=True)
     _airports = apt_mod.load(AIRPORT_DIR)
-    _runways  = rwy_mod.load(AIRPORT_DIR)
     cnt, mb = apt_mod.disk_stats(AIRPORT_DIR)
-    rcnt, rmb = rwy_mod.disk_stats(AIRPORT_DIR)
     disp["ad"]["records"] = cnt
-    disp["ad"]["used_mb"] = mb + rmb
-    disp["ad"]["runway_count"] = rcnt
+    disp["ad"]["used_mb"] = mb
     dl_date = apt_mod.download_date(AIRPORT_DIR)
     disp["ad"]["dl_date"] = dl_date
     if dl_date is not None:
@@ -3847,29 +6568,21 @@ def _ad_download_thread():
         return True
 
     csv_apt   = os.path.join(AIRPORT_DIR, apt_mod.CSV_FILENAME)
-    csv_rwy   = os.path.join(AIRPORT_DIR, rwy_mod.CSV_FILENAME)
     cache_apt = os.path.join(AIRPORT_DIR, apt_mod.CACHE_FILENAME)
-    cache_rwy = os.path.join(AIRPORT_DIR, rwy_mod.CACHE_FILENAME)
 
     try:
         if not _download_file(apt_mod.AIRPORTS_CSV_URL, csv_apt, "airports.csv"):
             ad["dl_status"]   = "Cancelled"
             ad["downloading"] = False
             return
-        if not _download_file(rwy_mod.RUNWAYS_CSV_URL, csv_rwy, "runways.csv"):
-            ad["dl_status"]   = "Cancelled"
-            ad["downloading"] = False
-            return
-        for p in (cache_apt, cache_rwy):
-            try: os.remove(p)
-            except Exception: pass
-        ad["dl_status"] = "Parsing airport + runway records\u2026"
+        try: os.remove(cache_apt)
+        except Exception: pass
+        ad["dl_status"] = "Parsing airport records\u2026"
         ad["parsing"]   = True
         _ad_load_airports()
         ad["parsing"]   = False
         cnt = ad["records"]
-        rwy_cnt = ad.get("runway_count", 0)
-        ad["dl_status"] = f"Done \u2713  {cnt:,} apts, {rwy_cnt:,} rwys"
+        ad["dl_status"] = f"Done \u2713  {cnt:,} apts"
     except Exception as exc:
         ad["dl_status"] = f"Error: {exc}"
     finally:
@@ -3906,7 +6619,7 @@ def draw_airport_data(surf, ad):
     else:
         stat_str = "No airport data on disk"
         stat_col = YELLOW
-    _text(surf, stat_str, 11, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+    _text(surf, stat_str, 14, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
 
     downloading = ad.get("downloading", False)
     parsing     = ad.get("parsing", False)
@@ -3915,7 +6628,7 @@ def draw_airport_data(surf, ad):
     info_h = 82
     pygame.draw.rect(surf, (0,10,26), (bx, info_y, bw, info_h), border_radius=6)
     pygame.draw.rect(surf, (40,55,80), (bx, info_y, bw, info_h), width=1, border_radius=6)
-    _text(surf, "OurAirports Global Database", 12, WHITE, bold=True,
+    _text(surf, "OurAirports Global Database", 15, WHITE, bold=True,
           cx=DISPLAY_W//2, cy=info_y+14)
     _text(surf, "\u2248 72,000 airports worldwide",
           9, (140,160,185), cx=DISPLAY_W//2, cy=info_y+30)
@@ -3966,10 +6679,32 @@ def draw_airport_data(surf, ad):
         col = (60,220,80) if status_msg.startswith("Done") else (160,160,170)
         _text(surf, status_msg, 9, col, cx=DISPLAY_W//2, cy=prog_y+20)
 
+    # ── Symbol legend — visual key for the three airport types ──────────
+    leg_y = prog_y + prog_h + 12
+    leg_h = 34
+    pygame.draw.rect(surf, (0,8,20), (bx, leg_y, bw, leg_h), border_radius=4)
+    _text(surf, "Symbol legend:", 12, (140,160,185), bold=True,
+          x=bx+10, y=leg_y+9)
+    # Public airport ring
+    lx = bx + 130; ly = leg_y + 18
+    pygame.draw.circle(surf, (120, 220, 255), (lx, ly), 5, 0)
+    pygame.draw.circle(surf, (0, 10, 30), (lx, ly), 3, 0)
+    _text(surf, "PUBLIC", 11, (170,180,195), x=lx+10, y=leg_y+10)
+    # Heliport
+    _text(surf, "H", 13, (220, 120, 220), bold=True, cx=bx+250, cy=ly)
+    _text(surf, "HELIPORT", 11, (170,180,195), x=bx+260, y=leg_y+10)
+    # Seaplane base
+    sx = bx + 380
+    pygame.draw.circle(surf, (150, 200, 255), (sx, ly), 4, 1)
+    pygame.draw.line(surf, (150, 200, 255), (sx - 4, ly + 5), (sx + 4, ly + 5), 1)
+    _text(surf, "SEAPLANE", 11, (170,180,195), x=sx+10, y=leg_y+10)
+
     # ── Display filters — toggle which airport types render on the AI ────
-    filt_y = prog_y + prog_h + 12
+    # pi_zero shows airports + symbols only; runway polygons and extended
+    # centerlines were dropped (too cluttered on the 640×480 panel).
+    filt_y = leg_y + leg_h + 14
     filt_h = 30
-    _text(surf, "Display filters:", 10, (140,160,185), x=bx+6, y=filt_y-12)
+    _text(surf, "Display filters:", 13, (140,160,185), x=bx+6, y=filt_y-14)
     bt_w = (bw - 30) // 4
     for i, (key, lbl) in enumerate([("show_public",   "PUBLIC"),
                                      ("show_heli",     "HELI"),
@@ -3977,13 +6712,6 @@ def draw_airport_data(surf, ad):
                                      ("show_other",    "OTHER")]):
         bxi = bx + i * (bt_w + 10)
         _seg_btn(surf, bxi, filt_y, bt_w, filt_h, lbl, ad.get(key, False), r=5)
-    # Row 2: runway + centerline
-    row2_y = filt_y + filt_h + 6
-    big_w = (bw - 10) // 2
-    _seg_btn(surf, bx,              row2_y, big_w, filt_h,
-             "RUNWAYS", ad.get("show_runways", False), r=5)
-    _seg_btn(surf, bx + big_w + 10, row2_y, big_w, filt_h,
-             "EXT C/LINES", ad.get("show_centerlines", False), r=5)
 
 
 def airport_data_hit(x, y, ad):
@@ -3992,10 +6720,13 @@ def airport_data_hit(x, y, ad):
     bx = _AD_MX; bw = DISPLAY_W - 2*_AD_MX
     btn_y = 92 + 82 + 10
     btn_h = 48
-    # Filter toggle strip
+    # Filter toggle strip — match draw-side: symbol legend (leg_h=34 + 12+14)
+    # sits between the download progress strip and the filter row.
     prog_y = btn_y + btn_h + 8
     prog_h = 40
-    filt_y = prog_y + prog_h + 12
+    leg_y  = prog_y + prog_h + 12
+    leg_h  = 34
+    filt_y = leg_y + leg_h + 14
     filt_h = 30
     bt_w   = (bw - 30) // 4
     if filt_y <= y <= filt_y + filt_h:
@@ -4004,14 +6735,6 @@ def airport_data_hit(x, y, ad):
             bxi = bx + i * (bt_w + 10)
             if bxi <= x <= bxi + bt_w:
                 return f"toggle:{key}"
-    # Row 2: runway + centerline
-    row2_y = filt_y + filt_h + 6
-    big_w = (bw - 10) // 2
-    if row2_y <= y <= row2_y + filt_h:
-        if bx <= x <= bx + big_w:
-            return "toggle:show_runways"
-        if bx + big_w + 10 <= x <= bx + big_w + 10 + big_w:
-            return "toggle:show_centerlines"
     if ad.get("downloading"):
         if (bx+bw-70 <= x <= bx+bw and prog_y+4 <= y <= prog_y+32):
             return "cancel"
@@ -4025,38 +6748,103 @@ def draw_terrain_data(surf, td):
     _screen_header(surf, "TERRAIN DATA")
     bx = _TD_MX; bw = DISPLAY_W - 2*_TD_MX
     n_tiles, used_mb = _td_disk_stats()
+    c_tiles, c_mb    = coarse_disk_stats(COARSE_DIR)
+    n_srtm1, srtm1_reclaim = _td_count_srtm1()
+    compacting = td.get("compacting", False)
 
-    # Status strip
-    pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, 28), border_radius=4)
-    pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, 28), width=1, border_radius=4)
-    stat_str = (f"{n_tiles} tile{'s' if n_tiles != 1 else ''} on disk  \u00b7  {used_mb:.1f} MB used"
-                if n_tiles else "No tiles on disk  \u00b7  SVT uses flat terrain")
-    stat_col = (60,220,80) if n_tiles else YELLOW
-    _text(surf, stat_str, 12, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+    # Status strip — two lines: SRTM hi-res + Mapzen coarse, with a
+    # COMPACT pill on the right edge when any SRTM1 tiles are on disk.
+    strip_h = 46
+    pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, strip_h), border_radius=4)
+    pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, strip_h), width=1, border_radius=4)
+    # COMPACT button (right side of strip) — shown when SRTM1 tiles exist
+    # OR while a compact run is in progress.
+    show_compact = (n_srtm1 > 0) or compacting
+    cp_w = 92; cp_h = 32
+    cp_x = bx + bw - cp_w - 8
+    cp_y = 52 + (strip_h - cp_h) // 2
+    if show_compact:
+        cp_label = "COMPACTING…" if compacting else "COMPACT"
+        _action_btn(surf, cp_x, cp_y, cp_w, cp_h, cp_label,
+                    "warn" if compacting else "ok", r=5)
+        # Text shifts left to avoid the button
+        text_cx = (bx + cp_x) // 2
+    else:
+        text_cx = DISPLAY_W // 2
 
-    downloading = td.get("downloading", False)
+    if n_tiles:
+        if n_srtm1 > 0:
+            hi_str = (f"SRTM:  {n_tiles} tiles  ·  {used_mb:.0f} MB"
+                      f"  ({n_srtm1} SRTM1 → save "
+                      f"{srtm1_reclaim/1e9:.1f} GB)")
+        else:
+            hi_str = (f"SRTM:  {n_tiles} tile{'s' if n_tiles != 1 else ''}"
+                      f"  ·  {used_mb:.1f} MB  ·  SRTM3")
+        hi_col = (60,220,80)
+    else:
+        hi_str = "SRTM:  none on disk"
+        hi_col = YELLOW
+    if c_tiles:
+        co_str = f"Mapzen global:  {c_tiles} tiles  ·  {c_mb:.1f} MB"
+        co_col = (60,220,80)
+    else:
+        co_str = "Mapzen global:  none on disk"
+        co_col = (180,160,80)
+    _text(surf, hi_str, 13, hi_col, bold=True, cx=text_cx, cy=64)
+    _text(surf, co_str, 13, co_col, bold=True, cx=text_cx, cy=85)
+
+    # `downloading` here gates the region tiles + cancel button to cover
+    # downloads and the compact pass — only one heavy job runs at a time.
+    downloading = td.get("downloading", False) or compacting
+    cur_region  = td.get("dl_region", "")
     rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
-    available_h = DISPLAY_H - _TD_MY - _TD_GAP*(rows-1) - 8
-    bh = available_h // (rows + 1)   # +1 row for the "Current Area" button
+    top_y = 52 + strip_h + 6
+    available_h = DISPLAY_H - top_y - _TD_GAP*(rows-1) - 8
+    bh = available_h // (rows + 1)   # +1 row for the two top action buttons
 
-    # ── Current Area button (full width) ─────────────────────────────────────
-    cur_col = (50,50,70) if downloading else (0,18,45)
-    cur_oc  = (70,70,95)  if downloading else WHITE
-    pygame.draw.rect(surf, cur_col, (bx, _TD_MY, bw, bh), border_radius=6)
-    gh = bh // 5
-    for i in range(gh):
-        t = 1.0 - i/gh
-        gc = (int(15+t*25), int(20+t*40), int(40+t*65)) if not downloading else (int(20+t*20),int(20+t*20),int(30+t*30))
-        pygame.draw.line(surf, gc, (bx+6, _TD_MY+1+i), (bx+bw-6, _TD_MY+1+i))
-    pygame.draw.rect(surf, cur_oc, (bx, _TD_MY, bw, bh), width=2, border_radius=6)
-    _text(surf, "DOWNLOAD CURRENT AREA", 15, cur_oc, bold=True,
-          cx=DISPLAY_W//2, cy=_TD_MY+bh//2-8)
+    # ── Top row: CURRENT AREA, GLOBAL LOW-RES, WATER MASKS (1/3 each) ────
+    third_w = (bw - 2 * _TD_GAP) // 3
+    wd_downloading = disp.get("wd", {}).get("downloading", False)
+
+    def _draw_action_tile(rx, ry, rw, label, sub, active):
+        any_busy = downloading or wd_downloading
+        col = (0,28,18) if active else ((50,50,70) if any_busy else (0,18,45))
+        oc  = (40,180,60) if active else ((70,70,95) if any_busy else WHITE)
+        pygame.draw.rect(surf, col, (rx, ry, rw, bh), border_radius=6)
+        if not any_busy or active:
+            gh = bh // 5
+            for i in range(gh):
+                t = 1.0 - i/gh
+                gc = (int(15+t*25), int(20+t*40), int(40+t*65))
+                pygame.draw.line(surf, gc, (rx+6, ry+1+i), (rx+rw-6, ry+1+i))
+        pygame.draw.rect(surf, oc, (rx, ry, rw, bh), width=2, border_radius=6)
+        tc = (40,180,60) if active else ((70,80,90) if any_busy else WHITE)
+        _text(surf, label, 15, tc, bold=True, cx=rx+rw//2, cy=ry+bh//2-10)
+        _text(surf, sub, 11,
+              (110,130,150) if not active else (60,180,80),
+              cx=rx+rw//2, cy=ry+bh//2+10)
+
     lat_i = int(disp.get("lat", DEMO_LAT)); lon_i = int(disp.get("lon", DEMO_LON))
-    area_str = f"25 tiles around {lat_i}\u00b0{'N' if lat_i>=0 else 'S'}  {abs(lon_i)}\u00b0{'W' if lon_i<0 else 'E'}  \u2248 35 MB"
-    _text(surf, area_str, 10, (120,140,165), cx=DISPLAY_W//2, cy=_TD_MY+bh//2+10)
+    area_str = f"25 tiles  ·  ≈ 35 MB"
+    _draw_action_tile(bx, top_y, third_w, "CURRENT AREA", area_str,
+                      active=(downloading and cur_region == "Current Area"))
+    n_coarse   = len(coarse_tile_list())
+    coarse_str = f"~{n_coarse} tiles  ·  ≈ 8 MB"
+    _draw_action_tile(bx + third_w + _TD_GAP, top_y, third_w,
+                      "GLOBAL LOW-RES", coarse_str,
+                      active=(downloading and cur_region == "Global Low-Res"))
+    # Water tile uses the same active highlight when its dedicated worker
+    # is running.  Re-runs the rasteriser for every existing SRTM tile.
+    w_tiles, w_mb = water_mod.disk_stats(WATER_DIR)
+    if w_tiles:
+        water_sub = f"{w_tiles} tiles  ·  {w_mb:.1f} MB"
+    else:
+        water_sub = "needs pyshp + SRTM"
+    _draw_action_tile(bx + 2*(third_w + _TD_GAP), top_y, third_w,
+                      "WATER MASKS", water_sub, active=wd_downloading)
 
     # ── Preset region grid ────────────────────────────────────────────────────
-    grid_y = _TD_MY + bh + _TD_GAP
+    grid_y = top_y + bh + _TD_GAP
     btn_w = (bw - _TD_GAP) // 2
     for idx, region in enumerate(_TD_REGIONS):
         col = idx % _TD_COLS; row = idx // _TD_COLS
@@ -4119,22 +6907,47 @@ def terrain_data_hit(x, y, td):
         return "back"
     bx = _TD_MX; bw = DISPLAY_W - 2*_TD_MX
     rows = (len(_TD_REGIONS) + _TD_COLS - 1) // _TD_COLS
-    available_h = DISPLAY_H - _TD_MY - _TD_GAP*(rows-1) - 8
+    # Match the draw-side geometry: now-taller status strip + new
+    # half-width action-tile row.
+    strip_h = 46
+    top_y = 52 + strip_h + 6
+    available_h = DISPLAY_H - top_y - _TD_GAP*(rows-1) - 8
     bh = available_h // (rows + 1)
+    third_w = (bw - 2 * _TD_GAP) // 3
 
-    # Cancel button during download
-    if td.get("downloading"):
+    # COMPACT button on the right side of the status strip — same rect
+    # the draw routine uses.  Only tappable when there are SRTM1 tiles
+    # to compact AND no job (download or compact) is currently running.
+    n_srtm1, _ = _td_count_srtm1()
+    compacting = td.get("compacting", False)
+    any_busy   = td.get("downloading") or disp.get("wd", {}).get("downloading") or compacting
+    if n_srtm1 > 0 or compacting:
+        cp_w = 92; cp_h = 32
+        cp_x = bx + bw - cp_w - 8
+        cp_y = 52 + (strip_h - cp_h) // 2
+        if (cp_x <= x <= cp_x + cp_w and cp_y <= y <= cp_y + cp_h
+                and not any_busy):
+            return "compact"
+
+    # Cancel button during download or compact (covers td, wd, compact)
+    if (td.get("downloading") or disp.get("wd", {}).get("downloading")
+            or compacting):
         prog_y = DISPLAY_H - 58
         if (DISPLAY_W-100-bx <= x <= DISPLAY_W-bx and
                 prog_y+6 <= y <= prog_y+42):
             return "cancel"
 
-    # Current Area button
-    if bx <= x <= bx+bw and _TD_MY <= y <= _TD_MY+bh:
-        return "current_area"
+    # Top action-tile row: CURRENT AREA + GLOBAL LOW-RES + WATER MASKS
+    if top_y <= y <= top_y+bh:
+        if bx <= x <= bx+third_w:
+            return "current_area"
+        if bx+third_w+_TD_GAP <= x <= bx+2*third_w+_TD_GAP:
+            return "global_coarse"
+        if bx+2*(third_w+_TD_GAP) <= x <= bx+2*(third_w+_TD_GAP)+third_w:
+            return "water_masks"
 
     # Region grid
-    grid_y = _TD_MY + bh + _TD_GAP
+    grid_y = top_y + bh + _TD_GAP
     btn_w = (bw - _TD_GAP) // 2
     for idx, region in enumerate(_TD_REGIONS):
         col = idx % _TD_COLS; row = idx // _TD_COLS
@@ -4180,12 +6993,16 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
       • Right (under alt tape)   : Baro setting — CYAN=baro sensor, MAGENTA=GPS ALT
     IAS and ALT bug buttons are drawn at the tops of their own tapes.
     """
-    y = HDG_Y + 2
+    # Bottom-row boxes fill the full HDG_H height of the heading strip so
+    # they read cleanly on the small 640x480 Waveshare panel. Matches the
+    # top-row speed / alt bug boxes (also bumped to HDG_H tall).
+    y = HDG_Y
 
     # HDG bug — left side of heading strip; color matches heading bug triangle
     _hdg_btn = f"{round(hdg_bug) % 360:03d}\u00b0" if hdg_bug is not None else "---\u00b0"
-    hdg_box_col = MAGENTA if hdg_src == "gps" else CYAN
-    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=22, col=hdg_box_col)
+    hdg_box_col = MAGENTA if hdg_src == "trk" else CYAN
+    _cyan_box(surf, _hdg_btn, x=SPD_X, y=y, w=SPD_W, h=HDG_H,
+              font_sz=24, col=hdg_box_col)
 
     # Baro — right side of heading strip; CYAN when baro sensor active, MAGENTA when GPS ALT
     # Accept any non-"gps" baro_src as meaning baro sensor is active (firmware uses
@@ -4193,18 +7010,18 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
     if baro_ok and baro_src != "gps":
         baro_unit = disp["ds"].get("baro_unit", "inhg")
         if baro_unit == "hpa":
-            baro_lbl = f"{baro_hpa:.0f} hPa"
-            baro_fsz = 12
+            baro_lbl = f"{baro_hpa:.0f}"
+            baro_fsz = 24
         else:
-            baro_lbl = f"{baro_hpa / 33.8639:.2f} IN"
-            baro_fsz = 12   # wider string needs slightly smaller font
+            baro_lbl = f"{baro_hpa / 33.8639:.2f}"
+            baro_fsz = 24    # cyan box border + display-setup choice tells the pilot the unit
         baro_col = CYAN
     else:
-        baro_lbl = "GPS ALT"
-        baro_fsz = 14
+        baro_lbl = "GPS"
+        baro_fsz = 24
         baro_col = MAGENTA
     _cyan_box(surf, baro_lbl,
-              x=ALT_X + 1, y=y, w=ALT_W - 1, h=22, font_sz=baro_fsz, col=baro_col)
+              x=ALT_X + 1, y=y, w=ALT_W - 1, h=HDG_H, font_sz=baro_fsz, col=baro_col)
 
 
 # ── Veil surface for transparent overlay modes (allocated once) ───────────────
@@ -4222,92 +7039,151 @@ def _draw_veil(surf):
 # ── Obstacle symbol renderer ──────────────────────────────────────────────────
 
 _OBS_RADIUS_NM  = OBSTACLE_RADIUS_NM
-_OBS_WINDOW_FT  = OBSTACLE_WINDOW_FT
+_OBS_BELOW_FT   = OBSTACLE_BELOW_FT
 _OBS_CAUTION_FT = OBSTACLE_CAUTION_FT
 _OBS_WARNING_FT = OBSTACLE_WARNING_FT
+_OBS_MIN_AGL_FT = 25.0    # hide DOF entries shorter than this so airport-
+                          # surface clutter (signs, low markers, taxiway
+                          # lighting) doesn't paint phantom towers.
+# Airport-boundary declutter: anything shorter than _OBS_AIRPORT_FLOOR_FT
+# AGL gets hidden when it sits within _OBS_AIRPORT_RADIUS_NM of any
+# runway centroid.
+_OBS_AIRPORT_RADIUS_NM = 1.0
+_OBS_AIRPORT_FLOOR_FT  = 50.0
+
+# Cache rendered obstacle labels keyed on (text, colour). pygame.font.render
+# is ~1 ms each — a busy metro view can show 50+ towers whose MSL labels
+# repeat, so caching cuts ~50 ms/frame on the Pi Zero 2W.
+_obs_label_cache = {}
+_OBS_LABEL_CACHE_MAX = 256
+
+
+def _obs_label_blit(surf, text, color, cx, cy):
+    """Blit a small obstacle MSL label, reusing cached pygame surfaces."""
+    key = (text, color)
+    img = _obs_label_cache.get(key)
+    if img is None:
+        font = _get_font(8, False)
+        img = font.render(text, True, color)
+        if len(_obs_label_cache) >= _OBS_LABEL_CACHE_MAX:
+            _obs_label_cache.clear()
+        _obs_label_cache[key] = img
+    rect = img.get_rect(center=(cx, cy))
+    surf.blit(img, rect)
+
 
 def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
                           hdg_deg, pitch_deg, roll_deg):
     """
     Project nearby obstacles onto the AI viewport as red/amber tower symbols.
 
-    Each obstacle is placed at its bearing/distance from the aircraft.
-    We compute a synthetic azimuth and elevation angle, then rotate it
-    by roll and translate by pitch — the same coordinate system as the
-    pitch ladder — to get pixel position.
+    Vectorised: candidate obstacles come back from obs_mod.query_nearby as
+    a numpy structured array; all bearing/distance/vertical-angle math
+    runs over the whole batch in numpy, and the Python loop only fires
+    for the obstacles whose top anchor lands inside the AI rect AND
+    passes the AGL / airport-boundary declutter filters. On the Pi Zero
+    2W this is ~30× faster than the per-obstacle Python loop in metro
+    views.
     """
+    import numpy as _np
     nearby = obs_mod.query_nearby(_obstacles, lat, lon,
                                   radius_nm=_OBS_RADIUS_NM,
                                   alt_ft=alt_ft,
-                                  window_ft=_OBS_WINDOW_FT)
-    if not nearby:
+                                  below_ft=_OBS_BELOW_FT)
+    if nearby is None or len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect
     cx = ax + aw // 2
     cy = ay_r + ah // 2
 
-    # Pixels per degree (same scale as pitch ladder: 8px/deg at default)
-    PX_PER_DEG = 8.0
+    # 10 px/deg matches draw_simple_ai_background / draw_pitch_ladder /
+    # draw_airport_symbols / above-horizon silhouette. The earlier 8.0
+    # left obstacle towers floating 20% off the horizon scale.
+    PX_PER_DEG = 10.0
 
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
 
-    for ob in nearby:
-        # Bearing from aircraft to obstacle (degrees true)
-        dlat_nm = (ob.lat - lat) * nm_per_deg_lat
-        dlon_nm = (ob.lon - lon) * nm_per_deg_lon
-        dist_nm = math.hypot(dlat_nm, dlon_nm)
-        if dist_nm < 0.01:
-            continue
-        bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
+    ob_lat = nearby["lat"].astype(_np.float64)
+    ob_lon = nearby["lon"].astype(_np.float64)
+    ob_msl = nearby["msl_ft"].astype(_np.float64)
+    ob_agl = nearby["agl_ft"].astype(_np.float64)
 
-        # Relative bearing (from nose)
-        rel_brg = (bearing - hdg_deg + 180) % 360 - 180   # −180…+180
+    dlat_nm = (ob_lat - lat) * nm_per_deg_lat
+    dlon_nm = (ob_lon - lon) * nm_per_deg_lon
+    dist_nm = _np.hypot(dlat_nm, dlon_nm)
+    bearing = _np.degrees(_np.arctan2(dlon_nm, dlat_nm)) % 360.0
+    rel_brg = (bearing - hdg_deg + 180.0) % 360.0 - 180.0
 
-        # Project BOTH the base (on terrain = msl_ft - agl_ft) and the top
-        # (at msl_ft) so the tower anchors to the ground rather than floats.
-        dist_ft      = dist_nm * 6076.0
-        top_diff_ft  = ob.msl_ft - alt_ft
-        base_diff_ft = (ob.msl_ft - ob.agl_ft) - alt_ft
-        top_vert_deg  = math.degrees(math.atan2(top_diff_ft,  dist_ft))
-        base_vert_deg = math.degrees(math.atan2(base_diff_ft, dist_ft))
+    dist_ft = dist_nm * 6076.0
+    dist_ft_safe = _np.maximum(dist_ft, 1.0)
+    top_diff_ft  = ob_msl - alt_ft
+    base_diff_ft = (ob_msl - ob_agl) - alt_ft
+    top_vert_deg  = _np.degrees(_np.arctan2(top_diff_ft,  dist_ft_safe))
+    base_vert_deg = _np.degrees(_np.arctan2(base_diff_ft, dist_ft_safe))
 
-        cos_r = math.cos(math.radians(roll_deg))
-        sin_r = math.sin(math.radians(roll_deg))
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
+    sxr = rel_brg * PX_PER_DEG
+    syr_top  = (pitch_deg - top_vert_deg)  * PX_PER_DEG
+    syr_base = (pitch_deg - base_vert_deg) * PX_PER_DEG
 
-        def _project(vert_deg):
-            sxr = rel_brg * PX_PER_DEG
-            syr = (pitch_deg - vert_deg) * PX_PER_DEG
-            return (int(cx + sxr * cos_r - syr * sin_r),
-                    int(cy + sxr * sin_r + syr * cos_r))
+    sx_top  = (cx + sxr * cos_r - syr_top  * sin_r).astype(_np.int32)
+    sy_top  = (cy + sxr * sin_r + syr_top  * cos_r).astype(_np.int32)
+    sy_base = (cy + sxr * sin_r + syr_base * cos_r).astype(_np.int32)
 
-        bx, by = _project(base_vert_deg)   # tower base on the ground
-        sx, sy = _project(top_vert_deg)    # tower top at MSL
+    # Airport-boundary declutter: hide low obstacles near airport centres.
+    # pi4 uses runway centroids here for a tighter polygon; pi_zero
+    # doesn't load runways, so we fall back to airport centres (the same
+    # OurAirports DB the symbol layer uses).  Coarser, but kills the same
+    # phantom-tower forest on the runway / ramp.
+    inside_airport = _np.zeros(len(ob_lat), dtype=bool)
+    if _airports is not None and len(_airports) > 0:
+        nearby_apts = apt_mod.query_nearby(
+            _airports, lat, lon,
+            radius_nm=_OBS_RADIUS_NM + _OBS_AIRPORT_RADIUS_NM)
+        if len(nearby_apts) > 0:
+            apt_lat_c = nearby_apts["lat"].astype(_np.float64)
+            apt_lon_c = nearby_apts["lon"].astype(_np.float64)
+            dlat_r = (ob_lat[:, None] - apt_lat_c[None, :]) * nm_per_deg_lat
+            dlon_r = (ob_lon[:, None] - apt_lon_c[None, :]) * nm_per_deg_lon
+            min_d_nm = _np.sqrt(dlat_r * dlat_r + dlon_r * dlon_r).min(axis=1)
+            inside_airport = min_d_nm <= _OBS_AIRPORT_RADIUS_NM
 
-        if not (ax + 4 <= sx <= ax + aw - 4 and ay_r + 4 <= sy <= ay_r + ah - 4):
-            continue
+    agl_ok = (ob_agl >= _OBS_MIN_AGL_FT) & (
+        ~inside_airport | (ob_agl >= _OBS_AIRPORT_FLOOR_FT))
+    visible = ((dist_nm >= 0.01)
+               & agl_ok
+               & (sx_top >= ax + 4) & (sx_top <= ax + aw - 4)
+               & (sy_top >= ay_r + 4) & (sy_top <= ay_r + ah - 4))
+    visible_idx = _np.flatnonzero(visible)
+    if visible_idx.size == 0:
+        return
 
-        # Colour by clearance — red/yellow/white (standard aviation convention)
-        clearance = alt_ft - ob.msl_ft
-        if clearance < _OBS_WARNING_FT:
+    clearance = alt_ft - ob_msl
+    ob_lit = nearby["lit"]
+
+    for i in visible_idx:
+        cl = clearance[i]
+        if cl < _OBS_WARNING_FT:
             col = RED
-        elif clearance < _OBS_CAUTION_FT:
+        elif cl < _OBS_CAUTION_FT:
             col = YELLOW
         else:
             col = WHITE
 
-        # Caret / chevron tower: apex at top (MSL), base anchored to ground
+        sx, sy = int(sx_top[i]),  int(sy_top[i])
+        by     = int(sy_base[i])
         tower_h = max(6, by - sy)
-        base_half = max(3, tower_h // 3)
         apex = (sx, sy)
+        base_half = max(3, tower_h // 3)
         left_base  = (sx - base_half, sy + tower_h)
         right_base = (sx + base_half, sy + tower_h)
         pygame.draw.line(surf, col, left_base,  apex, 2)
         pygame.draw.line(surf, col, right_base, apex, 2)
 
-        # Lit tower: 4-point asterisk at the apex
-        if ob.lit:
+        if ob_lit[i]:
             r = 4
             star_col = (255, 230, 100)
             pygame.draw.line(surf, star_col, (sx - r, sy),     (sx + r, sy),     2)
@@ -4315,10 +7191,11 @@ def draw_obstacle_symbols(surf, ai_rect, lat, lon, alt_ft,
             pygame.draw.line(surf, star_col, (sx - r, sy - r), (sx + r, sy + r), 1)
             pygame.draw.line(surf, star_col, (sx - r, sy + r), (sx + r, sy - r), 1)
 
-        # Height label for tall/close obstacles
-        if ob.agl_ft >= 500 or dist_nm < 3.0:
-            lbl = f"{int(ob.msl_ft//100)*100}"
-            _text(surf, lbl, 8, col, cx=sx, cy=sy - 14)
+        # Label only tall (≥1000 AGL) or close (<1 nm) towers — text render
+        # is ~1 ms each in pygame, the cache absorbs duplicates.
+        if ob_agl[i] >= 1000 or dist_nm[i] < 1.0:
+            lbl = f"{int(ob_msl[i])}"
+            _obs_label_blit(surf, lbl, col, sx, sy - 14)
 
 
 def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
@@ -4342,15 +7219,19 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
 
     nearby = apt_mod.query_nearby(_airports, lat, lon,
                                   radius_nm=AIRPORT_RADIUS_NM)
-    if not nearby:
+    if len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect
     cx = ax + aw // 2
     cy = ay_r + ah // 2
 
-    # Match pitch-ladder scale for consistency with the attitude indicator
-    PX_PER_DEG = ah / 48.0
+    # Match draw_simple_ai_background / draw_pitch_ladder / above-horizon
+    # silhouette so airport symbols sit at the same per-degree scale as the
+    # horizon line they reference. Previously ah/48 ≈ 9.08 px/deg disagreed
+    # with the horizon's hardcoded 10 px/deg — airports drifted relative
+    # to the horizon by ~10% per degree of pitch.
+    PX_PER_DEG = 10.0
     nm_per_deg_lat = 60.0
     nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
     cos_r = math.cos(math.radians(roll_deg))
@@ -4378,10 +7259,18 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
         alt_diff_ft = apt.elev_ft - alt_ft
         vert_deg = math.degrees(math.atan2(alt_diff_ft, dist_ft))
 
+        # Skip airports above the visual horizon — vert_deg > 0 means the
+        # field elevation is above the aircraft (looking up at it), which
+        # for normal cruise means the airport is sitting in the "sky"
+        # region of the AI and would visually drift into terrain features
+        # / pitch ladder territory. The old cull (screen_y_raw < 0) was
+        # off-centre instead of off-horizon, so at nose-up pitch airports
+        # with even slightly-positive vert_deg painted above the horizon.
+        if vert_deg > 0:
+            continue
+
         screen_x_raw = rel_brg * PX_PER_DEG
         screen_y_raw = (pitch_deg - vert_deg) * PX_PER_DEG
-        if screen_y_raw < 0:
-            continue
         sx = cx + int(screen_x_raw * cos_r - screen_y_raw * sin_r)
         sy = cy + int(screen_x_raw * sin_r + screen_y_raw * cos_r)
 
@@ -4406,198 +7295,524 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
             if apt.atype in ("M", "L"):
                 pygame.draw.circle(surf, col, (sx, sy), 7, 1)
 
-        # Ident label as a small "road sign" on a post above the symbol.
+        # Ident label as a "road sign" on a post above the symbol.
+        # Doubled in size from the original (font 9 / post 22 / line 1px)
+        # so the 4-letter ICAO ident is readable on the 640x480 panel
+        # without leaning in.
         if dist_nm <= AIRPORT_LABEL_NM:
             lbl = apt.ident
-            font_sz = 9
+            font_sz = 18
             f = _get_font(font_sz, bold=True)
             tw, th = f.size(lbl)
-            sign_w = tw + 8
-            sign_h = th + 4
-            post_h = 22
+            sign_w = tw + 16
+            sign_h = th + 8
+            post_h = 44
             sign_x = sx - sign_w // 2
             sign_y = sy - post_h - sign_h
             if sign_y < ay_r + 2:
                 sign_y = ay_r + 2
-                post_h = max(4, sy - sign_y - sign_h)
-            pygame.draw.line(surf, col, (sx, sy - 6), (sx, sign_y + sign_h), 1)
+                post_h = max(8, sy - sign_y - sign_h)
+            pygame.draw.line(surf, col, (sx, sy - 6), (sx, sign_y + sign_h), 2)
             pygame.draw.rect(surf, (0, 10, 26),
-                             (sign_x, sign_y, sign_w, sign_h), border_radius=2)
+                             (sign_x, sign_y, sign_w, sign_h), border_radius=3)
             pygame.draw.rect(surf, col,
-                             (sign_x, sign_y, sign_w, sign_h), width=1, border_radius=2)
+                             (sign_x, sign_y, sign_w, sign_h), width=2, border_radius=3)
             _text(surf, lbl, font_sz, col, bold=True,
                   cx=sx, cy=sign_y + sign_h // 2)
 
 
-# ── Runway polygons + extended centerlines ───────────────────────────────────
+# ── MFD: full-screen moving map ──────────────────────────────────────────────
+# Wraps shared/moving_map.py with the pi_zero state.  Uses the same airport
+# + obstacle + SRTM + water caches the PFD already keeps loaded — no extra
+# memory cost.  Runways are intentionally absent (pi_zero PFD dropped them
+# earlier so we don't load the runway DB).
 
-_RUNWAY_MAX_RANGE_NM       = 8.0
-_CENTERLINE_RANGE_NM       = 15.0
-_CENTERLINE_EXTEND_NM      = 10.0
-_CENTERLINE_DASH_NM        = 0.5
+import moving_map as _mfd_map   # noqa: E402
 
+# Match pi4 inset zoom range — 1, 2, 5, 10, 20, 40, 80, 160 nm plus AUTO.
+# Past 40 nm the moving_map gates out tint, airports, and obstacles, so
+# the only layers rendering at 80/160 are state lines + D2 line + own-
+# ship — feather-light, no SRTM I/O, no surface alloc.  AUTO scales to
+# the active direct-to waypoint (or stays at 80 with no D2).
+MFD_MAX_ZOOM_NM = 160
 
-def _project_latlon(lat_deg, lon_deg, ref_lat, ref_lon, ref_alt_ft,
-                    elev_ft, hdg_deg, pitch_deg, roll_deg,
-                    cx, cy, px_per_deg, max_fov_deg=None,
-                    ground_only=False):
-    """Project a lat/lon point onto the AI. Returns (sx, sy), or None when culled.
-    max_fov_deg: cull points whose bearing exceeds this off the nose.
-    ground_only: cull points that project above the pitch-adjusted horizon."""
-    nm_per_deg_lat = 60.0
-    nm_per_deg_lon = 60.0 * math.cos(math.radians(ref_lat))
-    dlat_nm = (lat_deg - ref_lat) * nm_per_deg_lat
-    dlon_nm = (lon_deg - ref_lon) * nm_per_deg_lon
-    dist_nm = math.hypot(dlat_nm, dlon_nm)
-    if dist_nm < 0.001:
-        return (cx, cy)
-    bearing = math.degrees(math.atan2(dlon_nm, dlat_nm)) % 360.0
-    rel_brg = (bearing - hdg_deg + 180) % 360 - 180
-    if max_fov_deg is not None and abs(rel_brg) > max_fov_deg:
-        return None
-    dist_ft = dist_nm * 6076.0
-    alt_diff = elev_ft - ref_alt_ft
-    vert_deg = math.degrees(math.atan2(alt_diff, dist_ft))
-    sxr = rel_brg * px_per_deg
-    syr = (pitch_deg - vert_deg) * px_per_deg
-    if ground_only and syr < 0:
-        return None
-    cos_r = math.cos(math.radians(roll_deg))
-    sin_r = math.sin(math.radians(roll_deg))
-    return (int(cx + sxr * cos_r - syr * sin_r),
-            int(cy + sxr * sin_r + syr * cos_r))
+_MFD_PFD_BTN_W = 100
+_MFD_PFD_BTN_H = 36
+_MFD_D2_BTN_W  = 100
+_MFD_D2_BTN_H  = 36
+_MFD_ZOOM_BTN  = 56     # square zoom-in / zoom-out buttons
 
 
-def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
-                        hdg_deg, pitch_deg, roll_deg):
-    if _runways is None:
-        return
-    ad = disp["ad"]
-    show_rwy   = ad.get("show_runways",     True)
-    show_cline = ad.get("show_centerlines", True)
-    if not (show_rwy or show_cline):
-        return
-    nearby = rwy_mod.query_nearby(_runways, lat, lon,
-                                  radius_nm=max(_RUNWAY_MAX_RANGE_NM,
-                                                _CENTERLINE_RANGE_NM))
-    if not nearby:
-        return
+def _mfd_d2_rect():
+    pad = 6
+    return (pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H)
 
-    ax, ay_r, aw, ah = ai_rect
-    cx = ax + aw // 2
-    cy = ay_r + ah // 2
-    px_per_deg = ah / 48.0
 
-    ASPHALT = (60, 60, 65)
-    STRIPE  = (230, 230, 235)
-    CLINE   = (220, 230, 240)
+def _mfd_zoom_in_rect():
+    """Zoom-in (+) button, bottom-right."""
+    pad = 6
+    return (DISPLAY_W - _MFD_ZOOM_BTN - pad,
+            DISPLAY_H - _MFD_ZOOM_BTN - pad,
+            _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
 
-    nm_per_deg_lat = 60.0
-    nm_per_deg_lon = 60.0 * math.cos(math.radians(lat))
 
-    def _proj(la, lo, elev):
-        return _project_latlon(la, lo, lat, lon, alt_ft,
-                               elev, hdg_deg, pitch_deg, roll_deg,
-                               cx, cy, px_per_deg, ground_only=True)
+def _mfd_zoom_out_rect():
+    """Zoom-out (-) button, bottom-left."""
+    pad = 6
+    return (pad, DISPLAY_H - _MFD_ZOOM_BTN - pad,
+            _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
 
-    def _in_ai(sx, sy):
-        return ax <= sx <= ax + aw and ay_r <= sy <= ay_r + ah
 
-    for r in nearby:
-        d_nm = math.hypot((r.centre_lat - lat) * nm_per_deg_lat,
-                          (r.centre_lon - lon) * nm_per_deg_lon)
+# Vertical spacing below the top-row chrome buttons.  Earlier rev had the
+# labels 4 px below — too close on the panel, hot fingers were landing on
+# the PFD button instead of the ORIENT tap.  18 px gives a clear gap.
+_MFD_LABEL_DROP = 18
+_MFD_LABEL_H    = 40   # tap-target height; text rendered centred
 
-        if show_rwy and d_nm <= _RUNWAY_MAX_RANGE_NM:
-            ax_lat = r.he_lat - r.le_lat
-            ax_lon = r.he_lon - r.le_lon
-            axis_len_nm = math.hypot(ax_lat * nm_per_deg_lat,
-                                     ax_lon * nm_per_deg_lon)
-            if axis_len_nm < 0.01:
+
+def _mfd_rng_label_rect():
+    """RNG readout: under the D2 button (top-left).  Passive label, but
+    its rect claims the chrome strip so a tap there doesn't pan the map."""
+    pad = 6
+    return (pad,
+            pad + _MFD_D2_BTN_H + _MFD_LABEL_DROP,
+            _MFD_D2_BTN_W,
+            _MFD_LABEL_H)
+
+
+def _mfd_orient_label_rect():
+    """ORIENT readout: under the PFD button (top-right).  Tappable to
+    toggle TRK↑ / N↑."""
+    pad = 6
+    return (DISPLAY_W - _MFD_PFD_BTN_W - pad,
+            pad + _MFD_PFD_BTN_H + _MFD_LABEL_DROP,
+            _MFD_PFD_BTN_W,
+            _MFD_LABEL_H)
+
+
+def _mfd_center_btn_rect():
+    """CTR (re-center) button — sits one full button-width below the
+    orient label so it stays visually distinct from the orient toggle
+    when the map is panned.  Both are visible at the same time."""
+    pad = 6
+    return (DISPLAY_W - _MFD_PFD_BTN_W - pad,
+            pad + _MFD_PFD_BTN_H + _MFD_LABEL_DROP
+                + _MFD_LABEL_H + _MFD_PFD_BTN_W,   # ← +100 px (button-width gap)
+            _MFD_PFD_BTN_W,
+            _MFD_PFD_BTN_H)
+
+
+def _mfd_center_btn_hit(x, y):
+    if not _mfd_is_panned():
+        return False
+    bx, by, bw, bh = _mfd_center_btn_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_orient_label_hit(x, y):
+    """Tap-test on the ORIENT readout (TRK↑ / N↑) to toggle map rotation."""
+    bx, by, bw, bh = _mfd_orient_label_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_get_range_label():
+    """Default-range label is the numeric NM value; AUTO mode reserved
+    for the future flight-plan-aware fit-to-route."""
+    nm = disp["ds"].get("map_zoom_nm", 10)
+    return f"{nm} NM" if nm > 0 else "AUTO"
+
+
+_mfd_apt_font = None
+
+
+def _mfd_get_apt_font():
+    """Lazy-init a bold font for airport labels on the MFD.  Sized for
+    a panel-mounted 480 px display read at arm's length — much larger
+    than the pi4 inset's 11 px because the labels are the only ident
+    cue at altitude."""
+    global _mfd_apt_font
+    if _mfd_apt_font is None:
+        # 3x the pi4 inset size — labels are the primary ident cue on
+        # the MFD and need to read at arm's length.
+        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", 33, bold=True)
+    return _mfd_apt_font
+
+
+def _mfd_effective_center():
+    """Return (lat, lon) for the map center: pan offset if active, else
+    the aircraft position."""
+    pan = disp.get("mfd_pan", {})
+    if pan.get("lat") is not None and pan.get("lon") is not None:
+        return float(pan["lat"]), float(pan["lon"])
+    return (disp.get("lat", DEMO_LAT), disp.get("lon", DEMO_LON))
+
+
+def _mfd_is_panned():
+    pan = disp.get("mfd_pan", {})
+    return pan.get("lat") is not None and pan.get("lon") is not None
+
+
+def _mfd_clear_pan():
+    disp["mfd_pan"]["lat"] = None
+    disp["mfd_pan"]["lon"] = None
+
+
+def draw_mfd(surf, connected=True, data_stale=False):
+    """Full-screen moving map.  Reuses pi_zero's already-loaded airport +
+    obstacle + terrain caches; pulls the active direct-to from disp["nav"]
+    so the magenta course line / waypoint diamond paints when D2 is set."""
+    # Lazy-retry state-lines cache load: if the .npz didn't exist at
+    # startup but lands later (rsync from pi4, or background build), pick
+    # it up without requiring a restart or mode flip.  Capped at one
+    # disk-stat every 5 s when the cache is still None.
+    global _state_lines, _state_lines_last_try
+    if _state_lines is None:
+        _now = time.monotonic()
+        if _now - _state_lines_last_try > 5.0:
+            _state_lines_last_try = _now
+            _state_lines = _sl_load_cache()
+    surf.fill((0, 0, 0))
+    rect = (0, 0, DISPLAY_W, DISPLAY_H)
+    ac_lat = disp.get("lat", DEMO_LAT)
+    ac_lon = disp.get("lon", DEMO_LON)
+    cen_lat, cen_lon = _mfd_effective_center()
+    alt = disp.get("alt", 0.0)
+    hdg = disp.get("yaw", 0.0)
+    track = disp.get("track", hdg)
+    orient    = disp["ds"].get("map_orient", "trk")
+    range_nm  = int(disp["ds"].get("map_zoom_nm", 10))
+    nav = disp.get("nav", {})
+    d2  = None
+    if nav.get("ident"):
+        d2 = {"lat":     float(nav.get("lat", 0.0)),
+              "lon":     float(nav.get("lon", 0.0)),
+              "act_lat": float(nav.get("act_lat", 0.0)),
+              "act_lon": float(nav.get("act_lon", 0.0)),
+              "ident":   nav.get("ident", "")}
+    gs_kt = float(disp.get("speed", 0.0))
+    # Build the *set* of type letters the user wants visible — moving_map
+    # checks `atype not in airport_types_visible`, so a dict here (which
+    # would test keys regardless of True/False) silently disables the
+    # whole filter.  Mirrors pi4's _types_vis pattern.
+    _ad = disp["ad"]
+    apt_types = set()
+    if _ad.get("show_public", True):
+        apt_types.update({"S", "M", "L"})
+    if _ad.get("show_heli", True):
+        apt_types.add("H")
+    if _ad.get("show_seaplane", False):
+        apt_types.add("W")
+    if _ad.get("show_other", False):
+        apt_types.add("B")
+    _mfd_map.render(
+        surf, rect, cen_lat, cen_lon, alt, hdg, track, orient, range_nm,
+        disp["ds"],
+        airports_arr=_airports,
+        runways_arr=None,
+        obstacles_arr=_obstacles,
+        srtm_dir=SRTM_DIR,
+        water_dir=WATER_DIR,
+        direct_to=d2,
+        airport_types_visible=apt_types,
+        gs_kt=gs_kt,
+        # Pass Vso (stall speed dirty) so the SVT-style clearance
+        # overlay activates above stall — moving_map paints red where
+        # terrain is at/above the aircraft, orange < 100 ft, amber
+        # < 500 ft, same palette as the PFD's terrain alerts.
+        vso_kt=disp["fp"].get("vs0", VS0),
+        # Font enables airport labels (≤10 nm).  Corner labels (RNG / ETE)
+        # are drawn by pi_zero's own chrome below, so suppress moving_map's
+        # versions to avoid overlap with the D2 / PFD buttons + data strip.
+        font=_mfd_get_apt_font(),
+        draw_corner_labels=False,
+        # State lines: cheap (bbox-culled polyline blits) and only drawn
+        # at >= 20 nm where they're the primary navigational context
+        # past the airport / terrain coverage caps.
+        state_lines=_state_lines,
+        # Aircraft position so the own-ship chevron stays at the real
+        # GPS fix when the user has panned the map elsewhere.
+        own_lat=ac_lat,
+        own_lon=ac_lon,
+    )
+    lat, lon = ac_lat, ac_lon
+
+    # ── Top labels (no plate) ─────────────────────────────────────────
+    # RNG sits under the D2 button (left); ORIENT sits under the PFD
+    # button (right).  Both are cyan-on-terrain (no plate), with ORIENT
+    # tappable to toggle TRK↑ / N↑.  When the map is panned, a CTR
+    # button appears below ORIENT (one button-width down) so both the
+    # orient toggle and the re-center button stay visible.
+    pad = 6
+    rng_lbl = _mfd_get_range_label()
+    orient_lbl = "TRK↑" if orient == "trk" else "N↑"
+    rx, ry, rw, rh = _mfd_rng_label_rect()
+    ox, oy, ow, oh = _mfd_orient_label_rect()
+    _text(surf, rng_lbl, 20, CYAN, bold=True, cx=rx + rw // 2, cy=ry + rh // 2)
+    _text(surf, orient_lbl, 20, CYAN, bold=True,
+          cx=ox + ow // 2, cy=oy + oh // 2)
+    if _mfd_is_panned():
+        cx_, cy_, cw_, ch_ = _mfd_center_btn_rect()
+        _action_btn(surf, cx_, cy_, cw_, ch_, "CTR", "ok", r=5)
+
+    # ── Bottom data strip ─────────────────────────────────────────────
+    # Labeled column-style readouts.  Always shows GS / TRK / ALT on
+    # the left; WPT / BTW / DIST / ETE on the right when D2 is active.
+    strip_h  = _MFD_ZOOM_BTN
+    strip_y  = DISPLAY_H - strip_h - pad
+    strip_x0 = _MFD_ZOOM_BTN + pad * 2
+    strip_x1 = DISPLAY_W - _MFD_ZOOM_BTN - pad * 2
+    strip_w  = strip_x1 - strip_x0
+    plate = pygame.Surface((strip_w, strip_h), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 180))
+    surf.blit(plate, (strip_x0, strip_y))
+    pygame.draw.rect(surf, (60, 80, 110),
+                     (strip_x0, strip_y, strip_w, strip_h),
+                     width=1, border_radius=4)
+    # Helper — small caption above, big value below.
+    def _col(cx_off, caption, value, val_col=WHITE):
+        _text(surf, caption, 11, (140, 170, 200), bold=True,
+              cx=strip_x0 + cx_off, y=strip_y + 4)
+        _text(surf, value, 22, val_col, bold=True,
+              cx=strip_x0 + cx_off, cy=strip_y + 30)
+
+    if d2 is not None:
+        dist_nm, brg = _nav_geo_dist_brg(lat, lon, d2["lat"], d2["lon"])
+        # ETE — needs ground speed; show dashes below taxi threshold.
+        if gs_kt >= 3.0 and dist_nm > 0.0:
+            hours = dist_nm / gs_kt
+            if hours < 1.0:
+                mm, ss = divmod(int(round(hours * 3600)), 60)
+                ete = f"{mm}:{ss:02d}"
+            else:
+                h_, rem = divmod(int(round(hours * 3600)), 3600)
+                mm, _ = divmod(rem, 60)
+                ete = f"{h_}:{mm:02d}"
+        else:
+            ete = "--:--"
+        # 7 columns: GS / TRK / ALT / WPT / BTW / DIST / ETE
+        # TRK is dashed below the track-valid GS threshold — at low GS
+        # the GPS-computed track is noisy / arbitrary and a 3-digit
+        # readout would mislead.
+        trk_str = (f"{int(round(track)) % 360:03d}°"
+                   if gs_kt >= HDG_TRK_MIN_KT else "---°")
+        n_cols = 7
+        col_w = strip_w // n_cols
+        _col(col_w // 2 + col_w * 0, "GS",   f"{int(round(gs_kt)):3d}")
+        _col(col_w // 2 + col_w * 1, "TRK",  trk_str)
+        # ALT snapped to 20 ft increments — the smoothed disp value walks
+        # every frame and a 1-ft-per-frame jitter on the bottom-of-strip
+        # readout is visually busy.  20 ft matches the standard PFD tape
+        # tick spacing and is finer than typical baro accuracy anyway.
+        alt_q = int(round(alt / 20.0) * 20)
+        _col(col_w // 2 + col_w * 2, "ALT",  f"{alt_q:5d}")
+        _col(col_w // 2 + col_w * 3, "WPT",  d2["ident"], val_col=MAGENTA)
+        _col(col_w // 2 + col_w * 4, "BTW",  f"{int(round(brg)) % 360:03d}°", val_col=MAGENTA)
+        _col(col_w // 2 + col_w * 5, "DIST", f"{dist_nm:.1f}", val_col=MAGENTA)
+        _col(col_w // 2 + col_w * 6, "ETE",  ete, val_col=MAGENTA)
+    else:
+        # No D2 active: 3 columns spanning the strip.
+        trk_str = (f"{int(round(track)) % 360:03d}°"
+                   if gs_kt >= HDG_TRK_MIN_KT else "---°")
+        n_cols = 3
+        col_w = strip_w // n_cols
+        _col(col_w // 2 + col_w * 0, "GS",  f"{int(round(gs_kt)):3d} KT")
+        _col(col_w // 2 + col_w * 1, "TRK", trk_str)
+        alt_q = int(round(alt / 20.0) * 20)
+        _col(col_w // 2 + col_w * 2, "ALT", f"{alt_q:5d} FT")
+
+    # ── MFD chrome buttons ─────────────────────────────────────────────
+    # D2 (top-left), PFD (top-right), zoom-out (bottom-left, "−"),
+    # zoom-in (bottom-right, "+").
+    # Top-right PFD button
+    _action_btn(surf, DISPLAY_W - _MFD_PFD_BTN_W - pad, pad,
+                _MFD_PFD_BTN_W, _MFD_PFD_BTN_H, "PFD", "normal", r=5)
+    # Top-left D2 button — magenta-styled when D2 is active
+    d2_style = "warn" if d2 is not None else "normal"
+    d2_label = (d2["ident"] if d2 else "D2")
+    _action_btn(surf, pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H,
+                f"→ {d2_label}", d2_style, r=5)
+    # Zoom buttons (bottom corners)
+    zo_x, zo_y, zo_w, zo_h = _mfd_zoom_out_rect()
+    zi_x, zi_y, zi_w, zi_h = _mfd_zoom_in_rect()
+    _action_btn(surf, zo_x, zo_y, zo_w, zo_h, "−", "normal", r=8)
+    _action_btn(surf, zi_x, zi_y, zi_w, zi_h, "+", "normal", r=8)
+
+    # No-link / stale-data badges
+    if not connected or data_stale:
+        _text(surf, "NO LINK" if not connected else "DATA STALE",
+              16, (240, 90, 90), bold=True,
+              cx=DISPLAY_W // 2, cy=DISPLAY_H - 18)
+
+
+def _mfd_pfd_btn_hit(x, y):
+    """Top-right PFD button on the MFD."""
+    pad = 6
+    bx = DISPLAY_W - _MFD_PFD_BTN_W - pad
+    by = pad
+    return (bx <= x <= bx + _MFD_PFD_BTN_W and
+            by <= y <= by + _MFD_PFD_BTN_H)
+
+
+def _mfd_d2_btn_hit(x, y):
+    bx, by, bw, bh = _mfd_d2_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_zoom_in_hit(x, y):
+    bx, by, bw, bh = _mfd_zoom_in_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_zoom_out_hit(x, y):
+    bx, by, bw, bh = _mfd_zoom_out_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_open_d2_keyboard():
+    """Open the existing keyboard with kbd_target == 'nav_ident' so the
+    pilot can type an ICAO ident.  ENTER routes through the nav_confirm
+    modal."""
+    disp["kbd_target"] = "nav_ident"
+    disp["kbd_prev"]   = "pfd"          # MFD runs under mode == "pfd"
+    disp["kbd_buf"]    = ""
+    disp["kbd_error"]  = ""
+    disp["kbd_shift"]  = False
+    disp["mode"]       = "keyboard"
+
+
+def _mfd_chrome_hit(x, y):
+    """True if (x, y) is over any MFD chrome button or the data strip —
+    i.e. the user can't pan / tap-airport here because some other widget
+    owns the tap."""
+    if _mfd_d2_btn_hit(x, y):       return True
+    if _mfd_pfd_btn_hit(x, y):      return True
+    if _mfd_zoom_in_hit(x, y):      return True
+    if _mfd_zoom_out_hit(x, y):     return True
+    if _mfd_center_btn_hit(x, y):   return True
+    if _mfd_orient_label_hit(x, y): return True
+    # RNG label (under D2) is a passive readout but still claims its rect
+    # so a hot finger doesn't accidentally pan the map.
+    rx, ry, rw, rh = _mfd_rng_label_rect()
+    if rx <= x <= rx + rw and ry <= y <= ry + rh:
+        return True
+    pad = 6
+    # Bottom data strip (full width minus zoom buttons)
+    strip_y = DISPLAY_H - _MFD_ZOOM_BTN - pad
+    strip_x0 = _MFD_ZOOM_BTN + pad * 2
+    strip_x1 = DISPLAY_W - _MFD_ZOOM_BTN - pad * 2
+    if strip_x0 <= x <= strip_x1 and strip_y <= y <= strip_y + _MFD_ZOOM_BTN:
+        return True
+    return False
+
+
+def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
+    """Hit-test airports against a screen tap.  Uses the same projection
+    moving_map.render() uses, and matches its drawing gates so taps
+    only consider airports that are actually visible on screen:
+    no airports drawn past 40 nm (no taps); type-filtered by zoom band
+    above 5 nm (same filter the draw loop uses).  Returns True if an
+    airport was hit (and the nav_confirm modal was opened)."""
+    if _airports is None:
+        return False
+    range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+    # Past 40 nm moving_map skips airports entirely — accept no tap
+    # there so a finger landing on empty terrain doesn't D2 to an
+    # invisible airport (most often hit while reaching for the orient
+    # toggle at top-right of the MFD).
+    if range_nm > 40 or range_nm <= 0:
+        return False
+    # Zoom-band type filter mirrors moving_map's drawing logic.
+    if range_nm > 20:
+        allowed_band = {"L"}
+    elif range_nm > 10:
+        allowed_band = {"M", "L"}
+    elif range_nm > 5:
+        allowed_band = {"S", "M", "L"}
+    else:
+        allowed_band = None    # all visible types
+    rect = (0, 0, DISPLAY_W, DISPLAY_H)
+    cen_lat, cen_lon = _mfd_effective_center()
+    hdg = disp.get("yaw", 0.0)
+    track = disp.get("track", hdg)
+    orient = disp["ds"].get("map_orient", "trk")
+    project, _ = _mfd_map.make_projector(
+        rect, cen_lat, cen_lon, orient, range_nm, hdg, track)
+    apt_types = {
+        "S": disp["ad"].get("show_public", True),
+        "M": disp["ad"].get("show_public", True),
+        "L": disp["ad"].get("show_public", True),
+        "H": disp["ad"].get("show_heli", True),
+        "W": disp["ad"].get("show_seaplane", False),
+        "B": disp["ad"].get("show_other", False),
+    }
+    nearby = apt_mod.query_nearby(_airports, cen_lat, cen_lon,
+                                  radius_nm=range_nm * 1.4)
+    if nearby is None or len(nearby) == 0:
+        return False
+    best_d2 = (tap_px + 1) ** 2
+    best = None
+    if hasattr(nearby, "dtype"):
+        # Same MAX_AIRPORTS_DRAWN cap as the renderer — taps can't pick
+        # an airport that was decimated out of the visible list.
+        max_considered = 40
+        considered = 0
+        for i in range(len(nearby)):
+            if considered >= max_considered:
+                break
+            atype = str(nearby["atype"][i])
+            if allowed_band is not None and atype not in allowed_band:
                 continue
-            perp_lat_nm =  (ax_lon * nm_per_deg_lon) / axis_len_nm
-            perp_lon_nm = -(ax_lat * nm_per_deg_lat) / axis_len_nm
-            half_w_nm = r.width_ft / 6076.0
-            perp_lat = (perp_lat_nm * half_w_nm) / nm_per_deg_lat
-            perp_lon = (perp_lon_nm * half_w_nm) / nm_per_deg_lon
-
-            p1 = _proj(r.le_lat + perp_lat, r.le_lon + perp_lon, r.le_elev_ft)
-            p2 = _proj(r.he_lat + perp_lat, r.he_lon + perp_lon, r.he_elev_ft)
-            p3 = _proj(r.he_lat - perp_lat, r.he_lon - perp_lon, r.he_elev_ft)
-            p4 = _proj(r.le_lat - perp_lat, r.le_lon - perp_lon, r.le_elev_ft)
-            if None in (p1, p2, p3, p4):
+            if not apt_types.get(atype, False):
                 continue
-            if _in_ai(*p1) or _in_ai(*p2) or _in_ai(*p3) or _in_ai(*p4):
-                old_clip = surf.get_clip()
-                surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
-                pygame.gfxdraw.filled_polygon(surf, [p1, p2, p3, p4], ASPHALT)
-                pygame.gfxdraw.aapolygon(surf, [p1, p2, p3, p4], STRIPE)
-                mid_le = _proj(r.le_lat, r.le_lon, r.le_elev_ft)
-                mid_he = _proj(r.he_lat, r.he_lon, r.he_elev_ft)
-                if mid_le is not None and mid_he is not None:
-                    pygame.draw.aaline(surf, STRIPE, mid_le, mid_he)
-                surf.set_clip(old_clip)
+            sx, sy = project(float(nearby["lat"][i]),
+                             float(nearby["lon"][i]))
+            d2 = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best = str(nearby["ident"][i])
+            considered += 1
+    else:
+        considered = 0
+        for r in nearby:
+            if considered >= 40:
+                break
+            atype = getattr(r, "atype", "")
+            if allowed_band is not None and atype not in allowed_band:
+                continue
+            if not apt_types.get(atype, False):
+                continue
+            sx, sy = project(float(r.lat), float(r.lon))
+            d2 = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best = r.ident
+            considered += 1
+    if best is None:
+        return False
+    _nav_open_confirm(best, "pfd")
+    return True
 
-        if show_cline and d_nm <= _CENTERLINE_RANGE_NM:
-            _draw_extended_centerline(
-                surf, ai_rect, r, lat, lon, alt_ft,
-                hdg_deg, pitch_deg, roll_deg, cx, cy, px_per_deg,
-                CLINE, nm_per_deg_lat, nm_per_deg_lon,
-            )
 
-
-def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
-                              hdg_deg, pitch_deg, roll_deg,
-                              cx, cy, px_per_deg, col,
-                              nm_per_deg_lat, nm_per_deg_lon):
-    ax, ay_r, aw, ah = ai_rect
-    ax_dlat = r.he_lat - r.le_lat
-    ax_dlon = r.he_lon - r.le_lon
-    axis_len_nm = math.hypot(ax_dlat * nm_per_deg_lat,
-                             ax_dlon * nm_per_deg_lon)
-    if axis_len_nm < 0.01:
+def _mfd_apply_drag(d, dx_px, dy_px):
+    """Apply pixel drag delta to the pan center using the projection
+    parameters captured on DOWN.  Inverse-rotates the screen delta so
+    track-up panning feels natural."""
+    px_per_nm = d["px_per_nm"]
+    if px_per_nm <= 0:
         return
-    u_dlat = ax_dlat / axis_len_nm
-    u_dlon = ax_dlon / axis_len_nm
-
-    dash_nm = _CENTERLINE_DASH_NM
-    gap_nm  = _CENTERLINE_DASH_NM * 0.6
-    n_steps = int(_CENTERLINE_EXTEND_NM / (dash_nm + gap_nm))
-
-    old_clip = surf.get_clip()
-    surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
-
-    # Angular cutoff: skip segments whose endpoint is more than 60° off the
-    # nose — past that the flat-earth bearing math wraps and dashes behind
-    # the aircraft would streak across the AI.  Well beyond the ~40° on-
-    # screen half-FOV so visible dashes are never clipped.
-    _FOV = 60.0
-
-    for thresh_lat, thresh_lon, thresh_elev, sign in (
-        (r.le_lat, r.le_lon, r.le_elev_ft, -1),
-        (r.he_lat, r.he_lon, r.he_elev_ft, +1),
-    ):
-        for i in range(n_steps):
-            start = (dash_nm + gap_nm) * i
-            end   = start + dash_nm
-            s_lat = thresh_lat + sign * u_dlat * start
-            s_lon = thresh_lon + sign * u_dlon * start
-            e_lat = thresh_lat + sign * u_dlat * end
-            e_lon = thresh_lon + sign * u_dlon * end
-            ps = _project_latlon(s_lat, s_lon, lat, lon, alt_ft,
-                                 thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg, max_fov_deg=_FOV,
-                                 ground_only=True)
-            if ps is None:
-                continue
-            pe = _project_latlon(e_lat, e_lon, lat, lon, alt_ft,
-                                 thresh_elev, hdg_deg, pitch_deg, roll_deg,
-                                 cx, cy, px_per_deg, max_fov_deg=_FOV,
-                                 ground_only=True)
-            if pe is None:
-                continue
-            pygame.draw.aaline(surf, col, ps, pe)
-
-    surf.set_clip(old_clip)
+    e_s = dx_px / px_per_nm
+    n_s = -dy_px / px_per_nm
+    rot_deg = d["rot_deg"]
+    if rot_deg != 0.0:
+        rr = math.radians(rot_deg)
+        cr, sr = math.cos(rr), math.sin(rr)
+        e_nm = e_s * cr + n_s * sr
+        n_nm = -e_s * sr + n_s * cr
+    else:
+        e_nm, n_nm = e_s, n_s
+    cos_lat = max(0.05, math.cos(math.radians(d["base_lat"])))
+    disp["mfd_pan"]["lat"] = d["base_lat"] - n_nm / 60.0
+    disp["mfd_pan"]["lon"] = d["base_lon"] - e_nm / (60.0 * cos_lat)
 
 
 # ── Main render function ──────────────────────────────────────────────────────
@@ -4613,12 +7828,30 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_display_setup(surf, disp["ds"]); return
     if mode == "ahrs_setup":
         draw_ahrs_setup(surf, disp["ss"]); return
+    if mode == "mag_cal":
+        # Draw AHRS setup behind so the modal sits on top of the screen
+        # it was launched from.
+        draw_ahrs_setup(surf, disp["ss"])
+        draw_mag_cal(surf); return
+    if mode == "nav_confirm":
+        # Modal is borderless; paint whatever screen the caller was on,
+        # then the modal on top.
+        prev = disp.get("nav_confirm_prev", "pfd")
+        if prev == "pfd":
+            disp["mode"] = "pfd"
+            render(surf, demo_mode, connected, data_stale)
+            disp["mode"] = "nav_confirm"
+        draw_nav_confirm(surf); return
     if mode == "wifi_scan":
         draw_wifi_scan(surf, disp["cs"]); return
     if mode == "connectivity_setup":
         draw_connectivity_setup(surf, disp["cs"]); return
+    if mode == "screen_sync_setup":
+        draw_screen_sync_setup(surf, disp["cs"]); return
     if mode == "system_setup":
         draw_system_setup(surf); return
+    if mode == "ahrs_firmware":
+        draw_ahrs_firmware(surf); return
     if mode == "terrain_data":
         draw_terrain_data(surf, disp["td"]); return
     if mode == "obstacle_data":
@@ -4627,6 +7860,28 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_airport_data(surf, disp["ad"]); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
+
+    # ── MFD: full-screen moving map (replaces the PFD when toggled) ──────────
+    if disp.get("display_mode", "pfd") == "mfd" and mode == "pfd":
+        # Terrain / obstacle alerts work on the MFD too.  Use the
+        # higher of GPS GS and IAS (when airdata_ok) so the alert
+        # arms whichever speed source the pilot has selected — and
+        # actually fires sooner when both are available.  gps_ok is
+        # still required since we need position for the lookups.
+        _alert_speed = disp.get("speed", 0.0)
+        if disp.get("airdata_ok"):
+            _alert_speed = max(_alert_speed, disp.get("ias_kt", 0.0))
+        _update_terrain_alert(
+            disp.get("lat", 0.0), disp.get("lon", 0.0),
+            disp.get("alt", 0.0), _alert_speed,
+            disp.get("gps_ok", False),
+            vso_kt=disp["fp"].get("vs0", VS0))
+        draw_mfd(surf, connected=connected, data_stale=data_stale)
+        # Banner overlaid on top of the MFD chrome — same position the
+        # PFD uses (top-centre between the D2 and PFD buttons there's
+        # plenty of clear space at y=3).
+        draw_terrain_alert(surf)
+        return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
     surf.fill((0, 0, 0))
@@ -4665,22 +7920,35 @@ def render(surf, demo_mode, connected, data_stale=False):
         ahrs_ok = False
 
     # ── Heading source selection ──────────────────────────────────────────────
-    # MAG  (default): use magnetometer/gyro yaw from AHRS (already fused)
-    # GPS TRK:        complementary filter — gyro propagates each frame,
-    #                 GPS track slowly slaves the absolute reference.
-    #                 Falls back to yaw if GPS fix is lost.
-    hdg_src = ss.get("hdg_src", "mag")
-    if hdg_src == "gps":
+    # User picks mag / trk / auto in AHRS setup.  _resolve_hdg_source
+    # turns the preference + runtime conditions (gps_ok, ahrs_ok, speed)
+    # into the actual source for this frame.  In AUTO, TRK wins when
+    # GPS is moving above HDG_TRK_MIN_KT, otherwise MAG.  Helpers below
+    # receive a resolved string ("trk" or "mag") so their existing
+    # checks stay simple.
+    hdg_pref = ss.get("hdg_src", "auto")
+    use_track, _hdg_label, _hdg_col = _resolve_hdg_source(
+        hdg_pref, gps_ok, ahrs_ok, speed)
+    hdg_src = "trk" if use_track else "mag"
+    if use_track:
         hdg = _update_gps_heading(disp["yaw"], disp["track"], gps_ok)
     else:
-        global _gps_hdg, _prev_yaw_disp  # reset filter when switching back to MAG
+        global _gps_hdg, _prev_yaw_disp  # reset filter when not using TRK
         _gps_hdg = _prev_yaw_disp = None
         hdg = disp["yaw"]
 
     # ── Airspeed source selection ─────────────────────────────────────────────
-    # "gps" (default): GPS groundspeed  → bug triangle is magenta
-    # "ias":           IAS sensor        → bug triangle is cyan (future)
-    airspeed_src = ss.get("airspeed_src", "gps")
+    # "gps" : GPS groundspeed         → bug triangle / tape source label is magenta
+    # "ias" : MS4525/SDP3x airspeed   → bug triangle / tape source label is cyan
+    # Effective source resolves to "ias" only when the pilot has selected it AND
+    # the air-data sensor is currently fresh (airdata_ok). Auto-falls-back to
+    # GPS GS otherwise so a transient sensor dropout doesn't blank the tape.
+    _user_src = ss.get("airspeed_src", "gps")
+    if _user_src == "ias" and disp.get("airdata_ok"):
+        airspeed_src = "ias"
+        speed = disp.get("ias_kt", speed)
+    else:
+        airspeed_src = "gps"
 
     # ── Unit conversions ──────────────────────────────────────────────────────
     ds = disp["ds"]
@@ -4705,19 +7973,31 @@ def render(surf, demo_mode, connected, data_stale=False):
     ai_rect = (AI_X, AI_Y, AI_W, AI_H)
 
     # 0. Compute terrain/obstacle alert level for this frame
-    _update_terrain_alert(lat, lon, alt, speed, gps_ok,
+    # Pick the better speed source for alert gating: max of GS and IAS
+    # (when airdata_ok) so we don't wait for GPS to spin up before
+    # alerts arm on a Pico that has both.
+    _alert_speed = speed
+    if disp.get("airdata_ok"):
+        _alert_speed = max(_alert_speed, disp.get("ias_kt", 0.0))
+    _update_terrain_alert(lat, lon, alt, _alert_speed, gps_ok,
                           vso_kt=fp.get("vs0", VS0))
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)
     draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
+    # 1a. Above-horizon terrain silhouette (mountain peaks rising above
+    # the eye-level horizon).  Only renders when SRTM tiles are loaded
+    # and at least one ray's peak exceeds aircraft altitude.
+    if gps_ok:
+        draw_above_horizon_terrain(surf, _full_ai, lat, lon, alt,
+                                   hdg, pitch, roll)
+
     # 1b. Symbol overlays painted in the TERRAIN coordinate frame
     # (heading + pitch only, no roll), then the entire overlay is
     # rotated by the roll angle so symbols stay locked to the terrain
     # during banked turns.
-    if gps_ok and (
-            _runways is not None or _airports is not None or _obstacles is not None):
+    if gps_ok and (_airports is not None or _obstacles is not None):
         _ov_w = DISPLAY_W
         _ov_h = HDG_Y
         diag = int(math.hypot(_ov_w, _ov_h)) + 4
@@ -4727,8 +8007,6 @@ def render(surf, demo_mode, connected, data_stale=False):
         _ox = (_rw - _ov_w) // 2
         _oy = (_rh - _ov_h) // 2
         _ov_rect = (_ox, _oy, _ov_w, _ov_h)
-        if _runways is not None:
-            draw_runway_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
         if _airports is not None:
             draw_airport_symbols(_overlay, _ov_rect, lat, lon, alt, hdg, pitch, 0)
         if _obstacles is not None:
@@ -4779,6 +8057,11 @@ def render(surf, demo_mode, connected, data_stale=False):
     # 11. Tap-buttons for heading bug, baro, and alt bug (color = data source)
     draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
                      hdg_src=hdg_src, baro_ok=baro_ok)
+
+    # 12. CDI strip — only when GPS is locked; bare strip + DIRECT prompt
+    # when no waypoint is active so the strip is always tappable.
+    if gps_ok:
+        draw_cdi(surf)
 
     # 12. Demo / SIM watermark
     if demo_mode:
@@ -4853,21 +8136,32 @@ def render(surf, demo_mode, connected, data_stale=False):
         target = disp.get("kbd_target", "")
         buf    = disp.get("kbd_buf", "")
         prev   = disp.get("kbd_prev", "flight_profile")
-        if prev == "connectivity_setup":
+        if target == "nav_ident":
+            # Direct-to: surface the active ident as the placeholder so the
+            # pilot sees what's active while typing the replacement.
+            cur   = disp.get("nav", {}).get("ident", "")
+            title = "WAYPOINT"
+        elif prev == "connectivity_setup":
             cur   = disp["cs"].get(target, "")
             title = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID",
                      "wifi_pass": "WiFi PASSWORD"}.get(target, "ENTER TEXT")
         else:
             cur   = disp["fp"].get(target, "")
             title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
-        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True)
+        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True,
+                      error=disp.get("kbd_error", ""))
 
 
 # ── Terrain availability (computed once at import time) ───────────────────────
 def _check_terrain():
-    if not os.path.isdir(SRTM_DIR):
-        return False
-    return any(f.endswith(".hgt") for f in os.listdir(SRTM_DIR))
+    """True if either the high-res SRTM cache or the coarse Mapzen cache
+    has at least one tile on disk — silhouette and TAWS lookups will
+    happily mix the two via get_elevation_ft_combined."""
+    if os.path.isdir(SRTM_DIR) and any(f.endswith(".hgt") for f in os.listdir(SRTM_DIR)):
+        return True
+    if os.path.isdir(COARSE_DIR) and any(f.endswith(".png") for f in os.listdir(COARSE_DIR)):
+        return True
+    return False
 
 _has_terrain = _check_terrain()
 
@@ -4931,7 +8225,37 @@ def main():
     # Restore persisted user settings before initialising the display
     if _settings.load_into(disp, SETTINGS_PATH):
         print(f"[PFD] Settings restored from {SETTINGS_PATH}")
+    # Migrate legacy hdg_src values: "gps" was the old name for "trk",
+    # and the UI never offered "auto" before — default any unexpected
+    # value to "auto" so the setting matches what the new selector shows.
+    legacy_hdg = disp["ss"].get("hdg_src", "auto")
+    if legacy_hdg == "gps":
+        disp["ss"]["hdg_src"] = "trk"
+    elif legacy_hdg not in ("mag", "trk", "auto"):
+        disp["ss"]["hdg_src"] = "auto"
+    # Clamp persisted map zoom — a saved value >20 nm would have crashed
+    # the Pi on the first MFD render, so guarantee we boot at a safe range.
+    saved_zoom = int(disp["ds"].get("map_zoom_nm", 10))
+    # AUTO (0) is valid; only clamp negative or above-cap values.
+    if saved_zoom > MFD_MAX_ZOOM_NM or saved_zoom < 0:
+        disp["ds"]["map_zoom_nm"] = min(MFD_MAX_ZOOM_NM, 10)
     _settings.start(disp, SETTINGS_PATH)
+
+    # Screen-to-screen sync: start the UDP listener so we hear peers from
+    # boot.  Publish/consume sets come from disp["cs"] (restored above),
+    # so the user's previous toggle state is honoured at startup.
+    global _screen_sync
+    _screen_sync = _ssync_mod.ScreenSync(
+        publish_kinds=_ssync_kinds_from_cs("publish"),
+        consume_kinds=_ssync_kinds_from_cs("consume"))
+    _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
+    _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
+    _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
+    _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
+    _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
+    _screen_sync.start()
+    print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
+          f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
 
     _init_backlight()
     _set_backlight(disp["ds"].get("brightness", 8))
@@ -5093,12 +8417,7 @@ def main():
         _seed(roll=0,   pitch=-3, hdg=200, alt=5800, speed=90,  vspeed=-700)
         _save("preview_sedona_approach.png")
 
-        # Short final KSEZ RWY 03: shows runway polygons + extended centerlines
-        _seed(roll=0, pitch=-3, hdg=33, alt=5500, speed=80, vspeed=-500,
-              lat=34.809, lon=-111.823)
-        _save("preview_runway_approach.png")
-
-        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115, hdg_src="gps")
+        _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115, hdg_src="trk")
         _save("preview_gps_trk_mode.png")
 
         _seed(roll=0, pitch=0, hdg=133, alt=8500, speed=115, baro_ok=False)
@@ -5155,10 +8474,10 @@ def main():
             disp["mode"] = screen_mode
             _save(fname)
 
-        disp["ss"]["hdg_src"] = "gps"
+        disp["ss"]["hdg_src"] = "trk"
         disp["mode"] = "ahrs_setup"
         _save("preview_setup_ahrs_gpstrk.png")
-        disp["ss"]["hdg_src"] = "mag"
+        disp["ss"]["hdg_src"] = "auto"
 
         # ── Terrain data screen states ────────────────────────────────────────
         disp["mode"] = "terrain_data"
@@ -5263,11 +8582,26 @@ def main():
 
     if not demo_mode:
         global _sse_client
-        _sse_client = SSEClient(SSE_URL, state, _state_lock)
-        _sse_client.start()
-        disp["cs"]["ahrs_transport"] = "wifi"
-        disp["cs"]["ahrs_port"]      = SSE_URL
-        print(f"[PFD] Connecting to {SSE_URL}")
+        # Try USB serial first — direct connection to the Pico W AHRS,
+        # no Wi-Fi needed. Falls back to SSE over Wi-Fi if no USB device
+        # is enumerated (no Pico W plugged in).
+        try:
+            from serial_client import SerialClient
+            _usb_port = SerialClient.find_port()
+        except ImportError:
+            _usb_port = None
+        if _usb_port:
+            _sse_client = SerialClient(_usb_port, state, _state_lock)
+            _sse_client.start()
+            disp["cs"]["ahrs_transport"] = "usb"
+            disp["cs"]["ahrs_port"]      = _usb_port
+            print(f"[PFD] AHRS via USB serial: {_usb_port}")
+        else:
+            _sse_client = SSEClient(SSE_URL, state, _state_lock)
+            _sse_client.start()
+            disp["cs"]["ahrs_transport"] = "wifi"
+            disp["cs"]["ahrs_port"]      = SSE_URL
+            print(f"[PFD] AHRS via WiFi SSE: {SSE_URL}")
         threading.Thread(target=_poll_wifi_status, daemon=True,
                          name="WiFiPoll").start()
         threading.Thread(target=_poll_ahrs_diag,  daemon=True,
@@ -5296,6 +8630,10 @@ def main():
         # Smooth sensor values into display values
         smooth_state()
 
+        # Push AHRS / GPS to peer screens (rate-limited inside the helpers).
+        _ssync_publish_ahrs()
+        _ssync_publish_gps()
+
         # Events
         for event in pygame.event.get():
             result = handle_event(event, demo_mode)
@@ -5308,6 +8646,16 @@ def main():
 
         if _sse_client:
             connected = _sse_client.connected
+            # If the local SSE/serial link is down but a peer screen is
+            # actively shadowing us data over UDP, treat the link as
+            # alive — the NO LINK badge is about "no data source", not
+            # "no SSE socket".  Without this the badge stays red on a
+            # screen whose only source is a sibling PFD's published
+            # AHRS / GPS feed.
+            if (not connected and _screen_sync is not None):
+                _peers, _age = _screen_sync.peer_status()
+                if _peers > 0 and _age is not None and _age < 3.0:
+                    connected = True
             disp["cs"]["ahrs_ok"] = connected
             # Stale-data timeout: track when link first dropped
             if not connected:

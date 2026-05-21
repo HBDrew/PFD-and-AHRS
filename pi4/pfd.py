@@ -93,6 +93,7 @@ import airports as apt_mod
 import runways as rwy_mod
 import water as water_mod
 import settings as _settings
+import screen_sync as _ssync_mod
 import moving_map as _map_mod
 import sun as _sun_mod
 import hits as _hits_mod
@@ -265,6 +266,15 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_rx":        0,    # count of $AHRS, lines parsed OK
     "ahrs_err":       0,    # count of parse / IO errors
     "ahrs_last_err":  "",   # most recent error message
+    # Screen-to-screen sync.  Each category is opt-in per direction so a
+    # screen with its own AHRS can still publish bugs/baro/nav to a
+    # second screen, etc.  All default off; toggled in the Screen Sync
+    # subscreen.
+    "sync_publish_bugs": False, "sync_consume_bugs": False,
+    "sync_publish_baro": False, "sync_consume_baro": False,
+    "sync_publish_nav":  False, "sync_consume_nav":  False,
+    "sync_publish_ahrs": False, "sync_consume_ahrs": False,
+    "sync_publish_gps":  False, "sync_consume_gps":  False,
 }
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
@@ -365,6 +375,227 @@ def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
 _sse_client  = None
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
+
+# ── Screen-to-screen sync ────────────────────────────────────────────────────
+# Created in main() once disp["cs"] has been restored from settings.json.
+_screen_sync = None
+_ssync_suppress_publish = 0
+_ssync_last_ahrs_t = 0.0
+_ssync_last_gps_t  = 0.0
+_SSYNC_AHRS_MIN_DT = 0.05    # 20 Hz upper bound
+_SSYNC_GPS_MIN_DT  = 0.20    # 5 Hz upper bound
+
+
+def _ssync_kinds_from_cs(direction):
+    """Build the set of categories whose `direction` ("publish" / "consume")
+    toggle is on in disp["cs"]."""
+    out = set()
+    cs = disp.get("cs", {})
+    for k in (_ssync_mod.KIND_BUGS, _ssync_mod.KIND_BARO,
+              _ssync_mod.KIND_NAV,  _ssync_mod.KIND_AHRS,
+              _ssync_mod.KIND_GPS):
+        if cs.get(f"sync_{direction}_{k}", False):
+            out.add(k)
+    return out
+
+
+def _ssync_refresh_kinds():
+    if _screen_sync is None:
+        return
+    _screen_sync.set_publish_kinds(_ssync_kinds_from_cs("publish"))
+    _screen_sync.set_consume_kinds(_ssync_kinds_from_cs("consume"))
+
+
+def _ssync_publish_bugs():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    _screen_sync.publish(_ssync_mod.KIND_BUGS, {
+        "alt_bug": float(disp.get("alt_bug", 0.0)),
+        "spd_bug": float(disp.get("spd_bug", 0.0)),
+        "hdg_bug": float(disp.get("hdg_bug", 0.0)),
+        "vs_bug":  float(disp.get("vs_bug",  0.0)),
+    })
+
+
+def _ssync_apply_bugs(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if "alt_bug" in data:
+            disp["alt_bug"] = float(data["alt_bug"])
+        if "spd_bug" in data:
+            disp["spd_bug"] = float(data["spd_bug"])
+        if "hdg_bug" in data:
+            disp["hdg_bug"] = float(data["hdg_bug"])
+        if "vs_bug" in data:
+            disp["vs_bug"] = float(data["vs_bug"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_baro():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    _screen_sync.publish(_ssync_mod.KIND_BARO, {
+        "baro_hpa": float(disp.get("baro_hpa", BARO_DEFAULT_HPA)),
+    })
+
+
+def _ssync_apply_baro(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if "baro_hpa" in data:
+            new_hpa = float(data["baro_hpa"])
+            disp["baro_hpa"] = new_hpa
+            try:
+                with _state_lock:
+                    state["baro_hpa"] = new_hpa
+                _push_baro_to_pico(new_hpa)
+            except Exception:
+                pass
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_nav():
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    nav = disp.get("nav", {})
+    _screen_sync.publish(_ssync_mod.KIND_NAV, {
+        "ident":   nav.get("ident", ""),
+        "lat":     float(nav.get("lat", 0.0)),
+        "lon":     float(nav.get("lon", 0.0)),
+        "elev_ft": float(nav.get("elev_ft", 0.0)),
+        "act_lat": float(nav.get("act_lat", 0.0)),
+        "act_lon": float(nav.get("act_lon", 0.0)),
+    })
+
+
+def _ssync_apply_nav(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        ident = str(data.get("ident", ""))
+        if not ident:
+            disp["nav"]["ident"]   = ""
+            disp["nav"]["lat"]     = 0.0
+            disp["nav"]["lon"]     = 0.0
+            disp["nav"]["elev_ft"] = 0.0
+            disp["nav"]["act_lat"] = 0.0
+            disp["nav"]["act_lon"] = 0.0
+        else:
+            disp["nav"]["ident"]   = ident
+            disp["nav"]["lat"]     = float(data.get("lat", 0.0))
+            disp["nav"]["lon"]     = float(data.get("lon", 0.0))
+            disp["nav"]["elev_ft"] = float(data.get("elev_ft", 0.0))
+            disp["nav"]["act_lat"] = float(data.get("act_lat", 0.0))
+            disp["nav"]["act_lon"] = float(data.get("act_lon", 0.0))
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_ahrs():
+    global _ssync_last_ahrs_t
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    if not _screen_sync.publish_enabled(_ssync_mod.KIND_AHRS):
+        return
+    now = time.monotonic()
+    if now - _ssync_last_ahrs_t < _SSYNC_AHRS_MIN_DT:
+        return
+    _ssync_last_ahrs_t = now
+    _screen_sync.publish(_ssync_mod.KIND_AHRS, {
+        "pitch":   float(disp.get("pitch", 0.0)),
+        "roll":    float(disp.get("roll",  0.0)),
+        "yaw":     float(disp.get("yaw",   0.0)),
+        # Include health so the receiving screen can mark its attitude
+        # indicator as live (no red X) when a peer's Pico is sourcing it.
+        "ahrs_ok": bool(disp.get("ahrs_ok", False)),
+    })
+
+
+def _ssync_apply_ahrs(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        with _state_lock:
+            if "pitch" in data:
+                state["pitch"] = float(data["pitch"])
+            if "roll" in data:
+                state["roll"]  = float(data["roll"])
+            if "yaw" in data:
+                state["yaw"]   = float(data["yaw"])
+            if "ahrs_ok" in data:
+                state["ahrs_ok"] = bool(data["ahrs_ok"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_gps():
+    """Broadcast GPS + altitude + airspeed sensor outputs at most 5 Hz.
+
+    The "gps" category is the convenience bucket for everything the
+    Pico produces that isn't attitude — position, fused altitude / VS,
+    baro source flag, MS4525/SDP3x air-data.  On a setup where one
+    screen has the Pico and the other shadows it, RX of this category
+    is what makes the altimeter tape and airspeed source work without
+    a local sensor.
+    """
+    global _ssync_last_gps_t
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    if not _screen_sync.publish_enabled(_ssync_mod.KIND_GPS):
+        return
+    now = time.monotonic()
+    if now - _ssync_last_gps_t < _SSYNC_GPS_MIN_DT:
+        return
+    _ssync_last_gps_t = now
+    _screen_sync.publish(_ssync_mod.KIND_GPS, {
+        # Position
+        "lat":         float(disp.get("lat", 0.0)),
+        "lon":         float(disp.get("lon", 0.0)),
+        "gps_alt":     float(disp.get("gps_alt", 0.0)),
+        "speed":       float(disp.get("speed", 0.0)),
+        "track":       float(disp.get("track", 0.0)),
+        "gps_ok":      bool(disp.get("gps_ok", False)),
+        "fix":         int(disp.get("fix", 0)),
+        "sats":        int(disp.get("sats", 0)),
+        # Altitude / vertical
+        "alt":         float(disp.get("alt", 0.0)),
+        "vspeed":      float(disp.get("vspeed", 0.0)),
+        "baro_src":    str(disp.get("baro_src", "gps")),
+        "baro_ok":     bool(disp.get("baro_ok", False)),
+        # Air data
+        "ias_kt":      float(disp.get("ias_kt", 0.0)),
+        "tas_kt":      float(disp.get("tas_kt", 0.0)),
+        "airdata_ok":  bool(disp.get("airdata_ok", False)),
+    })
+
+
+def _ssync_apply_gps(data):
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        with _state_lock:
+            for k in ("lat", "lon", "gps_alt", "speed", "track",
+                      "alt", "vspeed", "ias_kt", "tas_kt"):
+                if k in data:
+                    state[k] = float(data[k])
+            if "gps_ok" in data:
+                state["gps_ok"] = bool(data["gps_ok"])
+            if "fix" in data:
+                state["fix"] = int(data["fix"])
+            if "sats" in data:
+                state["sats"] = int(data["sats"])
+            if "baro_src" in data:
+                state["baro_src"] = str(data["baro_src"])
+            if "baro_ok" in data:
+                state["baro_ok"] = bool(data["baro_ok"])
+            if "airdata_ok" in data:
+                state["airdata_ok"] = bool(data["airdata_ok"])
+    finally:
+        _ssync_suppress_publish -= 1
 
 # ── GPS-slaved heading complementary filter ───────────────────────────────────
 # Propagate heading using the AHRS gyro yaw-rate (smooth, 30 Hz) and
@@ -777,6 +1008,11 @@ def _restart_sse(url):
     sse_url = url.rstrip("/") + "/events"
     _sse_client = SSEClient(sse_url, state, _state_lock)
     _sse_client.start()
+    # Keep the AHRS LINK row's transport label honest — TEST AHRS / a
+    # WiFi-side restart needs to overwrite whatever USB labels were set
+    # at boot, otherwise the screen lies about which transport is live.
+    disp["cs"]["ahrs_transport"] = "wifi"
+    disp["cs"]["ahrs_port"]      = sse_url
     print(f"[PFD] SSE → {sse_url}")
 
 
@@ -1367,7 +1603,12 @@ def draw_simple_ai_background(surf, ai_rect, pitch, roll):
     surf.set_clip(pygame.Rect(ax, ay, aw, ah))
 
     cx  = ax + aw // 2
-    cy  = ay + ah // 2
+    # Anchor horizon at TAPE_MID — same reference as draw_pitch_ladder's
+    # zero-pitch line.  _full_ai (the rect this is called with) has its
+    # geometric centre above TAPE_MID, which produced a ~1° gap between
+    # this fallback horizon and the pitch ladder when SVT couldn't paint
+    # (no GPS / no SRTM tiles).
+    cy  = TAPE_MID
 
     roll_rad = math.radians(roll)
     cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
@@ -2641,6 +2882,12 @@ class SimFlyState:
             state["gps_ok"]  = True
             state["baro_ok"] = False
             state["baro_src"] = "gps"
+            # Faux air-data so the airspeed tape responds when the
+            # pilot picks IAS as the speed source in sim: IAS == GS
+            # (still air assumption), TAS scaled for ISA altitude.
+            state["ias_kt"]     = sim["init_spd"]
+            state["tas_kt"]     = sim["init_spd"]
+            state["airdata_ok"] = True
         # Seed bugs so the aircraft holds its initial state.  Both bugs
         # start at the same value; whichever is active in the current
         # heading-source mode is what the autopilot follows.
@@ -2649,6 +2896,7 @@ class SimFlyState:
         disp["alt_bug"] = sim["init_alt"]
         if disp.get("spd_bug") is None:
             disp["spd_bug"] = sim["init_spd"]
+        _ssync_publish_bugs()
 
     def tick(self):
         now = time.monotonic()
@@ -2825,6 +3073,11 @@ class SimFlyState:
             spd_err = tgt_spd - spd
             d_spd   = max(-2.0 * dt, min(2.0 * dt, spd_err * 0.5))
             state["speed"] = max(0.0, spd + d_spd)
+            # Faux IAS/TAS track GS in sim (still air assumption) so the
+            # airspeed tape moves when the pilot has IAS as the source.
+            state["ias_kt"]     = state["speed"]
+            state["tas_kt"]     = state["speed"]
+            state["airdata_ok"] = True
 
             # ── Position ───────────────────────────────────────────────────────
             # Constant simulated wind from 270° (west) at 7 kt — yields a
@@ -3670,18 +3923,24 @@ def handle_event(event, demo_mode):
         if disp["mode"] == "pfd":
             if event.key == pygame.K_UP:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 + 100
+                _ssync_publish_bugs()
             if event.key == pygame.K_DOWN:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 - 100
+                _ssync_publish_bugs()
             if event.key == pygame.K_LEFT:
                 _bk = _active_bug_key()
                 disp[_bk] = (round(disp[_bk]) - 10) % 360
+                _ssync_publish_bugs()
             if event.key == pygame.K_RIGHT:
                 _bk = _active_bug_key()
                 disp[_bk] = (round(disp[_bk]) + 10) % 360
+                _ssync_publish_bugs()
             if event.key in (pygame.K_PLUS, pygame.K_EQUALS):
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 + 1) / 100
+                _ssync_publish_baro()
             if event.key == pygame.K_MINUS:
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 - 1) / 100
+                _ssync_publish_baro()
 
     # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────
     if event.type == pygame.FINGERDOWN:
@@ -3693,6 +3952,42 @@ def handle_event(event, demo_mode):
         _active_fingers.pop(event.finger_id, None)
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
+
+    # ── Drag-to-scroll on setup screens ──────────────────────────────────────
+    # We defer the tap-fire on BUTTONDOWN inside a drag-capable setup
+    # screen, watch MOTION to detect a scroll-drag, and on BUTTONUP either
+    # consume the drag (no action fires) or replay the tap at the up
+    # position so the underlying row-hit code runs as if nothing happened.
+    global _ss_drag, _dispatch_replay
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        x, y = pos
+        dy = y - _ss_drag["down_y"]
+        if not _ss_drag["is_drag"] and abs(dy) > _SS_DRAG_THRESHOLD:
+            _ss_drag["is_drag"] = True
+        if _ss_drag["is_drag"]:
+            mode = _ss_drag["mode"]
+            n_rows = _SS_DRAG_MODES.get(mode, 5)
+            max_s = _ss_max_scroll(n_rows)
+            new_scroll = _ss_drag["scroll_at_down"] - dy
+            _ss_scroll[mode] = max(0, min(max_s, new_scroll))
+        _ss_drag["pos"] = (x, y)
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _ss_drag is not None:
+        d = _ss_drag
+        _ss_drag = None
+        if not d["is_drag"]:
+            _dispatch_replay = True
+            try:
+                fake = pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN,
+                    {"pos": d["pos"], "button": 1})
+                handle_event(fake, demo_mode)
+            finally:
+                _dispatch_replay = False
+        return True
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
@@ -3706,19 +4001,48 @@ def handle_event(event, demo_mode):
 
         mode = disp["mode"]
 
+        # Defer tap-fire on drag-capable setup screens — except taps inside
+        # the title bar (back button), which still fire immediately.
+        if (not _dispatch_replay
+                and mode in _SS_DRAG_MODES
+                and y >= _SS_TITLE_BAR_H):
+            _ss_drag = {
+                "mode":           mode,
+                "down_x":         x,
+                "down_y":         y,
+                "pos":            (x, y),
+                "scroll_at_down": _ss_scroll.get(mode, 0),
+                "is_drag":        False,
+            }
+            return True
+
         # ── Setup screen taps ─────────────────────────────────────────────
         if mode == "setup":
             idx = setup_hit(x, y)
-            if   idx == 5: disp["mode"] = "pfd"
-            elif idx == 0: disp["mode"] = "flight_profile"
-            elif idx == 1: disp["mode"] = "display_setup"
-            elif idx == 2: disp["mode"] = "ahrs_setup"
+            # Indices follow _SETUP_ITEMS row-major order: 0 FLIGHT, 1 DISPLAY,
+            # 2 AHRS, 3 CONNECTIVITY, 4 SCREEN SYNC, 5 SYSTEM, 6 EXIT.
+            if   idx == 6: disp["mode"] = "pfd"
+            elif idx == 0:
+                _ss_reset_scroll("flight_profile")
+                disp["mode"] = "flight_profile"
+            elif idx == 1:
+                _ss_reset_scroll("display_setup")
+                disp["mode"] = "display_setup"
+            elif idx == 2:
+                _ss_reset_scroll("ahrs_setup")
+                disp["mode"] = "ahrs_setup"
             elif idx == 3:
                 actual = disp["cs"].get("wifi_actual", "")
                 if actual:
                     disp["cs"]["wifi_ssid"] = actual
+                _ss_reset_scroll("connectivity_setup")
                 disp["mode"] = "connectivity_setup"
-            elif idx == 4: disp["mode"] = "system_setup"
+            elif idx == 4:
+                _ss_reset_scroll("screen_sync_setup")
+                disp["mode"] = "screen_sync_setup"
+            elif idx == 5:
+                _ss_reset_scroll("system_setup")
+                disp["mode"] = "system_setup"
             return True
 
         # ── Display settings taps ─────────────────────────────────────────
@@ -3825,6 +4149,21 @@ def handle_event(event, demo_mode):
                     if ok:
                         _restart_sse(disp["cs"]["ahrs_url"])
                 threading.Thread(target=_do_test, daemon=True).start()
+            return True
+
+        # ── Screen sync taps ──────────────────────────────────────────────
+        if mode == "screen_sync_setup":
+            action = screen_sync_setup_hit(x, y, disp["cs"])
+            if action == "back":
+                disp["mode"] = "setup"
+            elif action and action.startswith(("toggle_publish:",
+                                                "toggle_consume:")):
+                head, kind = action.split(":", 1)
+                direction = head.split("_", 1)[1]    # "publish" or "consume"
+                key = f"sync_{direction}_{kind}"
+                disp["cs"][key] = not disp["cs"].get(key, False)
+                _settings.mark_dirty()
+                _ssync_refresh_kinds()
             return True
 
         # ── WiFi scan screen taps ─────────────────────────────────────────────
@@ -4220,12 +4559,16 @@ def handle_event(event, demo_mode):
                         if target == "alt_bug":
                             # Input is hundreds of display-unit altitude.
                             disp["alt_bug"] = float(val * 100) / alt_factor
+                            _ssync_publish_bugs()
                         elif target == "hdg_bug":
                             disp["hdg_bug"] = float(val % 360)
+                            _ssync_publish_bugs()
                         elif target == "trk_bug":
                             disp["trk_bug"] = float(val % 360)
+                            _ssync_publish_bugs()
                         elif target == "spd_bug":
                             disp["spd_bug"] = float(val) / spd_factor
+                            _ssync_publish_bugs()
                         elif target == "baro_hpa":
                             baro_unit = ds.get("baro_unit", "inhg")
                             if baro_unit == "hpa":
@@ -4240,6 +4583,7 @@ def handle_event(event, demo_mode):
                             with _state_lock:
                                 state["baro_hpa"] = new_hpa
                             _push_baro_to_pico(new_hpa)
+                            _ssync_publish_baro()
                         elif target == "sim_init_alt":
                             disp["sim"]["init_alt"] = float(val * 100) / alt_factor
                         elif target == "sim_init_hdg":
@@ -4350,6 +4694,7 @@ def handle_event(event, demo_mode):
         if ALT_X <= x <= DISPLAY_W and TAPE_TOP <= y <= TAPE_BOT:
             ft = round(disp["alt"] + (TAPE_MID - y) / PX_PER_FT)
             disp["alt_bug"] = round(ft / 100) * 100
+            _ssync_publish_bugs()
         # Tap on heading tape → adjust active bug by position.  In TRK mode
         # the centre reference is GPS track (matching what the box shows),
         # so the bug lands under the finger relative to the displayed value.
@@ -4358,6 +4703,7 @@ def handle_event(event, demo_mode):
             _bk = _active_bug_key()
             _ref = disp.get("track", disp["yaw"]) if _bk == "trk_bug" else disp["yaw"]
             disp[_bk] = round(_ref + off) % 360
+            _ssync_publish_bugs()
 
     return True
 
@@ -4369,14 +4715,18 @@ _SETUP_ITEMS = [
     (1, 0, "DISPLAY",         "Units · Brightness · Night mode"),
     (0, 1, "AHRS / SENSORS",  "Trim · Mag cal · Mounting"),
     (1, 1, "CONNECTIVITY",    "WiFi · AHRS link"),
-    (0, 2, "SYSTEM",          "Version · Diagnostics · Reset"),
-    (1, 2, "EXIT",            "Return to PFD"),
+    (0, 2, "SCREEN SYNC",     "Share bugs · baro · nav · AHRS"),
+    (1, 2, "SYSTEM",          "Version · Diagnostics · Reset"),
+    (0, 3, "EXIT",            "Return to PFD"),
 ]
-_S_MX=15; _S_MY=50; _S_GX=10; _S_GY=12
+_S_MX=15; _S_MY=50; _S_GX=10; _S_GY=10
 _S_BW = (DISPLAY_W - 2*_S_MX - _S_GX) // 2
-_S_BH = (DISPLAY_H - _S_MY - 14 - 2*_S_GY) // 3
+_S_BH = (DISPLAY_H - _S_MY - 14 - 3*_S_GY) // 4
 _S_COLS = [_S_MX, _S_MX + _S_BW + _S_GX]
-_S_ROWS = [_S_MY, _S_MY + _S_BH + _S_GY, _S_MY + 2*(_S_BH + _S_GY)]
+_S_ROWS = [_S_MY,
+           _S_MY + _S_BH + _S_GY,
+           _S_MY + 2*(_S_BH + _S_GY),
+           _S_MY + 3*(_S_BH + _S_GY)]
 
 
 def _setup_button(surf, bx, by, bw, bh, label, subtitle="", exit_btn=False, r=8):
@@ -4827,12 +5177,58 @@ def keyboard_hit(x, y):
 
 _SS_MX  = 12     # side margin
 _SS_Y0  = 52     # first row top (44px title bar + 8px gap)
-_SS_RH  = 62     # row height (62 lets 6 rows fit in 480px)
+_SS_RH  = 62     # row height
 _SS_GAP = 6      # gap between rows
+
+# Per-setup-screen scroll offsets (in pixels). Keyed by disp["mode"].
+# Used when a screen's content exceeds the available vertical area below
+# the title bar.
+_ss_scroll = {}
+
+_SS_TITLE_BAR_H = 44
+
+# Drag-to-scroll state. Set on MOUSEBUTTONDOWN/FINGERDOWN inside a drag-
+# capable setup screen, cleared on UP. Motion exceeding _SS_DRAG_THRESHOLD
+# converts the touch from "tap" to "drag".
+_ss_drag = None
+_SS_DRAG_THRESHOLD = 8
+_SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
+    "ahrs_setup":         8,
+    "display_setup":      10,
+    "system_setup":       9,
+    "connectivity_setup": 6,
+    "flight_profile":     8,
+    "ahrs_firmware":      5,
+    "screen_sync_setup":  6,    # 1 peer-status + 5 categories
+}
+_dispatch_replay = False
 
 
 def _ss_row_y(i):
-    return _SS_Y0 + i * (_SS_RH + _SS_GAP)
+    base = _SS_Y0 + i * (_SS_RH + _SS_GAP)
+    return base - _ss_scroll.get(disp.get("mode", ""), 0)
+
+
+def _ss_content_h(n_rows):
+    return _SS_Y0 + n_rows * (_SS_RH + _SS_GAP) - _SS_GAP
+
+
+def _ss_max_scroll(n_rows):
+    visible = DISPLAY_H - _SS_TITLE_BAR_H
+    return max(0, _ss_content_h(n_rows) - _SS_TITLE_BAR_H - visible)
+
+
+def _ss_clip_to_content(surf):
+    """Clip drawing to the area below the title bar.  Returns the previous
+    clip so the caller can restore it via surf.set_clip(prev)."""
+    prev = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, _SS_TITLE_BAR_H,
+                              DISPLAY_W, DISPLAY_H - _SS_TITLE_BAR_H))
+    return prev
+
+
+def _ss_reset_scroll(mode):
+    _ss_scroll.pop(mode, None)
 
 
 def _screen_header(surf, title):
@@ -4984,6 +5380,7 @@ def _dsp_layers_geom(bx, bw):
 
 def draw_display_setup(surf, ds):
     _screen_header(surf, "DISPLAY")
+    _prev_clip = _ss_clip_to_content(surf)
     for ri, row in enumerate(_DSP_ROWS):
         key, label, sub, opts_v, opts_l, bw_each = row
         bx, by, bw, bh = _setting_row(surf, ri, label, sub)
@@ -5025,6 +5422,7 @@ def draw_display_setup(surf, ds):
         _seg_btn(surf,
                  rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
                  ry, _DSP_LAYERS_BTN_W, _DSP_BTN_H, lbl, active)
+    surf.set_clip(_prev_clip)
 
 
 def display_setup_hit(x, y, ds):
@@ -5289,6 +5687,7 @@ def _approach_cancel():
 
 def draw_ahrs_setup(surf, ss):
     _screen_header(surf, "AHRS / SENSORS")
+    _prev_clip = _ss_clip_to_content(surf)
 
     # Row 0: Pitch trim
     bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction")
@@ -5398,6 +5797,7 @@ def draw_ahrs_setup(surf, ss):
     else:
         _action_btn(surf, inh_bx, inh_by, inh_w, _DSP_BTN_H,
                     "INHIBIT", "normal")
+    surf.set_clip(_prev_clip)
 
 
 def ahrs_setup_hit(x, y, ss):
@@ -5646,6 +6046,7 @@ def _cs_val_box(surf, bx, by, bw, bh, key, val):
 
 def draw_connectivity_setup(surf, cs):
     _screen_header(surf, "CONNECTIVITY")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
 
     # Rows 0-2: editable fields (URL / SSID / password)
@@ -5714,6 +6115,7 @@ def draw_connectivity_setup(surf, cs):
     _action_btn(surf, bx,                _CS_BTN_Y, third, _CS_BTN_H, "SCAN WIFI",  "normal")
     _action_btn(surf, bx+third+10,       _CS_BTN_Y, third, _CS_BTN_H, "APPLY WIFI", "warn")
     _action_btn(surf, bx+2*(third+10),   _CS_BTN_Y, third, _CS_BTN_H, "TEST AHRS",  "ok")
+    surf.set_clip(_prev_clip)
 
 
 def connectivity_setup_hit(x, y, cs):
@@ -5736,6 +6138,89 @@ def connectivity_setup_hit(x, y, cs):
             return "apply_wifi"
         if bx+2*(third+10) <= x <= bx+3*third+20:
             return "test_ahrs"
+    return None
+
+
+# ── Screen Sync subscreen ─────────────────────────────────────────────────────
+# One row per category (BUGS / BARO / NAV / AHRS / GPS).  Each row has two
+# segmented pills: TX (publish to peers) and RX (consume from peers).  Tap
+# either pill to toggle.  A peer-status header row shows whether anyone
+# is on the wire so the user can confirm the link works before flipping
+# their first toggle.
+
+_SCS_KINDS = (
+    ("bugs", "BUGS",     "alt / spd / hdg / vs"),
+    ("baro", "BARO",     "altimeter setting"),
+    ("nav",  "NAV (D2)", "waypoint ident + activation point"),
+    ("ahrs", "AHRS",     "pitch / roll / yaw — local only when off"),
+    ("gps",  "GPS",      "lat / lon / alt / speed / track"),
+)
+
+_SCS_PILL_W = 86
+_SCS_PILL_H = 36
+_SCS_PILL_GAP = 6
+
+
+def _scs_pill_rects(by, bh):
+    """Return (tx_rect, rx_rect) for the right side of a sync row."""
+    bw = DISPLAY_W - 2 * _SS_MX
+    rx = _SS_MX + bw - _SS_MX - _SCS_PILL_W
+    tx = rx - _SCS_PILL_GAP - _SCS_PILL_W
+    py = by + (bh - _SCS_PILL_H) // 2
+    return ((tx, py, _SCS_PILL_W, _SCS_PILL_H),
+            (rx, py, _SCS_PILL_W, _SCS_PILL_H))
+
+
+def draw_screen_sync_setup(surf, cs):
+    _screen_header(surf, "SCREEN SYNC")
+    _prev_clip = _ss_clip_to_content(surf)
+
+    # Row 0: peer status
+    bx, by, bw, bh = _setting_row(surf, 0, "PEER",
+                                   "Other PFD seen on this network")
+    if _screen_sync is None:
+        n, age = 0, None
+        peer_id = ""
+    else:
+        n, age = _screen_sync.peer_status()
+        peer_id = _screen_sync.first_peer_id()
+    if n > 0:
+        age_s = f"{age:.1f}s" if age is not None else "—"
+        col   = (60, 220, 80)
+        lbl   = f"PEER {peer_id}  ·  last {age_s} ago"
+    else:
+        col   = (180, 90, 90)
+        lbl   = "NO PEER"
+    pygame.draw.circle(surf, col, (bx + bw - 240, by + bh // 2), 7)
+    _text(surf, lbl, 16, col, bold=True,
+          x=bx + bw - 226, y=by + bh // 2 - 9)
+
+    # Rows 1-5: per-category TX/RX toggles
+    for i, (kind, label, sub) in enumerate(_SCS_KINDS, start=1):
+        bx2, by2, bw2, bh2 = _setting_row(surf, i, label, sub)
+        tx_rect, rx_rect = _scs_pill_rects(by2, bh2)
+        _seg_btn(surf, *tx_rect, "TX",
+                 cs.get(f"sync_publish_{kind}", False))
+        _seg_btn(surf, *rx_rect, "RX",
+                 cs.get(f"sync_consume_{kind}", False))
+
+    surf.set_clip(_prev_clip)
+
+
+def screen_sync_setup_hit(x, y, cs):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    for i, (kind, _, _sub) in enumerate(_SCS_KINDS, start=1):
+        by = _ss_row_y(i)
+        if not (by <= y <= by + _SS_RH):
+            continue
+        tx_rect, rx_rect = _scs_pill_rects(by, _SS_RH)
+        tx_x, tx_y, tx_w, tx_h = tx_rect
+        rx_x, rx_y, rx_w, rx_h = rx_rect
+        if tx_x <= x <= tx_x + tx_w and tx_y <= y <= tx_y + tx_h:
+            return f"toggle_publish:{kind}"
+        if rx_x <= x <= rx_x + rx_w and rx_y <= y <= rx_y + rx_h:
+            return f"toggle_consume:{kind}"
     return None
 
 
@@ -5779,6 +6264,7 @@ def _sys_data_tile(surf, bx, by, bw, bh, label, sub, active=True):
 
 def draw_system_setup(surf):
     _screen_header(surf, "SYSTEM")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     _gps_ok   = disp.get("gps_ok", False)
     _gps_comm = disp.get("gps_comm", False)
@@ -5861,6 +6347,7 @@ def draw_system_setup(surf):
     _action_btn(surf, bx,           sim_y,      half_w, _SYS_BTN_H, "SIMULATOR",       "ok")
     _action_btn(surf, bx+half_w+10, sim_y,      half_w, _SYS_BTN_H, "RESET DEFAULTS",  "danger")
     _action_btn(surf, bx,           quit_y,     bw,     _SYS_BTN_H, "QUIT PFD",        "danger")
+    surf.set_clip(_prev_clip)
 
 
 def system_setup_hit(x, y):
@@ -5893,7 +6380,9 @@ def system_setup_hit(x, y):
 # ── AHRS firmware update screen ───────────────────────────────────────────────
 
 _FW_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
-_FW_SCRIPTS = ["main.py", "config.py", "web_server.py", "wt901.py", "bme280.py", "gps.py"]
+_FW_SCRIPTS = ["main.py", "config.py", "web_server.py", "wt901.py",
+               "bme280.py", "gps.py", "airdata.py", "sdp31.py",
+               "ms4525.py", "ahrs_filter.py"]
 _IPHONE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "iphone_display")
 _FW_WEB     = ["index.html", "terrain.js", "sw.js", "manifest.webmanifest", "icon-192.png"]
 _FW_ROW_H   = 72
@@ -5923,14 +6412,24 @@ def _find_pico_serial():
 
 
 def _find_pico_bootsel():
-    """Return RPI-RP2 mount path, auto-mounting via udisksctl if needed (cached 2 s)."""
+    """Return the Pico BOOTSEL mount path, auto-mounting via udisksctl
+    if needed (cached 2 s).  Handles both chip families:
+        Pico W  (RP2040)  → label "RPI-RP2"
+        Pico 2W (RP2350)  → label "RP2350"
+    """
     global _pico_bootsel_cache
     now = time.time()
     if now - _pico_bootsel_cache[0] < _PICO_CACHE_TTL:
         return _pico_bootsel_cache[1]
     import glob
+    _LABELS = ("RPI-RP2", "RP2350")
     # Check standard mount paths first (must be an actual mountpoint, not a stale dir)
-    for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
+    _mount_pats = [p
+                   for lbl in _LABELS
+                   for p in (f"/media/*/{lbl}",
+                             f"/run/media/*/{lbl}",
+                             f"/mnt/{lbl}")]
+    for pat in _mount_pats:
         mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
         if mounts:
             _pico_bootsel_cache = (now, mounts[0])
@@ -5942,19 +6441,20 @@ def _find_pico_bootsel():
             capture_output=True, text=True, timeout=5)
         for line in r.stdout.splitlines():
             parts = line.split()
-            if len(parts) >= 2 and parts[1] == "RPI-RP2":
+            if len(parts) >= 2 and parts[1] in _LABELS:
+                label   = parts[1]
                 devpath = f"/dev/{parts[0]}"
                 # Try udisksctl first, fall back to sudo mount
                 mr = subprocess.run(["udisksctl", "mount", "-b", devpath],
                                     capture_output=True, timeout=10)
                 if mr.returncode != 0:
-                    subprocess.run(["sudo", "mkdir", "-p", "/mnt/RPI-RP2"],
+                    subprocess.run(["sudo", "mkdir", "-p", f"/mnt/{label}"],
                                    capture_output=True, timeout=5)
                     uid = os.getuid(); gid = os.getgid()
                     subprocess.run(["sudo", "mount", "-o", f"uid={uid},gid={gid}",
-                                    devpath, "/mnt/RPI-RP2"],
+                                    devpath, f"/mnt/{label}"],
                                    capture_output=True, timeout=10)
-                for pat in ["/media/*/RPI-RP2", "/run/media/*/RPI-RP2", "/mnt/RPI-RP2"]:
+                for pat in _mount_pats:
                     mounts = [m for m in glob.glob(pat) if os.path.ismount(m)]
                     if mounts:
                         _pico_bootsel_cache = (now, mounts[0])
@@ -6061,7 +6561,7 @@ def _do_flash_uf2():
             return
         mount = _find_pico_bootsel()
         if not mount:
-            disp["fw"]["flash_msg"]   = "RPI-RP2 not mounted — hold BOOTSEL then plug USB"
+            disp["fw"]["flash_msg"]   = "Pico BOOTSEL not mounted — hold BOOTSEL then plug USB"
             disp["fw"]["flash_state"] = "error"
             return
         try:
@@ -6080,6 +6580,7 @@ def _do_flash_uf2():
 
 def draw_ahrs_firmware(surf):
     _screen_header(surf, "AHRS FIRMWARE")
+    _prev_clip = _ss_clip_to_content(surf)
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     fw = disp["fw"]
 
@@ -6141,6 +6642,7 @@ def draw_ahrs_firmware(surf):
     flash_style = "normal" if fw.get("flash_state") != "flashing" else "warn"
     _action_btn(surf, bx,          btn_y, half, 54, "PUSH SCRIPTS TO PICO", push_style)
     _action_btn(surf, bx+half+10,  btn_y, half, 54, "FLASH .UF2",           flash_style)
+    surf.set_clip(_prev_clip)
 
 
 def ahrs_firmware_hit(x, y):
@@ -8074,6 +8576,7 @@ def _nav_set_by_ident(ident: str) -> bool:
     disp["nav"]["act_lat"] = lat
     disp["nav"]["act_lon"] = lon
     _settings.mark_dirty()
+    _ssync_publish_nav()
     return True
 
 
@@ -8136,6 +8639,7 @@ def _nav_clear() -> None:
     disp["nav"]["act_lat"] = 0.0
     disp["nav"]["act_lon"] = 0.0
     _settings.mark_dirty()
+    _ssync_publish_nav()
 
 
 _DIRECT_TO_DRAPE_OFFSET_FT = 200.0  # ft above terrain.  Has to clear the
@@ -8679,7 +9183,7 @@ def draw_runway_symbols(surf, ai_rect, lat, lon, alt_ft,
     nearby = rwy_mod.query_nearby(_runways, lat, lon,
                                   radius_nm=max(_RUNWAY_MAX_RANGE_NM,
                                                 _CENTERLINE_RANGE_NM))
-    if not nearby:
+    if len(nearby) == 0:
         return
 
     ax, ay_r, aw, ah = ai_rect
@@ -8983,6 +9487,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_wifi_scan(surf, disp["cs"]); return
     if mode == "connectivity_setup":
         draw_connectivity_setup(surf, disp["cs"]); return
+    if mode == "screen_sync_setup":
+        draw_screen_sync_setup(surf, disp["cs"]); return
     if mode == "ahrs_firmware":
         draw_ahrs_firmware(surf); return
     if mode == "system_setup":
@@ -9699,6 +10205,22 @@ def main():
         disp["ss"]["hdg_src"] = "auto"
     _settings.start(disp, SETTINGS_PATH)
 
+    # Screen-to-screen sync: start the UDP listener so we hear peers from
+    # boot.  Publish/consume sets come from disp["cs"] (restored above),
+    # so the user's previous toggle state is honoured at startup.
+    global _screen_sync
+    _screen_sync = _ssync_mod.ScreenSync(
+        publish_kinds=_ssync_kinds_from_cs("publish"),
+        consume_kinds=_ssync_kinds_from_cs("consume"))
+    _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
+    _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
+    _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
+    _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
+    _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
+    _screen_sync.start()
+    print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
+          f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
+
     _init_backlight()
     _set_backlight(disp["ds"].get("brightness", 8))
 
@@ -10234,6 +10756,10 @@ def main():
         # Smooth sensor values into display values
         smooth_state()
 
+        # Push AHRS / GPS to peer screens (rate-limited inside the helpers).
+        _ssync_publish_ahrs()
+        _ssync_publish_gps()
+
         # Events
         for event in pygame.event.get():
             result = handle_event(event, demo_mode)
@@ -10246,6 +10772,16 @@ def main():
 
         if _sse_client:
             connected = _sse_client.connected
+            # If the local SSE/serial link is down but a peer screen is
+            # actively shadowing us data over UDP, treat the link as
+            # alive — the NO LINK badge is about "no data source", not
+            # "no SSE socket".  Without this the badge stays red on a
+            # screen whose only source is a sibling PFD's published
+            # AHRS / GPS feed.
+            if (not connected and _screen_sync is not None):
+                _peers, _age = _screen_sync.peer_status()
+                if _peers > 0 and _age is not None and _age < 3.0:
+                    connected = True
             disp["cs"]["ahrs_ok"] = connected
             # Stale-data timeout: track when link first dropped
             if not connected:

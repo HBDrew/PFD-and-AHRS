@@ -89,8 +89,30 @@ def interp_colour(palette, value):
 # Cap of 12 covers the inner + outer mesh extents (~50 nm radius → ~9 tiles)
 # plus comfortable hysteresis. Previously 32 — too generous on a 2 GB Pi.
 import collections as _collections
-_TILE_CACHE_MAX = 12
+# 16 entries: enough for a 50-nm MFD bbox (~9 tiles) plus hysteresis as
+# the aircraft moves into new ones.  Now that tiles are stored as int16
+# (~2.8 MB SRTM3 in feet), 16 fits comfortably even on the Pi Zero 2W.
+# Previously 32 — let SRTM1 tiles snowball past the 512 MB RAM during
+# extended bench sessions and trigger oom-kill / reboot.
+_TILE_CACHE_MAX = 16
 _tile_cache: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
+
+# Optional resolution gate.  pi_zero/pfd.py calls
+# terrain.set_resolution_preference("srtm3") at startup so the tile
+# loader treats SRTM1 .hgt files as missing.  This avoids loading
+# 52 MB float32 arrays per tile on a 512 MB Pi Zero 2W when the MFD
+# tint only samples ~2300 elevation points anyway.  pi4 leaves this
+# at "any" so the full-resolution SVT scene still uses SRTM1 when
+# present.
+_PREFER_RESOLUTION = "any"   # "any" | "srtm3"
+
+
+def set_resolution_preference(pref: str):
+    """Configure which SRTM resolutions the tile loader is willing to
+    read.  ``"any"`` (default) opens any .hgt file regardless of size;
+    ``"srtm3"`` skips the 25 MB SRTM1 files and only reads SRTM3."""
+    global _PREFER_RESOLUTION
+    _PREFER_RESOLUTION = pref
 
 
 def _tile_key(lat_int: int, lon_int: int) -> str:
@@ -128,18 +150,34 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
 
     # Detect resolution from file size (2 bytes per sample)
     file_bytes = os.path.getsize(path)
-    if file_bytes == SRTM1_SAMPLES * SRTM1_SAMPLES * 2:
+    is_srtm1 = (file_bytes == SRTM1_SAMPLES * SRTM1_SAMPLES * 2)
+    # When the caller has asked for srtm3 but the file on disk is the
+    # 25 MB SRTM1 variant, downsample to SRTM3 resolution on load (every
+    # third sample, no interpolation — SRTM1's 30 m → SRTM3's 90 m).
+    # The cached array is SRTM3-sized so the per-tile RAM cost drops
+    # ~9× to ~5.8 MB.  Brief ~25 MB int16 peak during the read.
+    decimate_to_srtm3 = is_srtm1 and (_PREFER_RESOLUTION == "srtm3")
+    if is_srtm1 and not decimate_to_srtm3:
         n_samples = SRTM1_SAMPLES
     else:
-        n_samples = SRTM3_SAMPLES  # default / fallback
+        n_samples = SRTM3_SAMPLES  # output resolution after any decimation
 
     if HAS_NUMPY:
-        # Load raw int16 (metres). Convert metres→feet and replace voids,
-        # then store as int16 to halve cache memory. Bilinear interpolation
-        # in get_elevation_ft auto-promotes to float on read.
-        data_raw = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
-        # The float intermediate (size = n_samples² × 4 bytes) is transient
-        # — only the final int16 array enters the cache.
+        if decimate_to_srtm3:
+            # Read SRTM1 raw int16 (~25 MB), slice every third sample to
+            # SRTM3 resolution, copy to release the big buffer.  Decimated
+            # array then goes through the same metres→feet + void mask +
+            # int16-recast as a native SRTM3 file.
+            raw_full = np.fromfile(path, dtype='>i2').reshape(
+                (SRTM1_SAMPLES, SRTM1_SAMPLES))
+            data_raw = raw_full[::3, ::3].copy()
+            del raw_full
+        else:
+            data_raw = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
+        # metres → feet, replace voids, then store as int16 to halve the
+        # cache footprint.  The float intermediate is transient — only the
+        # final int16 array enters the cache.  Bilinear interpolation in
+        # get_elevation_ft auto-promotes to float on read.
         data = (np.where(data_raw == VOID_ELEV, 0, data_raw).astype(np.float32)
                 * 3.28084).astype(np.int16)
         del data_raw
@@ -205,3 +243,127 @@ def tile_exists(srtm_dir: str, lat: float, lon: float) -> bool:
 def tile_name(lat_int: int, lon_int: int) -> str:
     """Public alias for _tile_key."""
     return _tile_key(lat_int, lon_int)
+
+
+# ── Coarse global terrain (Mapzen Terrarium PNG, zoom 5) ─────────────────────
+# Companion to the high-res SRTM cache.  ~576 PNG tiles cover lat -60°..+75°
+# at ~5 km/px — enough resolution for the iPhone-style "mountains above
+# horizon" silhouette anywhere in the world without the per-region SRTM
+# download.  Same source the iPhone PFD uses (terrain.js).
+#
+#   URL pattern:  https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png
+#   Elevation:    R*256 + G + B/256 - 32768   (metres)
+
+MAPZEN_BASE   = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium"
+COARSE_Z      = 5
+_COARSE_LAT_LO = -60.0
+_COARSE_LAT_HI =  75.0
+_COARSE_CACHE_MAX = 64
+_coarse_cache = _collections.OrderedDict()
+
+
+def coarse_latlon_to_tile(lat: float, lon: float, z: int = COARSE_Z):
+    """Return (x, y) Mapzen tile coords for the given lat/lon at zoom z."""
+    n = 1 << z
+    lat = max(-85.0, min(85.0, lat))
+    x  = int((lon + 180.0) / 360.0 * n)
+    lr = math.log(math.tan((90.0 + lat) * math.pi / 360.0))
+    y  = int((1.0 - lr / math.pi) / 2.0 * n)
+    return max(0, min(n - 1, x)), max(0, min(n - 1, y))
+
+
+def coarse_tile_url(z: int, x: int, y: int) -> str:
+    return f"{MAPZEN_BASE}/{z}/{x}/{y}.png"
+
+
+def coarse_tile_path(coarse_dir: str, z: int, x: int, y: int) -> str:
+    return os.path.join(coarse_dir, f"{z}_{x}_{y}.png")
+
+
+def coarse_tile_list(z: int = COARSE_Z):
+    """Enumerate (z, x, y) tile triples for the useful lat band at zoom z."""
+    n = 1 << z
+    _, y_top    = coarse_latlon_to_tile(_COARSE_LAT_HI, 0.0, z)
+    _, y_bottom = coarse_latlon_to_tile(_COARSE_LAT_LO, 0.0, z)
+    return [(z, tx, ty) for tx in range(n)
+                        for ty in range(y_top, y_bottom + 1)]
+
+
+def _load_coarse_tile(coarse_dir: str, z: int, x: int, y: int):
+    """Return (elev_ft_array, n_samples) for one Mapzen tile, or None."""
+    key = (z, x, y)
+    if key in _coarse_cache:
+        _coarse_cache.move_to_end(key)
+        return _coarse_cache[key]
+    path = coarse_tile_path(coarse_dir, z, x, y)
+    if not os.path.exists(path) or not HAS_NUMPY:
+        _coarse_cache[key] = None
+        while len(_coarse_cache) > _COARSE_CACHE_MAX:
+            _coarse_cache.popitem(last=False)
+        return None
+    try:
+        import pygame
+        img = pygame.image.load(path)
+        # pygame.surfarray.array3d returns (W, H, 3); transpose to (H, W, 3)
+        arr = pygame.surfarray.array3d(img).transpose(1, 0, 2)
+        r = arr[:, :, 0].astype(np.float32)
+        g = arr[:, :, 1].astype(np.float32)
+        b = arr[:, :, 2].astype(np.float32)
+        elev_m  = r * 256.0 + g + b / 256.0 - 32768.0
+        elev_ft = elev_m * 3.28084
+        result  = (elev_ft, elev_ft.shape[0])
+    except Exception:
+        result = None
+    _coarse_cache[key] = result
+    while len(_coarse_cache) > _COARSE_CACHE_MAX:
+        _coarse_cache.popitem(last=False)
+    return result
+
+
+def get_coarse_elevation_ft(coarse_dir: str, lat: float, lon: float) -> float:
+    """Return elevation (ft MSL) sampled from the Mapzen coarse layer.  0.0
+    when the tile is absent (we treat missing data as sea level — same
+    convention as the SRTM fallback in get_elevation_ft)."""
+    if not coarse_dir:
+        return 0.0
+    z = COARSE_Z
+    tx, ty = coarse_latlon_to_tile(lat, lon, z)
+    res = _load_coarse_tile(coarse_dir, z, tx, ty)
+    if res is None:
+        return 0.0
+    tile, n_samples = res
+    # Convert lat/lon to fractional pixel coords within the tile
+    n = 1 << z
+    x_world = (lon + 180.0) / 360.0 * n
+    lr      = math.log(math.tan((90.0 + max(-85.0, min(85.0, lat))) * math.pi / 360.0))
+    y_world = (1.0 - lr / math.pi) / 2.0 * n
+    col_frac = (x_world - tx) * n_samples
+    row_frac = (y_world - ty) * n_samples
+    col = max(0, min(n_samples - 1, int(col_frac)))
+    row = max(0, min(n_samples - 1, int(row_frac)))
+    return float(tile[row, col])
+
+
+def get_elevation_ft_combined(srtm_dir: str, coarse_dir: str,
+                               lat: float, lon: float) -> float:
+    """Look up elevation, preferring high-res SRTM when the tile is
+    available locally and falling back to the Mapzen coarse layer."""
+    if srtm_dir and tile_exists(srtm_dir, lat, lon):
+        return get_elevation_ft(srtm_dir, lat, lon)
+    return get_coarse_elevation_ft(coarse_dir, lat, lon)
+
+
+def coarse_disk_stats(coarse_dir: str):
+    """Return (tile_count, used_mb) for the Mapzen coarse cache on disk."""
+    if not coarse_dir or not os.path.isdir(coarse_dir):
+        return 0, 0.0
+    total = 0
+    count = 0
+    for fn in os.listdir(coarse_dir):
+        if fn.endswith(".png"):
+            count += 1
+            try:
+                total += os.path.getsize(os.path.join(coarse_dir, fn))
+            except OSError:
+                pass
+    return count, total / 1_048_576

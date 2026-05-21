@@ -324,7 +324,9 @@ def query_nearby(obstacles, lat: float, lon: float,
             dist_sq = ((dlat_r * _NM_PER_DEG_LAT) ** 2
                        + (dlon_r * nm_per_deg_lon) ** 2)
             candidates = candidates[dist_sq <= radius_nm * radius_nm]
-        return candidates
+        # Return as recarray so callers can use either row.field or
+        # row["field"]; the render path uses attribute access.
+        return candidates.view(np.recarray)
 
     results = []
     for rec in obstacles:

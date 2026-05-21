@@ -36,7 +36,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _sys.path.insert(0, os.path.join(_HERE, "..", "shared"))
 
 import airports as _apt_mod    # noqa: E402
-import runways as _rwy_mod     # noqa: E402
+try:
+    import runways as _rwy_mod   # noqa: E402
+except ImportError:
+    _rwy_mod = None
 import obstacles as _obs_mod   # noqa: E402
 import water as _water_mod     # noqa: E402
 from terrain import load_tile  # noqa: E402
@@ -99,14 +102,31 @@ _STATE_LINE  = (110, 130, 160)      # muted slate-blue: visible over tint
 # without thrashing.
 
 _tint_cache: dict = {}
-_TINT_CACHE_MAX = 6
-_TINT_N = 64       # elevation samples per side; smoothscaled up to fit
+_TINT_CACHE_MAX = 4   # pi4 uses 6; pi_zero gets less RAM, so trim.
+_TINT_N = 48          # elevation samples per side; smoothscaled up to fit.
+                      # pi4 uses 64 — 48 cuts the build cost by ~45 %.
+
+# Cached overlay surfaces keyed by (w, h) so render() doesn't allocate
+# a fresh full-screen SRCALPHA each frame.  Only one entry in practice
+# (the inset size doesn't change at runtime).
+_veil_cache: dict = {}
+
+# Cached airport ident labels keyed by (ident, font id).  The 33 pt
+# font on pi_zero MFD makes each font.render call a real cost; the
+# cache holds rendered labels so repeated frames reuse them.  Capped
+# at 256 entries (LRU eviction) so a long cross-country flight doesn't
+# grow the cache unbounded as the visible set shifts.
+import collections as _collections_mm
+_APT_LABEL_CACHE_MAX = 256
+_apt_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
 
 
 def _quantise_centre(lat, lon, range_nm):
-    """Snap the centre to ~10% of the visible range so light pan motion
-    re-uses the same cached surface."""
-    step_deg = max(0.002, (range_nm / _NM_PER_DEG_LAT) * 0.10)
+    """Snap the centre to ~25% of the visible range so light pan motion
+    re-uses the same cached surface.  Was 10% — too fine at sim speeds
+    where the aircraft crossed cell boundaries faster than the async
+    tint worker could finish, leaving "BUILDING…" flashing constantly."""
+    step_deg = max(0.002, (range_nm / _NM_PER_DEG_LAT) * 0.25)
     cos_lat = max(0.05, math.cos(math.radians(lat)))
     return (round(lat / step_deg) * step_deg,
             round(lon / (step_deg / cos_lat)) * (step_deg / cos_lat))
@@ -128,17 +148,32 @@ if HAS_NUMPY:
 # happens on a worker thread, pygame surface finalisation stays on the main
 # thread (pygame's surface APIs are not thread-safe), and the renderer
 # paints around a None tint while the build is in flight.
-_TINT_SYNC_MAX_NM = 40           # range cap for synchronous builds
-_TINT_RENDER_MAX_NM = 80         # range cap for rendering the tint at all
-                                 # — above this, SRTM I/O is too heavy
-
-# Below this groundspeed, GPS track is noisy / arbitrary — the inset
-# rotation falls back to magnetic heading so it doesn't jitter or jump
-# while taxiing or holding short.  Matches HDG_TRK_MIN_KT in pfd.py.
-_TRK_MIN_KT = 3.0
+#
+# pi_zero values are tighter than pi4's because the Pi Zero 2W only has
+# 512 MB RAM and a much slower SD card: keeping sync builds at <= 5 nm
+# (tiny bbox, 1-2 tiles) means the main thread stalls only on the rare
+# very-zoomed-in render.  Wider zooms go async with a "BUILDING…" hint.
+_TINT_SYNC_MAX_NM = 5            # range cap for synchronous builds
+_TINT_RENDER_MAX_NM = 40         # range cap for rendering the tint at all.
+                                 # With terrain.set_resolution_preference
+                                 # ("srtm3") forced on at startup, the
+                                 # SRTM tile bbox no longer pulls 52 MB
+                                 # SRTM1 files into RAM — even at 40 nm
+                                 # zoom the in-memory tile data stays
+                                 # bounded (~25 MB for 4 SRTM3 tiles).
+                                 # Vector layers still render past 40 nm
+                                 # if the user steps zoom up; the tint
+                                 # just stops appearing there.
 _tint_async_lock = threading.Lock()
 _tint_pending: set = set()       # keys currently being built on a worker
 _tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
+_TINT_READY_MAX = 6              # cap above ensures stale results don't pile up
+
+# Below this groundspeed, GPS track is noisy / arbitrary — the map
+# rotation falls back to magnetic heading so the inset doesn't jitter
+# or jump while taxiing or holding short.  Matches HDG_TRK_MIN_KT in
+# pi_zero/pi4 pfd.py.
+_TRK_MIN_KT = 3.0
 
 
 def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
@@ -249,6 +284,13 @@ def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
                                         c_lat, c_lon, range_nm, oversize)
         with _tint_async_lock:
             _tint_ready[key] = (rgb, elevs)
+            # Cap _tint_ready: when the aircraft moves faster than
+            # builds finish (e.g. sim cruising), completed results for
+            # stale keys pile up and never get picked up by the main
+            # thread.  Prune oldest entries above the cap so memory
+            # stays bounded.
+            while len(_tint_ready) > _TINT_READY_MAX:
+                _tint_ready.pop(next(iter(_tint_ready)))
     except Exception as e:
         print(f"[moving_map] async tint build failed: {e}")
     finally:
@@ -345,6 +387,21 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
             args=(srtm_dir, water_dir, q_lat, q_lon,
                   range_nm, oversize, key),
             daemon=True, name="MapTintBuild").start()
+    # Async build in flight — instead of returning (None, None) and
+    # flashing "BUILDING…", reuse the most recent cached tint at the
+    # same range / size / oversize / water-mode.  Visually the user
+    # sees the previous tint centered slightly off the aircraft for
+    # the duration of the build (≤2.5 nm offset at 25 % quantisation);
+    # the new tint slides in seamlessly once the worker finishes.
+    # range_nm and size/oversize/water_dir must match — different
+    # zoom levels render at different target_px so they're not
+    # interchangeable as fallback surfaces.
+    for cached_key in reversed(_tint_cache):
+        if (cached_key[2] == key[2]   # range_nm
+                and cached_key[3] == key[3]   # size_px
+                and cached_key[4] == key[4]   # oversize
+                and cached_key[5] == key[5]): # water_dir bool
+            return _tint_cache[cached_key]
     return None, None
 
 
@@ -405,12 +462,66 @@ def _draw_state_lines(surf, state_lines, range_nm, lat, lon, cos_lat,
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _rot_deg_for(orient, hdg_deg, track_deg):
+    """Resolve map rotation in degrees CCW (in the math frame where +n is up).
+    Track-up uses track when valid, falls back to heading; north-up is 0."""
+    if orient != "trk":
+        return 0.0
+    if track_deg is None or track_deg == 0.0:
+        return float(hdg_deg or 0.0)
+    return float(track_deg)
+
+
+def make_projector(rect, lat, lon, orient, range_nm, hdg_deg, track_deg):
+    """Return (project, unproject) closures bound to the given map params.
+
+    project(la, lo) → (sx, sy) screen coordinates inside ``rect``.
+    unproject(sx, sy) → (la, lo) world coordinates.
+
+    Used by callers that need to hit-test features (e.g. tap-an-airport)
+    or apply pan-by-drag deltas in world coordinates.  Shares the same
+    rotation + small-angle equirectangular math as ``render()``."""
+    x, y, w, h = rect
+    rot_deg = _rot_deg_for(orient, hdg_deg, track_deg)
+    half_min = min(w, h) / 2
+    px_per_nm = half_min / max(0.5, range_nm)
+    cx, cy = x + w / 2.0, y + h / 2.0
+    cos_lat = max(0.05, math.cos(math.radians(lat)))
+    if rot_deg != 0.0:
+        rr = math.radians(rot_deg)
+        sin_r, cos_r = math.sin(rr), math.cos(rr)
+    else:
+        sin_r, cos_r = 0.0, 1.0
+
+    def project(la, lo):
+        n_nm = (la - lat) * _NM_PER_DEG_LAT
+        e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+        if rot_deg != 0.0:
+            e2 = e_nm * cos_r - n_nm * sin_r
+            n2 = e_nm * sin_r + n_nm * cos_r
+            e_nm, n_nm = e2, n2
+        return cx + e_nm * px_per_nm, cy - n_nm * px_per_nm
+
+    def unproject(sx, sy):
+        e_nm = (sx - cx) / px_per_nm
+        n_nm = -(sy - cy) / px_per_nm
+        if rot_deg != 0.0:
+            e2 = e_nm * cos_r + n_nm * sin_r
+            n2 = -e_nm * sin_r + n_nm * cos_r
+            e_nm, n_nm = e2, n2
+        return (lat + n_nm / _NM_PER_DEG_LAT,
+                lon + e_nm / (_NM_PER_DEG_LAT * cos_lat))
+
+    return project, unproject
+
+
 def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
-           range_label=None, state_lines=None):
+           range_label=None, state_lines=None,
+           own_lat=None, own_lon=None, draw_corner_labels=True):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -429,7 +540,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # Map rotation: track-up rotates so current track points up.
     # Fall back to magnetic heading whenever GPS groundspeed is below
     # the track-valid threshold (~3 kt) — at low GS, GPS track is
-    # noisy / stale / arbitrary and would make the inset jitter or jump.
+    # noisy / stale / arbitrary and would make the map jitter or jump.
     # Using hdg in that case keeps the inset rotating with the nose so
     # the toggle is still visibly different from north-up before takeoff.
     if orient == "trk":
@@ -508,8 +619,14 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             # below Vso so taxi and rollout don't paint the inset red —
             # mirrors how the PFD's TAWS banner is gated.
             if vso_kt is not None and gs_kt >= vso_kt and elev_grid is not None:
+                # Cap target_px the same way as the tint so the overlay
+                # stays proportional and bilinear-stretches to the inset
+                # at blit time.  Without this the overlay was a full
+                # max(w, h)² surface (1.6 MB at 640²) and dominated the
+                # memory budget at wider zooms.
                 overlay = _build_alert_overlay(
-                    elev_grid, alt_ft, max(w, h))
+                    elev_grid, alt_ft,
+                    max(w, h))
                 if overlay is not None:
                     if orient == "trk" and rot_deg != 0.0:
                         overlay_r = pygame.transform.rotate(overlay, rot_deg)
@@ -518,9 +635,15 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
                     surf.blit(overlay_r, o_rect)
 
-    # Slightly darker veil under vector layers so labels read cleanly
-    veil = pygame.Surface((w, h), pygame.SRCALPHA)
-    veil.fill((0, 0, 0, 60))
+    # Slightly darker veil under vector layers so labels read cleanly.
+    # Cache by (w, h) — on the pi_zero MFD this is a full-screen-sized
+    # SRCALPHA surface (640×480 = ~1.2 MB), and re-allocating it every
+    # frame at 12+ fps was a major source of SDL surface churn.
+    veil = _veil_cache.get((w, h))
+    if veil is None:
+        veil = pygame.Surface((w, h), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 60))
+        _veil_cache[(w, h)] = veil
     surf.blit(veil, (x, y))
 
     # ── State / province lines ──────────────────────────────────────────────
@@ -537,7 +660,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # ── Runways ──────────────────────────────────────────────────────────────
     # Runway rectangles only carry useful detail at terminal-area zooms —
     # above 5 nm they collapse to single pixels and clutter the screen.
-    if (settings.get("map_show_runways", True) and runways_arr is not None
+    if (_rwy_mod is not None
+            and settings.get("map_show_runways", True) and runways_arr is not None
             and range_nm <= 5):
         nearby = _rwy_mod.query_nearby(runways_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
@@ -572,14 +696,31 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 pygame.draw.circle(surf, _OBS_COL, (int(ox), int(oy)), 2)
 
     # ── Airports ─────────────────────────────────────────────────────────────
-    # Per-type filtering matches the main PFD: caller passes a set of
+    # Per-type filtering matches the main PFD; caller passes a set of
     # visible atype letters (S/M/L = public, H = helo, W = water, B = other).
-    # Default ``None`` = show every type the master toggle covers.
-    # Above 40 nm the airport dots smear into noise — the destination is
-    # still marked by the D2 waypoint diamond drawn below, which is what
-    # the pilot actually cares about at whole-leg scale.
+    # On the pi_zero MFD, ``query_nearby`` can return 300+ airports in
+    # dense areas at 20 nm, and the per-airport pygame.draw.circle calls
+    # add up fast (~75 µs each × 300 = 22 ms just for dots) plus a font
+    # render per ident at narrow zooms.  We bound the cost three ways:
+    #
+    #   1. Hard cap the rendered count at MAX_AIRPORTS_DRAWN.  Results
+    #      are sorted nearest-first by query_nearby, so the cap throws
+    #      away the farthest ones first — the pilot already can't read
+    #      a label that's 25 nm away anyway.
+    #   2. At wider zooms, narrow the visible set to "important" types
+    #      only.  >10 nm drops "B"/"H"/"W"; >20 nm drops "S" too.
+    #   3. Labels stay capped at <= 10 nm where they're actually legible.
+    MAX_AIRPORTS_DRAWN = 40
     if (settings.get("map_show_airports", True) and airports_arr is not None
             and range_nm <= 40):
+        if range_nm > 20:
+            allowed_types = {"L"}
+        elif range_nm > 10:
+            allowed_types = {"M", "L"}
+        elif range_nm > 5:
+            allowed_types = {"S", "M", "L"}
+        else:
+            allowed_types = None    # all visible types
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
@@ -587,8 +728,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             types = nearby["atype"]
             lats  = nearby["lat"]
             lons  = nearby["lon"]
+            drawn = 0
             for i in range(len(nearby)):
+                if drawn >= MAX_AIRPORTS_DRAWN:
+                    break
                 atype = str(types[i])
+                if allowed_types is not None and atype not in allowed_types:
+                    continue
                 if (airport_types_visible is not None
                         and atype not in airport_types_visible):
                     continue
@@ -604,8 +750,22 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     pygame.draw.circle(surf, _APT_PUB, (ix, iy),
                                        4 if atype in ("M", "L") else 3)
                 if font is not None and range_nm <= 10:
-                    lbl = font.render(str(ids[i]), True, _APT_PUB)
+                    # Cache rendered idents — at 33 pt, font.render on
+                    # Pi Zero costs ~250 µs/call, and the same idents
+                    # repeat every frame as long as the aircraft sits
+                    # over the same area.
+                    ident_str = str(ids[i])
+                    cache_key = (ident_str, id(font))
+                    lbl = _apt_label_cache.get(cache_key)
+                    if lbl is None:
+                        lbl = font.render(ident_str, True, _APT_PUB)
+                        _apt_label_cache[cache_key] = lbl
+                        if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                            _apt_label_cache.popitem(last=False)
+                    else:
+                        _apt_label_cache.move_to_end(cache_key)
                     surf.blit(lbl, (ix + 5, iy - 7))
+                drawn += 1
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:
@@ -673,12 +833,18 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                              (int(wpx),     int(wpy) + d),
                              (int(wpx) - d, int(wpy))])
         # Always-on D2 ident label next to the waypoint diamond.  The
-        # airport loop caps labels at <= 10 nm; at wider zooms the
-        # diamond would otherwise be unlabelled.  Match the course /
-        # diamond colour so it reads as "the D2".
+        # airport-loop above caps labels at <= 10 nm and 40 nearest;
+        # at wider zooms (or in dense areas where the airport got
+        # decimated out) the diamond would otherwise be unlabelled.
+        # Match the course / diamond colour so it reads as "the D2".
         d2_ident = str(direct_to.get("ident", ""))
         if d2_ident and font is not None:
-            d2_lbl = font.render(d2_ident, True, course_col)
+            d2_lbl = _apt_label_cache.get((d2_ident, id(font), "d2"))
+            if d2_lbl is None:
+                d2_lbl = font.render(d2_ident, True, course_col)
+                _apt_label_cache[(d2_ident, id(font), "d2")] = d2_lbl
+                if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                    _apt_label_cache.popitem(last=False)
             surf.blit(d2_lbl, (int(wpx) + d + 3, int(wpy) - d - 2))
 
     # ── Range ring ───────────────────────────────────────────────────────────
@@ -699,12 +865,20 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             own_rot = float(hdg_deg or 0.0)
         else:
             own_rot = float(track_deg)
+    # When the caller passes own_lat/own_lon (pan mode: map centred away
+    # from the aircraft), project the aircraft to its actual screen pos
+    # instead of pinning the chevron to the rect centre.
+    if (own_lat is not None and own_lon is not None
+            and (abs(own_lat - lat) > 1e-9 or abs(own_lon - lon) > 1e-9)):
+        ox, oy = _project(own_lat, own_lon)
+    else:
+        ox, oy = cx, cy
     s = 7
     base_pts = [(0, -s), (s, s), (0, s * 0.4), (-s, s)]
     cr = math.cos(math.radians(own_rot))
     sr = math.sin(math.radians(own_rot))
-    rotated = [(cx + p[0] * cr - p[1] * sr,
-                cy + p[0] * sr + p[1] * cr) for p in base_pts]
+    rotated = [(ox + p[0] * cr - p[1] * sr,
+                oy + p[0] * sr + p[1] * cr) for p in base_pts]
     pygame.draw.polygon(surf, _OWNSHIP,
                         [(int(rx), int(ry)) for rx, ry in rotated])
 
@@ -713,7 +887,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # ── Frame + corner labels ────────────────────────────────────────────────
     pygame.draw.rect(surf, _FRAME, rect, width=1)
 
-    if font is not None:
+    if font is not None and draw_corner_labels:
         if range_label:
             # Caller supplied a custom prefix — used by AUTO mode to show
             # "AUTO 20 NM" instead of a bare distance.
@@ -732,20 +906,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         # ground speed; below 3 kt (taxi threshold) the ETE is unstable
         # so we render dashes rather than a noise-driven number.
         if direct_to is not None and direct_to.get("ident"):
-            # Great-circle distance to the waypoint.  The earlier
-            # flat-earth approximation (Pythagorean on lat/lon × NM
-            # per deg) overestimates by ~4 % at 700 nm leg lengths
-            # — visible as a ~15 min ETE delta against pi_zero's GC
-            # calc on the same flight plan.
-            phi1 = math.radians(lat)
-            phi2 = math.radians(direct_to["lat"])
-            dphi = phi2 - phi1
-            dlam = math.radians(direct_to["lon"] - lon)
-            _a = (math.sin(dphi * 0.5) ** 2
-                  + math.cos(phi1) * math.cos(phi2)
-                  * math.sin(dlam * 0.5) ** 2)
-            d_nm = 3440.065 * 2.0 * math.atan2(
-                math.sqrt(_a), math.sqrt(1.0 - _a))
+            n_nm = (direct_to["lat"] - lat) * _NM_PER_DEG_LAT
+            e_nm = ((direct_to["lon"] - lon)
+                    * _NM_PER_DEG_LAT * cos_lat)
+            d_nm = math.hypot(n_nm, e_nm)
             if gs_kt >= 3.0 and d_nm > 0.0:
                 hours = d_nm / gs_kt
                 if hours < 1.0:
