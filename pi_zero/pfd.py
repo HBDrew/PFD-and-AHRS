@@ -240,6 +240,18 @@ disp["fpl"] = {
     "waypoints":  [],
     "active_idx": -1,
 }
+# In-progress user-waypoint entry — populated by the +HERE button (which
+# stashes the current aircraft position) and the +LAT/LON entry screen
+# (which collects the three fields one keyboard at a time).  Cleared on
+# save or cancel.  Not persisted — it's transient editor state.
+disp["fpl_new"] = {
+    "ident":   "",
+    "lat":     0.0,        # captured aircraft pos (HERE) or
+    "lon":     0.0,        # most recent parsed value (LAT/LON)
+    "lat_str": "",         # raw keyboard buffer for LAT/LON path
+    "lon_str": "",
+    "source":  "",         # "here" | "latlon"
+}
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
     "init_alt":   5000.0,
@@ -2900,13 +2912,37 @@ def handle_event(event, demo_mode):
                 _ssync_refresh_kinds()
             return True
 
+        # ── +LAT/LON entry screen taps ────────────────────────────────────
+        if mode == "fpl_latlon_entry":
+            act, payload = fpl_latlon_entry_hit(x, y)
+            if act in ("back", "cancel"):
+                disp["fle_err_field"] = ""
+                disp["fle_err_msg"]   = ""
+                disp["mode"] = "fpl"
+            elif act == "edit":
+                _fle_open_kbd(payload)
+            elif act == "save":
+                field, msg = _fpl_commit_latlon()
+                if field:
+                    disp["fle_err_field"] = field
+                    disp["fle_err_msg"]   = msg
+                else:
+                    disp["fle_err_field"] = ""
+                    disp["fle_err_msg"]   = ""
+                    disp["mode"] = "fpl"
+            return True
+
         # ── FPL screen taps ───────────────────────────────────────────────
         if mode == "fpl":
             act, payload = fpl_hit(x, y)
             if act == "back":
                 disp["mode"] = "pfd"
-            elif act == "add":
+            elif act == "add_icao":
                 _fpl_open_add_keyboard()
+            elif act == "add_here":
+                _fpl_open_here_keyboard()
+            elif act == "add_ll":
+                _fpl_open_latlon_entry()
             elif act == "deact":
                 _fpl_deactivate()
             elif act == "activate":
@@ -3158,7 +3194,13 @@ def handle_event(event, demo_mode):
                 lbl, sty = hit
                 target  = disp["kbd_target"]
                 _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80}
-                if disp.get("kbd_prev") == "connectivity_setup":
+                _FPL_MAX = {"fpl_ident": 6, "fpl_here_ident": 6,
+                            "fpl_latlon_ident": 6,
+                            "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
+                            "nav_ident": 6}
+                if target in _FPL_MAX:
+                    max_len = _FPL_MAX[target]
+                elif disp.get("kbd_prev") == "connectivity_setup":
                     max_len = _CS_MAX.get(target, 32)
                 else:
                     max_len = next((f[3] for f in _FP_FIELDS if f[0]==target), 16)
@@ -3211,6 +3253,46 @@ def handle_event(event, demo_mode):
                             disp["mode"] = "fpl"
                         else:
                             disp["kbd_error"] = f"PLAN FULL ({_FPL_MAX_WAYPOINTS} MAX)"
+                        return True
+                    if target == "fpl_here_ident":
+                        # + HERE: appends with the lat/lon stashed when
+                        # the button was tapped.  No airport-DB lookup
+                        # — any user-typed name is accepted.
+                        if not buf:
+                            disp["kbd_buf"]   = ""
+                            disp["kbd_error"] = ""
+                            disp["mode"] = "fpl"
+                            return True
+                        n = disp["fpl_new"]
+                        if _fpl_add_waypoint(buf.upper()[:6],
+                                              n["lat"], n["lon"],
+                                              elev_ft=0.0, user=True):
+                            disp["kbd_buf"]   = ""
+                            disp["kbd_error"] = ""
+                            disp["mode"] = "fpl"
+                        else:
+                            disp["kbd_error"] = f"PLAN FULL ({_FPL_MAX_WAYPOINTS} MAX)"
+                        return True
+                    if target == "fpl_latlon_ident":
+                        # +LAT/LON ident field: store and return to the
+                        # entry screen so the pilot can fill the rest.
+                        disp["fpl_new"]["ident"] = buf.upper()[:6]
+                        disp["kbd_buf"]   = ""
+                        disp["kbd_error"] = ""
+                        disp["mode"] = "fpl_latlon_entry"
+                        return True
+                    if target in ("fpl_latlon_lat", "fpl_latlon_lon"):
+                        # Store raw string; validation runs on SAVE.
+                        axis = "lat" if target.endswith("lat") else "lon"
+                        disp["fpl_new"][f"{axis}_str"] = buf
+                        # Eagerly parse so the entry screen shows a
+                        # green tick / red strike-through as feedback.
+                        v, _err = _fpl_parse_latlon(buf, axis)
+                        if v is not None:
+                            disp["fpl_new"][axis] = v
+                        disp["kbd_buf"]   = ""
+                        disp["kbd_error"] = ""
+                        disp["mode"] = "fpl_latlon_entry"
                         return True
                     if target == "nav_ident":
                         # Direct-to entry — three paths (pi4 parity):
@@ -8615,25 +8697,37 @@ _FPL_ICON_W     = 32
 _FPL_ICON_GAP   = 4
 
 
+# Two action rows: row 1 has three "+" buttons (ICAO / HERE / LAT-LON),
+# row 2 has DEACTIVATE.  Stacking lets each + button stay finger-sized
+# on the 480-px-wide screen instead of being squashed into thirds.
+_FPL_ACTIONS_GAP = 6
+_FPL_DEACT_H     = 36
+
+
 def _fpl_actions_rect():
     pad = 6
     return (pad, _FPL_HEADER_H + 6,
             DISPLAY_W - 2 * pad, _FPL_ACTIONS_H)
 
 
-def _fpl_add_btn_rect():
+def _fpl_add_buttons():
+    """Return three rects for the +ICAO / +HERE / +LAT/LON buttons."""
     ax, ay, aw, ah = _fpl_actions_rect()
-    # Half-width on the left
-    return (ax, ay, aw // 2 - 4, ah)
+    n = 3
+    gap = _FPL_ACTIONS_GAP
+    bw = (aw - (n - 1) * gap) // n
+    return [(ax + i * (bw + gap), ay, bw, ah) for i in range(n)]
 
 
 def _fpl_deact_btn_rect():
-    ax, ay, aw, ah = _fpl_actions_rect()
-    return (ax + aw // 2 + 4, ay, aw // 2 - 4, ah)
+    ax, ay, aw, _ = _fpl_actions_rect()
+    by = ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+    return (ax, by, aw, _FPL_DEACT_H)
 
 
 def _fpl_list_y0():
-    return _FPL_HEADER_H + 6 + _FPL_ACTIONS_H + 8
+    return (_FPL_HEADER_H + 6 + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+            + _FPL_DEACT_H + 8)
 
 
 def _fpl_row_rect(idx):
@@ -8675,23 +8769,25 @@ def draw_fpl(surf):
     active_idx = disp.get("fpl", {}).get("active_idx", -1)
     is_active  = 0 <= active_idx < len(wps)
 
-    # ── Action bar: ADD WPT + DEACTIVATE ────────────────────────────────
-    ax, ay, aw, ah = _fpl_add_btn_rect()
-    add_style = "ok" if len(wps) < _FPL_MAX_WAYPOINTS else "normal"
-    add_label = ("+ ADD WPT" if len(wps) < _FPL_MAX_WAYPOINTS
-                 else f"FULL ({_FPL_MAX_WAYPOINTS} max)")
-    _action_btn(surf, ax, ay, aw, ah, add_label, add_style, r=6)
+    # ── Action row 1: + ICAO / + HERE / + LAT/LON ──────────────────────
+    full = len(wps) >= _FPL_MAX_WAYPOINTS
+    add_style = "ok" if not full else "normal"
+    add_rects = _fpl_add_buttons()
+    labels = ("+ ICAO", "+ HERE", "+ LAT/LON") if not full else (
+        "FULL", "FULL", "FULL")
+    for (ax, ay, aw, ah), lbl in zip(add_rects, labels):
+        _action_btn(surf, ax, ay, aw, ah, lbl, add_style, r=6)
 
+    # ── Action row 2: DEACTIVATE ──────────────────────────────────────
     dx, dy, dw, dh = _fpl_deact_btn_rect()
     if is_active:
         _action_btn(surf, dx, dy, dw, dh, "DEACTIVATE", "warn", r=6)
     else:
-        # Dimmed when nothing's active.
         pygame.draw.rect(surf, (10, 14, 22), (dx, dy, dw, dh),
                          border_radius=6)
         pygame.draw.rect(surf, (40, 48, 62), (dx, dy, dw, dh),
                          width=1, border_radius=6)
-        _text(surf, "DEACTIVATE", 15, (80, 90, 110), bold=True,
+        _text(surf, "DEACTIVATE", 14, (80, 90, 110), bold=True,
               cx=dx + dw // 2, cy=dy + dh // 2)
 
     # ── Waypoint list ────────────────────────────────────────────────────
@@ -8743,20 +8839,24 @@ def draw_fpl(surf):
 
 def fpl_hit(x, y):
     """Hit-test the FPL screen.  Returns one of:
-        ("back",     None)
-        ("add",      None)
-        ("deact",    None)
-        ("activate", idx)
-        ("up",       idx)
-        ("down",     idx)
-        ("delete",   idx)
-        (None,       None)
+        ("back",      None)
+        ("add_icao",  None)
+        ("add_here",  None)
+        ("add_ll",    None)
+        ("deact",     None)
+        ("activate",  idx)
+        ("up",        idx)
+        ("down",      idx)
+        ("delete",    idx)
+        (None,        None)
     """
     if 8 <= x <= 80 and 6 <= y <= 37:
         return ("back", None)
-    ax, ay, aw, ah = _fpl_add_btn_rect()
-    if ax <= x <= ax + aw and ay <= y <= ay + ah:
-        return ("add", None)
+    for rect, kind in zip(_fpl_add_buttons(),
+                           ("add_icao", "add_here", "add_ll")):
+        ax, ay, aw, ah = rect
+        if ax <= x <= ax + aw and ay <= y <= ay + ah:
+            return (kind, None)
     dx, dy, dw, dh = _fpl_deact_btn_rect()
     if dx <= x <= dx + dw and dy <= y <= dy + dh:
         return ("deact", None)
@@ -8789,6 +8889,186 @@ def _fpl_open_add_keyboard():
     disp["kbd_error"]  = ""
     disp["kbd_shift"]  = False
     disp["mode"]       = "keyboard"
+
+
+# ── +LAT/LON entry screen ───────────────────────────────────────────────
+# Three tappable rows (IDENT / LAT / LON) collect a user waypoint by
+# decimal degrees.  Each field hands off to the existing keyboard with
+# a target that returns here on ENTER or CANCEL so the entry screen
+# stays the focal point until SAVE.
+
+_FLE_HEADER_H  = 44
+_FLE_ROW_H     = 60
+_FLE_ROW_GAP   = 10
+_FLE_FOOTER_H  = 56
+
+
+def _fle_field_rect(i):
+    pad = 6
+    y0 = _FLE_HEADER_H + 12
+    return (pad, y0 + i * (_FLE_ROW_H + _FLE_ROW_GAP),
+            DISPLAY_W - 2 * pad, _FLE_ROW_H)
+
+
+def _fle_footer_rects():
+    pad = 6
+    fy = DISPLAY_H - _FLE_FOOTER_H - pad
+    half = (DISPLAY_W - 2 * pad - _FPL_ACTIONS_GAP) // 2
+    return ((pad, fy, half, _FLE_FOOTER_H),                       # CANCEL
+            (pad + half + _FPL_ACTIONS_GAP, fy,
+             half, _FLE_FOOTER_H))                                # SAVE
+
+
+def _fle_open_kbd(target_axis):
+    """Hand off to the keyboard for one of the three fields.  The
+    keyboard's ENTER stores the typed value back into disp["fpl_new"]
+    and returns to fpl_latlon_entry."""
+    n = disp["fpl_new"]
+    if target_axis == "ident":
+        disp["kbd_target"] = "fpl_latlon_ident"
+        disp["kbd_buf"]    = n.get("ident", "")
+    elif target_axis == "lat":
+        disp["kbd_target"] = "fpl_latlon_lat"
+        disp["kbd_buf"]    = n.get("lat_str", "")
+    elif target_axis == "lon":
+        disp["kbd_target"] = "fpl_latlon_lon"
+        disp["kbd_buf"]    = n.get("lon_str", "")
+    else:
+        return
+    disp["kbd_prev"]  = "fpl_latlon_entry"
+    disp["kbd_error"] = ""
+    disp["kbd_shift"] = False
+    disp["mode"]      = "keyboard"
+
+
+def draw_fpl_latlon_entry(surf):
+    _screen_header(surf, "ADD USER WAYPOINT")
+    n = disp["fpl_new"]
+
+    fields = [
+        ("IDENT", "ident",   n.get("ident", ""),
+         "name (e.g. FISH, RDV1)"),
+        ("LAT",   "lat_str", n.get("lat_str", ""),
+         "decimal degrees, e.g. 34.523 or -34.523"),
+        ("LON",   "lon_str", n.get("lon_str", ""),
+         "decimal degrees, e.g. -111.789"),
+    ]
+    err_field, err_msg = disp.get("fle_err_field", ""), disp.get("fle_err_msg", "")
+
+    for i, (label, key, val, hint) in enumerate(fields):
+        bx, by, bw, bh = _fle_field_rect(i)
+        is_err = (err_field and (
+            (err_field == "ident" and key == "ident")
+            or (err_field == "lat" and key == "lat_str")
+            or (err_field == "lon" and key == "lon_str")
+        ))
+        bg = (28, 14, 14) if is_err else (0, 12, 32)
+        oc = (200, 80, 80) if is_err else (60, 80, 110)
+        pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=6)
+        pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=1,
+                         border_radius=6)
+        _text(surf, label, 12, (160, 180, 210), bold=True,
+              x=bx + 14, y=by + 8)
+        # Value or placeholder
+        if val:
+            _text(surf, val, 22, WHITE, bold=True,
+                  x=bx + 14, cy=by + bh // 2 + 8)
+        else:
+            _text(surf, hint, 12, (100, 110, 130),
+                  x=bx + 14, cy=by + bh // 2 + 8)
+        # Right-edge "tap to edit" affordance
+        _text(surf, "edit ›", 11, (130, 150, 180),
+              x=bx + bw - 60, cy=by + bh // 2)
+
+    if err_msg:
+        _text(surf, err_msg, 13, (240, 120, 120), bold=True,
+              cx=DISPLAY_W // 2,
+              y=DISPLAY_H - _FLE_FOOTER_H - 28)
+
+    # CANCEL | SAVE
+    (cx_, cy_, cw_, ch_), (sx_, sy_, sw_, sh_) = _fle_footer_rects()
+    _action_btn(surf, cx_, cy_, cw_, ch_, "CANCEL", "normal", r=8)
+    _action_btn(surf, sx_, sy_, sw_, sh_, "SAVE", "ok", r=8)
+
+
+def fpl_latlon_entry_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return ("back", None)
+    for i, axis in enumerate(("ident", "lat", "lon")):
+        bx, by, bw, bh = _fle_field_rect(i)
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return ("edit", axis)
+    (cx_, cy_, cw_, ch_), (sx_, sy_, sw_, sh_) = _fle_footer_rects()
+    if cx_ <= x <= cx_ + cw_ and cy_ <= y <= cy_ + ch_:
+        return ("cancel", None)
+    if sx_ <= x <= sx_ + sw_ and sy_ <= y <= sy_ + sh_:
+        return ("save", None)
+    return (None, None)
+
+
+def _fpl_open_here_keyboard():
+    """+ HERE: stash the current aircraft position and open the keyboard
+    so the pilot can name the waypoint.  ENTER appends the stored
+    position with the typed ident, marked as a user waypoint."""
+    disp["fpl_new"]["ident"]   = ""
+    disp["fpl_new"]["lat"]     = float(disp.get("lat", 0.0))
+    disp["fpl_new"]["lon"]     = float(disp.get("lon", 0.0))
+    disp["fpl_new"]["source"]  = "here"
+    disp["kbd_target"] = "fpl_here_ident"
+    disp["kbd_prev"]   = "fpl"
+    disp["kbd_buf"]    = ""
+    disp["kbd_error"]  = ""
+    disp["kbd_shift"]  = False
+    disp["mode"]       = "keyboard"
+
+
+def _fpl_open_latlon_entry():
+    """+ LAT/LON: clear pending entry and open the multi-field entry
+    screen.  Pilot taps each field to bring up the keyboard."""
+    disp["fpl_new"]["ident"]   = ""
+    disp["fpl_new"]["lat"]     = 0.0
+    disp["fpl_new"]["lon"]     = 0.0
+    disp["fpl_new"]["lat_str"] = ""
+    disp["fpl_new"]["lon_str"] = ""
+    disp["fpl_new"]["source"]  = "latlon"
+    disp["mode"]               = "fpl_latlon_entry"
+
+
+def _fpl_parse_latlon(s, axis):
+    """Parse a decimal-degree string into a float.  Returns
+    (value, error_msg).  axis is 'lat' or 'lon' for range-checking."""
+    s = s.strip()
+    if not s:
+        return (None, "empty")
+    try:
+        v = float(s)
+    except ValueError:
+        return (None, f"can't parse '{s}'")
+    if axis == "lat" and not (-90.0 <= v <= 90.0):
+        return (None, "lat out of range")
+    if axis == "lon" and not (-180.0 <= v <= 180.0):
+        return (None, "lon out of range")
+    return (v, "")
+
+
+def _fpl_commit_latlon():
+    """Validate and append a +LAT/LON waypoint.  Returns ('', '') on
+    success, ('field', 'msg') on validation failure."""
+    n = disp["fpl_new"]
+    ident = n["ident"].strip().upper()
+    if not ident:
+        return ("ident", "ident is required")
+    lat, err = _fpl_parse_latlon(n["lat_str"], "lat")
+    if lat is None:
+        return ("lat", err)
+    lon, err = _fpl_parse_latlon(n["lon_str"], "lon")
+    if lon is None:
+        return ("lon", err)
+    if not _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=True):
+        return ("ident", f"plan full ({_FPL_MAX_WAYPOINTS} max)")
+    n["ident"] = ""; n["lat"] = 0.0; n["lon"] = 0.0
+    n["lat_str"] = ""; n["lon_str"] = ""; n["source"] = ""
+    return ("", "")
 
 
 def _mfd_open_d2_keyboard():
@@ -8970,6 +9250,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_mfd_strip_setup(surf); return
     if mode == "fpl":
         draw_fpl(surf); return
+    if mode == "fpl_latlon_entry":
+        draw_fpl_latlon_entry(surf); return
     if mode == "system_setup":
         draw_system_setup(surf); return
     if mode == "ahrs_firmware":
@@ -9273,6 +9555,18 @@ def render(surf, demo_mode, connected, data_stale=False):
             # pilot sees what's active while typing the replacement.
             cur   = disp.get("nav", {}).get("ident", "")
             title = "WAYPOINT"
+        elif target == "fpl_ident":
+            cur, title = "", "ICAO IDENT"
+        elif target == "fpl_here_ident":
+            cur, title = "", "WAYPOINT NAME"
+        elif target == "fpl_latlon_ident":
+            cur, title = disp["fpl_new"].get("ident", ""), "WAYPOINT NAME"
+        elif target == "fpl_latlon_lat":
+            cur   = disp["fpl_new"].get("lat_str", "")
+            title = "LATITUDE  (decimal °)"
+        elif target == "fpl_latlon_lon":
+            cur   = disp["fpl_new"].get("lon_str", "")
+            title = "LONGITUDE  (decimal °)"
         elif prev == "connectivity_setup":
             cur   = disp["cs"].get(target, "")
             title = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID",
