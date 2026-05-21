@@ -7178,6 +7178,34 @@ def draw_tap_buttons(surf, hdg, hdg_bug, baro_hpa, baro_src, alt_bug,
               x=ALT_X + 1, y=y, w=ALT_W - 1, h=HDG_H, font_sz=baro_fsz, col=baro_col)
 
 
+# ── Boot splash ───────────────────────────────────────────────────────────────
+_BOOT_SPLASH_PATH = os.path.join(os.path.dirname(__file__), "assets",
+                                 "boot_splash.jpg")
+
+
+def _show_boot_splash(surf, flip_fn, hold_s=2.5):
+    """Cover the screen with the boot splash image while airports/obstacles
+    finish loading in the background. No-op if the asset is missing —
+    the PFD just falls through to its first real frame as before."""
+    if not os.path.exists(_BOOT_SPLASH_PATH):
+        return
+    try:
+        img = pygame.image.load(_BOOT_SPLASH_PATH)
+    except pygame.error as e:
+        print(f"[PFD] boot splash load failed: {e}", file=sys.stderr)
+        return
+    iw, ih = img.get_size()
+    # Cover-fit: scale so the smaller dimension fills the display, crop the
+    # overflow. Preserves the photo's composition better than stretching.
+    scale = max(DISPLAY_W / iw, DISPLAY_H / ih)
+    sw, sh = int(iw * scale), int(ih * scale)
+    img = pygame.transform.smoothscale(img, (sw, sh))
+    surf.fill((0, 0, 0))
+    surf.blit(img, ((DISPLAY_W - sw) // 2, (DISPLAY_H - sh) // 2))
+    flip_fn()
+    time.sleep(hold_s)
+
+
 # ── Veil surface for transparent overlay modes (allocated once) ───────────────
 _veil_surf = None
 
@@ -8788,6 +8816,8 @@ def main():
         disp["hdg_bug"] = DEMO_HDG
         disp["alt_bug"] = DEMO_ALT
         print("[PFD] Demo mode — Sedona AZ")
+
+    _show_boot_splash(surf, _flip)
 
     running = True
     while running:
