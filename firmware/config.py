@@ -138,6 +138,16 @@ AHRS_PITCH_TRIM = 0.0   # degrees; positive = nose-up correction
 AHRS_ROLL_TRIM  = 0.0   # degrees; positive = right-roll correction
 AHRS_YAW_TRIM   = 0.0   # degrees; positive = clockwise heading correction
 
+# ── AHRS Axis Alignment ─────────────────────────────────────────────────────
+# Small INPUT-side rotation applied to raw gyro/accel/mag before the Mahony
+# filter, in airframe convention (pitch about aircraft Y, roll about aircraft
+# X).  Compensates for sensor mounting misalignment that couples yaw rate
+# into pitch/roll readings (e.g. left turn → display pitches up).  Unlike
+# pitch/roll TRIM (output-side static offsets), ALIGN values fix the
+# dynamic coupling.  Persisted to orient.json; pushed from Pi4 via $ALIGN.
+AHRS_PITCH_ALIGN = 0.0   # degrees; rotation about aircraft pitch axis
+AHRS_ROLL_ALIGN  = 0.0   # degrees; rotation about aircraft roll axis
+
 # ── AHRS Orientation ─────────────────────────────────────────────────────────
 # AHRS_CONNECTOR: which edge of the WT901 the connector points toward, viewed
 # from the pilot's seat.  Swaps pitch/roll axes and adds a heading offset so

@@ -129,6 +129,10 @@ state = {
     "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
     "ahrs_ok": False, "gps_ok": False, "gps_comm": False, "baro_ok": False,
     "orientation": "right", "mounting": "normal",
+    # Echo-back of the Pico's input-side axis alignment (the source of
+    # truth lives in disp["ss"]; this mirrors the broadcast so the UI
+    # can show pending-vs-confirmed state).
+    "pitch_align": 0.0, "roll_align": 0.0,
     "yaw_raw": 0.0,
 }
 
@@ -239,6 +243,10 @@ disp["ds"] = {                      # display settings
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
     "mag_cal":       "idle", "mounting": "normal",
+    # Axis alignment — degrees of compensation around the airframe
+    # pitch and roll axes.  See firmware/_apply_axis_align.  Tunable on
+    # the AHRS setup screen; pushed to the Pico via $ALIGN.
+    "pitch_align":   0.0, "roll_align": 0.0,
     "mag_cal_deltas": [0.0] * 4,     # per-cardinal (N/E/S/W) heading
                                       # corrections from the compass-cal
                                       # wizard.  Piecewise-linear
@@ -857,6 +865,43 @@ def _push_magcal_clear_to_pico():
     threading.Thread(target=_worker, daemon=True, name="MagCalClear").start()
 
 
+def _push_align_to_pico(pitch_align, roll_align):
+    """Send axis-alignment values to the Pico via $ALIGN.  Same retry-
+    until-broadcast-echo pattern as _push_orient_to_pico — confirms
+    receipt by watching state["pitch_align"]/state["roll_align"] for a
+    matching update from the next $AHRS frame."""
+    import time as _time
+
+    def _worker():
+        for attempt in range(6):
+            client = _sse_client
+            if client is None or not hasattr(client, 'write'):
+                print("[PFD] align push: no serial client available")
+                return
+            try:
+                cmd = f"$ALIGN,{pitch_align:.2f},{roll_align:.2f}\n".encode()
+                client.write(cmd)
+                print(f"[PFD] align sent (attempt {attempt + 1}) "
+                      f"({pitch_align:+.2f},{roll_align:+.2f})")
+            except Exception as e:
+                print(f"[PFD] align serial write failed: {e}")
+                return
+            for _ in range(20):
+                _time.sleep(0.1)
+                with _state_lock:
+                    pa = state.get("pitch_align")
+                    ra = state.get("roll_align")
+                if (pa is not None and ra is not None
+                        and abs(pa - pitch_align) < 0.05
+                        and abs(ra - roll_align)  < 0.05):
+                    print(f"[PFD] align confirmed by Pico "
+                          f"({pitch_align:+.2f},{roll_align:+.2f})")
+                    return
+        print(f"[PFD] align push gave up after 6 attempts "
+              f"({pitch_align:+.2f},{roll_align:+.2f})")
+    threading.Thread(target=_worker, daemon=True, name="AlignPush").start()
+
+
 def _push_orient_to_pico(connector, mounting):
     """Send orientation + mounting to the Pico via USB serial ($ORIENT, command).
     Retries every 2 s (up to 6 attempts) until the Pico echoes back the new
@@ -1166,7 +1211,8 @@ def smooth_state():
               "ahrs_ok", "gps_ok", "gps_comm", "baro_ok", "airdata_ok",
               "ahrs_aligning",
               "pitch_trim", "roll_trim", "yaw_trim",
-              "orientation", "mounting", "yaw_raw", "yaw_wt901",
+              "orientation", "mounting", "pitch_align", "roll_align",
+              "yaw_raw", "yaw_wt901",
               "mx", "my", "mz", "fw_ver"):
         if k in snap:
             disp[k] = snap[k]
@@ -4115,6 +4161,18 @@ def handle_event(event, demo_mode):
                 _, key, delta_str = action.split(":")
                 disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
                 _settings.mark_dirty()
+            elif action and action.startswith("align:"):
+                # Input-side axis alignment — clamp to ±10° to match the
+                # firmware-side cap, push to the Pico via $ALIGN.
+                _, key, delta_str = action.split(":")
+                new = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
+                if   new > 10.0: new = 10.0
+                elif new < -10.0: new = -10.0
+                disp["ss"][key] = new
+                _settings.mark_dirty()
+                _push_align_to_pico(
+                    float(disp["ss"].get("pitch_align", 0.0)),
+                    float(disp["ss"].get("roll_align",  0.0)))
             elif action == "mag_cal_open":
                 _mag_cal_open("ahrs_setup")
             elif action == "terrain_inhibit_toggle":
@@ -5218,7 +5276,7 @@ _SS_TITLE_BAR_H = 44
 _ss_drag = None
 _SS_DRAG_THRESHOLD = 8
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
-    "ahrs_setup":         8,
+    "ahrs_setup":         10,
     "display_setup":      10,
     "system_setup":       9,
     "connectivity_setup": 6,
@@ -5823,6 +5881,29 @@ def draw_ahrs_setup(surf, ss):
     else:
         _action_btn(surf, inh_bx, inh_by, inh_w, _DSP_BTN_H,
                     "INHIBIT", "normal")
+
+    # Rows 8 & 9: PITCH / ROLL ALIGN — input-side axis alignment.  Unlike
+    # the TRIM rows above (output-side static offsets), these rotate the
+    # raw gyro/accel/mag before the Mahony filter, killing yaw-rate
+    # coupling into pitch/roll from imperfect sensor mounting.  Pushed
+    # to the Pico via $ALIGN; "sending…" hint shows until the Pico
+    # echoes the new value back in its $AHRS broadcast.
+    pico_pa = float(disp.get("pitch_align", 0.0))
+    sel_pa  = float(ss.get("pitch_align", pico_pa))
+    pa_sub  = "Yaw-coupling fix; tune until turns don't pitch the display"
+    if abs(sel_pa - pico_pa) > 0.05:
+        pa_sub = f"{pa_sub}  (AHRS: {pico_pa:+.1f}° — sending…)"
+    bx, by, bw, bh = _setting_row(surf, 8, "PITCH ALIGN", pa_sub)
+    _trim_stepper(surf, bx, by, bw, bh, sel_pa, "pitch_align")
+
+    pico_ra = float(disp.get("roll_align", 0.0))
+    sel_ra  = float(ss.get("roll_align", pico_ra))
+    ra_sub  = "Yaw-coupling fix; tune until turns don't roll the display"
+    if abs(sel_ra - pico_ra) > 0.05:
+        ra_sub = f"{ra_sub}  (AHRS: {pico_ra:+.1f}° — sending…)"
+    bx, by, bw, bh = _setting_row(surf, 9, "ROLL ALIGN", ra_sub)
+    _trim_stepper(surf, bx, by, bw, bh, sel_ra, "roll_align")
+
     surf.set_clip(_prev_clip)
 
 
@@ -5832,21 +5913,26 @@ def ahrs_setup_hit(x, y, ss):
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(8):
+    for ri in range(10):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
         bx = _SS_MX
-        if ri in (0, 1):
-            key = "pitch_trim" if ri == 0 else "roll_trim"
+        if ri in (0, 1, 8, 9):
+            # Stepper rows: pitch/roll TRIM (output offset) on 0/1,
+            # pitch/roll ALIGN (input rotation) on 8/9.  All use the
+            # same ±0.1° step widget.
+            key = {0: "pitch_trim", 1: "roll_trim",
+                   8: "pitch_align", 9: "roll_align"}[ri]
             ry = by + (_SS_RH - _SS_TRIM_H) // 2
             if not (ry <= y <= ry+_SS_TRIM_H):
                 continue
+            action_prefix = "align" if ri in (8, 9) else "trim"
             if rx_trim <= x <= rx_trim+_SS_TRIM_SW:
-                return f"trim:{key}:-0.1"
+                return f"{action_prefix}:{key}:-0.1"
             plus_x = rx_trim + _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G
             if plus_x <= x <= plus_x+_SS_TRIM_SW:
-                return f"trim:{key}:+0.1"
+                return f"{action_prefix}:{key}:+0.1"
         elif ri == 2:
             cbx = _SS_MX + bw - 138 - 14
             cby = by + (_SS_RH - _DSP_BTN_H) // 2

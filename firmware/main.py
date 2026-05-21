@@ -44,6 +44,7 @@ from config import (
     AHRS_GPS_TRACK_ENABLE, AHRS_GPS_TRACK_MIN_KT,
     AHRS_GPS_TRACK_INTERVAL_S, AHRS_GPS_TRACK_ALPHA,
     AHRS_FWD_IN_SENSOR, AHRS_ALIGN_DURATION_S, FW_VERSION,
+    AHRS_PITCH_ALIGN, AHRS_ROLL_ALIGN,
     AHRS_DEBUG_PRINT, AHRS_DEBUG_PRINT_DECIM,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
@@ -179,25 +180,39 @@ def save_magcal(offset):
 
 
 def load_orient():
+    """Returns (connector, mounting, pitch_align, roll_align).  The two
+    align fields are fine-grained input-side rotations that compensate
+    for sensor mounting that's a few degrees off the four 90° connector
+    quanta — see config.AHRS_PITCH_ALIGN."""
     _valid_c = ('forward', 'right', 'left', 'aft')
     _valid_m = ('normal', 'inverted')
     try:
         with open(ORIENT_FILE, 'r') as f:
             d = ujson.loads(f.read())
-        c = d.get('connector', AHRS_CONNECTOR)
-        m = d.get('mounting',  AHRS_MOUNTING)
+        c  = d.get('connector', AHRS_CONNECTOR)
+        m  = d.get('mounting',  AHRS_MOUNTING)
+        pa = float(d.get('pitch_align', AHRS_PITCH_ALIGN))
+        ra = float(d.get('roll_align',  AHRS_ROLL_ALIGN))
         if c not in _valid_c: c = AHRS_CONNECTOR
         if m not in _valid_m: m = AHRS_MOUNTING
-        return c, m
+        # Clamp to ±10° — anything beyond is almost certainly a typo;
+        # the connector quanta should handle larger rotations.
+        if pa < -10.0: pa = -10.0
+        elif pa > 10.0: pa = 10.0
+        if ra < -10.0: ra = -10.0
+        elif ra > 10.0: ra = 10.0
+        return c, m, pa, ra
     except Exception:
-        return AHRS_CONNECTOR, AHRS_MOUNTING
+        return AHRS_CONNECTOR, AHRS_MOUNTING, AHRS_PITCH_ALIGN, AHRS_ROLL_ALIGN
 
 
 def save_orient(state):
     try:
         with open(ORIENT_FILE, 'w') as f:
-            f.write(ujson.dumps({'connector': state['orientation'],
-                                  'mounting':  state['mounting']}))
+            f.write(ujson.dumps({'connector':   state['orientation'],
+                                  'mounting':    state['mounting'],
+                                  'pitch_align': state['pitch_align'],
+                                  'roll_align':  state['roll_align']}))
     except Exception as e:
         print(f'save_orient failed: {e}')
 
@@ -249,6 +264,11 @@ state = {
     # AHRS orientation (reflects config.py values; broadcast for Pi4 info display)
     'orientation': AHRS_CONNECTOR,
     'mounting':    AHRS_MOUNTING,
+    # Input-side axis alignment (degrees; airframe convention).
+    # Applied to raw gyro/accel/mag before the Mahony filter to kill
+    # yaw → pitch/roll coupling from imperfect sensor mounting.
+    'pitch_align': AHRS_PITCH_ALIGN,
+    'roll_align':  AHRS_ROLL_ALIGN,
     # Air data (SDP33-1500Pa + BME280 density correction)
     'ias_kt'     : 0.0,  # indicated airspeed (knots) — ρ₀ reference
     'tas_kt'     : 0.0,  # true airspeed (knots) — density-corrected
@@ -471,6 +491,74 @@ def _fwd_in_sensor_for(connector):
     return (0.0, 1.0, 0.0)   # 'right' (default)
 
 
+def _ac_axes_in_sensor(connector):
+    """Return (roll_axis, pitch_axis) as 3-tuples expressed in the WT901
+    sensor frame, given the connector orientation.  Derived from the
+    same axis mapping that _apply_remap uses on the output Euler — kept
+    in sync by inspection (a mismatch would make ALIGN behave the
+    opposite of what the user expects)."""
+    if connector == 'forward':
+        # output: airframe roll = +sensor_pitch (axis = sensor +Y)
+        #         airframe pitch = +sensor_roll (axis = sensor +X)
+        return ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0))
+    if connector == 'left':
+        # output: airframe roll = +sensor_roll (axis = sensor +X)
+        #         airframe pitch = -sensor_pitch (axis = sensor -Y)
+        return ((1.0, 0.0, 0.0), (0.0, -1.0, 0.0))
+    if connector == 'aft':
+        # output: airframe roll = -sensor_pitch (axis = sensor -Y)
+        #         airframe pitch = -sensor_roll (axis = sensor -X)
+        return ((0.0, -1.0, 0.0), (-1.0, 0.0, 0.0))
+    # 'right' (default): airframe roll = -sensor_roll, pitch = +sensor_pitch
+    return ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+
+
+def _rot_about_axis(vec, axis, theta_rad):
+    """Rotate `vec` around the unit-vector `axis` by `theta_rad` radians.
+    Rodrigues' formula.  Exact (not small-angle) so the math stays
+    correct even if the pilot dials in a larger trim."""
+    if theta_rad == 0.0:
+        return vec
+    s = math.sin(theta_rad)
+    c = math.cos(theta_rad)
+    kx, ky, kz = axis
+    vx, vy, vz = vec
+    # k × v
+    cx = ky * vz - kz * vy
+    cy = kz * vx - kx * vz
+    cz = kx * vy - ky * vx
+    # k · v
+    d = kx * vx + ky * vy + kz * vz
+    return (vx * c + cx * s + kx * d * (1.0 - c),
+            vy * c + cy * s + ky * d * (1.0 - c),
+            vz * c + cz * s + kz * d * (1.0 - c))
+
+
+def _apply_axis_align(gx, gy, gz, ax, ay, az, mx, my, mz,
+                       pitch_align_deg, roll_align_deg, connector):
+    """Rotate raw sensor vectors by the NEGATIVE of the alignment
+    angles around the airframe pitch and roll axes (expressed in
+    sensor frame).  Compensates for small mounting misalignment that
+    would otherwise couple yaw rate into the pitch/roll channels.
+
+    No-op when both align values are exactly zero — fast path for the
+    common case of an aligned sensor."""
+    if pitch_align_deg == 0.0 and roll_align_deg == 0.0:
+        return gx, gy, gz, ax, ay, az, mx, my, mz
+    roll_axis, pitch_axis = _ac_axes_in_sensor(connector)
+    pa = -math.radians(pitch_align_deg)
+    ra = -math.radians(roll_align_deg)
+    g = _rot_about_axis((gx, gy, gz), pitch_axis, pa)
+    g = _rot_about_axis(g,            roll_axis,  ra)
+    a = _rot_about_axis((ax, ay, az), pitch_axis, pa)
+    a = _rot_about_axis(a,            roll_axis,  ra)
+    if mx is not None:
+        m = _rot_about_axis((mx, my, mz), pitch_axis, pa)
+        m = _rot_about_axis(m,            roll_axis,  ra)
+        return g[0], g[1], g[2], a[0], a[1], a[2], m[0], m[1], m[2]
+    return g[0], g[1], g[2], a[0], a[1], a[2], mx, my, mz
+
+
 def _apply_remap(roll, pitch, yaw, connector, mounting):
     """Map WT901 sensor-frame Euler (ENU-convention) → aircraft body NED.
     Returns (body_roll, body_pitch, body_yaw_raw_unwrapped, hdg_off).
@@ -606,6 +694,15 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
         ahrs.new_mag = False
     else:
         mx = my = mz = None
+
+    # Input-side axis alignment — rotates gyro/accel/mag so a small
+    # sensor mounting misalignment doesn't couple yaw rate into the
+    # pitch/roll channels.  No-op when both align values are 0.
+    gx, gy, gz, ax, ay, az, mx, my, mz = _apply_axis_align(
+        gx, gy, gz, ax, ay, az, mx, my, mz,
+        state.get('pitch_align', 0.0),
+        state.get('roll_align',  0.0),
+        state['orientation'])
 
     # Pass ZUPT state into the filter so it can freeze the bias integrator
     # while stationary. Otherwise the integrator winds up to its clamp over
@@ -922,7 +1019,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                     'roll','pitch','yaw','yaw_raw','ay','lat','lon','speed','track',
                     'fix','sats','alt','gps_alt','vspeed','baro_src','baro_hpa',
                     'ahrs_ok','gps_ok','gps_comm','baro_ok','pitch_trim','roll_trim','yaw_trim',
-                    'orientation','mounting',
+                    'orientation','mounting','pitch_align','roll_align',
                     'ias_kt','tas_kt','dp_pa','oat_c','dens_alt_ft',
                     'wind_dir','wind_kt','airdata_ok',
                     'att_src','att_aid','ahrs_aligning','ahrs_zupt',
@@ -1035,6 +1132,27 @@ def _process_stdin_line(line):
                 print(f'$ORIENT_ACK,ERR invalid: {c},{m}')
         else:
             print('$ORIENT_ACK,ERR bad format')
+    elif line.startswith('$ALIGN,'):
+        # $ALIGN,<pitch_deg>,<roll_deg> — input-side axis alignment.
+        # Clamped to ±10° before applying so a typo doesn't send the
+        # filter into an unrecoverable state on the next packet.
+        parts = line[7:].split(',')
+        if len(parts) == 2:
+            try:
+                pa = float(parts[0].strip())
+                ra = float(parts[1].strip())
+                if pa < -10.0: pa = -10.0
+                elif pa > 10.0: pa = 10.0
+                if ra < -10.0: ra = -10.0
+                elif ra > 10.0: ra = 10.0
+                state['pitch_align'] = pa
+                state['roll_align']  = ra
+                state['_save_orient'] = True
+                print(f'$ALIGN_ACK,{pa:+.2f},{ra:+.2f},OK')
+            except ValueError as e:
+                print(f'$ALIGN_ACK,ERR parse: {e}')
+        else:
+            print('$ALIGN_ACK,ERR bad format')
 
 
 async def wdt_loop(wdt):
@@ -1137,10 +1255,13 @@ async def main():
 
     state.update(load_trims())
     print(f'Trims loaded: pitch={state["pitch_trim"]}° roll={state["roll_trim"]}° yaw={state["yaw_trim"]}°')
-    _c, _m = load_orient()
+    _c, _m, _pa, _ra = load_orient()
     state['orientation'] = _c
     state['mounting']    = _m
-    print(f'Orientation: connector={_c}  mounting={_m}')
+    state['pitch_align'] = _pa
+    state['roll_align']  = _ra
+    print(f'Orientation: connector={_c}  mounting={_m}'
+          f'  pitch_align={_pa:+.1f}°  roll_align={_ra:+.1f}°')
     state['_magdev'] = load_magdev()
     if state['_magdev']:
         print(f'Magdev table loaded: {len(state["_magdev"])} corrections')
