@@ -170,6 +170,10 @@ disp["ds"] = {                      # display settings
     "map_show_obstacles": True,
     "map_show_state_lines": True,
     "map_show_country_lines": True,
+    # MFD bottom data strip — 8 user-selectable readout slots.  Each
+    # entry is a kind id from _MFD_STRIP_KIND_IDS; user reconfigures
+    # via tap-strip → chooser overlay.  See draw_mfd / draw_mfd_strip_setup.
+    "mfd_strip_kinds":  ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "eta"],
 }
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
@@ -2886,6 +2890,24 @@ def handle_event(event, demo_mode):
                 _ssync_refresh_kinds()
             return True
 
+        # ── MFD strip-setup chooser taps ──────────────────────────────────
+        if mode == "mfd_strip_setup":
+            act, payload = mfd_strip_setup_hit(x, y)
+            if act == "back":
+                disp["mode"] = "pfd"   # MFD runs under mode=pfd
+            elif act == "slot":
+                disp["mss_sel"] = int(payload)
+            elif act == "kind":
+                kinds = _mfd_strip_kinds()
+                sel = int(disp.get("mss_sel", 0)) % _MFD_STRIP_SLOT_COUNT
+                kinds[sel] = payload
+                disp["ds"]["mfd_strip_kinds"] = kinds
+                # Auto-advance to the next slot for fast keyboard-style
+                # configuration; wraps at the end.
+                disp["mss_sel"] = (sel + 1) % _MFD_STRIP_SLOT_COUNT
+                _settings.mark_dirty()
+            return True
+
         # ── WiFi scan screen taps ─────────────────────────────────────────────
         if mode == "wifi_scan":
             action = wifi_scan_hit(x, y, disp["cs"])
@@ -3279,6 +3301,10 @@ def handle_event(event, demo_mode):
                 cur = disp["ds"].get("map_orient", "trk")
                 disp["ds"]["map_orient"] = "nrth" if cur == "trk" else "trk"
                 _settings.mark_dirty()
+                return True
+            if _mfd_strip_hit(x, y):
+                disp["mode"] = "mfd_strip_setup"
+                disp["mss_sel"] = 0   # currently-selected slot index
                 return True
             # Anywhere else over the map → start a pan/tap drag.  MOTION
             # converts to pan; UP without motion runs airport hit-test.
@@ -7713,6 +7739,45 @@ _MFD_PFD_BTN_H = 36
 _MFD_D2_BTN_W  = 100
 _MFD_D2_BTN_H  = 36
 _MFD_ZOOM_BTN  = 56     # square zoom-in / zoom-out buttons
+_MFD_STRIP_H   = 46     # height of the bottom data strip
+_MFD_STRIP_PAD = 6      # gap between strip and zoom buttons above it
+_MFD_STRIP_SLOT_COUNT = 8
+
+# Catalog of readouts the user can drop into the strip.  Order here is
+# the order they appear in the chooser grid.
+#   (kind_id, caption_default, needs_d2)
+# When needs_d2 is True and no direct-to is active, the slot draws "--"
+# in a dim colour rather than going blank.
+_MFD_STRIP_AVAILABLE = (
+    ("gs",   "GS",   False),
+    ("as",   "AS",   False),   # indicated airspeed
+    ("tas",  "TAS",  False),
+    ("trk",  "TRK",  False),
+    ("hdg",  "HDG",  False),
+    ("alt",  "ALT",  False),
+    ("agl",  "AGL",  False),
+    ("vs",   "VS",   False),
+    ("oat",  "OAT",  False),
+    ("da",   "DA",   False),
+    ("pa",   "PA",   False),
+    ("wind", "WIND", False),
+    ("time", "UTC",  False),
+    ("baro", "BARO", False),
+    ("sat",  "SAT",  False),
+    ("wpt",  "WPT",  True),
+    ("btw",  "BTW",  True),
+    ("dtk",  "DTK",  True),
+    ("dist", "DIST", True),
+    ("xte",  "XTE",  True),
+    ("ete",  "ETE",  True),
+    ("eta",  "ETA",  True),
+    ("etw",  "ETW",  True),
+)
+_MFD_STRIP_KIND_IDS = tuple(k[0] for k in _MFD_STRIP_AVAILABLE)
+_MFD_STRIP_CAPTIONS = {k[0]: k[1] for k in _MFD_STRIP_AVAILABLE}
+_MFD_STRIP_NEEDS_D2 = {k[0]: k[2] for k in _MFD_STRIP_AVAILABLE}
+_MFD_STRIP_DEFAULT  = ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "eta"]
+_D2_DIM = (110, 90, 110)   # dim magenta for D2-required slots when no D2
 
 
 def _mfd_d2_rect():
@@ -7720,19 +7785,189 @@ def _mfd_d2_rect():
     return (pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H)
 
 
-def _mfd_zoom_in_rect():
-    """Zoom-in (+) button, bottom-right."""
+def _mfd_strip_rect():
+    """Bottom data strip — spans full width, sits at the very bottom."""
     pad = 6
+    return (pad, DISPLAY_H - _MFD_STRIP_H - pad,
+            DISPLAY_W - 2 * pad, _MFD_STRIP_H)
+
+
+def _mfd_zoom_in_rect():
+    """Zoom-in (+) button — right corner, just above the strip."""
+    pad = 6
+    _, sy, _, _ = _mfd_strip_rect()
     return (DISPLAY_W - _MFD_ZOOM_BTN - pad,
-            DISPLAY_H - _MFD_ZOOM_BTN - pad,
+            sy - _MFD_STRIP_PAD - _MFD_ZOOM_BTN,
             _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
 
 
 def _mfd_zoom_out_rect():
-    """Zoom-out (-) button, bottom-left."""
+    """Zoom-out (-) button — left corner, just above the strip."""
     pad = 6
-    return (pad, DISPLAY_H - _MFD_ZOOM_BTN - pad,
+    _, sy, _, _ = _mfd_strip_rect()
+    return (pad,
+            sy - _MFD_STRIP_PAD - _MFD_ZOOM_BTN,
             _MFD_ZOOM_BTN, _MFD_ZOOM_BTN)
+
+
+def _mfd_strip_hit(x, y):
+    sx, sy, sw, sh = _mfd_strip_rect()
+    return sx <= x <= sx + sw and sy <= y <= sy + sh
+
+
+def _mfd_strip_kinds():
+    """Return the user's selected 8 strip kinds, padded/trimmed and
+    validated against the available-kinds set."""
+    cur = list(disp["ds"].get("mfd_strip_kinds", _MFD_STRIP_DEFAULT))
+    out = []
+    for i in range(_MFD_STRIP_SLOT_COUNT):
+        k = cur[i] if i < len(cur) else _MFD_STRIP_DEFAULT[i]
+        if k not in _MFD_STRIP_KIND_IDS:
+            k = _MFD_STRIP_DEFAULT[i]
+        out.append(k)
+    return out
+
+
+def _mfd_strip_ete_str(gs_kt, dist_nm):
+    """ETE remaining — M:SS for <1 h, H:MM up to 99 h, else dashes."""
+    if gs_kt < 3.0 or dist_nm <= 0.0:
+        return "--:--"
+    hours = dist_nm / gs_kt
+    if hours < 1.0:
+        mm, ss = divmod(int(round(hours * 3600)), 60)
+        return f"{mm}:{ss:02d}"
+    if hours < 99.0:
+        h_, rem = divmod(int(round(hours * 3600)), 3600)
+        mm, _ = divmod(rem, 60)
+        return f"{h_}:{mm:02d}"
+    return "--:--"
+
+
+def _mfd_strip_eta_str(gs_kt, dist_nm):
+    """Zulu clock time of arrival, HH:MMZ."""
+    if gs_kt < 3.0 or dist_nm <= 0.0:
+        return "--:--"
+    hours = dist_nm / gs_kt
+    if hours >= 99.0:
+        return "--:--"
+    eta_t = time.time() + int(round(hours * 3600))
+    return time.strftime("%H:%MZ", time.gmtime(eta_t))
+
+
+def _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2):
+    """Bundle live values a strip slot may need.  D2-dependent fields
+    (dist_nm/brg/dtk/xte_nm) are only set when d2 is non-None."""
+    ctx = {
+        "lat":      lat,
+        "lon":      lon,
+        "alt":      alt,
+        "hdg":      hdg,
+        "track":    track,
+        "gs_kt":    gs_kt,
+        "ias":      float(disp.get("ias_kt", 0.0)),
+        "tas":      float(disp.get("tas_kt", 0.0)),
+        "vs":       float(disp.get("vspeed", 0.0)),
+        "baro_hpa": float(disp.get("baro_hpa", BARO_DEFAULT_HPA)),
+        "sats":     int(disp.get("sats", 0)),
+        "d2":       d2,
+    }
+    if d2 is not None:
+        dist_nm, brg = _nav_geo_dist_brg(lat, lon, d2["lat"], d2["lon"])
+        ctx["dist_nm"] = dist_nm
+        ctx["brg"]     = brg
+        act_lat = float(d2.get("act_lat", lat))
+        act_lon = float(d2.get("act_lon", lon))
+        _, dtk = _nav_geo_dist_brg(act_lat, act_lon, d2["lat"], d2["lon"])
+        ctx["dtk"]     = dtk
+        ctx["xte_nm"]  = _nav_xtk_nm(act_lat, act_lon,
+                                      d2["lat"], d2["lon"], lat, lon)
+    return ctx
+
+
+def _mfd_strip_format(kind, ctx):
+    """Returns (caption, value_str, color) for a single strip slot.
+
+    D2-required kinds when no direct-to is active return (caption, '--',
+    dim) so the slot stays visible but obviously inactive."""
+    d2    = ctx.get("d2")
+    gs_kt = ctx["gs_kt"]
+
+    # ── Non-D2 ───────────────────────────────────────────────────────────
+    if kind == "gs":
+        return ("GS", f"{int(round(gs_kt)):3d}", WHITE)
+    if kind == "as":
+        v = ctx["ias"]
+        s = f"{int(round(v)):3d}" if v > 0 else "---"
+        return ("AS", s, WHITE)
+    if kind == "tas":
+        v = ctx["tas"]
+        s = f"{int(round(v)):3d}" if v > 0 else "---"
+        return ("TAS", s, WHITE)
+    if kind == "trk":
+        track = ctx["track"]
+        s = (f"{int(round(track)) % 360:03d}°"
+             if gs_kt >= HDG_TRK_MIN_KT else "---°")
+        return ("TRK", s, WHITE)
+    if kind == "hdg":
+        return ("HDG", f"{int(round(ctx['hdg'])) % 360:03d}°", WHITE)
+    if kind == "alt":
+        alt_q = int(round(ctx["alt"] / 20.0) * 20)
+        return ("ALT", f"{alt_q:5d}", WHITE)
+    if kind == "agl":
+        # Wired up once terrain-elev lookup is exposed at this layer.
+        return ("AGL", "----", (140, 140, 140))
+    if kind == "vs":
+        return ("VS", f"{int(round(ctx['vs'])):+5d}", WHITE)
+    if kind == "oat":
+        return ("OAT", "--", (140, 140, 140))
+    if kind == "da":
+        return ("DA", "----", (140, 140, 140))
+    if kind == "pa":
+        return ("PA", "----", (140, 140, 140))
+    if kind == "wind":
+        return ("WIND", "---/--", (140, 140, 140))
+    if kind == "time":
+        return ("UTC", time.strftime("%H:%MZ", time.gmtime()), WHITE)
+    if kind == "baro":
+        hpa = ctx["baro_hpa"]
+        unit = disp["ds"].get("baro_unit", "inhg")
+        if unit == "inhg":
+            return ("BARO", f"{hpa * 0.02953:.2f}", WHITE)
+        return ("BARO", f"{int(round(hpa)):4d}", WHITE)
+    if kind == "sat":
+        return ("SAT", f"{ctx['sats']:2d}", WHITE)
+
+    # ── D2-required ──────────────────────────────────────────────────────
+    caption = _MFD_STRIP_CAPTIONS.get(kind, "?")
+    if d2 is None:
+        return (caption, "--", _D2_DIM)
+
+    if kind == "wpt":
+        return (caption, d2.get("ident", "----"), MAGENTA)
+    if kind == "btw":
+        return (caption,
+                f"{int(round(ctx['brg'])) % 360:03d}°", MAGENTA)
+    if kind == "dtk":
+        return (caption,
+                f"{int(round(ctx['dtk'])) % 360:03d}°", MAGENTA)
+    if kind == "dist":
+        d_nm = ctx["dist_nm"]
+        s = (f"{int(round(d_nm)):d}" if d_nm >= 1000.0
+             else f"{d_nm:.1f}")
+        return (caption, s, MAGENTA)
+    if kind == "xte":
+        return (caption, f"{ctx['xte_nm']:+.1f}", MAGENTA)
+    if kind == "ete":
+        return (caption,
+                _mfd_strip_ete_str(gs_kt, ctx["dist_nm"]), MAGENTA)
+    if kind in ("eta", "etw"):
+        # ETW currently == ETA (single waypoint).  Once flight plans
+        # land, ETW computes against the next waypoint and ETA stays
+        # against the final.
+        return (caption,
+                _mfd_strip_eta_str(gs_kt, ctx["dist_nm"]), MAGENTA)
+
+    return (caption, "--", _D2_DIM)
 
 
 # Vertical spacing below the top-row chrome buttons.  Earlier rev had the
@@ -7933,74 +8168,25 @@ def draw_mfd(surf, connected=True, data_stale=False):
         _action_btn(surf, cx_, cy_, cw_, ch_, "CTR", "ok", r=5)
 
     # ── Bottom data strip ─────────────────────────────────────────────
-    # Labeled column-style readouts.  Always shows GS / TRK / ALT on
-    # the left; WPT / BTW / DIST / ETE on the right when D2 is active.
-    strip_h  = _MFD_ZOOM_BTN
-    strip_y  = DISPLAY_H - strip_h - pad
-    strip_x0 = _MFD_ZOOM_BTN + pad * 2
-    strip_x1 = DISPLAY_W - _MFD_ZOOM_BTN - pad * 2
-    strip_w  = strip_x1 - strip_x0
-    plate = pygame.Surface((strip_w, strip_h), pygame.SRCALPHA)
+    # Full-width 8-slot strip.  Each slot's kind is user-selectable —
+    # tap the strip to open the chooser overlay.
+    sx, sy, sw, sh = _mfd_strip_rect()
+    plate = pygame.Surface((sw, sh), pygame.SRCALPHA)
     plate.fill((0, 8, 22, 180))
-    surf.blit(plate, (strip_x0, strip_y))
-    pygame.draw.rect(surf, (60, 80, 110),
-                     (strip_x0, strip_y, strip_w, strip_h),
+    surf.blit(plate, (sx, sy))
+    pygame.draw.rect(surf, (60, 80, 110), (sx, sy, sw, sh),
                      width=1, border_radius=4)
-    # Helper — small caption above, big value below.
-    def _col(cx_off, caption, value, val_col=WHITE):
-        _text(surf, caption, 11, (140, 170, 200), bold=True,
-              cx=strip_x0 + cx_off, y=strip_y + 4)
-        _text(surf, value, 22, val_col, bold=True,
-              cx=strip_x0 + cx_off, cy=strip_y + 30)
 
-    if d2 is not None:
-        dist_nm, brg = _nav_geo_dist_brg(lat, lon, d2["lat"], d2["lon"])
-        # ETE — needs ground speed; show dashes below taxi threshold.
-        if gs_kt >= 3.0 and dist_nm > 0.0:
-            hours = dist_nm / gs_kt
-            if hours < 1.0:
-                mm, ss = divmod(int(round(hours * 3600)), 60)
-                ete = f"{mm}:{ss:02d}"
-            else:
-                h_, rem = divmod(int(round(hours * 3600)), 3600)
-                mm, _ = divmod(rem, 60)
-                ete = f"{h_}:{mm:02d}"
-        else:
-            ete = "--:--"
-        # 7 columns: GS / TRK / ALT / WPT / BTW / DIST / ETE
-        # TRK is dashed below the track-valid GS threshold — at low GS
-        # the GPS-computed track is noisy / arbitrary and a 3-digit
-        # readout would mislead.
-        trk_str = (f"{int(round(track)) % 360:03d}°"
-                   if gs_kt >= HDG_TRK_MIN_KT else "---°")
-        n_cols = 7
-        col_w = strip_w // n_cols
-        _col(col_w // 2 + col_w * 0, "GS",   f"{int(round(gs_kt)):3d}")
-        _col(col_w // 2 + col_w * 1, "TRK",  trk_str)
-        # ALT snapped to 20 ft increments — the smoothed disp value walks
-        # every frame and a 1-ft-per-frame jitter on the bottom-of-strip
-        # readout is visually busy.  20 ft matches the standard PFD tape
-        # tick spacing and is finer than typical baro accuracy anyway.
-        alt_q = int(round(alt / 20.0) * 20)
-        _col(col_w // 2 + col_w * 2, "ALT",  f"{alt_q:5d}")
-        _col(col_w // 2 + col_w * 3, "WPT",  d2["ident"], val_col=MAGENTA)
-        _col(col_w // 2 + col_w * 4, "BTW",  f"{int(round(brg)) % 360:03d}°", val_col=MAGENTA)
-        # 4-digit integer once DIST hits 1000 nm — the extra decimal
-        # crowds the adjacent ETE column at long range.
-        dist_str = (f"{int(round(dist_nm)):d}" if dist_nm >= 1000.0
-                    else f"{dist_nm:.1f}")
-        _col(col_w // 2 + col_w * 5, "DIST", dist_str, val_col=MAGENTA)
-        _col(col_w // 2 + col_w * 6, "ETE",  ete, val_col=MAGENTA)
-    else:
-        # No D2 active: 3 columns spanning the strip.
-        trk_str = (f"{int(round(track)) % 360:03d}°"
-                   if gs_kt >= HDG_TRK_MIN_KT else "---°")
-        n_cols = 3
-        col_w = strip_w // n_cols
-        _col(col_w // 2 + col_w * 0, "GS",  f"{int(round(gs_kt)):3d} KT")
-        _col(col_w // 2 + col_w * 1, "TRK", trk_str)
-        alt_q = int(round(alt / 20.0) * 20)
-        _col(col_w // 2 + col_w * 2, "ALT", f"{alt_q:5d} FT")
+    ctx = _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2)
+    n_cols = _MFD_STRIP_SLOT_COUNT
+    col_w  = sw // n_cols
+    for i, kind in enumerate(_mfd_strip_kinds()):
+        cap, val, col = _mfd_strip_format(kind, ctx)
+        cx = sx + col_w // 2 + col_w * i
+        _text(surf, cap, 11, (140, 170, 200), bold=True,
+              cx=cx, y=sy + 4)
+        _text(surf, val, 22, col, bold=True,
+              cx=cx, cy=sy + 30)
 
     # ── MFD chrome buttons ─────────────────────────────────────────────
     # D2 (top-left), PFD (top-right), zoom-out (bottom-left, "−"),
@@ -8050,6 +8236,112 @@ def _mfd_zoom_out_hit(x, y):
     return bx <= x <= bx + bw and by <= y <= by + bh
 
 
+# ── MFD strip-setup chooser overlay ──────────────────────────────────────
+# Layout: top row of 8 slot pills showing the current kind for each
+# strip column (currently-selected slot has a cyan border).  Below, a
+# grid of all available kinds — tap any to assign it to the selected
+# slot, which then auto-advances to the next slot for fast configuring.
+
+_MSS_HEADER_H   = 44
+_MSS_SLOT_H     = 56
+_MSS_SLOT_GAP   = 4
+_MSS_GRID_GAP   = 6
+_MSS_GRID_COLS  = 5
+
+
+def _mss_slot_rects():
+    pad = 6
+    n = _MFD_STRIP_SLOT_COUNT
+    avail_w = DISPLAY_W - 2 * pad
+    pw = (avail_w - (n - 1) * _MSS_SLOT_GAP) // n
+    y = _MSS_HEADER_H + 8
+    rects = []
+    for i in range(n):
+        rects.append((pad + i * (pw + _MSS_SLOT_GAP), y, pw, _MSS_SLOT_H))
+    return rects
+
+
+def _mss_grid_rects():
+    pad = 6
+    n = len(_MFD_STRIP_AVAILABLE)
+    cols = _MSS_GRID_COLS
+    rows = (n + cols - 1) // cols
+    avail_w = DISPLAY_W - 2 * pad
+    cell_w = (avail_w - (cols - 1) * _MSS_GRID_GAP) // cols
+    cell_h = 56
+    y0 = _MSS_HEADER_H + 8 + _MSS_SLOT_H + 16
+    rects = []
+    for i in range(n):
+        r = i // cols
+        c = i % cols
+        rects.append((pad + c * (cell_w + _MSS_GRID_GAP),
+                      y0 + r * (cell_h + _MSS_GRID_GAP),
+                      cell_w, cell_h))
+    return rects
+
+
+def draw_mfd_strip_setup(surf):
+    """Chooser overlay reached by tapping the MFD bottom strip."""
+    _screen_header(surf, "MFD STRIP")
+
+    sel = int(disp.get("mss_sel", 0))
+    sel = max(0, min(_MFD_STRIP_SLOT_COUNT - 1, sel))
+    kinds = _mfd_strip_kinds()
+
+    # ── Top: 8 slot pills, current kind shown ────────────────────────────
+    for i, (rect, kind) in enumerate(zip(_mss_slot_rects(), kinds)):
+        bx, by, bw, bh = rect
+        is_sel = (i == sel)
+        bg = (0, 40, 60) if is_sel else (0, 12, 32)
+        oc = CYAN        if is_sel else (60, 80, 110)
+        pygame.draw.rect(surf, bg, rect, border_radius=5)
+        pygame.draw.rect(surf, oc, rect, width=2 if is_sel else 1,
+                         border_radius=5)
+        cap = _MFD_STRIP_CAPTIONS.get(kind, "?")
+        _text(surf, f"{i+1}", 10, (140, 150, 170), bold=True,
+              cx=bx + bw // 2, y=by + 4)
+        _text(surf, cap, 18, CYAN if is_sel else WHITE, bold=True,
+              cx=bx + bw // 2, cy=by + bh // 2 + 4)
+
+    # Hint under the slot row
+    hint_y = _MSS_HEADER_H + 8 + _MSS_SLOT_H + 1
+    _text(surf, "tap a slot, then tap a readout below — auto-advances",
+          10, (140, 150, 170), cx=DISPLAY_W // 2, y=hint_y)
+
+    # ── Grid of available kinds ──────────────────────────────────────────
+    for (kind, cap, needs_d2), rect in zip(_MFD_STRIP_AVAILABLE,
+                                            _mss_grid_rects()):
+        bx, by, bw, bh = rect
+        in_use_here = (kinds[sel] == kind)
+        bg = (0, 55, 65) if in_use_here else (0, 18, 38)
+        oc = CYAN        if in_use_here else (60, 80, 110)
+        pygame.draw.rect(surf, bg, rect, border_radius=4)
+        pygame.draw.rect(surf, oc, rect, width=1, border_radius=4)
+        tc = CYAN if in_use_here else (WHITE if not needs_d2 else MAGENTA)
+        _text(surf, cap, 18, tc, bold=True,
+              cx=bx + bw // 2, cy=by + bh // 2 - 6)
+        if needs_d2:
+            _text(surf, "needs D2", 9, (140, 100, 130),
+                  cx=bx + bw // 2, y=by + bh - 14)
+
+
+def mfd_strip_setup_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return ("back", None)
+    # Slot pills
+    for i, rect in enumerate(_mss_slot_rects()):
+        bx, by, bw, bh = rect
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return ("slot", i)
+    # Kind grid
+    for (kind, _cap, _nd2), rect in zip(_MFD_STRIP_AVAILABLE,
+                                         _mss_grid_rects()):
+        bx, by, bw, bh = rect
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return ("kind", kind)
+    return (None, None)
+
+
 def _mfd_open_d2_keyboard():
     """Open the existing keyboard with kbd_target == 'nav_ident' so the
     pilot can type an ICAO ident.  ENTER routes through the nav_confirm
@@ -8077,12 +8369,7 @@ def _mfd_chrome_hit(x, y):
     rx, ry, rw, rh = _mfd_rng_label_rect()
     if rx <= x <= rx + rw and ry <= y <= ry + rh:
         return True
-    pad = 6
-    # Bottom data strip (full width minus zoom buttons)
-    strip_y = DISPLAY_H - _MFD_ZOOM_BTN - pad
-    strip_x0 = _MFD_ZOOM_BTN + pad * 2
-    strip_x1 = DISPLAY_W - _MFD_ZOOM_BTN - pad * 2
-    if strip_x0 <= x <= strip_x1 and strip_y <= y <= strip_y + _MFD_ZOOM_BTN:
+    if _mfd_strip_hit(x, y):
         return True
     return False
 
@@ -8230,6 +8517,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_connectivity_setup(surf, disp["cs"]); return
     if mode == "screen_sync_setup":
         draw_screen_sync_setup(surf, disp["cs"]); return
+    if mode == "mfd_strip_setup":
+        draw_mfd_strip_setup(surf); return
     if mode == "system_setup":
         draw_system_setup(surf); return
     if mode == "ahrs_firmware":
