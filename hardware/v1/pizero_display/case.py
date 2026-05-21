@@ -36,13 +36,21 @@ Hardware to grab (from the M2.5 assortment kit):
                      open top of the case), self-tap into the printed
                      standoff pilot bores.
 
-Coordinate convention (all dimensions in mm):
-    +X = right (display long edge, GPIO-header side)
-    +Y = top (cable side)
+Coordinate convention (final product frame, after the -90 deg Z rotation
+applied at the end of make_case):
+    +X = right (along the display's 77 mm long axis)
+    +Y = up   (toward the display's TOP edge, where the two M2.5 brass
+              mounting posts live)
+    -Y = down (toward the BOTTOM edge of the product, where the 40-pin
+              GPIO header lives and the Pi Zero hangs)
     +Z = forward, out the screen (toward the pilot's face)
+    -Z = back of the product (Pi Zero pokes out -Z behind the display
+              via the GPIO header)
 
-PCB-frame origin matches the STEP file (PCB corner at 0,0). The case is
-modelled in the same frame so STEP positions map directly.
+The geometry is BUILT in a "display frame" matching the STEP file (PCB
+corner at 0,0, display +X = the GPIO-header long edge) and then rotated
+-90 deg about Z at the very end so the exported STEP/STL is already in
+the product frame.
 """
 
 import cadquery as cq
@@ -205,17 +213,6 @@ PI_STANDOFF_OD     = 5.0
 PI_STANDOFF_BORE   = 2.1        # M2.5 self-tap pilot
 PI_STANDOFF_BORE_D = 5.0
 
-# ─── Kickstand feet ──────────────────────────────────────────────────
-# Two triangular ribs on the -Z back face. Lifting the bottom (-Y) edge
-# off the table by FOOT_RISE while the top (+Y) edge sits down on the
-# back of the case gives a viewing angle of about
-#   atan(FOOT_RISE / OUTER_Y)  ~= 18 deg at FOOT_RISE=25.
-FOOT_RISE = 25.0                # how far the feet stick out behind the case
-FOOT_DEPTH = 18.0               # how wide along Y the feet extend
-FOOT_THICK = 6.0                # how thick (along X) each foot is
-FOOT_X_OFFSET = OUTER_X / 2 - 12.0   # feet near the X-ends
-
-
 # ─── BUILD ───────────────────────────────────────────────────────────
 def make_case():
     # Outer brick
@@ -322,31 +319,14 @@ def make_case():
         # Only cut the vents where they land over the Pi Zero footprint.
         shell = shell.cut(vent)
 
-    # Kickstand feet — two triangular ribs on the back face, at the TOP
-    # (+Y) edge. Each is a right triangle in the YZ plane:
-    #   base on the case back at Z=0, running from +OUTER_Y/2 inward by
-    #     FOOT_DEPTH (toward -Y),
-    #   vertical leg from +OUTER_Y/2,0 going down to +OUTER_Y/2,-FOOT_RISE
-    #     (this is the rear contact point on the desk),
-    #   hypotenuse closes the triangle.
-    # When the case is laid down, the -Y bottom edge and the foot tips
-    # both rest on the desk; the screen face (+Z, OUTER_Z high) tilts up
-    # toward the user. Cables exit the +Y wall in +Y direction, the foot
-    # extends in -Z direction — orthogonal, no conflict.
-    for sign in (-1, +1):
-        fx = sign * FOOT_X_OFFSET
-        tri_pts = [
-            ( OUTER_Y / 2,                         0),             # foot base, top-back corner of case
-            ( OUTER_Y / 2 - FOOT_DEPTH,            0),             # along the back face toward -Y
-            ( OUTER_Y / 2,                         -FOOT_RISE),    # rear contact point
-        ]
-        foot = (
-            cq.Workplane("YZ", origin=(fx, 0, 0))
-            .polyline(tri_pts).close()
-            .extrude(FOOT_THICK / 2, both=True)
-        )
-        shell = shell.union(foot)
-
+    # Rotate -90 deg about Z so the GPIO-header long edge of the display
+    # (currently at +X in the build frame) ends up at -Y (bottom) in the
+    # product frame. After this:
+    #   - product +X = old +Y (display Y long axis runs left-to-right)
+    #   - product +Y = old -X (display X short axis runs bottom-to-top,
+    #                          with brass posts at the top)
+    #   - product +Z unchanged (still out the screen)
+    shell = shell.rotate((0, 0, 0), (0, 0, 1), -90)
     return shell
 
 
@@ -355,8 +335,10 @@ def main():
     case = make_case()
     case.val().exportStep("case.step")
     cq.exporters.export(case, "case.stl")
-    print(f"Case outer: {OUTER_X:.1f} x {OUTER_Y:.1f} x {OUTER_Z:.1f} mm "
-          f"(+{FOOT_RISE:.0f} mm foot)")
+    # Note: after the -90 deg Z rotation, the EXPORTED footprint is
+    # (old OUTER_Y) wide x (old OUTER_X) tall x OUTER_Z deep.
+    print(f"Case outer (product frame): "
+          f"{OUTER_Y:.1f} x {OUTER_X:.1f} x {OUTER_Z:.1f} mm")
     print(f"Stack Z: floor={FLOOR_T}, pi_bot={PI_BOT_Z}, "
           f"pi_top={PI_TOP_Z}, disp_bot={DISP_BOT_Z}, "
           f"disp_top={DISP_TOP_Z}, glass_top={GLASS_Z}")
