@@ -11,13 +11,15 @@ notes with enough context to pick it up cold.
 ## Open
 
 ### BOARD-REV-B  Next AHRS PCB spin — index
-Status: **OPEN — queued, no schedule yet**
-Decisions captured (see linked entries for the full rationale):
-  - **Airspeed transducer**: swap SDP33-1500Pa → **TE MS4525DO ±1 psi**.
-    The SDP33 saturates at ~96 kt; S-21 cruise is 130 kt. See
-    SDP31-AIRDATA "Higher-range swap path".
+Status: **OPEN — sensor selection locked, layout work next**
+Locked-in decisions (see linked entries for the full rationale):
+  - **Airspeed transducer**: **TE MS4525DO ±1 psi** replaces the
+    SDP33-1500Pa. The SDP33 saturates at ~96 kt; S-21 cruise is
+    130 kt. See SDP31-AIRDATA "Higher-range swap path".
   - **AOA transducer**: a **second MS4525DO** on the same I²C bus at
     the alternate address (single BOM line covers both). See AOA-PROBE.
+  - Net result: rev B carries **2× MS4525DO** — one for pitot/static,
+    one for AOA — sharing the I²C bus, driver, and supply rails.
   - **AOA probe head**: AlphaSystems Eagle preferred; 2-hole DIY
     flush probe as the cheap alternative.
   - **Sensor footprint reservations**: keep the 0x22 SDP3x pad on rev
