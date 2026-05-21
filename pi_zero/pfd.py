@@ -2896,6 +2896,12 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "pfd"   # MFD runs under mode=pfd
             return True
 
+        # ── FPL placeholder taps ──────────────────────────────────────────
+        if mode == "fpl":
+            if fpl_hit(x, y) == "back":
+                disp["mode"] = "pfd"   # MFD runs under mode=pfd
+            return True
+
         # ── MFD strip-setup chooser taps ──────────────────────────────────
         if mode == "mfd_strip_setup":
             act, payload = mfd_strip_setup_hit(x, y)
@@ -7741,11 +7747,11 @@ import moving_map as _mfd_map   # noqa: E402
 # the active direct-to waypoint (or stays at 80 with no D2).
 MFD_MAX_ZOOM_NM = 160
 
-_MFD_FPL_BTN_W = 100
-_MFD_FPL_BTN_H = 52     # taller — FPL opens the flight-plan editor (TODO)
-_MFD_D2_BTN_W  = 100
-_MFD_D2_BTN_H  = 52     # taller — matches FPL for a balanced chrome row
 _MFD_ZOOM_BTN  = 56     # square zoom-in / zoom-out buttons
+_MFD_FPL_BTN_W = 100    # FPL keeps its width for the 3-char label
+_MFD_FPL_BTN_H = _MFD_ZOOM_BTN   # height matches zoom buttons
+_MFD_D2_BTN_W  = 100    # D2 keeps its width for "→ KSEZ"-style idents
+_MFD_D2_BTN_H  = _MFD_ZOOM_BTN
 _MFD_STRIP_H   = 46     # height of the bottom data strip
 _MFD_STRIP_PAD = 6      # gap between strip and zoom buttons above it
 _MFD_STRIP_SLOT_COUNT = 8
@@ -7793,10 +7799,11 @@ def _mfd_d2_rect():
 
 
 def _mfd_strip_rect():
-    """Bottom data strip — spans full width, sits at the very bottom."""
-    pad = 6
-    return (pad, DISPLAY_H - _MFD_STRIP_H - pad,
-            DISPLAY_W - 2 * pad, _MFD_STRIP_H)
+    """Bottom data strip — flush with the bottom and side edges of the
+    display so the dark backplate reads as a real status bar rather
+    than a floating card."""
+    return (0, DISPLAY_H - _MFD_STRIP_H,
+            DISPLAY_W, _MFD_STRIP_H)
 
 
 def _mfd_zoom_in_rect():
@@ -7878,12 +7885,17 @@ def _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2):
         "sats":     int(disp.get("sats", 0)),
         "d2":       d2,
     }
-    # AGL: alt minus terrain elevation under the aircraft.  Returns 0
-    # when no SRTM tile is loaded for the current cell — same fallback
-    # the terrain-alert code already relies on, so an unknown tile reads
-    # as "AGL == alt" rather than dashing out the slot.
+    # AGL: alt minus terrain elevation under the aircraft.  Use the
+    # combined helper so the coarse Mapzen layer fills in areas the
+    # high-res SRTM cache doesn't cover.  Both helpers return 0.0
+    # when no tile is loaded (sea-level convention) — same fallback
+    # the terrain-alert code uses, so an unknown cell shows
+    # AGL == baro alt rather than dashing the slot.  _has_terrain is
+    # checked at import time so this gate skips the lookup entirely
+    # on a Pi without any cached terrain.
     if _has_terrain:
-        ground_ft = get_elevation_ft(SRTM_DIR, lat, lon)
+        ground_ft = get_elevation_ft_combined(
+            SRTM_DIR, COARSE_DIR, lat, lon)
         ctx["agl"] = max(0.0, alt - ground_ft)
     if d2 is not None:
         dist_nm, brg = _nav_geo_dist_brg(lat, lon, d2["lat"], d2["lon"])
@@ -7931,7 +7943,8 @@ def _mfd_strip_format(kind, ctx):
         v = ctx.get("agl")
         if v is None:
             return ("AGL", "----", (140, 140, 140))
-        agl_q = int(round(v / 20.0) * 20)
+        # 10 ft resolution — matches the Pi 4 PFD's AGL readout.
+        agl_q = int(round(v / 10.0) * 10)
         return ("AGL", f"{agl_q:5d}", WHITE)
     if kind == "vs":
         return ("VS", f"{int(round(ctx['vs'])):+5d}", WHITE)
@@ -8185,14 +8198,16 @@ def draw_mfd(surf, connected=True, data_stale=False):
         _action_btn(surf, cx_, cy_, cw_, ch_, "CTR", "ok", r=5)
 
     # ── Bottom data strip ─────────────────────────────────────────────
-    # Full-width 8-slot strip.  Each slot's kind is user-selectable —
-    # tap the strip to open the chooser overlay.
+    # Full-width 8-slot strip.  Spans display-edge to display-edge so
+    # the dark backplate reads as a status bar rather than a floating
+    # card; only the top edge gets a hairline since the bottom and
+    # sides are flush with the bezel.
     sx, sy, sw, sh = _mfd_strip_rect()
     plate = pygame.Surface((sw, sh), pygame.SRCALPHA)
     plate.fill((0, 8, 22, 180))
     surf.blit(plate, (sx, sy))
-    pygame.draw.rect(surf, (60, 80, 110), (sx, sy, sw, sh),
-                     width=1, border_radius=4)
+    pygame.draw.line(surf, (60, 80, 110),
+                     (sx, sy), (sx + sw - 1, sy), 1)
 
     ctx = _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2)
     n_cols = _MFD_STRIP_SLOT_COUNT
@@ -8393,6 +8408,39 @@ def mfd_strip_setup_hit(x, y):
     return (None, None)
 
 
+# ── FPL (flight-plan editor) — placeholder ─────────────────────────────
+# Top-right "FPL" button on the MFD opens this.  Real multi-waypoint
+# editing + user-waypoint storage will hang off this screen; for now
+# it's a stub so the chrome tap target and screen routing are in place
+# when that work lands.
+
+def draw_fpl_placeholder(surf):
+    _screen_header(surf, "FLIGHT PLAN")
+    nav = disp.get("nav", {})
+    cy = DISPLAY_H // 2 - 30
+    if nav.get("ident"):
+        _text(surf, "Active direct-to", 14, (140, 170, 200),
+              cx=DISPLAY_W // 2, cy=cy - 24)
+        _text(surf, nav.get("ident", ""), 36, MAGENTA, bold=True,
+              cx=DISPLAY_W // 2, cy=cy + 8)
+    else:
+        _text(surf, "No direct-to active", 14, (140, 170, 200),
+              cx=DISPLAY_W // 2, cy=cy - 12)
+        _text(surf, "(use the D2 button on the MFD)", 11,
+              (110, 130, 160), cx=DISPLAY_W // 2, cy=cy + 14)
+
+    _text(surf, "Multi-waypoint flight plans and user waypoints",
+          12, (180, 200, 220), cx=DISPLAY_W // 2, cy=cy + 70)
+    _text(surf, "will live here.  Coming soon.",
+          12, (180, 200, 220), cx=DISPLAY_W // 2, cy=cy + 88)
+
+
+def fpl_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    return None
+
+
 def _mfd_open_d2_keyboard():
     """Open the existing keyboard with kbd_target == 'nav_ident' so the
     pilot can type an ICAO ident.  ENTER routes through the nav_confirm
@@ -8570,6 +8618,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_screen_sync_setup(surf, disp["cs"]); return
     if mode == "mfd_strip_setup":
         draw_mfd_strip_setup(surf); return
+    if mode == "fpl":
+        draw_fpl_placeholder(surf); return
     if mode == "fpl":
         draw_fpl_placeholder(surf); return
     if mode == "system_setup":
