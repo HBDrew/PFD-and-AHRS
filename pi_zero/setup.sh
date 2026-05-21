@@ -67,12 +67,23 @@ dtparam=i2c_arm=on
 disable_overscan=1
 framebuffer_width=640
 framebuffer_height=480
+# Hardware PWM on GPIO 18 for the panel backlight (active-low; pfd.py
+# uses kernel sysfs PWM with polarity=inversed).
+dtoverlay=pwm,pin=18,func=2
 CFG
     echo "  → /boot/firmware/config.txt updated for Waveshare 3.5\" DPI"
     echo "  → IMPORTANT: Copy waveshare DT overlay files to /boot/overlays/"
     echo "    Download from: https://www.waveshare.com/wiki/3.5inch_DPI_LCD"
 else
-    echo "  → config.txt already configured"
+    echo "  → config.txt already configured (Waveshare block present)"
+    # Idempotent backfill of the PWM-backlight overlay for installs that
+    # were set up before backlight control existed in this repo.
+    if ! grep -q "^dtoverlay=pwm,pin=18" /boot/firmware/config.txt; then
+        echo "" >> /boot/firmware/config.txt
+        echo "# Hardware PWM on GPIO 18 for the panel backlight (added by setup.sh)" >> /boot/firmware/config.txt
+        echo "dtoverlay=pwm,pin=18,func=2" >> /boot/firmware/config.txt
+        echo "  → added PWM-backlight overlay (reboot required)"
+    fi
 fi
 
 echo "[5/8] Creating data directories…"
@@ -88,7 +99,7 @@ After=network.target
 
 [Service]
 User=$RUN_USER
-SupplementaryGroups=video render input dialout
+SupplementaryGroups=video render input dialout gpio
 WorkingDirectory=$ZERO_DIR
 # kmsdrm is required when the panel is driven via vc4-kms-DPI-35inch
 # (the new Waveshare 3.5" DPI overlay).  fbcon was correct only for
@@ -98,6 +109,23 @@ WorkingDirectory=$ZERO_DIR
 Environment="SDL_VIDEODRIVER=kmsdrm"
 Environment="DISPLAY="
 Environment="PYTHONPATH=$SHARED_DIR"
+# Backlight PWM setup — runs as root (the leading '+' bypasses User=)
+# before the main process starts.  Idempotent so a service restart
+# doesn't fail when pwm0 is already exported.  Skips cleanly when the
+# pwm overlay isn't loaded (HDMI-only test bench, e.g.) so the PFD
+# still starts and just falls back to the no-control path.
+ExecStartPre=+/bin/sh -c '\
+    if [ -d /sys/class/pwm/pwmchip0 ]; then \
+        [ -e /sys/class/pwm/pwmchip0/pwm0 ] || echo 0 > /sys/class/pwm/pwmchip0/export; \
+        sleep 0.05; \
+        echo 0        > /sys/class/pwm/pwmchip0/pwm0/enable     2>/dev/null || true; \
+        echo 1000000  > /sys/class/pwm/pwmchip0/pwm0/period; \
+        echo inversed > /sys/class/pwm/pwmchip0/pwm0/polarity   2>/dev/null || true; \
+        echo 500000   > /sys/class/pwm/pwmchip0/pwm0/duty_cycle 2>/dev/null || true; \
+        echo 1        > /sys/class/pwm/pwmchip0/pwm0/enable; \
+        chgrp gpio /sys/class/pwm/pwmchip0/pwm0/duty_cycle; \
+        chmod g+w  /sys/class/pwm/pwmchip0/pwm0/duty_cycle; \
+    fi'
 ExecStart=/usr/bin/python3 $ZERO_DIR/pfd.py
 Restart=always
 RestartSec=5

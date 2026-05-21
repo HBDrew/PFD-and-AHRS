@@ -719,38 +719,97 @@ def _test_ahrs_connection(url):
 
 
 # ── Backlight control ─────────────────────────────────────────────────────────
+# Two transports, in priority order:
+#
+#   1. Hardware PWM via the kernel sysfs PWM subsystem
+#      (/sys/class/pwm/pwmchip0/pwm0/duty_cycle).  Used on the Waveshare
+#      3.5" DPI panel where backlight is active-low on GPIO 18.  Requires
+#      `dtoverlay=pwm,pin=18,func=2` in /boot/firmware/config.txt and
+#      the export + period + polarity + chmod set up by the pfd.service
+#      ExecStartPre block (root-only ops done there so this process can
+#      stay unprivileged).  Polarity is `inversed` in sysfs so the duty
+#      cycle reads naturally: 0 % = off, 100 % = max brightness.
+#
+#   2. Legacy /sys/class/backlight/<panel>/brightness node — kernel
+#      backlight drivers (rpi_backlight, I²C-controlled backlights).
+#
+# If neither is available the slider still works in the UI but won't
+# change panel output.
+
+_BL_PWM_DUTY     = "/sys/class/pwm/pwmchip0/pwm0/duty_cycle"
+_BL_PWM_PERIOD_F = "/sys/class/pwm/pwmchip0/pwm0/period"
 
 _BACKLIGHT_PATHS = [
     "/sys/class/backlight/rpi_backlight/brightness",
     "/sys/class/backlight/10-0045/brightness",
 ]
+
+_BL_TRANSPORT       = None      # "pwm" | "sysfs" | None
+_BL_PWM_PERIOD_NS   = 1_000_000 # cached at init; service unit is the source of truth
 _backlight_path     = None
-_backlight_max_path = None   # max_brightness sysfs node
+_backlight_max_path = None      # max_brightness sysfs node
 
 def _init_backlight():
-    """Find the active backlight sysfs node (called once at startup)."""
+    """Detect which backlight transport is available."""
     global _backlight_path, _backlight_max_path
+    global _BL_TRANSPORT, _BL_PWM_PERIOD_NS
+
+    # Path 1: hardware PWM (preferred on Waveshare 3.5" DPI).  The
+    # service unit's ExecStartPre has already exported pwm0, set period
+    # and polarity, enabled the channel, and chmod'd duty_cycle to be
+    # group-writable.  We only need to confirm the file is writable and
+    # cache the period that ExecStartPre set.
+    if os.access(_BL_PWM_DUTY, os.W_OK):
+        try:
+            with open(_BL_PWM_PERIOD_F) as f:
+                _BL_PWM_PERIOD_NS = int(f.read().strip())
+        except OSError:
+            pass
+        _BL_TRANSPORT = "pwm"
+        print(f"[BL] Using PWM backlight: {_BL_PWM_DUTY} "
+              f"(period={_BL_PWM_PERIOD_NS} ns)")
+        return
+
+    # Path 2: legacy sysfs backlight driver.
     for p in _BACKLIGHT_PATHS:
         if os.path.exists(p):
             _backlight_path     = p
             _backlight_max_path = os.path.join(os.path.dirname(p), "max_brightness")
-            print(f"[BL] Using backlight: {p}")
-            break
+            _BL_TRANSPORT = "sysfs"
+            print(f"[BL] Using sysfs backlight: {p}")
+            return
+
+    print("[BL] No backlight control available")
 
 def _set_backlight(level: int):
-    """Set brightness 1–10 → 0..max_brightness (or 0..255 fallback)."""
-    if _backlight_path is None:
+    """Set brightness 1–10 across whichever transport is active.
+
+    level=1 maps to 0 % (effectively off, matches the existing 1–10
+    scale's lower bound); level=10 maps to 100 %.
+    """
+    if _BL_TRANSPORT == "pwm":
+        try:
+            duty = max(0, min(_BL_PWM_PERIOD_NS,
+                              int(_BL_PWM_PERIOD_NS * (level - 1) / 9.0)))
+            with open(_BL_PWM_DUTY, "w") as f:
+                f.write(str(duty))
+        except OSError:
+            pass
         return
-    try:
-        max_b = 255
-        if _backlight_max_path and os.path.exists(_backlight_max_path):
-            with open(_backlight_max_path) as f:
-                max_b = int(f.read().strip())
-        raw = max(0, min(max_b, int((level - 1) / 9.0 * max_b)))
-        with open(_backlight_path, "w") as f:
-            f.write(str(raw))
-    except OSError:
-        pass
+
+    if _BL_TRANSPORT == "sysfs":
+        if _backlight_path is None:
+            return
+        try:
+            max_b = 255
+            if _backlight_max_path and os.path.exists(_backlight_max_path):
+                with open(_backlight_max_path) as f:
+                    max_b = int(f.read().strip())
+            raw = max(0, min(max_b, int((level - 1) / 9.0 * max_b)))
+            with open(_backlight_path, "w") as f:
+                f.write(str(raw))
+        except OSError:
+            pass
 
 
 def smooth_state():
