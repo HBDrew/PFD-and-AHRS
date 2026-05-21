@@ -7985,7 +7985,11 @@ def draw_mfd(surf, connected=True, data_stale=False):
         _col(col_w // 2 + col_w * 2, "ALT",  f"{alt_q:5d}")
         _col(col_w // 2 + col_w * 3, "WPT",  d2["ident"], val_col=MAGENTA)
         _col(col_w // 2 + col_w * 4, "BTW",  f"{int(round(brg)) % 360:03d}°", val_col=MAGENTA)
-        _col(col_w // 2 + col_w * 5, "DIST", f"{dist_nm:.1f}", val_col=MAGENTA)
+        # 4-digit integer once DIST hits 1000 nm — the extra decimal
+        # crowds the adjacent ETE column at long range.
+        dist_str = (f"{int(round(dist_nm)):d}" if dist_nm >= 1000.0
+                    else f"{dist_nm:.1f}")
+        _col(col_w // 2 + col_w * 5, "DIST", dist_str, val_col=MAGENTA)
         _col(col_w // 2 + col_w * 6, "ETE",  ete, val_col=MAGENTA)
     else:
         # No D2 active: 3 columns spanning the strip.

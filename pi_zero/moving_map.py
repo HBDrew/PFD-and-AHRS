@@ -948,7 +948,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 if hours < 1.0:
                     mm_, ss_ = divmod(int(round(hours * 3600)), 60)
                     ete_lbl = f"ETE {mm_}:{ss_:02d}"
-                elif hours < 10.0:
+                elif hours < 99.0:
                     h_  = int(hours)
                     mm_ = int(round((hours - h_) * 60))
                     if mm_ == 60:
