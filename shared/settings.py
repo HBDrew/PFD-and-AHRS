@@ -28,7 +28,9 @@ import threading
 import time
 
 # ── Which top-level disp subtrees to persist ──────────────────────────────────
-# Nested dicts (one level) — only their leaf values get saved.
+# Nested dicts (one level) — only their leaf values get saved by default.
+# Subtrees in _PERSIST_COMPLEX_SUBTREES additionally allow list / dict leaf
+# values (for the flight plan's waypoint list, etc.).
 _PERSIST_SUBTREES = [
     "fp",    # Flight profile: V-speeds, callsign, aircraft type
     "ds",    # Display settings: units, brightness, baro_unit
@@ -36,7 +38,9 @@ _PERSIST_SUBTREES = [
     "cs",    # Connectivity: AHRS URL, WiFi SSID  (not password — see below)
     "ad",    # Airport data: filter toggles (show_public, show_heli, etc.)
     "nav",   # Direct-to navigation: active waypoint ident, lat/lon, activation
+    "fpl",   # Flight plan: ordered waypoint list + active leg index
 ]
+_PERSIST_COMPLEX_SUBTREES = {"fpl"}
 
 # Top-level scalar keys that persist as-is
 _PERSIST_SCALARS = [
@@ -67,16 +71,26 @@ _WRITE_DELAY_S = 1.5   # debounce: save 1.5 s after last change
 def _extract(disp: dict) -> dict:
     """Build a shallow, JSON-safe snapshot of persistable settings."""
     out = {"subtrees": {}, "scalars": {}}
+    scalar_types = (bool, int, float, str, type(None))
     for sub in _PERSIST_SUBTREES:
         if sub not in disp:
             continue
         skip = _SKIP_KEYS.get(sub, set())
-        out["subtrees"][sub] = {
-            k: v for k, v in disp[sub].items()
-            if k not in skip and isinstance(v, (bool, int, float, str, type(None)))
-        }
+        allow_complex = sub in _PERSIST_COMPLEX_SUBTREES
+        sub_out = {}
+        for k, v in disp[sub].items():
+            if k in skip:
+                continue
+            if isinstance(v, scalar_types):
+                sub_out[k] = v
+            elif allow_complex and isinstance(v, (list, dict)):
+                # Trust the caller for opted-in subtrees; the top-level
+                # json.dump will catch anything that's not actually
+                # serializable.
+                sub_out[k] = v
+        out["subtrees"][sub] = sub_out
     for k in _PERSIST_SCALARS:
-        if k in disp and isinstance(disp[k], (bool, int, float, str, type(None))):
+        if k in disp and isinstance(disp[k], scalar_types):
             out["scalars"][k] = disp[k]
     return out
 

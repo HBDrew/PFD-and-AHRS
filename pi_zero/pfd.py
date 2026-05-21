@@ -230,6 +230,16 @@ disp["mfd_pan"] = {                 # MFD pan offset
     "lat": None,        # None → map follows aircraft
     "lon": None,
 }
+# Flight plan — ordered list of waypoints + active-leg index.  Each
+# waypoint is {ident, lat, lon, elev_ft, user}.  active_idx == -1 means
+# no plan is active (the FPL list still survives across restarts; you
+# just aren't navigating along it).  When active_idx >= 0 the current
+# leg's destination is mirrored into disp["nav"] so the existing CDI,
+# moving-map course line, ETE/ETA, and D→ button all keep working.
+disp["fpl"] = {
+    "waypoints":  [],
+    "active_idx": -1,
+}
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
     "init_alt":   5000.0,
@@ -2890,16 +2900,23 @@ def handle_event(event, demo_mode):
                 _ssync_refresh_kinds()
             return True
 
-        # ── FPL placeholder taps ──────────────────────────────────────────
+        # ── FPL screen taps ───────────────────────────────────────────────
         if mode == "fpl":
-            if fpl_hit(x, y) == "back":
-                disp["mode"] = "pfd"   # MFD runs under mode=pfd
-            return True
-
-        # ── FPL placeholder taps ──────────────────────────────────────────
-        if mode == "fpl":
-            if fpl_hit(x, y) == "back":
-                disp["mode"] = "pfd"   # MFD runs under mode=pfd
+            act, payload = fpl_hit(x, y)
+            if act == "back":
+                disp["mode"] = "pfd"
+            elif act == "add":
+                _fpl_open_add_keyboard()
+            elif act == "deact":
+                _fpl_deactivate()
+            elif act == "activate":
+                _fpl_activate(payload, reset_activation=True)
+            elif act == "up" and payload > 0:
+                _fpl_swap(payload, payload - 1)
+            elif act == "down":
+                _fpl_swap(payload, payload + 1)
+            elif act == "delete":
+                _fpl_remove(payload)
             return True
 
         # ── MFD strip-setup chooser taps ──────────────────────────────────
@@ -3173,6 +3190,28 @@ def handle_event(event, demo_mode):
                     disp["mode"] = disp["kbd_prev"]
                 elif sty == 'ok':             # DONE
                     buf = disp["kbd_buf"].strip()
+                    if target == "fpl_ident":
+                        # FPL append — look up the ident in the
+                        # airport DB, append to disp["fpl"]["waypoints"],
+                        # return to the FPL screen.  Empty buf cancels.
+                        if not buf:
+                            disp["kbd_buf"]   = ""
+                            disp["kbd_error"] = ""
+                            disp["mode"] = "fpl"
+                            return True
+                        candidate = buf.upper()
+                        hit = _nav_lookup_ident(candidate)
+                        if hit is None:
+                            disp["kbd_error"] = f"UNKNOWN WAYPOINT  {candidate}"
+                            return True
+                        ident, lat, lon, elev_ft = hit
+                        if _fpl_add_waypoint(ident, lat, lon, elev_ft):
+                            disp["kbd_buf"]   = ""
+                            disp["kbd_error"] = ""
+                            disp["mode"] = "fpl"
+                        else:
+                            disp["kbd_error"] = f"PLAN FULL ({_FPL_MAX_WAYPOINTS} MAX)"
+                        return True
                     if target == "nav_ident":
                         # Direct-to entry — three paths (pi4 parity):
                         #   1. Empty buf + active waypoint → re-confirm
@@ -4626,6 +4665,176 @@ def _nav_xtk_nm(act_lat, act_lon, wpt_lat, wpt_lon, cur_lat, cur_lon):
     return _EARTH_R_NM * math.asin(
         math.sin(d13 / _EARTH_R_NM) * math.sin(math.radians(brg13 - brg12))
     )
+
+
+# ── Flight plan helpers ───────────────────────────────────────────────────
+# disp["fpl"] is the source of truth.  When active_idx >= 0 we mirror
+# the current leg's destination into disp["nav"] so the existing CDI /
+# moving-map course / D→ button / ETE all keep working unchanged.
+
+_FPL_ADVANCE_DIST_NM = 0.5    # auto-sequence when within this of the
+                              # current waypoint
+_FPL_MAX_WAYPOINTS   = 20     # capped so the list fits a single screen
+                              # without scrolling
+
+
+def _fpl_is_active():
+    fpl = disp.get("fpl", {})
+    wps = fpl.get("waypoints", [])
+    idx = fpl.get("active_idx", -1)
+    return 0 <= idx < len(wps)
+
+
+def _fpl_current():
+    """Return the waypoint we're flying toward, or None."""
+    if not _fpl_is_active():
+        return None
+    return disp["fpl"]["waypoints"][disp["fpl"]["active_idx"]]
+
+
+def _fpl_apply_active(reset_activation=False):
+    """Mirror the active FPL waypoint into disp["nav"] so CDI / map /
+    D→ button all see it as the current direct-to.  Activation point
+    is the previous waypoint's lat/lon (for proper XTE across legs)
+    or — on the first leg or when reset_activation=True — the current
+    aircraft position."""
+    wp = _fpl_current()
+    if wp is None:
+        return
+    idx = disp["fpl"]["active_idx"]
+    if idx > 0 and not reset_activation:
+        prev = disp["fpl"]["waypoints"][idx - 1]
+        act_lat = float(prev["lat"])
+        act_lon = float(prev["lon"])
+    else:
+        act_lat = float(disp.get("lat", wp["lat"]))
+        act_lon = float(disp.get("lon", wp["lon"]))
+    disp["nav"]["ident"]   = str(wp["ident"])
+    disp["nav"]["lat"]     = float(wp["lat"])
+    disp["nav"]["lon"]     = float(wp["lon"])
+    disp["nav"]["elev_ft"] = float(wp.get("elev_ft", 0.0))
+    disp["nav"]["act_lat"] = act_lat
+    disp["nav"]["act_lon"] = act_lon
+
+
+def _fpl_activate(idx, reset_activation=True):
+    """Activate the leg whose destination is waypoints[idx].  Reset
+    the activation point to the current aircraft pos by default so a
+    fresh user-initiated activation always starts from where we are."""
+    wps = disp["fpl"]["waypoints"]
+    if not (0 <= idx < len(wps)):
+        return
+    disp["fpl"]["active_idx"] = idx
+    _fpl_apply_active(reset_activation=reset_activation)
+    _settings.mark_dirty()
+
+
+def _fpl_deactivate():
+    """Clear the active plan without touching the waypoint list."""
+    disp["fpl"]["active_idx"] = -1
+    disp["nav"]["ident"]   = ""
+    disp["nav"]["lat"]     = 0.0
+    disp["nav"]["lon"]     = 0.0
+    disp["nav"]["elev_ft"] = 0.0
+    _settings.mark_dirty()
+
+
+def _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=False):
+    """Append a waypoint; clamped to _FPL_MAX_WAYPOINTS."""
+    wps = disp["fpl"]["waypoints"]
+    if len(wps) >= _FPL_MAX_WAYPOINTS:
+        return False
+    wps.append({"ident": str(ident), "lat": float(lat), "lon": float(lon),
+                "elev_ft": float(elev_ft), "user": bool(user)})
+    _settings.mark_dirty()
+    return True
+
+
+def _fpl_remove(idx):
+    """Delete waypoints[idx].  If it was the active leg, deactivate;
+    otherwise shift active_idx down by 1 if it was past the removal."""
+    wps = disp["fpl"]["waypoints"]
+    if not (0 <= idx < len(wps)):
+        return
+    cur = disp["fpl"]["active_idx"]
+    del wps[idx]
+    if cur == idx:
+        _fpl_deactivate()
+    elif cur > idx:
+        disp["fpl"]["active_idx"] = cur - 1
+        # nav[] still points at the right waypoint (object identity),
+        # but the act_lat/act_lon may have come from a deleted prev —
+        # refresh.
+        _fpl_apply_active()
+    _settings.mark_dirty()
+
+
+def _fpl_swap(i, j):
+    """Reorder waypoints by swapping i and j.  Adjusts active_idx so
+    the active leg's destination follows."""
+    wps = disp["fpl"]["waypoints"]
+    if not (0 <= i < len(wps) and 0 <= j < len(wps)):
+        return
+    wps[i], wps[j] = wps[j], wps[i]
+    cur = disp["fpl"]["active_idx"]
+    if cur == i:
+        disp["fpl"]["active_idx"] = j
+    elif cur == j:
+        disp["fpl"]["active_idx"] = i
+    if _fpl_is_active():
+        _fpl_apply_active()
+    _settings.mark_dirty()
+
+
+def _fpl_check_advance(lat, lon):
+    """Called every frame.  Auto-sequence to the next leg when within
+    _FPL_ADVANCE_DIST_NM of the current waypoint.  Deactivates at the
+    end of the plan."""
+    wp = _fpl_current()
+    if wp is None:
+        return
+    dist_nm, _ = _nav_geo_dist_brg(lat, lon, wp["lat"], wp["lon"])
+    if dist_nm >= _FPL_ADVANCE_DIST_NM:
+        return
+    fpl = disp["fpl"]
+    if fpl["active_idx"] < len(fpl["waypoints"]) - 1:
+        _fpl_activate(fpl["active_idx"] + 1, reset_activation=False)
+    else:
+        # Reached the final waypoint — deactivate so the magenta
+        # course line clears.  The list stays for re-activation.
+        _fpl_deactivate()
+
+
+def _fpl_render_remaining():
+    """Return a list of (lat, lon) tuples starting at the active
+    waypoint and including every subsequent waypoint, for the moving
+    map to draw as a dimmer magenta polyline.  Returns None when
+    there's nothing forward of the active leg."""
+    if not _fpl_is_active():
+        return None
+    wps = disp["fpl"]["waypoints"]
+    idx = disp["fpl"]["active_idx"]
+    if idx >= len(wps) - 1:
+        return None
+    return [(float(wp["lat"]), float(wp["lon"]))
+            for wp in wps[idx:]]
+
+
+def _fpl_total_remaining_nm(lat, lon):
+    """Distance from current aircraft position through the active leg
+    and every remaining leg.  Used by ETA = clock at the FINAL waypoint."""
+    if not _fpl_is_active():
+        return 0.0
+    wps = disp["fpl"]["waypoints"]
+    idx = disp["fpl"]["active_idx"]
+    total, _ = _nav_geo_dist_brg(lat, lon,
+                                  wps[idx]["lat"], wps[idx]["lon"])
+    for i in range(idx, len(wps) - 1):
+        leg, _ = _nav_geo_dist_brg(
+            wps[i]["lat"], wps[i]["lon"],
+            wps[i + 1]["lat"], wps[i + 1]["lon"])
+        total += leg
+    return total
 
 
 def draw_cdi(surf):
@@ -7988,12 +8197,22 @@ def _mfd_strip_format(kind, ctx):
     if kind == "xte":
         return (caption, f"{ctx['xte_nm']:+.1f}", MAGENTA)
     if kind == "ete":
+        # Remaining time to the active leg's destination — single leg.
         return (caption,
                 _mfd_strip_ete_str(gs_kt, ctx["dist_nm"]), MAGENTA)
-    if kind in ("eta", "etw"):
-        # ETW currently == ETA (single waypoint).  Once flight plans
-        # land, ETW computes against the next waypoint and ETA stays
-        # against the final.
+    if kind == "etw":
+        # Clock time at the NEXT waypoint (the active leg's dest).
+        # When the plan has only one waypoint, equivalent to ETA.
+        return (caption,
+                _mfd_strip_eta_str(gs_kt, ctx["dist_nm"]), MAGENTA)
+    if kind == "eta":
+        # Clock time at the FINAL waypoint of the plan — walks
+        # remaining legs.  Falls back to single-leg D2 behaviour when
+        # no plan is active (just the current direct-to destination).
+        if _fpl_is_active():
+            total_nm = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"])
+            return (caption,
+                    _mfd_strip_eta_str(gs_kt, total_nm), MAGENTA)
         return (caption,
                 _mfd_strip_eta_str(gs_kt, ctx["dist_nm"]), MAGENTA)
 
@@ -8176,6 +8395,11 @@ def draw_mfd(surf, connected=True, data_stale=False):
         # GPS fix when the user has panned the map elsewhere.
         own_lat=ac_lat,
         own_lon=ac_lon,
+        # Remaining FPL legs past the active waypoint — drawn as a
+        # dimmer magenta polyline so the pilot sees the rest of the
+        # plan after the current direct-to.  None when no plan is
+        # active or the active leg is also the final.
+        fpl_remaining=_fpl_render_remaining(),
     )
     lat, lon = ac_lat, ac_lon
 
@@ -8358,41 +8582,6 @@ def draw_mfd_strip_setup(surf):
                   cx=bx + bw // 2, y=by + bh - 14)
 
 
-def draw_fpl_placeholder(surf):
-    """Placeholder Flight Plan screen — reached by tapping FPL on the
-    MFD chrome.  Real multi-waypoint plans + user waypoints land here;
-    for now it shows the active direct-to (if any) and an explanation."""
-    _screen_header(surf, "FLIGHT PLAN")
-    nv = disp.get("nav") or {}
-    cx = DISPLAY_W // 2
-    y = 90
-    if nv.get("ident"):
-        _text(surf, "Active direct-to:", 14, (160, 180, 210),
-              cx=cx, y=y)
-        _text(surf, nv["ident"], 36, MAGENTA, bold=True,
-              cx=cx, y=y + 22)
-        y += 88
-    else:
-        _text(surf, "No active direct-to.", 14, (160, 180, 210),
-              cx=cx, y=y)
-        y += 36
-    for line in (
-        "Multi-waypoint flight plans and",
-        "user waypoints will live on this screen.",
-        "",
-        "Tap BACK to return.",
-        "Three-finger 2-s hold to swap PFD ↔ MFD.",
-    ):
-        _text(surf, line, 13, (140, 160, 190), cx=cx, y=y)
-        y += 22
-
-
-def fpl_hit(x, y):
-    if 8 <= x <= 80 and 6 <= y <= 37:
-        return "back"
-    return None
-
-
 def mfd_strip_setup_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return ("back", None)
@@ -8410,37 +8599,196 @@ def mfd_strip_setup_hit(x, y):
     return (None, None)
 
 
-# ── FPL (flight-plan editor) — placeholder ─────────────────────────────
-# Top-right "FPL" button on the MFD opens this.  Real multi-waypoint
-# editing + user-waypoint storage will hang off this screen; for now
-# it's a stub so the chrome tap target and screen routing are in place
-# when that work lands.
+# ── FPL (flight-plan editor) ────────────────────────────────────────────
+# Top-right "FPL" button on the MFD opens this.  Ordered list of
+# waypoints; tap a row to activate that leg (writes disp["nav"]).
+# Reorder with ↑ / ↓; delete with ✕.  Auto-sequences to the next
+# waypoint when within _FPL_ADVANCE_DIST_NM of the active one.
 
-def draw_fpl_placeholder(surf):
+_FPL_HEADER_H   = 44
+_FPL_ACTIONS_H  = 50
+_FPL_ROW_H      = 46
+_FPL_ROW_GAP    = 4
+
+# Per-row action icon button width, right-justified.
+_FPL_ICON_W     = 32
+_FPL_ICON_GAP   = 4
+
+
+def _fpl_actions_rect():
+    pad = 6
+    return (pad, _FPL_HEADER_H + 6,
+            DISPLAY_W - 2 * pad, _FPL_ACTIONS_H)
+
+
+def _fpl_add_btn_rect():
+    ax, ay, aw, ah = _fpl_actions_rect()
+    # Half-width on the left
+    return (ax, ay, aw // 2 - 4, ah)
+
+
+def _fpl_deact_btn_rect():
+    ax, ay, aw, ah = _fpl_actions_rect()
+    return (ax + aw // 2 + 4, ay, aw // 2 - 4, ah)
+
+
+def _fpl_list_y0():
+    return _FPL_HEADER_H + 6 + _FPL_ACTIONS_H + 8
+
+
+def _fpl_row_rect(idx):
+    y0 = _fpl_list_y0()
+    pad = 6
+    return (pad, y0 + idx * (_FPL_ROW_H + _FPL_ROW_GAP),
+            DISPLAY_W - 2 * pad, _FPL_ROW_H)
+
+
+def _fpl_row_icon_rects(rect):
+    """Return (up_rect, down_rect, del_rect) inside a row rect, right-
+    justified.  Tappable to reorder / delete."""
+    bx, by, bw, bh = rect
+    iy = by + (bh - _FPL_ICON_W) // 2
+    ih = _FPL_ICON_W
+    del_x  = bx + bw - 6 - _FPL_ICON_W
+    down_x = del_x  - _FPL_ICON_GAP - _FPL_ICON_W
+    up_x   = down_x - _FPL_ICON_GAP - _FPL_ICON_W
+    return ((up_x,   iy, _FPL_ICON_W, ih),
+            (down_x, iy, _FPL_ICON_W, ih),
+            (del_x,  iy, _FPL_ICON_W, ih))
+
+
+def _fpl_icon_btn(surf, rect, glyph, dim=False):
+    bx, by, bw, bh = rect
+    bg = (8, 18, 32) if not dim else (4, 8, 14)
+    oc = (80, 100, 130) if not dim else (40, 50, 70)
+    tc = WHITE if not dim else (90, 100, 120)
+    pygame.draw.rect(surf, bg, rect, border_radius=4)
+    pygame.draw.rect(surf, oc, rect, width=1, border_radius=4)
+    _text(surf, glyph, 22, tc, bold=True,
+          cx=bx + bw // 2, cy=by + bh // 2 + 1)
+
+
+def draw_fpl(surf):
     _screen_header(surf, "FLIGHT PLAN")
-    nav = disp.get("nav", {})
-    cy = DISPLAY_H // 2 - 30
-    if nav.get("ident"):
-        _text(surf, "Active direct-to", 14, (140, 170, 200),
-              cx=DISPLAY_W // 2, cy=cy - 24)
-        _text(surf, nav.get("ident", ""), 36, MAGENTA, bold=True,
-              cx=DISPLAY_W // 2, cy=cy + 8)
-    else:
-        _text(surf, "No direct-to active", 14, (140, 170, 200),
-              cx=DISPLAY_W // 2, cy=cy - 12)
-        _text(surf, "(use the D2 button on the MFD)", 11,
-              (110, 130, 160), cx=DISPLAY_W // 2, cy=cy + 14)
 
-    _text(surf, "Multi-waypoint flight plans and user waypoints",
-          12, (180, 200, 220), cx=DISPLAY_W // 2, cy=cy + 70)
-    _text(surf, "will live here.  Coming soon.",
-          12, (180, 200, 220), cx=DISPLAY_W // 2, cy=cy + 88)
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    active_idx = disp.get("fpl", {}).get("active_idx", -1)
+    is_active  = 0 <= active_idx < len(wps)
+
+    # ── Action bar: ADD WPT + DEACTIVATE ────────────────────────────────
+    ax, ay, aw, ah = _fpl_add_btn_rect()
+    add_style = "ok" if len(wps) < _FPL_MAX_WAYPOINTS else "normal"
+    add_label = ("+ ADD WPT" if len(wps) < _FPL_MAX_WAYPOINTS
+                 else f"FULL ({_FPL_MAX_WAYPOINTS} max)")
+    _action_btn(surf, ax, ay, aw, ah, add_label, add_style, r=6)
+
+    dx, dy, dw, dh = _fpl_deact_btn_rect()
+    if is_active:
+        _action_btn(surf, dx, dy, dw, dh, "DEACTIVATE", "warn", r=6)
+    else:
+        # Dimmed when nothing's active.
+        pygame.draw.rect(surf, (10, 14, 22), (dx, dy, dw, dh),
+                         border_radius=6)
+        pygame.draw.rect(surf, (40, 48, 62), (dx, dy, dw, dh),
+                         width=1, border_radius=6)
+        _text(surf, "DEACTIVATE", 15, (80, 90, 110), bold=True,
+              cx=dx + dw // 2, cy=dy + dh // 2)
+
+    # ── Waypoint list ────────────────────────────────────────────────────
+    if not wps:
+        _text(surf, "No waypoints yet — tap + ADD WPT to start",
+              14, (140, 160, 190), cx=DISPLAY_W // 2,
+              cy=_fpl_list_y0() + 60)
+        _text(surf, "Each ICAO ident becomes a leg.  Tap a row to",
+              11, (110, 130, 160), cx=DISPLAY_W // 2,
+              cy=_fpl_list_y0() + 90)
+        _text(surf, "activate that leg as the direct-to.",
+              11, (110, 130, 160), cx=DISPLAY_W // 2,
+              cy=_fpl_list_y0() + 106)
+        return
+
+    for i, wp in enumerate(wps):
+        # Clip if off the bottom (we cap at _FPL_MAX_WAYPOINTS so the
+        # list always fits without scrolling on a 480-tall screen).
+        bx, by, bw, bh = _fpl_row_rect(i)
+        if by + bh > DISPLAY_H - 6:
+            break
+        is_this_active = (i == active_idx)
+        bg = (0, 40, 18) if is_this_active else (0, 12, 32)
+        oc = (60, 200, 90) if is_this_active else (60, 80, 110)
+        pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=5)
+        pygame.draw.rect(surf, oc, (bx, by, bw, bh),
+                         width=2 if is_this_active else 1, border_radius=5)
+        # Row number
+        _text(surf, f"{i+1}", 14, (160, 180, 200), bold=True,
+              x=bx + 10, cy=by + bh // 2)
+        # Ident — bigger
+        ident_col = MAGENTA if is_this_active else WHITE
+        _text(surf, wp.get("ident", ""), 24, ident_col, bold=True,
+              x=bx + 42, cy=by + bh // 2)
+        # ACTIVE badge
+        if is_this_active:
+            _text(surf, "● ACTIVE", 11, (60, 220, 100), bold=True,
+                  x=bx + 180, cy=by + bh // 2)
+        # User-waypoint marker (small "U" pip in the corner)
+        if wp.get("user"):
+            _text(surf, "U", 10, (200, 200, 110), bold=True,
+                  x=bx + 30, y=by + 4)
+        # Reorder / delete icons
+        up_r, dn_r, del_r = _fpl_row_icon_rects((bx, by, bw, bh))
+        _fpl_icon_btn(surf, up_r, "↑", dim=(i == 0))
+        _fpl_icon_btn(surf, dn_r, "↓", dim=(i == len(wps) - 1))
+        _fpl_icon_btn(surf, del_r, "✕")
 
 
 def fpl_hit(x, y):
+    """Hit-test the FPL screen.  Returns one of:
+        ("back",     None)
+        ("add",      None)
+        ("deact",    None)
+        ("activate", idx)
+        ("up",       idx)
+        ("down",     idx)
+        ("delete",   idx)
+        (None,       None)
+    """
     if 8 <= x <= 80 and 6 <= y <= 37:
-        return "back"
-    return None
+        return ("back", None)
+    ax, ay, aw, ah = _fpl_add_btn_rect()
+    if ax <= x <= ax + aw and ay <= y <= ay + ah:
+        return ("add", None)
+    dx, dy, dw, dh = _fpl_deact_btn_rect()
+    if dx <= x <= dx + dw and dy <= y <= dy + dh:
+        return ("deact", None)
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    for i in range(len(wps)):
+        bx, by, bw, bh = _fpl_row_rect(i)
+        if not (bx <= x <= bx + bw and by <= y <= by + bh):
+            continue
+        up_r, dn_r, del_r = _fpl_row_icon_rects((bx, by, bw, bh))
+        rx, ry, rw, rh = up_r
+        if rx <= x <= rx + rw and ry <= y <= ry + rh:
+            return ("up", i)
+        rx, ry, rw, rh = dn_r
+        if rx <= x <= rx + rw and ry <= y <= ry + rh:
+            return ("down", i)
+        rx, ry, rw, rh = del_r
+        if rx <= x <= rx + rw and ry <= y <= ry + rh:
+            return ("delete", i)
+        # Body of the row → activate
+        return ("activate", i)
+    return (None, None)
+
+
+def _fpl_open_add_keyboard():
+    """Open the existing ident keyboard, but route ENTER to FPL append
+    instead of the D2 nav_confirm modal."""
+    disp["kbd_target"] = "fpl_ident"
+    disp["kbd_prev"]   = "fpl"
+    disp["kbd_buf"]    = ""
+    disp["kbd_error"]  = ""
+    disp["kbd_shift"]  = False
+    disp["mode"]       = "keyboard"
 
 
 def _mfd_open_d2_keyboard():
@@ -8621,9 +8969,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     if mode == "mfd_strip_setup":
         draw_mfd_strip_setup(surf); return
     if mode == "fpl":
-        draw_fpl_placeholder(surf); return
-    if mode == "fpl":
-        draw_fpl_placeholder(surf); return
+        draw_fpl(surf); return
     if mode == "system_setup":
         draw_system_setup(surf); return
     if mode == "ahrs_firmware":
@@ -8761,6 +9107,12 @@ def render(surf, demo_mode, connected, data_stale=False):
         _alert_speed = max(_alert_speed, disp.get("ias_kt", 0.0))
     _update_terrain_alert(lat, lon, alt, _alert_speed, gps_ok,
                           vso_kt=fp.get("vs0", VS0))
+
+    # Auto-sequence the active flight-plan leg when within the
+    # advance threshold of the current waypoint.  Gated on GPS so a
+    # bad fix can't blip us through the plan.
+    if gps_ok and _fpl_is_active():
+        _fpl_check_advance(lat, lon)
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)

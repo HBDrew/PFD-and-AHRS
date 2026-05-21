@@ -547,7 +547,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
            range_label=None, state_lines=None, country_lines=None,
-           own_lat=None, own_lon=None, draw_corner_labels=True):
+           own_lat=None, own_lon=None, draw_corner_labels=True,
+           fpl_remaining=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -865,6 +866,34 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                              (int(wpx) + d, int(wpy)),
                              (int(wpx),     int(wpy) + d),
                              (int(wpx) - d, int(wpy))])
+
+        # Multi-leg FPL polyline: every waypoint past the current one,
+        # joined with a dimmer magenta line + small diamonds.  The
+        # active leg itself is already drawn above by the D2 line; we
+        # just extend the route forward.  Each leg is sampled along
+        # the great circle for the same reason the D2 line is.
+        if (fpl_remaining is not None
+                and len(fpl_remaining) >= 2
+                and not approach_active):
+            faded = (140, 0, 140)   # dimmer magenta — clearly past-active
+            from_la, from_lo = fpl_remaining[0]
+            for next_la, next_lo in fpl_remaining[1:]:
+                n_seg = 16
+                pts = []
+                for i in range(n_seg + 1):
+                    f = i / n_seg
+                    la, lo = _gc_interp(from_la, from_lo,
+                                         next_la, next_lo, f)
+                    px, py = _project(la, lo)
+                    pts.append((int(px), int(py)))
+                pygame.draw.lines(surf, faded, False, pts, 1)
+                npx, npy = _project(next_la, next_lo)
+                pygame.draw.polygon(surf, faded,
+                                    [(int(npx),     int(npy) - d),
+                                     (int(npx) + d, int(npy)),
+                                     (int(npx),     int(npy) + d),
+                                     (int(npx) - d, int(npy))])
+                from_la, from_lo = next_la, next_lo
         # Always-on D2 ident label next to the waypoint diamond.  The
         # airport-loop above caps labels at <= 10 nm and 40 nearest;
         # at wider zooms (or in dense areas where the airport got
