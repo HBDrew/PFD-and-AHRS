@@ -2626,7 +2626,12 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "setup"
             elif action and action.startswith("set:"):
                 _, key, val_str = action.split(":", 2)
-                disp["ds"][key] = (val_str == "True") if key == "night_mode" else val_str
+                # Convert "True" / "False" strings back to bools for any
+                # boolean-valued setting (night_mode + all map_show_*).
+                if val_str in ("True", "False"):
+                    disp["ds"][key] = (val_str == "True")
+                else:
+                    disp["ds"][key] = val_str
                 _settings.mark_dirty()
             elif action and action.startswith("inc:brightness:"):
                 delta = int(action.split(":")[-1])
@@ -3655,7 +3660,7 @@ _ss_drag = None
 _SS_DRAG_THRESHOLD = 8     # px before tap becomes drag
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         7,
-    "display_setup":      5,
+    "display_setup":      6,    # 5 standard rows + MAP LAYERS
     "system_setup":       9,
     "connectivity_setup": 6,
     "flight_profile":     8,
@@ -3801,6 +3806,30 @@ _DSP_ROWS = [
      [False, True],      ["OFF","ON"],        100),
 ]
 
+# MAP LAYERS multi-toggle row — mirrors pi4's _DSP_MAP_LAYERS so the
+# Display setup screen has the same per-layer control across both
+# displays.  Five small pills packed into one row; tapping each toggles
+# the matching map_show_* boolean in disp["ds"].  moving_map.render
+# already gates each layer on these flags.  No RWY pill because the
+# pi_zero MFD doesn't render runways (passes runways_arr=None).
+_DSP_MAP_LAYERS = [
+    ("map_show_terrain",     "TER"),
+    ("map_show_water",       "WTR"),
+    ("map_show_airports",    "APT"),
+    ("map_show_obstacles",   "OBS"),
+    ("map_show_state_lines", "STA"),
+]
+_DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
+_DSP_LAYERS_BTN_W     = 70
+_DSP_LAYERS_BTN_G     = 6
+
+
+def _dsp_layers_geom(bx, bw):
+    """Right-aligned x of the first map-layer pill in the row."""
+    n = len(_DSP_MAP_LAYERS)
+    total = n * _DSP_LAYERS_BTN_W + (n - 1) * _DSP_LAYERS_BTN_G
+    return bx + bw - total - 14
+
 
 def _dsp_rx(row, bx, bw):
     """Left x of control group (right-aligned, 14 px margin)."""
@@ -3840,6 +3869,18 @@ def draw_display_setup(surf, ds):
             cur = ds.get(key, opts_v[0])
             for i, (v, lbl) in enumerate(zip(opts_v, opts_l)):
                 _seg_btn(surf, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
+
+    # MAP LAYERS — packed multi-toggle row drawn after the standard ones.
+    bx, by, bw, bh = _setting_row(surf, _DSP_LAYERS_ROW_INDEX,
+                                  "MAP LAYERS",
+                                  "Per-layer visibility on the MFD")
+    ry = by + (bh - _DSP_BTN_H) // 2
+    rx = _dsp_layers_geom(bx, bw)
+    for i, (key, lbl) in enumerate(_DSP_MAP_LAYERS):
+        active = bool(ds.get(key, True))
+        _seg_btn(surf,
+                 rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
+                 ry, _DSP_LAYERS_BTN_W, _DSP_BTN_H, lbl, active)
     surf.set_clip(_prev_clip)
 
 
@@ -3870,6 +3911,19 @@ def display_setup_hit(x, y, ds):
                 bx_b = rx + i*(bw_each+_DSP_BTN_G)
                 if bx_b <= x <= bx_b+bw_each:
                     return f"set:{key}:{v}"
+
+    # MAP LAYERS multi-toggle row
+    by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
+    if by <= y <= by + _SS_RH:
+        bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+        ry = by + (_SS_RH - _DSP_BTN_H) // 2
+        if ry <= y <= ry + _DSP_BTN_H:
+            rx = _dsp_layers_geom(bx, bw)
+            for i, (key, _lbl) in enumerate(_DSP_MAP_LAYERS):
+                bx_b = rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
+                if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
+                    new_val = not bool(ds.get(key, True))
+                    return f"set:{key}:{new_val}"
     return None
 
 
@@ -7436,14 +7490,20 @@ def draw_mfd(surf, connected=True, data_stale=False):
               "act_lon": float(nav.get("act_lon", 0.0)),
               "ident":   nav.get("ident", "")}
     gs_kt = float(disp.get("speed", 0.0))
-    apt_types = {
-        "S": disp["ad"].get("show_public", True),
-        "M": disp["ad"].get("show_public", True),
-        "L": disp["ad"].get("show_public", True),
-        "H": disp["ad"].get("show_heli", True),
-        "W": disp["ad"].get("show_seaplane", False),
-        "B": disp["ad"].get("show_other", False),
-    }
+    # Build the *set* of type letters the user wants visible — moving_map
+    # checks `atype not in airport_types_visible`, so a dict here (which
+    # would test keys regardless of True/False) silently disables the
+    # whole filter.  Mirrors pi4's _types_vis pattern.
+    _ad = disp["ad"]
+    apt_types = set()
+    if _ad.get("show_public", True):
+        apt_types.update({"S", "M", "L"})
+    if _ad.get("show_heli", True):
+        apt_types.add("H")
+    if _ad.get("show_seaplane", False):
+        apt_types.add("W")
+    if _ad.get("show_other", False):
+        apt_types.add("B")
     _mfd_map.render(
         surf, rect, cen_lat, cen_lon, alt, hdg, track, orient, range_nm,
         disp["ds"],
