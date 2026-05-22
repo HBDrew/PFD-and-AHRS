@@ -1,0 +1,272 @@
+================================================================
+PFD-and-AHRS  -  Rev B PCB  -  Connection List
+================================================================
+Source of truth : Docs/BUGS_AND_TODO.md  >  BOARD-REV-B
+Host MCU        : Raspberry Pi Pico W (40-pin module)
+Use             : Reference for Flux.ai schematic capture.
+
+----------------------------------------------------------------
+COMPONENTS  (reference designators)
+----------------------------------------------------------------
+U1   Raspberry Pi Pico W                  40-pin SMT/THT module
+U2   WT901 IMU                            UART, 3V3 power
+U3   GY-NEO6MV2 GPS module                UART, 5V power
+U4   BME280 breakout                      I2C, addr 0x76
+U5   MS4525DO-DS5AI001DP                  I2C, addr 0x28  (A-cal, pitot)
+U6   MS4525DO-DS5BI001DP                  I2C, addr 0x36  (B-cal, AOA)
+U7   DS18B20 waterproof OAT probe         1-Wire on cable
+
+R1   2.2 kohm     I2C1 SDA pull-up to +3V3
+R2   2.2 kohm     I2C1 SCL pull-up to +3V3
+R3   4.7 kohm     1-Wire DQ pull-up to +3V3
+R4   100  ohm     DS18B20 DQ series, Pico end (optional, cable ESD)
+
+C1   100 nF       U5 VDD-GND decoupling (place < 5 mm from U5)
+C2   100 nF       U6 VDD-GND decoupling (place < 5 mm from U6)
+C3   100 nF       U7 VDD-GND decoupling at J6 connector
+
+J1   Power input   USB or aircraft regulated 5V  -> VBUS
+J2   Pitot port    silicone-hose nipple  -> U5 port "+"
+J3   Static port   silicone-hose nipple  -> U5 port "-" (tee'd to U4)
+J4   AOA upper     silicone-hose nipple  -> U6 port "+"
+J5   AOA lower     silicone-hose nipple  -> U6 port "-"
+J6   OAT cable     3-pin connector for U7  (VDD / GND / DQ)
+J7   Debug header  unused Pico GPIOs broken out (optional)
+
+
+----------------------------------------------------------------
+NET LIST
+----------------------------------------------------------------
+
+NET  +5V
+  U1 pin 40  (VBUS)
+  U3 VCC
+  J1 +
+
+NET  +3V3
+  U1 pin 36  (3V3_OUT)
+  U2 VCC
+  U4 VCC
+  U4 CSB        (if breakout does not tie it internally; forces I2C mode)
+  U5 VDD
+  U6 VDD
+  U7 VDD        (red wire)
+  R1 top
+  R2 top
+  R3 top
+  C1 +,  C2 +,  C3 +
+
+NET  GND
+  U1 pins 3, 8, 13, 18, 23, 28, 38
+  U1 pin 33  (AGND, tie to GND plane)
+  U2 GND
+  U3 GND
+  U4 GND
+  U4 SDO        (selects I2C address 0x76; tie SDO -> +3V3 for 0x77)
+  U5 GND
+  U6 GND
+  U7 GND        (black wire)
+  C1 -,  C2 -,  C3 -
+  J1 -
+
+NET  UART0_TX     (Pico -> WT901)
+  U1 pin 1   (GP0)
+  U2 RX
+
+NET  UART0_RX     (WT901 -> Pico)
+  U1 pin 2   (GP1)
+  U2 TX
+
+NET  I2C1_SDA
+  U1 pin 4   (GP2)
+  U4 SDA
+  U5 SDA
+  U6 SDA
+  R1 bottom
+
+NET  I2C1_SCL
+  U1 pin 5   (GP3)
+  U4 SCL
+  U5 SCL
+  U6 SCL
+  R2 bottom
+
+NET  UART1_TX     (Pico -> GPS)
+  U1 pin 6   (GP4)
+  U3 RX
+
+NET  UART1_RX     (GPS -> Pico)
+  U1 pin 7   (GP5)
+  U3 TX
+
+NET  ONE_WIRE_DQ
+  U1 pin 20  (GP15)
+  R3 bottom
+  R4 Pico-side    (if used)
+  U7 DQ           (yellow wire; via R4 if used, else direct)
+
+
+----------------------------------------------------------------
+PNEUMATIC CONNECTIONS  (not electrical, for plumbing reference)
+----------------------------------------------------------------
+J2  pitot      ->  U5 port "+"
+J3  static     ->  U5 port "-"   tee'd to U4 (BME280) reference
+J4  AOA upper  ->  U6 port "+"
+J5  AOA lower  ->  U6 port "-"
+
+
+----------------------------------------------------------------
+PIN-BY-PIN  -  U1  Raspberry Pi Pico W  (40-pin module)
+----------------------------------------------------------------
+Pin   GPIO    Net               Function
+  1   GP0     UART0_TX          WT901 RX
+  2   GP1     UART0_RX          WT901 TX
+  3   --      GND
+  4   GP2     I2C1_SDA          BME280 + 2x MS4525 SDA
+  5   GP3     I2C1_SCL          BME280 + 2x MS4525 SCL
+  6   GP4     UART1_TX          GPS RX
+  7   GP5     UART1_RX          GPS TX
+  8   --      GND
+  9   GP6     --                free
+ 10   GP7     --                free
+ 11   GP8     --                free   (I2C0 SDA alt if MS4525 split bus)
+ 12   GP9     --                free   (I2C0 SCL alt if MS4525 split bus)
+ 13   --      GND
+ 14   GP10    --                free
+ 15   GP11    --                free
+ 16   GP12    --                free
+ 17   GP13    --                free
+ 18   --      GND
+ 19   GP14    --                free
+ 20   GP15    ONE_WIRE_DQ       DS18B20 data line
+ 21   GP16    --                free
+ 22   GP17    --                free
+ 23   --      GND
+ 24   GP18    --                free
+ 25   GP19    --                free
+ 26   GP20    --                free
+ 27   GP21    --                free
+ 28   --      GND
+ 29   GP22    --                free
+ 30   --      RUN               reset; leave floating (pull low to reset)
+ 31   GP26    --                free   (ADC0)
+ 32   GP27    --                free   (ADC1)
+ 33   --      AGND              tie to GND plane
+ 34   GP28    --                free   (ADC2)
+ 35   --      ADC_VREF          leave on Pico defaults
+ 36   --      +3V3 (3V3_OUT)    sensor 3V3 rail
+ 37   --      3V3_EN            leave floating
+ 38   --      GND
+ 39   --      +5V (VSYS)        powers U3 (GPS)
+ 40   --      +5V (VBUS)        from J1
+
+
+----------------------------------------------------------------
+PIN-BY-PIN  -  U2  WT901 IMU
+----------------------------------------------------------------
+VCC ->  +3V3        (U1 pin 36)
+GND ->  GND
+RX  ->  UART0_TX    (U1 pin 1  / GP0)
+TX  ->  UART0_RX    (U1 pin 2  / GP1)
+
+
+----------------------------------------------------------------
+PIN-BY-PIN  -  U3  GY-NEO6MV2 GPS
+----------------------------------------------------------------
+VCC ->  +5V         (U1 pin 39 / VSYS)
+GND ->  GND
+RX  ->  UART1_TX    (U1 pin 6  / GP4)
+TX  ->  UART1_RX    (U1 pin 7  / GP5)
+PPS ->  (unused)
+
+
+----------------------------------------------------------------
+PIN-BY-PIN  -  U4  BME280 breakout    (I2C addr 0x76)
+----------------------------------------------------------------
+VCC ->  +3V3        (U1 pin 36)
+GND ->  GND
+SDA ->  I2C1_SDA    (U1 pin 4  / GP2)
+SCL ->  I2C1_SCL    (U1 pin 5  / GP3)
+SDO ->  GND         (selects I2C addr 0x76; tie to +3V3 for 0x77)
+CSB ->  +3V3        (forces I2C mode; many breakouts tie it internally)
+Vent:  cabin ambient on rev B.  Ported static plenum is deferred
+       to rev C (see BOARD-REV-C).
+
+
+----------------------------------------------------------------
+PIN-BY-PIN  -  U5  MS4525DO #1   Pitot/Static   (A-cal, addr 0x28)
+----------------------------------------------------------------
+Part number:   MS4525DO-DS5AI001DP
+VDD ->  +3V3        (U1 pin 36)
+GND ->  GND
+SDA ->  I2C1_SDA    (U1 pin 4  / GP2)
+SCL ->  I2C1_SCL    (U1 pin 5  / GP3)
+Decoupling:  C1 = 100 nF VDD-GND, < 5 mm from VDD pin
+Pneumatics:
+  Port "+"  ->  J2  pitot
+  Port "-"  ->  J3  static (tee'd to U4 reference)
+
+
+----------------------------------------------------------------
+PIN-BY-PIN  -  U6  MS4525DO #2   AOA   (B-cal, addr 0x36)
+----------------------------------------------------------------
+Part number:   MS4525DO-DS5BI001DP
+VDD ->  +3V3        (U1 pin 36)
+GND ->  GND
+SDA ->  I2C1_SDA    (U1 pin 4  / GP2)
+SCL ->  I2C1_SCL    (U1 pin 5  / GP3)
+Decoupling:  C2 = 100 nF VDD-GND, < 5 mm from VDD pin
+Pneumatics:
+  Port "+"  ->  J4  AOA upper
+  Port "-"  ->  J5  AOA lower
+
+
+----------------------------------------------------------------
+PIN-BY-PIN  -  U7  DS18B20 waterproof OAT probe
+----------------------------------------------------------------
+3-conductor probe cable (typically 1 m, silicone-jacketed):
+  Red    (VDD)  ->  +3V3         (U1 pin 36)
+  Black  (GND)  ->  GND
+  Yellow (DQ)   ->  ONE_WIRE_DQ  (U1 pin 20 / GP15)
+                                  via R4 if used
+Pull-up:     R3 = 4.7 kohm  from DQ to +3V3
+Optional:    R4 = 100 ohm   series on DQ at the Pico end (cable ESD)
+Decoupling:  C3 = 100 nF VDD-GND at the J6 connector
+Mounting:    probe head in the slipstream (cowl / vent louver /
+             NACA scoop); strain-relieve cable at enclosure exit.
+
+
+----------------------------------------------------------------
+LAYOUT NOTES
+----------------------------------------------------------------
+1.  I2C1 carries three devices (U4, U5, U6).  Add external
+    2.2 kohm pull-ups R1/R2 to +3V3.  BME280 breakouts usually
+    ship with 10 kohm pulls on board; combined parallel ~1.8 kohm
+    is fine for 400 kHz with three devices.  If the breakout has
+    stronger pulls, raise R1/R2 to 4.7 kohm.
+
+2.  The MS4525DO has NO address-strap pin.  The I2C address is
+    baked into the interface-code letter of the part number.
+    Two on one bus REQUIRES two different SKUs:
+      U5  = MS4525DO-DS5AI001DP   (A-cal, addr 0x28)  pitot
+      U6  = MS4525DO-DS5BI001DP   (B-cal, addr 0x36)  AOA
+    If single-SKU sourcing is preferred at layout time, the
+    alternates are:
+      (a)  Add a TCA9546A I2C mux and put both on its downstream
+           channels; reuse 0x28 on both.
+      (b)  Split across I2C0 and I2C1.  Move U6 to GP8 (SDA)
+           and GP9 (SCL) on I2C0; firmware change is one line.
+
+3.  Place C1 and C2 within 5 mm of the MS4525 VDD pins.  The
+    parts are slow but the cap close-in helps the I2C edges.
+
+4.  Route the OAT probe cable away from the GPS antenna feed and
+    the WT901 magnetometer axes.  The cable can be 1 m or more.
+
+5.  Leave J7 header broken out on the unused GPIOs so rev B
+    doubles as a dev / debug board for the rev-C bring-up.
+
+6.  Static plenum + BMP390 upgrade are explicitly deferred to
+    rev C (BOARD-REV-C in BUGS_AND_TODO.md), where the BMP390
+    can be reflow-placed on the main PCB with a proper
+    PCB-integrated plenum.
