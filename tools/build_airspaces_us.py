@@ -299,6 +299,17 @@ def _douglas_peucker(points, tol_deg=_SIMPLIFY_TOL_DEG):
     return [points[i] for i in range(n) if keep[i]]
 
 
+# Cap input to DP at this many vertices.  DP is O(n²) worst case in
+# pure Python; on a Pi Zero a single 5000-vertex polygon was taking
+# ~30 s and the DC SFRA / Defense TFR / Class B can easily hit that.
+# We uniform-stride pre-sample down to _DP_INPUT_CAP first so the DP
+# itself sees at most ~500 points — turns the worst case from minutes
+# into well under a second.  Accuracy loss is tiny: uniform sample at
+# stride 10 still preserves overall shape, and DP then cleans up the
+# straight segments.
+_DP_INPUT_CAP = 500
+
+
 def _decimate_ring(ring, tol_deg=_SIMPLIFY_TOL_DEG):
     """Decimate a closed ring.  Strips the duplicate close vertex
     (Polygon rings repeat the first vertex at the end), simplifies the
@@ -308,6 +319,14 @@ def _decimate_ring(ring, tol_deg=_SIMPLIFY_TOL_DEG):
         return ring
     closed = ring[0] == ring[-1]
     open_pts = ring[:-1] if closed else ring
+    # Pre-sample huge rings before DP so the O(n²) inner loop doesn't
+    # spend minutes on a single airspace.
+    if len(open_pts) > _DP_INPUT_CAP:
+        stride = len(open_pts) // _DP_INPUT_CAP
+        # +1 guarantees stride ≥ 1 even if math rounds to 0 in edge cases.
+        if stride < 1:
+            stride = 1
+        open_pts = open_pts[::stride]
     simplified = _douglas_peucker(open_pts, tol_deg)
     if len(simplified) < 3:
         # Decimation collapsed the polygon — bail out and keep original
