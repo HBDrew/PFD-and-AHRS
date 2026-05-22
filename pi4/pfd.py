@@ -90,6 +90,7 @@ _shared_gl_compositor = None
 
 import obstacles as obs_mod
 import airports as apt_mod
+import airspaces as asp_mod
 import runways as rwy_mod
 import water as water_mod
 import settings as _settings
@@ -191,6 +192,16 @@ disp["od"] = {                      # obstacle download/parse state
 }
 _obstacles = None           # loaded obstacle array (module-level)
 _airports  = None           # loaded airport array (module-level)
+_airspaces = None           # list of airspace records, or None until loaded
+# disp["asp"] mirrors disp["ad"]/disp["td"]/disp["od"]: status fields
+# surfaced on the AIRSPACE DATA subscreen.  Not persisted (recomputed
+# on load).
+disp["asp"] = {
+    "records":     0,
+    "downloading": False,
+    "dl_status":   "",
+    "dl_cancel":   False,
+}
 _runways   = None           # loaded runway array (module-level)
 disp["ad"] = {                      # airport download/parse state
     "downloading": False,
@@ -237,6 +248,15 @@ disp["ds"] = {                      # display settings
     "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_country_lines": True, # admin_0 boundaries at >= 20 nm
     "map_show_directto": True,
+    # Airspace overlay — off by default until the pilot has a real
+    # NASR-derived file on disk.  Per-class toggles let pilots hide
+    # MOAs / restricted / etc. when not relevant.
+    "map_show_airspaces":    False,
+    "map_show_airspace_b":   True,
+    "map_show_airspace_c":   True,
+    "map_show_airspace_d":   True,
+    "map_show_airspace_moa": True,
+    "map_show_airspace_r":   True,
     # Real-time SVT sun position (off → SE / mid-morning fixed lighting)
     "sun_realtime":      True,
 }
@@ -4423,6 +4443,8 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "obstacle_data"
             elif action == "airport_data":
                 disp["mode"] = "airport_data"
+            elif action == "airspace_data":
+                disp["mode"] = "airspace_data"
             elif action == "ahrs_firmware":
                 disp["fw"]["push_state"]  = ""
                 disp["fw"]["push_msg"]    = ""
@@ -4583,6 +4605,21 @@ def handle_event(event, demo_mode):
                 _nav_open_confirm(_nav_lookup_nearest(), "airport_data")
             elif action == "nav_clear":
                 _nav_clear()
+            return True
+
+        # ── Airspace data screen taps ─────────────────────────────────────
+        if mode == "airspace_data":
+            action = airspace_data_hit(x, y)
+            if action == "back":
+                disp["mode"] = "system_setup"
+            elif action == "download":
+                asp = disp["asp"]
+                if not asp.get("downloading"):
+                    _asp_start_download()
+            elif action == "build":
+                _asp_build_from_geojson()
+            elif action == "install_example":
+                _asp_install_example()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -6713,10 +6750,11 @@ def draw_system_setup(surf):
     _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
     _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
 
-    # Data download tiles: TERRAIN | OBSTACLE | AIRPORT (three columns)
-    third = (bw - 16) // 3
+    # Data download tiles: TERRAIN | OBSTACLE | AIRPORT | AIRSPACE
+    # (four columns \u2014 mirrors the piZ system-setup layout).
+    quarter = (bw - 24) // 4
     n_tiles, used_mb = _td_disk_stats()
-    _sys_data_tile(surf, bx,              _SYS_TERRAIN_Y, third, _SS_RH,
+    _sys_data_tile(surf, bx,                     _SYS_TERRAIN_Y, quarter, _SS_RH,
                    "TERRAIN",
                    f"{n_tiles} tile{'s' if n_tiles != 1 else ''}  \u00b7  {used_mb:.1f} MB",
                    active=True)
@@ -6730,7 +6768,7 @@ def draw_system_setup(surf):
             od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB"
     else:
         od_sub = "Tap to download"
-    _sys_data_tile(surf, bx+third+8,      _SYS_TERRAIN_Y, third, _SS_RH,
+    _sys_data_tile(surf, bx + quarter + 8,       _SYS_TERRAIN_Y, quarter, _SS_RH,
                    "OBSTACLE", od_sub, active=True)
     ad_cnt     = disp["ad"].get("records", 0)
     ad_expired = disp["ad"].get("expired", False)
@@ -6738,11 +6776,15 @@ def draw_system_setup(surf):
         if ad_expired:
             ad_sub = f"{ad_cnt:,} apts  \u00b7  \u26a0 EXP"
         else:
-            ad_sub = f"{ad_cnt:,} airports"
+            ad_sub = f"{ad_cnt:,} apts"
     else:
         ad_sub = "Tap to download"
-    _sys_data_tile(surf, bx+2*(third+8),  _SYS_TERRAIN_Y, third, _SS_RH,
-                   "AIRPORTS", ad_sub, active=True)
+    _sys_data_tile(surf, bx + 2 * (quarter + 8), _SYS_TERRAIN_Y, quarter, _SS_RH,
+                   "AIRPORT", ad_sub, active=True)
+    asp_cnt = disp.get("asp", {}).get("records", 0)
+    asp_sub = f"{asp_cnt} polygons" if asp_cnt else "Tap to set up"
+    _sys_data_tile(surf, bx + 3 * (quarter + 8), _SYS_TERRAIN_Y, quarter, _SS_RH,
+                   "AIRSPACE", asp_sub, active=True)
 
     half_w = (bw - 10) // 2
     # FIRMWARE first (right after terrain row), then SIMULATOR/RESET, then QUIT
@@ -6760,13 +6802,15 @@ def system_setup_hit(x, y):
         return "back"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
-        third = (bw - 16) // 3
-        if bx <= x <= bx+third:
+        quarter = (bw - 24) // 4
+        if bx <= x <= bx + quarter:
             return "terrain_data"
-        if bx+third+8 <= x <= bx+2*third+8:
+        if bx + quarter + 8 <= x <= bx + 2 * quarter + 8:
             return "obstacle_data"
-        if bx+2*(third+8) <= x <= bx+2*(third+8)+third:
+        if bx + 2 * (quarter + 8) <= x <= bx + 3 * quarter + 16:
             return "airport_data"
+        if bx + 3 * (quarter + 8) <= x <= bx + 4 * quarter + 24:
+            return "airspace_data"
     half_w = (bw - 10) // 2
     sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
     quit_y = sim_y       + _SYS_BTN_H + 10
@@ -8261,6 +8305,99 @@ def airport_data_hit(x, y, ad):
             return "cancel"
     if bx <= x <= bx+bw and btn_y <= y <= btn_y+btn_h:
         return "download"
+    return None
+
+
+# ── Airspace data management (pi4) ──────────────────────────────────────
+# Mirror of pi_zero's AIRSPACE DATA screen.  Pi 4 can build its own
+# airspaces.json so the PFD's inset map shows the polygons, and so
+# the user has a consistent build flow regardless of which Pi has
+# the GeoJSON files on disk.
+
+def draw_airspace_data(surf):
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "AIRSPACE DATA")
+    bx = _AD_MX; bw = DISPLAY_W - 2 * _AD_MX
+    asp = disp["asp"]
+    cnt = asp.get("records", 0)
+
+    pygame.draw.rect(surf, (0, 12, 32), (bx, 52, bw, 28), border_radius=4)
+    pygame.draw.rect(surf, (40, 60, 90), (bx, 52, bw, 28), width=1, border_radius=4)
+    if cnt:
+        stat_str = f"{cnt} airspace polygons on disk"
+        stat_col = (60, 220, 80)
+    else:
+        stat_str = "No airspaces.json found — using bundled example"
+        stat_col = (200, 180, 100)
+    _text(surf, stat_str, 14, stat_col, bold=True,
+          cx=DISPLAY_W // 2, cy=66)
+
+    info_y = 92
+    info_h = 96
+    pygame.draw.rect(surf, (0, 10, 26), (bx, info_y, bw, info_h),
+                     border_radius=6)
+    pygame.draw.rect(surf, (40, 55, 80), (bx, info_y, bw, info_h),
+                     width=1, border_radius=6)
+    _text(surf, "US Airspace Polygons (B/C/D/MOA/R)", 15, WHITE,
+          bold=True, cx=DISPLAY_W // 2, cy=info_y + 14)
+    _text(surf, "Rendered on the PFD inset map by class.",
+          10, (140, 160, 185), cx=DISPLAY_W // 2, cy=info_y + 32)
+    _text(surf, "Master toggle: Display Settings → ASP pill.",
+          10, (140, 160, 185), cx=DISPLAY_W // 2, cy=info_y + 48)
+    if asp_mod.DOWNLOAD_URL:
+        _text(surf, f"Source: {asp_mod.DOWNLOAD_URL}",
+              9, (120, 140, 165), cx=DISPLAY_W // 2, cy=info_y + 66)
+    else:
+        _text(surf, "BUILD reads *.geojson from data/airspaces/",
+              9, (140, 170, 200), cx=DISPLAY_W // 2, cy=info_y + 66)
+        _text(surf, "(scp the FAA exports there, then tap BUILD)",
+              9, (120, 140, 165), cx=DISPLAY_W // 2, cy=info_y + 80)
+
+    # Three action buttons: DOWNLOAD | BUILD | EXAMPLE
+    btn_y = info_y + info_h + 12
+    btn_h = 48
+    third = (bw - 20) // 3
+    downloading = asp.get("downloading", False)
+    dl_disabled = not asp_mod.DOWNLOAD_URL
+    dl_style    = "normal" if (not downloading and not dl_disabled) else "warn"
+    _action_btn(surf, bx, btn_y, third, btn_h,
+                "DOWNLOAD" if not downloading else "CANCEL", dl_style)
+    _action_btn(surf, bx + third + 10, btn_y, third, btn_h,
+                "BUILD", "normal")
+    _action_btn(surf, bx + 2 * (third + 10), btn_y, third, btn_h,
+                "EXAMPLE", "ok")
+
+    # Status / result line
+    prog_y = btn_y + btn_h + 16
+    prog_h = 40
+    pygame.draw.rect(surf, (0, 10, 24), (bx, prog_y, bw, prog_h),
+                     border_radius=6)
+    pygame.draw.rect(surf, (35, 50, 75), (bx, prog_y, bw, prog_h),
+                     width=1, border_radius=6)
+    status = asp.get("dl_status", "")
+    if status:
+        col = ((60, 220, 80) if status.startswith("Done")
+               else (220, 130, 60) if (status.startswith("Error")
+                                        or status.startswith("Build failed"))
+               else (160, 160, 170))
+        _text(surf, status, 11, col, cx=DISPLAY_W // 2, cy=prog_y + 20)
+
+
+def airspace_data_hit(x, y):
+    if _back_hit(x, y):
+        return "back"
+    bx = _AD_MX; bw = DISPLAY_W - 2 * _AD_MX
+    info_y = 92; info_h = 96
+    btn_y  = info_y + info_h + 12
+    btn_h  = 48
+    third  = (bw - 20) // 3
+    if btn_y <= y <= btn_y + btn_h:
+        if bx <= x <= bx + third:
+            return "download"
+        if bx + third + 10 <= x <= bx + 2 * third + 10:
+            return "build"
+        if bx + 2 * (third + 10) <= x <= bx + 3 * third + 20:
+            return "install_example"
     return None
 
 
@@ -9922,6 +10059,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_obstacle_data(surf, disp["od"]); return
     if mode == "airport_data":
         draw_airport_data(surf, disp["ad"]); return
+    if mode == "airspace_data":
+        draw_airspace_data(surf); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
 
@@ -10363,6 +10502,10 @@ def render(surf, demo_mode, connected, data_stale=False):
             # screen sync (KIND_FPL) — only renders when the pilot has
             # FPL sync set to RX on this side AND the MFD is TXing.
             fpl_remaining=_fpl_render_remaining(),
+            # Airspace polygons (B/C/D/MOA/R).  Loaded in the
+            # background at startup from AIRSPACE_DIR/airspaces.json;
+            # per-class display gates live in disp["ds"]["map_show_airspace_*"].
+            airspaces=_airspaces,
         )
 
     # 2. Pitch ladder (with roll rotation)
@@ -10572,6 +10715,130 @@ def _startup_load_airports():
               f"{len(_country_lines['seg_starts']) - 1:,} polylines loaded")
 
 
+def _startup_load_airspaces():
+    """Background thread: load airspace polygons.  Falls back to the
+    bundled example when no airspaces.json is on disk so the render
+    path is verifiable even before the pilot builds real data."""
+    global _airspaces
+    loaded = asp_mod.load(AIRSPACE_DIR)
+    if loaded is None:
+        loaded = asp_mod.load_bundled_example()
+        disp["asp"]["records"] = 0
+        print(f"[PFD] Airspaces: no airspaces.json at {AIRSPACE_DIR}; "
+              f"using bundled {len(loaded)}-record example")
+    else:
+        disp["asp"]["records"] = len(loaded)
+        print(f"[PFD] Airspaces: {len(loaded)} polygons loaded")
+    _airspaces = loaded
+
+
+def _asp_reload():
+    """Re-read airspaces.json from disk."""
+    global _airspaces
+    loaded = asp_mod.load(AIRSPACE_DIR)
+    if loaded is None:
+        loaded = asp_mod.load_bundled_example()
+        disp["asp"]["records"] = 0
+    else:
+        disp["asp"]["records"] = len(loaded)
+    _airspaces = loaded
+
+
+def _asp_install_example():
+    asp = disp["asp"]
+    asp["dl_status"] = "Writing example dataset…"
+    try:
+        asp_mod.write_example(AIRSPACE_DIR)
+        _asp_reload()
+        asp["dl_status"] = f"Done ✓  example dataset ({asp['records']} polygons)"
+    except Exception as exc:
+        asp["dl_status"] = f"Error: {exc}"
+
+
+def _asp_download_thread():
+    """Fetch asp_mod.DOWNLOAD_URL → airspaces.json.  No-op-with-hint
+    when no URL is configured — drop GeoJSON files in AIRSPACE_DIR
+    and BUILD instead."""
+    asp = disp["asp"]
+    asp["downloading"] = True
+    asp["dl_cancel"]   = False
+    if not asp_mod.DOWNLOAD_URL:
+        asp["dl_status"]   = ("No download URL set — drop FAA "
+                              "*.geojson into "
+                              f"{AIRSPACE_DIR}/ and tap BUILD")
+        asp["downloading"] = False
+        return
+    os.makedirs(AIRSPACE_DIR, exist_ok=True)
+    path = os.path.join(AIRSPACE_DIR, asp_mod.CACHE_FILENAME)
+    asp["dl_status"] = f"Connecting to {asp_mod.DOWNLOAD_URL}…"
+    try:
+        req = urllib.request.Request(
+            asp_mod.DOWNLOAD_URL,
+            headers={"User-Agent": "PFD-AHRS/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            with open(path + ".tmp", "wb") as out:
+                while True:
+                    if asp["dl_cancel"]:
+                        try: os.remove(path + ".tmp")
+                        except Exception: pass
+                        asp["dl_status"]   = "Cancelled"
+                        asp["downloading"] = False
+                        return
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+        os.replace(path + ".tmp", path)
+        _asp_reload()
+        asp["dl_status"] = f"Done ✓  {disp['asp']['records']} polygons"
+    except Exception as exc:
+        asp["dl_status"] = f"Error: {exc}"
+    finally:
+        asp["downloading"] = False
+
+
+def _asp_start_download():
+    threading.Thread(target=_asp_download_thread, daemon=True,
+                     name="AirspaceDownload").start()
+
+
+def _asp_build_from_geojson():
+    """Convert any *.geojson under AIRSPACE_DIR into airspaces.json in
+    the same dir.  Background-threaded so the UI stays responsive on
+    large datasets."""
+    asp = disp["asp"]
+    asp["dl_status"] = "Building airspaces.json from *.geojson…"
+
+    def _worker():
+        try:
+            import sys as _sys
+            _tools = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "..", "tools")
+            _tools = os.path.abspath(_tools)
+            if _tools not in _sys.path:
+                _sys.path.insert(0, _tools)
+            import build_airspaces_us as _bldr
+            stats = _bldr.build_from_dir(
+                AIRSPACE_DIR,
+                source_note="FAA GeoJSON (built on pi4)")
+            _asp_reload()
+            if stats.get("files", 0) == 0:
+                asp["dl_status"] = (f"No *.geojson in {AIRSPACE_DIR} "
+                                    f"— drop FAA exports there first")
+            elif stats.get("errors"):
+                asp["dl_status"] = f"Done with errors: {stats['errors'][0]}"
+            else:
+                asp["dl_status"] = (
+                    f"Done ✓  {stats['records']} polygons "
+                    f"(B:{stats['B']} C:{stats['C']} D:{stats['D']} "
+                    f"MOA:{stats['MOA']} R:{stats['R']})")
+        except Exception as exc:
+            asp["dl_status"] = f"Build failed: {exc}"
+
+    threading.Thread(target=_worker, daemon=True,
+                     name="AirspaceBuild").start()
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="PFD Display")
@@ -10664,6 +10931,8 @@ def main():
                      name="ObstacleLoad").start()
     threading.Thread(target=_startup_load_airports, daemon=True,
                      name="AirportLoad").start()
+    threading.Thread(target=_startup_load_airspaces, daemon=True,
+                     name="AirspaceLoad").start()
 
     # Disable vsync so display.flip() doesn't block waiting for the display's
     # vsync signal (which was taking ~82 ms at ~12 Hz on KMS/DRM, halving FPS).

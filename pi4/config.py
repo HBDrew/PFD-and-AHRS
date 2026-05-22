@@ -131,6 +131,13 @@ OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")
 # ── Airport database (OurAirports CSV) ────────────────────────────────────────
 AIRPORT_DIR   = os.path.join(_HERE, "data", "airports")
 
+# ── Airspace boundaries (Class B/C/D + MOA + Restricted, US first-cut) ───────
+# JSON file at AIRSPACE_DIR/airspaces.json — see shared/airspaces.py
+# for the schema.  Falls back to a bundled example when no file is on
+# disk; pilot uses the AIRSPACE DATA subscreen's BUILD button to
+# convert FAA GeoJSON exports in-place on this Pi.
+AIRSPACE_DIR  = os.path.join(_HERE, "data", "airspaces")
+
 # ── User settings persistence ─────────────────────────────────────────────────
 # JSON file that stores V-speeds, units, brightness, AHRS trims, airport
 # filters and other user-configurable values across reboots.

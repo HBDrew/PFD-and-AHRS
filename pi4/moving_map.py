@@ -88,6 +88,39 @@ _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
 _D2_MAGENTA  = (220, 0, 220)
 _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
+
+# Airspace outline + fill colours by class.  Mirrors piZ moving_map so
+# a polygon reads the same on both inset views.  Fill is low-alpha
+# so the shape shades without hiding terrain underneath.
+_AIRSPACE_COLORS = {
+    "B":   ((100, 140, 255), (100, 140, 255, 40)),
+    "C":   ((220,  80, 220), (220,  80, 220, 40)),
+    "D":   ((110, 170, 255), (110, 170, 255, 30)),
+    "MOA": ((230, 170,  60), (230, 170,  60, 35)),
+    "R":   ((230,  60,  60), (230,  60,  60, 50)),
+}
+_AIRSPACE_DEFAULT = ((200, 200, 200), (200, 200, 200, 30))
+
+
+def _airspaces_query_nearby(airspaces, lat, lon, radius_nm):
+    """Inline bbox cull — keeps render-side independent of any shared
+    helper so the pi4 module stays self-contained."""
+    if not airspaces:
+        return []
+    nm_per_deg = 60.0
+    cos_lat = max(0.05, math.cos(math.radians(lat)))
+    d_lat = radius_nm / nm_per_deg
+    d_lon = radius_nm / nm_per_deg / cos_lat
+    lat_lo = lat - d_lat; lat_hi = lat + d_lat
+    lon_lo = lon - d_lon; lon_hi = lon + d_lon
+    out = []
+    for a in airspaces:
+        bla_lo, bla_hi, blo_lo, blo_hi = a["bbox"]
+        if (bla_hi < lat_lo or bla_lo > lat_hi
+                or blo_hi < lon_lo or blo_lo > lon_hi):
+            continue
+        out.append(a)
+    return out
 _STATE_LINE  = (110, 130, 160)      # muted slate-blue: admin_1 boundaries
                                     # — visible over tint without competing
                                     # with airports / D2
@@ -437,7 +470,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
            range_label=None, state_lines=None, country_lines=None,
-           fpl_remaining=None):
+           fpl_remaining=None, airspaces=None, airspace_visible=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -567,6 +600,48 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             and range_nm >= 20):
         _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
                         cx, cy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+
+    # ── Airspaces (Class B/C/D + MOA + Restricted) ──────────────────────────
+    # Drawn between context lines and runways so airspaces sit UNDER
+    # obstacles + airports + D2 (flight-critical, must read on top)
+    # but OVER state/country lines.  Per-class display gates live in
+    # the same `settings` dict as the other layer toggles.
+    if (airspaces is not None
+            and settings.get("map_show_airspaces", True)
+            and range_nm <= 80):
+        nearby_as = _airspaces_query_nearby(airspaces, lat, lon,
+                                             range_nm * 1.4)
+        x_r, y_r, w_r, h_r = rect
+        for asp in nearby_as:
+            cls = asp["class"]
+            if airspace_visible is not None and cls not in airspace_visible:
+                continue
+            if not settings.get(f"map_show_airspace_{cls.lower()}", True):
+                continue
+            col, fill = _AIRSPACE_COLORS.get(cls, _AIRSPACE_DEFAULT)
+            pts = [(int(px), int(py)) for px, py in
+                   (_project(la, lo) for la, lo in asp["polygon"])]
+            if len(pts) < 3:
+                continue
+            xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+            if (max(xs) < x_r or min(xs) > x_r + w_r
+                    or max(ys) < y_r or min(ys) > y_r + h_r):
+                continue
+            if fill is not None:
+                bx0 = max(x_r, min(xs)); by0 = max(y_r, min(ys))
+                bx1 = min(x_r + w_r, max(xs)); by1 = min(y_r + h_r, max(ys))
+                bw_  = max(1, bx1 - bx0); bh_  = max(1, by1 - by0)
+                fs = pygame.Surface((bw_, bh_), pygame.SRCALPHA)
+                shifted = [(p[0] - bx0, p[1] - by0) for p in pts]
+                pygame.draw.polygon(fs, fill, shifted)
+                surf.blit(fs, (bx0, by0))
+            pygame.draw.polygon(surf, col, pts, 2)
+            if font is not None:
+                w_px = max(xs) - min(xs); h_px = max(ys) - min(ys)
+                if w_px > 60 and h_px > 30:
+                    cxp = sum(xs) // len(xs); cyp = sum(ys) // len(ys)
+                    surf.blit(font.render(asp["ident"], True, col),
+                              (cxp - 12, cyp - 8))
 
     # ── Runways ──────────────────────────────────────────────────────────────
     # Runway rectangles only carry useful detail at terminal-area zooms —
