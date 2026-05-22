@@ -234,6 +234,90 @@ def _polygons_from(geometry):
                 yield ring
 
 
+# Douglas-Peucker simplification tolerance in degrees.  At mid-latitudes
+# 1 deg lat ≈ 60 NM, so 0.005 deg ≈ 0.3 NM — well below the resolution
+# the moving map can render (one pixel ≈ 0.1-1 NM depending on zoom).
+# FAA Class B/C boundaries come with hundreds of vertices per polygon
+# capturing every notch and shelf; at MFD zoom levels we only need
+# 10-20 vertices to depict the shape correctly.  Cutting vertices at
+# build time keeps airspaces.json an order of magnitude smaller, which
+# matters on the Pi Zero (416 MB RAM): full-fidelity FAA Class Airspace
+# produces a 168 MB airspaces.json that OOMs the box on load; this
+# decimation brings it down to ~5-10 MB.
+_SIMPLIFY_TOL_DEG = 0.005
+
+
+def _perp_dist2(p, a, b):
+    """Squared perpendicular distance from p to line a-b in 2D.
+    Treating lat/lon as planar is fine for the small distances inside
+    one airspace polygon — error <0.1% even for the largest Class B."""
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    dx = bx - ax; dy = by - ay
+    if dx == 0.0 and dy == 0.0:
+        # Degenerate segment — fall back to distance from p to a.
+        ex = px - ax; ey = py - ay
+        return ex * ex + ey * ey
+    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    # Clamp to [0,1] so the "perpendicular" distance to the SEGMENT,
+    # not the infinite line, is what we measure.
+    if t < 0.0: t = 0.0
+    elif t > 1.0: t = 1.0
+    fx = ax + t * dx
+    fy = ay + t * dy
+    ex = px - fx; ey = py - fy
+    return ex * ex + ey * ey
+
+
+def _douglas_peucker(points, tol_deg=_SIMPLIFY_TOL_DEG):
+    """Iterative Douglas-Peucker on a list of (lat, lon) tuples.
+    Iterative rather than recursive because some FAA polygons have
+    thousands of vertices and would blow Python's recursion limit."""
+    n = len(points)
+    if n < 3:
+        return list(points)
+    tol2 = tol_deg * tol_deg
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b - a < 2:
+            continue
+        pa = points[a]; pb = points[b]
+        max_d2 = -1.0
+        max_i = -1
+        for i in range(a + 1, b):
+            d2 = _perp_dist2(points[i], pa, pb)
+            if d2 > max_d2:
+                max_d2 = d2; max_i = i
+        if max_d2 > tol2:
+            keep[max_i] = True
+            stack.append((a, max_i))
+            stack.append((max_i, b))
+    return [points[i] for i in range(n) if keep[i]]
+
+
+def _decimate_ring(ring, tol_deg=_SIMPLIFY_TOL_DEG):
+    """Decimate a closed ring.  Strips the duplicate close vertex
+    (Polygon rings repeat the first vertex at the end), simplifies the
+    open polyline, then puts the close vertex back so the renderer
+    still gets a closed polygon."""
+    if len(ring) < 4:
+        return ring
+    closed = ring[0] == ring[-1]
+    open_pts = ring[:-1] if closed else ring
+    simplified = _douglas_peucker(open_pts, tol_deg)
+    if len(simplified) < 3:
+        # Decimation collapsed the polygon — bail out and keep original
+        # so we don't lose a small but valid airspace.
+        return ring
+    if closed:
+        simplified.append(simplified[0])
+    return simplified
+
+
 def feature_to_records(feature, class_hint=None):
     """Convert one GeoJSON feature → 0 or more schema records.
     `class_hint` lets the caller force a class when the source file
@@ -256,13 +340,14 @@ def feature_to_records(feature, class_hint=None):
     clg   = _ceiling_from(props)
 
     for poly in _polygons_from(geometry):
+        simplified = _decimate_ring(poly)
         yield {
             "class":      cls,
             "ident":      ident,
             "name":       name,
             "floor_ft":   int(flr),
             "ceiling_ft": int(clg),
-            "polygon":    [[lat, lon] for lat, lon in poly],
+            "polygon":    [[lat, lon] for lat, lon in simplified],
         }
 
 
