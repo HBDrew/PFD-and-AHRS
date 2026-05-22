@@ -436,7 +436,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
            srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
-           range_label=None, state_lines=None, country_lines=None):
+           range_label=None, state_lines=None, country_lines=None,
+           fpl_remaining=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -697,7 +698,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                                     direct_to["lat"], direct_to["lon"], f)
                 px, py = _project(la, lo)
                 pts.append((int(px), int(py)))
-            pygame.draw.lines(surf, course_col, False, pts, 2)
+            pygame.draw.lines(surf, course_col, False, pts, 3)
 
         d = 5
         pygame.draw.polygon(surf, course_col,
@@ -713,6 +714,37 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         if d2_ident and font is not None:
             d2_lbl = font.render(d2_ident, True, course_col)
             surf.blit(d2_lbl, (int(wpx) + d + 3, int(wpy) - d - 2))
+
+        # Multi-leg FPL polyline (same render as piZ): every waypoint
+        # past the active one, joined with a dimmer-magenta GC line +
+        # small diamonds + ident labels.  fpl_remaining is the list
+        # synced from the MFD over screen sync; None when no plan is
+        # active or only one leg remains.
+        if (fpl_remaining is not None
+                and len(fpl_remaining) >= 2
+                and not approach_active):
+            faded = (140, 0, 140)
+            from_la, from_lo, _from_ident = fpl_remaining[0]
+            for next_la, next_lo, next_ident in fpl_remaining[1:]:
+                n_seg = 16
+                pts = []
+                for i in range(n_seg + 1):
+                    f = i / n_seg
+                    la, lo = _gc_interp(from_la, from_lo,
+                                         next_la, next_lo, f)
+                    px, py = _project(la, lo)
+                    pts.append((int(px), int(py)))
+                pygame.draw.lines(surf, faded, False, pts, 3)
+                npx, npy = _project(next_la, next_lo)
+                pygame.draw.polygon(surf, faded,
+                                    [(int(npx),     int(npy) - d),
+                                     (int(npx) + d, int(npy)),
+                                     (int(npx),     int(npy) + d),
+                                     (int(npx) - d, int(npy))])
+                if next_ident and font is not None:
+                    surf.blit(font.render(next_ident, True, faded),
+                              (int(npx) + d + 3, int(npy) - d - 2))
+                from_la, from_lo = next_la, next_lo
 
     # ── Range ring ───────────────────────────────────────────────────────────
     # Shrink the ring 2 px inside the inset's shorter axis so the frame

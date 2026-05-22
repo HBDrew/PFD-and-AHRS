@@ -235,6 +235,7 @@ disp["cs"] = {                      # connectivity settings
     "sync_publish_nav":  False, "sync_consume_nav":  False,
     "sync_publish_ahrs": False, "sync_consume_ahrs": False,
     "sync_publish_gps":  False, "sync_consume_gps":  False,
+    "sync_publish_fpl":  False, "sync_consume_fpl":  False,
 }
 disp["nav"] = {                     # direct-to navigation
     "ident":   "",      # ICAO/local ID of active waypoint, "" = none
@@ -312,7 +313,7 @@ def _ssync_kinds_from_cs(direction):
     cs = disp.get("cs", {})
     for k in (_ssync_mod.KIND_BUGS, _ssync_mod.KIND_BARO,
               _ssync_mod.KIND_NAV,  _ssync_mod.KIND_AHRS,
-              _ssync_mod.KIND_GPS):
+              _ssync_mod.KIND_GPS,  _ssync_mod.KIND_FPL):
         if cs.get(f"sync_{direction}_{k}", False):
             out.add(k)
     return out
@@ -514,6 +515,63 @@ def _ssync_apply_gps(data):
                 state["baro_ok"] = bool(data["baro_ok"])
             if "airdata_ok" in data:
                 state["airdata_ok"] = bool(data["airdata_ok"])
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_fpl():
+    """Mirror the full flight plan + active leg index to the peer.
+    Triggered whenever the FPL changes (add/delete/reorder/activate/
+    deactivate).  Subject to _ssync_suppress_publish so applying a
+    received FPL doesn't bounce back."""
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    fpl = disp.get("fpl", {})
+    _screen_sync.publish(_ssync_mod.KIND_FPL, {
+        "waypoints":  list(fpl.get("waypoints", [])),
+        "active_idx": int(fpl.get("active_idx", -1)),
+    })
+
+
+def _ssync_apply_fpl(data):
+    """Replace the local FPL with the peer's.  Also re-applies the
+    active leg into disp["nav"] so CDI / D→ button / moving-map line
+    follow the new active waypoint."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        wps = data.get("waypoints", [])
+        idx = int(data.get("active_idx", -1))
+        # Defensive parse — accept dicts or skip malformed entries.
+        clean = []
+        for w in wps:
+            if not isinstance(w, dict):
+                continue
+            try:
+                clean.append({
+                    "ident":   str(w.get("ident", "")),
+                    "lat":     float(w.get("lat",  0.0)),
+                    "lon":     float(w.get("lon",  0.0)),
+                    "elev_ft": float(w.get("elev_ft", 0.0)),
+                    "user":    bool(w.get("user")),
+                    "name":    str(w.get("name", "")),
+                    "region":  str(w.get("region", "")),
+                })
+            except (TypeError, ValueError):
+                continue
+        disp["fpl"]["waypoints"]  = clean
+        disp["fpl"]["active_idx"] = idx if 0 <= idx < len(clean) else -1
+        # Mirror the active leg into disp["nav"] without touching
+        # _settings.mark_dirty (the FPL itself persists in this side's
+        # settings.json on next mark) so CDI etc. pick up the change.
+        if _fpl_is_active():
+            _fpl_apply_active()
+        else:
+            disp["nav"]["ident"]   = ""
+            disp["nav"]["lat"]     = 0.0
+            disp["nav"]["lon"]     = 0.0
+            disp["nav"]["elev_ft"] = 0.0
+        _settings.mark_dirty()
     finally:
         _ssync_suppress_publish -= 1
 
@@ -4057,7 +4115,7 @@ _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "connectivity_setup": 6,
     "flight_profile":     8,
     "ahrs_firmware":      5,
-    "screen_sync_setup":  9,    # enable + transport + peer + ifaces + 5 categories
+    "screen_sync_setup": 10,    # enable + transport + peer + ifaces + 6 categories
 }
 _dispatch_replay = False   # guard against infinite recursion in the
                            # deferred-tap replay path
@@ -5128,6 +5186,7 @@ def _fpl_activate(idx, reset_activation=True):
     disp["fpl"]["active_idx"] = idx
     _fpl_apply_active(reset_activation=reset_activation)
     _settings.mark_dirty()
+    _ssync_publish_fpl()
 
 
 def _fpl_deactivate():
@@ -5138,6 +5197,7 @@ def _fpl_deactivate():
     disp["nav"]["lon"]     = 0.0
     disp["nav"]["elev_ft"] = 0.0
     _settings.mark_dirty()
+    _ssync_publish_fpl()
 
 
 def _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=False,
@@ -5157,6 +5217,7 @@ def _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=False,
                 "name":   str(name),
                 "region": str(region)})
     _settings.mark_dirty()
+    _ssync_publish_fpl()
     return True
 
 
@@ -5177,6 +5238,7 @@ def _fpl_remove(idx):
         # refresh.
         _fpl_apply_active()
     _settings.mark_dirty()
+    _ssync_publish_fpl()
 
 
 def _fpl_swap(i, j):
@@ -5194,6 +5256,7 @@ def _fpl_swap(i, j):
     if _fpl_is_active():
         _fpl_apply_active()
     _settings.mark_dirty()
+    _ssync_publish_fpl()
 
 
 def _fpl_check_advance(lat, lon):
@@ -5829,12 +5892,14 @@ _SCS_KINDS = (
     ("nav",  "NAV (D2)", "waypoint ident + activation point"),
     ("ahrs", "AHRS",     "pitch / roll / yaw — pick one direction"),
     ("gps",  "GPS",      "lat / lon / alt / speed / track — pick one"),
+    ("fpl",  "FPL",      "full flight plan + active leg — pick one direction"),
 )
-# Stream sensors: exactly one of OFF/TX/RX.  See pi4/pfd.py for the
-# rationale — both-on creates a publish→receive→republish echo loop
-# on streaming sensor data.  Bugs/baro/nav don't have this problem
-# (they only publish on user edits, gated by _ssync_suppress_publish).
-_SCS_MUTEX_KINDS = {"ahrs", "gps"}
+# Stream sensors / state mirrors: exactly one of OFF/TX/RX.  See
+# pi4/pfd.py for the rationale — both-on creates a
+# publish→receive→republish echo loop.  Bugs/baro/nav don't have
+# this problem (they only publish on user edits, gated by
+# _ssync_suppress_publish).
+_SCS_MUTEX_KINDS = {"ahrs", "gps", "fpl"}
 
 _SCS_PILL_W = 86
 _SCS_PILL_H = 36
@@ -10301,6 +10366,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
     _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
     _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
+    _screen_sync.on(_ssync_mod.KIND_FPL,  _ssync_apply_fpl)
     _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
     _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
     _screen_sync.start()

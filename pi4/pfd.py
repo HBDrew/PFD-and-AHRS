@@ -286,6 +286,16 @@ disp["cs"] = {                      # connectivity settings
     "sync_publish_nav":  False, "sync_consume_nav":  False,
     "sync_publish_ahrs": False, "sync_consume_ahrs": False,
     "sync_publish_gps":  False, "sync_consume_gps":  False,
+    "sync_publish_fpl":  False, "sync_consume_fpl":  False,
+}
+# Mirror of the peer's flight plan (received over screen sync).  The
+# Pi 4 PFD doesn't edit FPLs today — it just renders the active leg
+# (via disp["nav"]) and the multi-leg polyline on its inset map.  When
+# the user adds an editor on this side, the existing _ssync_publish_fpl
+# pattern from pi_zero can drop in here verbatim.
+disp["fpl"] = {
+    "waypoints":  [],
+    "active_idx": -1,
 }
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
@@ -404,7 +414,7 @@ def _ssync_kinds_from_cs(direction):
     cs = disp.get("cs", {})
     for k in (_ssync_mod.KIND_BUGS, _ssync_mod.KIND_BARO,
               _ssync_mod.KIND_NAV,  _ssync_mod.KIND_AHRS,
-              _ssync_mod.KIND_GPS):
+              _ssync_mod.KIND_GPS,  _ssync_mod.KIND_FPL):
         if cs.get(f"sync_{direction}_{k}", False):
             out.add(k)
     return out
@@ -588,6 +598,54 @@ def _ssync_publish_gps():
         "tas_kt":      float(disp.get("tas_kt", 0.0)),
         "airdata_ok":  bool(disp.get("airdata_ok", False)),
     })
+
+
+def _fpl_render_remaining():
+    """Return [(lat, lon, ident), ...] for the polyline on the inset
+    map starting at the active waypoint, or None when there's nothing
+    forward of the active leg.  Mirrors pi_zero's same-named helper."""
+    fpl = disp.get("fpl", {})
+    wps = fpl.get("waypoints", [])
+    idx = int(fpl.get("active_idx", -1))
+    if not (0 <= idx < len(wps) - 1):
+        return None
+    return [(float(w["lat"]), float(w["lon"]),
+             str(w.get("ident", "")))
+            for w in wps[idx:]]
+
+
+def _ssync_apply_fpl(data):
+    """Receive a flight plan + active leg index from the peer (piZ).
+    Replaces local disp["fpl"] verbatim; the multi-leg polyline render
+    on this side's inset map keys off this same dict.  Does not write
+    back to disp["nav"] — the peer also sends KIND_NAV with the active
+    leg's position when nav sync is enabled, and conflating the two
+    could overwrite a Pi-4-side temporary D2 override."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        wps = data.get("waypoints", [])
+        idx = int(data.get("active_idx", -1))
+        clean = []
+        for w in wps:
+            if not isinstance(w, dict):
+                continue
+            try:
+                clean.append({
+                    "ident":   str(w.get("ident", "")),
+                    "lat":     float(w.get("lat",  0.0)),
+                    "lon":     float(w.get("lon",  0.0)),
+                    "elev_ft": float(w.get("elev_ft", 0.0)),
+                    "user":    bool(w.get("user")),
+                    "name":    str(w.get("name", "")),
+                    "region":  str(w.get("region", "")),
+                })
+            except (TypeError, ValueError):
+                continue
+        disp["fpl"]["waypoints"]  = clean
+        disp["fpl"]["active_idx"] = idx if 0 <= idx < len(clean) else -1
+    finally:
+        _ssync_suppress_publish -= 1
 
 
 def _ssync_apply_gps(data):
@@ -5332,7 +5390,7 @@ _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "connectivity_setup": 6,
     "flight_profile":     8,
     "ahrs_firmware":      5,
-    "screen_sync_setup":  9,    # enable + transport + peer + ifaces + 5 categories
+    "screen_sync_setup": 10,    # enable + transport + peer + ifaces + 6 categories
 }
 _dispatch_replay = False
 
@@ -6316,13 +6374,14 @@ _SCS_KINDS = (
     ("nav",  "NAV (D2)", "waypoint ident + activation point"),
     ("ahrs", "AHRS",     "pitch / roll / yaw — pick one direction"),
     ("gps",  "GPS",      "lat / lon / alt / speed / track — pick one"),
+    ("fpl",  "FPL",      "full flight plan + active leg — pick one"),
 )
 # Stream sensors: exactly one of OFF/TX/RX.  If both TX and RX were
 # on, the periodic publisher would rebroadcast each peer packet right
 # back as if it were our own data, creating a feedback loop that
 # jitters the display.  Bugs/baro/nav don't have this problem (they
 # only publish on user edits, gated by _ssync_suppress_publish).
-_SCS_MUTEX_KINDS = {"ahrs", "gps"}
+_SCS_MUTEX_KINDS = {"ahrs", "gps", "fpl"}
 
 _SCS_PILL_W = 86
 _SCS_PILL_H = 36
@@ -10277,6 +10336,10 @@ def render(surf, demo_mode, connected, data_stale=False):
             range_label=_eff_label,
             state_lines=_state_lines,
             country_lines=_country_lines,
+            # Multi-leg FPL polyline.  Mirrored from the MFD over
+            # screen sync (KIND_FPL) — only renders when the pilot has
+            # FPL sync set to RX on this side AND the MFD is TXing.
+            fpl_remaining=_fpl_render_remaining(),
         )
 
     # 2. Pitch ladder (with roll rotation)
@@ -10563,6 +10626,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_BUGS, _ssync_apply_bugs)
     _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
     _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
+    _screen_sync.on(_ssync_mod.KIND_FPL,  _ssync_apply_fpl)
     _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
     _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
     _screen_sync.start()

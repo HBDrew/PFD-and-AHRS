@@ -47,9 +47,10 @@ KIND_BARO  = "baro"   # baro_hpa
 KIND_NAV   = "nav"    # D2 ident, lat/lon, activation point
 KIND_AHRS  = "ahrs"   # pitch, roll, yaw
 KIND_GPS   = "gps"    # lat, lon, alt, speed, track
+KIND_FPL   = "fpl"    # full flight-plan waypoint list + active_idx
 KIND_HELLO = "hello"  # heartbeat, no payload — keeps peer-status live
 
-ALL_KINDS = (KIND_BUGS, KIND_BARO, KIND_NAV, KIND_AHRS, KIND_GPS)
+ALL_KINDS = (KIND_BUGS, KIND_BARO, KIND_NAV, KIND_AHRS, KIND_GPS, KIND_FPL)
 
 # Transport selectors.  "auto" sends on every usable interface (USB
 # and network alike); "usb" / "net" restrict sends to one category.
