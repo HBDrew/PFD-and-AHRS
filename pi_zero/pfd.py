@@ -2675,7 +2675,7 @@ def handle_event(event, demo_mode):
     # screen, watch MOTION to detect a scroll-drag, and on BUTTONUP either
     # consume the drag (no action fires) or replay the tap at the up
     # position so the underlying row-hit code runs as if nothing happened.
-    global _ss_drag, _dispatch_replay
+    global _ss_drag, _dispatch_replay, _fpl_drag, _fpl_scroll
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
         pos = event.pos if hasattr(event, "pos") else (
             int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
@@ -2712,6 +2712,40 @@ def handle_event(event, demo_mode):
     # Same defer-replay pattern as scroll-drag: DOWN over the MFD's map
     # area is held until MOTION exceeds the threshold (→ pan) or UP fires
     # with no significant motion (→ airport hit-test).
+    # ── FPL list scroll drag ────────────────────────────────────────────────
+    # Defer-replay pattern: tap inside the list area starts a candidate
+    # drag; motion beyond _FPL_DRAG_THRESHOLD converts to scroll; UP
+    # without motion fires the original tap (so row buttons still work).
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _fpl_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        _, y = pos
+        dy = y - _fpl_drag["down_y"]
+        if not _fpl_drag["is_drag"] and abs(dy) > _FPL_DRAG_THRESHOLD:
+            _fpl_drag["is_drag"] = True
+        if _fpl_drag["is_drag"]:
+            wps = disp.get("fpl", {}).get("waypoints", [])
+            max_s = _fpl_max_scroll(len(wps))
+            _fpl_scroll = max(0, min(max_s,
+                                      _fpl_drag["scroll_at_down"] - dy))
+        _fpl_drag["pos"] = pos
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _fpl_drag is not None:
+        d = _fpl_drag
+        _fpl_drag = None
+        if not d["is_drag"]:
+            # Tap — replay so the existing FPL-tap dispatch handles it.
+            _dispatch_replay = True
+            try:
+                fake = pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN,
+                    {"pos": d["pos"], "button": 1})
+                handle_event(fake, demo_mode)
+            finally:
+                _dispatch_replay = False
+        return True
+
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _mfd_drag is not None:
         pos = event.pos if hasattr(event, "pos") else (
             int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
@@ -2764,6 +2798,21 @@ def handle_event(event, demo_mode):
                 "is_drag":        False,
             }
             return True
+
+        # FPL list has its own scrollable area below the action bar;
+        # taps in the action bar / header fire immediately, taps in
+        # the list area defer for a possible drag.
+        if not _dispatch_replay and mode == "fpl":
+            list_top, list_bot = _fpl_list_area_y()
+            if list_top <= y <= list_bot:
+                _fpl_drag = {
+                    "down_x":         x,
+                    "down_y":         y,
+                    "pos":            (x, y),
+                    "scroll_at_down": _fpl_scroll,
+                    "is_drag":        False,
+                }
+                return True
 
         # ── Setup screen taps ─────────────────────────────────────────────
         if mode == "setup":
@@ -4017,6 +4066,10 @@ _dispatch_replay = False   # guard against infinite recursion in the
 # Motion exceeding _MFD_DRAG_THRESHOLD converts a tap into a pan-drag.
 _mfd_drag = None
 _MFD_DRAG_THRESHOLD = 8
+
+# FPL list scroll-drag state (mode == "fpl").  Same shape as _ss_drag.
+_fpl_drag = None
+_FPL_DRAG_THRESHOLD = 8
 
 
 def _ss_row_y(i):
@@ -9028,12 +9081,21 @@ def mfd_strip_setup_hit(x, y):
 
 _FPL_HEADER_H   = 44
 _FPL_ACTIONS_H  = 50
-_FPL_ROW_H      = 46
-_FPL_ROW_GAP    = 4
+# Row and icon sizes sized for cockpit fingers — was 46/32 which read
+# too small in real lighting.  At ~80 px row + 56 px icons the list
+# matches the rest of the MFD chrome (zoom buttons, D→ / FPL buttons
+# are all 56 px).  Three full rows fit per screen; the list scrolls
+# by touch-drag for >3 waypoints.
+_FPL_ROW_H      = 80
+_FPL_ROW_GAP    = 6
 
 # Per-row action icon button width, right-justified.
-_FPL_ICON_W     = 32
-_FPL_ICON_GAP   = 4
+_FPL_ICON_W     = 56
+_FPL_ICON_GAP   = 6
+
+# Vertical-drag scroll offset for the FPL list.  Updated by the
+# touch handler while a finger is dragging inside the list area.
+_fpl_scroll = 0
 
 
 # Two action rows: row 1 has three "+" buttons (ICAO / LAT-LON / USER),
@@ -9072,10 +9134,24 @@ def _fpl_list_y0():
 
 
 def _fpl_row_rect(idx):
-    y0 = _fpl_list_y0()
+    y0 = _fpl_list_y0() - _fpl_scroll
     pad = 6
     return (pad, y0 + idx * (_FPL_ROW_H + _FPL_ROW_GAP),
             DISPLAY_W - 2 * pad, _FPL_ROW_H)
+
+
+def _fpl_max_scroll(n_rows):
+    """Maximum scroll offset given n_rows in the list.  Zero when the
+    list fits entirely in the visible area."""
+    visible_h = DISPLAY_H - _fpl_list_y0() - 6
+    content_h = n_rows * (_FPL_ROW_H + _FPL_ROW_GAP) - _FPL_ROW_GAP
+    return max(0, content_h - visible_h)
+
+
+def _fpl_list_area_y():
+    """(top, bottom) of the scrollable list area — used for hit-test
+    and clip rect."""
+    return _fpl_list_y0(), DISPLAY_H - 6
 
 
 def _fpl_row_icon_rects(rect):
@@ -9097,9 +9173,9 @@ def _fpl_icon_btn(surf, rect, glyph, dim=False):
     bg = (8, 18, 32) if not dim else (4, 8, 14)
     oc = (80, 100, 130) if not dim else (40, 50, 70)
     tc = WHITE if not dim else (90, 100, 120)
-    pygame.draw.rect(surf, bg, rect, border_radius=4)
-    pygame.draw.rect(surf, oc, rect, width=1, border_radius=4)
-    _text(surf, glyph, 22, tc, bold=True,
+    pygame.draw.rect(surf, bg, rect, border_radius=5)
+    pygame.draw.rect(surf, oc, rect, width=1, border_radius=5)
+    _text(surf, glyph, 34, tc, bold=True,
           cx=bx + bw // 2, cy=by + bh // 2 + 1)
 
 
@@ -9153,12 +9229,22 @@ def draw_fpl(surf):
               cy=_fpl_list_y0() + 106)
         return
 
+    # Clip row rendering to the list area so scrolled-up rows don't
+    # bleed into the action buttons above.  Also clamp the scroll so
+    # blank space never appears below the last row.
+    global _fpl_scroll
+    list_top, list_bot = _fpl_list_area_y()
+    _fpl_scroll = max(0, min(_fpl_scroll, _fpl_max_scroll(len(wps))))
+    prev_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, list_top, DISPLAY_W, list_bot - list_top))
+
     for i, wp in enumerate(wps):
-        # Clip if off the bottom (we cap at _FPL_MAX_WAYPOINTS so the
-        # list always fits without scrolling on a 480-tall screen).
         bx, by, bw, bh = _fpl_row_rect(i)
-        if by + bh > DISPLAY_H - 6:
-            break
+        # Skip rows entirely above or below the visible window — at
+        # 80 px row height + scroll, most of the list is off-screen
+        # except a few rows.
+        if by + bh < list_top or by > list_bot:
+            continue
         is_this_active = (i == active_idx)
         bg = (0, 40, 18) if is_this_active else (0, 12, 32)
         oc = (60, 200, 90) if is_this_active else (60, 80, 110)
@@ -9166,12 +9252,12 @@ def draw_fpl(surf):
         pygame.draw.rect(surf, oc, (bx, by, bw, bh),
                          width=2 if is_this_active else 1, border_radius=5)
         # Row number (full-row centred vertically)
-        _text(surf, f"{i+1}", 14, (160, 180, 200), bold=True,
-              x=bx + 10, cy=by + bh // 2)
+        _text(surf, f"{i+1}", 20, (160, 180, 200), bold=True,
+              x=bx + 14, cy=by + bh // 2)
         # Ident — top half so the subtitle can sit underneath
         ident_col = MAGENTA if is_this_active else WHITE
-        _text(surf, wp.get("ident", ""), 22, ident_col, bold=True,
-              x=bx + 42, y=by + 4)
+        _text(surf, wp.get("ident", ""), 32, ident_col, bold=True,
+              x=bx + 56, y=by + 10)
         # Subtitle — airport name + region, or USER · lat/lon
         wp_name   = str(wp.get("name", "") or "")
         wp_region = str(wp.get("region", "") or "")
@@ -9192,21 +9278,39 @@ def draw_fpl(surf):
             sub_col = (130, 150, 180)
         # Crop subtitle to fit the available width before the icons.
         max_sub_x = bx + bw - 6 - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 14
-        # Trim characters until it fits — coarse but cheap.
-        font = _get_font(13, bold=False)
-        while sub and font.size(sub)[0] > (max_sub_x - (bx + 42)):
+        sub_font = _get_font(18, bold=False)
+        while sub and sub_font.size(sub)[0] > (max_sub_x - (bx + 56)):
             sub = sub[:-1]
-        _text(surf, sub, 13, sub_col, x=bx + 42, y=by + bh - 18)
+        _text(surf, sub, 18, sub_col, x=bx + 56, y=by + bh - 26)
         # ACTIVE badge — top-right of the ident line
         if is_this_active:
-            _text(surf, "● ACTIVE", 11, (60, 220, 100), bold=True,
-                  x=bx + bw - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 78,
-                  y=by + 6)
+            _text(surf, "● ACTIVE", 15, (60, 220, 100), bold=True,
+                  x=bx + bw - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 108,
+                  y=by + 12)
         # Reorder / delete icons
         up_r, dn_r, del_r = _fpl_row_icon_rects((bx, by, bw, bh))
         _fpl_icon_btn(surf, up_r, "↑", dim=(i == 0))
         _fpl_icon_btn(surf, dn_r, "↓", dim=(i == len(wps) - 1))
         _fpl_icon_btn(surf, del_r, "✕")
+
+    # Lift the clip and paint a scroll indicator on the right edge
+    # when the list overflows.
+    surf.set_clip(prev_clip)
+    max_s = _fpl_max_scroll(len(wps))
+    if max_s > 0:
+        bar_w = 4
+        bar_x = DISPLAY_W - bar_w - 2
+        track_h = list_bot - list_top
+        thumb_h = max(20, int(track_h * track_h
+                              / (track_h + max_s)))
+        thumb_y = list_top + int((track_h - thumb_h)
+                                  * _fpl_scroll / max_s)
+        pygame.draw.rect(surf, (40, 50, 70),
+                         (bar_x, list_top, bar_w, track_h),
+                         border_radius=2)
+        pygame.draw.rect(surf, (120, 150, 190),
+                         (bar_x, thumb_y, bar_w, thumb_h),
+                         border_radius=2)
 
 
 def fpl_hit(x, y):
