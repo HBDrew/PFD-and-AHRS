@@ -82,9 +82,9 @@ DOWNLOAD_SOURCES = {
         "?format=geojson&spatialRefId=4326"
     ),
     "special_use_airspace.geojson": (
-        "https://opendata.arcgis.com/api/v3/datasets/"
-        "12cdb097edaf483aa0c635f5f48bc31a_0/downloads/data"
-        "?format=geojson&spatialRefId=4326"
+        "https://hub.arcgis.com/api/v3/datasets/"
+        "dd0d1b726e504137ab3c41b21835d05b_0/downloads/data"
+        "?format=geojson&spatialRefId=4326&where=1%3D1"
     ),
 }
 # Compat shim — older callers read a single DOWNLOAD_URL; we now expose
