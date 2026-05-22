@@ -58,6 +58,7 @@ with fewer than 3 points are dropped.
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -274,19 +275,25 @@ def build_from_dir(data_dir, source_note=""):
     This is the entrypoint the Pi-side AIRSPACE DATA screens call to
     do the conversion in-process — no separate laptop step needed."""
     from pathlib import Path as _P
-    out_records = []
+    # Streaming write: open the output now, append per-record as we
+    # convert, never accumulate the full output in memory.  Important
+    # on the Pi Zero where a 600 MB Class Airspace dump + 8000 output
+    # records + final json.dumps would push the process well past the
+    # 512 MB RAM ceiling.
     stats = {"B": 0, "C": 0, "D": 0, "MOA": 0, "R": 0, "P": 0, "TFR": 0,
              "files": 0, "skipped_no_class": 0,
              "skipped_no_polygon": 0, "skipped_bad_feature": 0,
-             "errors": []}
+             "errors": [], "records": 0}
     data_path = _P(data_dir)
     if not data_path.is_dir():
         stats["errors"].append(f"directory not found: {data_dir}")
         return stats
-    # Hard per-file size cap so a 500 MB blob can't OOM the Pi.
-    # Typical Class Airspace dump is ~10-15 MB; SUA ~5 MB.  Bumping
-    # this won't help if the Pi can't hold the JSON in RAM anyway.
-    MAX_FILE_BYTES = 100 * 1024 * 1024
+    # Per-file size cap.  We stream-parse, so a multi-hundred-MB file
+    # is OK — the cap is just a "is this clearly corrupt or pointing
+    # at the wrong dataset" sanity check.  FAA Class Airspace can be
+    # ~600 MB if Class E coverage is included; SUA + TFRs are much
+    # smaller.  Cap at 2 GB.
+    MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
     # Filename-based class hint — used when feature properties don't
     # clearly identify the class.  Lets the FAA Stadium TFR / Defense
     # TFR / Prohibited Areas datasets classify cleanly even when their
@@ -297,50 +304,77 @@ def build_from_dir(data_dir, source_note=""):
         if "prohibit" in n:                                return "P"
         return None
 
-    for gj in sorted(data_path.glob("*.geojson")):
-        stats["files"] += 1
-        try:
-            sz = gj.stat().st_size
-            if sz > MAX_FILE_BYTES:
-                stats["errors"].append(
-                    f"{gj.name}: {sz/1024/1024:.1f} MB exceeds "
-                    f"{MAX_FILE_BYTES/1024/1024:.0f} MB cap — skipped")
-                continue
-            features = load_geojson(gj)
-        except (json.JSONDecodeError, ValueError, OSError) as e:
-            stats["errors"].append(f"{gj.name}: {e}")
-            continue
-        hint = _hint_for(gj.name)
-        # Per-feature try/except — one bad polygon (unexpected
-        # geometry type, non-numeric coord, weird property value)
-        # must not kill the entire build.  Counts toward
-        # skipped_bad_feature for surfacing in the UI.
-        for feat in features:
-            try:
-                had_class = had_poly = False
-                for rec in feature_to_records(feat, class_hint=hint):
-                    had_class = had_poly = True
-                    out_records.append(rec)
-                    stats[rec["class"]] = stats.get(rec["class"], 0) + 1
-                if not had_class:
-                    stats["skipped_no_class"] += 1
-                elif not had_poly:
-                    stats["skipped_no_polygon"] += 1
-            except Exception as e:    # noqa: BLE001 — defensive sink
-                stats["skipped_bad_feature"] += 1
-                if len(stats["errors"]) < 5:
-                    stats["errors"].append(f"{gj.name} feature: {e}")
     out_path = data_path / "airspaces.json"
+    tmp_path = data_path / "airspaces.json.tmp"
+    out_f = None
     try:
-        out_path.write_text(json.dumps({
-            "version": 1,
-            "source":  source_note or "FAA GeoJSON (pi-side build)",
-            "airspaces": out_records,
-        }, indent=2))
+        out_f = open(tmp_path, "w", encoding="utf-8")
+        # Compact JSON — no indent.  ~half the file size + memory of
+        # the indented form, irrelevant for human reading because
+        # the file is consumed by airspaces._records_from_raw().
+        src = source_note or "FAA GeoJSON (pi-side build)"
+        out_f.write('{"version":1,"source":')
+        out_f.write(json.dumps(src))
+        out_f.write(',"airspaces":[')
+        first_rec = True
+
+        for gj in sorted(data_path.glob("*.geojson")):
+            stats["files"] += 1
+            try:
+                sz = gj.stat().st_size
+                if sz > MAX_FILE_BYTES:
+                    stats["errors"].append(
+                        f"{gj.name}: {sz/1024/1024:.1f} MB exceeds cap "
+                        f"— skipped")
+                    continue
+            except OSError as e:
+                stats["errors"].append(f"{gj.name}: {e}")
+                continue
+            hint = _hint_for(gj.name)
+            # Stream-parse the input + stream-write the output so even
+            # a 600 MB Class Airspace dump processes in tens of MB of
+            # working memory.  Per-feature try/except so one bad
+            # polygon can't kill the whole build.
+            try:
+                for feat in stream_features(gj):
+                    try:
+                        had_class = had_poly = False
+                        for rec in feature_to_records(feat, class_hint=hint):
+                            had_class = had_poly = True
+                            if not first_rec:
+                                out_f.write(',')
+                            out_f.write(json.dumps(rec, separators=(',', ':')))
+                            first_rec = False
+                            stats[rec["class"]] = stats.get(rec["class"], 0) + 1
+                            stats["records"] += 1
+                        if not had_class:
+                            stats["skipped_no_class"] += 1
+                        elif not had_poly:
+                            stats["skipped_no_polygon"] += 1
+                    except Exception as e:    # noqa: BLE001
+                        stats["skipped_bad_feature"] += 1
+                        if len(stats["errors"]) < 5:
+                            stats["errors"].append(f"{gj.name} feature: {e}")
+            except OSError as e:
+                stats["errors"].append(f"{gj.name}: {e}")
+                continue
+
+        out_f.write(']}')
+        out_f.close()
+        out_f = None
+        # Atomic replace so a partial write doesn't corrupt the
+        # existing airspaces.json a reader might be holding open.
+        os.replace(str(tmp_path), str(out_path))
     except OSError as e:
         stats["errors"].append(f"write {out_path.name}: {e}")
-    stats["records"] = len(out_records)
-    stats["output"]  = str(out_path)
+    finally:
+        if out_f is not None:
+            try: out_f.close()
+            except Exception: pass
+            try: os.remove(str(tmp_path))
+            except Exception: pass
+
+    stats["output"] = str(out_path)
     return stats
 
 
@@ -349,7 +383,10 @@ def load_geojson(path):
     against:
         * BOM at the start of the file (some Windows-saved exports)
         * GeoJSON with no top-level 'type' but a 'features' array
-        * features list as None instead of empty list"""
+        * features list as None instead of empty list
+
+    Whole-file load — prefer stream_features() for inputs over a few
+    MB so the Pi Zero doesn't OOM."""
     with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
         data = json.load(fh)
     if not isinstance(data, dict):
@@ -361,6 +398,100 @@ def load_geojson(path):
     if isinstance(data.get("features"), list):
         return data["features"]
     raise ValueError(f"{path}: not a GeoJSON Feature/FeatureCollection")
+
+
+def stream_features(path):
+    """Yield Features from a GeoJSON FeatureCollection one at a time
+    without loading the whole file into memory.  Required for the
+    Pi Zero (512 MB RAM) on multi-hundred-MB FAA dumps that include
+    Class E or other very-detailed polygons we don't ultimately keep.
+
+    State machine: find ``"features": [``, then track brace depth +
+    string state to identify each top-level object inside the array.
+    JSON-parse each individually.  Malformed individual features
+    log + skip rather than abort the whole stream."""
+    OPEN_BRACE  = 0x7B   # {
+    CLOSE_BRACE = 0x7D   # }
+    QUOTE       = 0x22   # "
+    BACKSLASH   = 0x5C   # \\
+    CLOSE_BRKT  = 0x5D   # ]
+    READ_BLOCK  = 64 * 1024
+
+    with open(path, "rb") as fh:
+        # ── Locate the start of the features array ────────────────────
+        head = b""
+        features_start = -1
+        # Cap the head scan to a few MB to avoid pathological inputs
+        # where "features" never appears.
+        while features_start < 0 and len(head) < 8 * 1024 * 1024:
+            more = fh.read(READ_BLOCK)
+            if not more:
+                break
+            head += more
+            f_idx = head.find(b'"features"')
+            if f_idx < 0:
+                continue
+            bracket = head.find(b'[', f_idx)
+            if bracket >= 0:
+                features_start = bracket + 1
+                break
+        if features_start < 0:
+            return
+        leftover = head[features_start:]
+
+        # ── Stream the rest, yielding one feature per top-level {…} ──
+        depth = 0
+        in_str = False
+        esc = False
+        buf = bytearray()
+        # Re-emit leftover bytes first, then continue reading.
+        def _byte_stream():
+            for b in leftover:
+                yield b
+            while True:
+                chunk = fh.read(READ_BLOCK)
+                if not chunk:
+                    return
+                for b in chunk:
+                    yield b
+
+        for b in _byte_stream():
+            if in_str:
+                buf.append(b)
+                if esc:
+                    esc = False
+                elif b == BACKSLASH:
+                    esc = True
+                elif b == QUOTE:
+                    in_str = False
+                continue
+            if b == QUOTE:
+                in_str = True
+                if depth > 0:
+                    buf.append(b)
+                continue
+            if b == OPEN_BRACE:
+                if depth == 0:
+                    buf = bytearray()
+                buf.append(b)
+                depth += 1
+                continue
+            if b == CLOSE_BRACE:
+                if depth > 0:
+                    buf.append(b)
+                depth -= 1
+                if depth == 0 and buf:
+                    try:
+                        feat = json.loads(buf.decode("utf-8", errors="replace"))
+                        yield feat
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+                    buf = bytearray()
+                continue
+            if b == CLOSE_BRKT and depth == 0:
+                return   # end of features array
+            if depth > 0:
+                buf.append(b)
 
 
 # ── Main ────────────────────────────────────────────────────────────────
