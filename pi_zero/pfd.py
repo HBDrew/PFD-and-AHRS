@@ -3055,6 +3055,19 @@ def handle_event(event, demo_mode):
                 disp["cs"][key] = not disp["cs"].get(key, False)
                 _settings.mark_dirty()
                 _ssync_refresh_kinds()
+            elif action and action.startswith("usb_role:"):
+                new_role = action.split(":", 1)[1]
+                cur = disp.get("_usb_role", _usb_role_current())
+                if cur == new_role:
+                    disp["_usb_role_msg"] = f"already {new_role}"
+                else:
+                    ok, msg = _usb_role_set(new_role)
+                    if ok:
+                        disp["_usb_role"] = new_role
+                        disp["_usb_role_msg"] = (
+                            f"REBOOT REQUIRED — dr_mode={new_role}")
+                    else:
+                        disp["_usb_role_msg"] = f"failed: {msg}"
             return True
 
         # ── +LAT/LON entry screen taps ────────────────────────────────────
@@ -4164,7 +4177,7 @@ _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "connectivity_setup": 6,
     "flight_profile":     8,
     "ahrs_firmware":      5,
-    "screen_sync_setup": 10,    # enable + transport + peer + ifaces + 6 categories
+    "screen_sync_setup": 11,    # enable + transport + peer + ifaces + usb_role + 6 categories
 }
 _dispatch_replay = False   # guard against infinite recursion in the
                            # deferred-tap replay path
@@ -6036,7 +6049,8 @@ _SCS_ROW_ENABLE    = 0
 _SCS_ROW_TRANSPORT = 1
 _SCS_ROW_PEER      = 2
 _SCS_ROW_IFACES    = 3
-_SCS_ROW_KINDS_OFS = 4
+_SCS_ROW_USB_ROLE  = 4
+_SCS_ROW_KINDS_OFS = 5
 
 _SCS_TRANSPORTS = (
     ("auto", "AUTO"),
@@ -6105,6 +6119,53 @@ def _scs_transport_rects(by, bh):
     for i in range(3):
         rects.append((base_x + i * (seg_w + gap), py, seg_w, _SCS_PILL_H))
     return rects
+
+
+# ── USB role (dwc2 dr_mode) — Pi Zero hardware switch ───────────────────────
+# The Pi Zero has a single USB-OTG data port and a single dwc2 controller;
+# dr_mode is read at boot so the toggle below writes config.txt and
+# requests a reboot rather than trying to switch at runtime.
+_USB_ROLE_SCRIPT = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..",
+    "tools", "set_usb_role.sh"))
+
+
+def _usb_role_current():
+    """Return 'host' | 'peripheral' | 'otg' | 'none' | 'unknown' by
+    asking the helper script.  Cached briefly per-frame would be nicer
+    but the cost is one subprocess on screen entry, not per-frame."""
+    try:
+        r = subprocess.run(["bash", _USB_ROLE_SCRIPT, "status"],
+                           capture_output=True, text=True, timeout=2)
+        out = (r.stdout or "").strip()
+        return out if out else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def _usb_role_set(new_role):
+    """Run the helper with sudo to flip dr_mode.  Returns (ok, message)."""
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "bash", _USB_ROLE_SCRIPT, new_role],
+            capture_output=True, text=True, timeout=4)
+        if r.returncode == 0:
+            return True, (r.stdout or "").strip() or f"dr_mode={new_role}"
+        return False, (r.stderr or r.stdout or "").strip() or "failed"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+
+
+def _scs_usb_role_rects(by, bh):
+    """Two segmented buttons (HOST / PERIPHERAL) for the USB ROLE row."""
+    bw = DISPLAY_W - 2 * _SS_MX
+    seg_w = 110
+    gap   = _SCS_PILL_GAP
+    rx_right = _SS_MX + bw - _SS_MX
+    base_x = rx_right - (2 * seg_w + gap)
+    py = by + (bh - _SCS_PILL_H) // 2
+    return [(base_x, py, seg_w, _SCS_PILL_H),
+            (base_x + seg_w + gap, py, seg_w, _SCS_PILL_H)]
 
 
 def draw_screen_sync_setup(surf, cs):
@@ -6176,7 +6237,25 @@ def draw_screen_sync_setup(surf, cs):
             _text(surf, tail, 10, (140, 150, 170),
                   x=bx + 14, y=by + bh - 14)
 
-    # Rows 4-8: per-category direction controls.  AHRS and GPS use a
+    # Row 4: USB ROLE (Pi Zero only).  HOST = AHRS / sensors over USB;
+    # PERIPHERAL = USB-eth screen sync to Pi 4.  Mutually exclusive —
+    # Pi Zero has one USB controller.  Changes write /boot/firmware/
+    # config.txt; reboot to apply.
+    role_cur = disp.setdefault("_usb_role", _usb_role_current())
+    role_msg = disp.get("_usb_role_msg", "")
+    bx, by, bw, bh = _setting_row(
+        surf, _SCS_ROW_USB_ROLE, "USB ROLE",
+        "HOST = AHRS via USB · PERIPHERAL = USB screen-sync · reboot to apply")
+    host_r, peri_r = _scs_usb_role_rects(by, bh)
+    _seg_btn(surf, *host_r, "HOST",       role_cur == "host")
+    _seg_btn(surf, *peri_r, "PERIPHERAL", role_cur == "peripheral")
+    if role_msg:
+        col = ((230, 150, 60) if role_msg.startswith("REBOOT")
+               else (60, 220, 80) if role_msg.startswith("OK")
+               else (220, 130, 60))
+        _text(surf, role_msg, 11, col, bold=True, x=bx + 14, y=by + bh - 16)
+
+    # Rows 5-N: per-category direction controls.  AHRS and GPS use a
     # mutex three-pill (OFF/TX/RX) because both-on would create a
     # publish→receive→republish echo loop on the streaming sensor
     # data.  Bugs/baro/nav stay as independent TX + RX pills.
@@ -6218,6 +6297,15 @@ def screen_sync_setup_hit(x, y, cs):
             tx, ty, tw, th = rect
             if tx <= x <= tx + tw and ty <= y <= ty + th:
                 return f"transport:{val}"
+
+    # USB role (HOST / PERIPHERAL)
+    by = _ss_row_y(_SCS_ROW_USB_ROLE)
+    if by <= y <= by + _SS_RH:
+        host_r, peri_r = _scs_usb_role_rects(by, _SS_RH)
+        for rect, role in ((host_r, "host"), (peri_r, "peripheral")):
+            rx_, ry_, rw_, rh_ = rect
+            if rx_ <= x <= rx_ + rw_ and ry_ <= y <= ry_ + rh_:
+                return f"usb_role:{role}"
 
     # Per-category direction controls.  Mutex kinds (AHRS, GPS) emit
     # set_mode:<kind>:<off|tx|rx>; others emit toggle_publish /
