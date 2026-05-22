@@ -620,6 +620,105 @@ def _ssync_publish_gps():
     })
 
 
+# ── Flight plan helpers ────────────────────────────────────────────────
+# Pi 4 has the sim / GPS source and so is the side that "knows" when the
+# aircraft passes a waypoint.  Without auto-advance here the sim's
+# autopilot keeps chasing a waypoint that's now behind it — the
+# bearing-to-waypoint flips 180° at overflight and the AP commands a
+# tight orbit.  Same _FPL_ADVANCE_DIST_NM / _fpl_check_advance pattern
+# as pi_zero so the two stay in lockstep.
+
+_FPL_ADVANCE_DIST_NM = 0.5    # distance below which auto-sequence fires
+
+
+def _fpl_is_active():
+    fpl = disp.get("fpl", {})
+    wps = fpl.get("waypoints", [])
+    idx = fpl.get("active_idx", -1)
+    return 0 <= idx < len(wps)
+
+
+def _fpl_current():
+    if not _fpl_is_active():
+        return None
+    return disp["fpl"]["waypoints"][disp["fpl"]["active_idx"]]
+
+
+def _fpl_apply_active(reset_activation=False):
+    """Mirror the active FPL waypoint into disp["nav"]."""
+    wp = _fpl_current()
+    if wp is None:
+        return
+    idx = disp["fpl"]["active_idx"]
+    if idx > 0 and not reset_activation:
+        prev = disp["fpl"]["waypoints"][idx - 1]
+        act_lat = float(prev["lat"])
+        act_lon = float(prev["lon"])
+    else:
+        act_lat = float(disp.get("lat", wp["lat"]))
+        act_lon = float(disp.get("lon", wp["lon"]))
+    disp["nav"]["ident"]   = str(wp["ident"])
+    disp["nav"]["lat"]     = float(wp["lat"])
+    disp["nav"]["lon"]     = float(wp["lon"])
+    disp["nav"]["elev_ft"] = float(wp.get("elev_ft", 0.0))
+    disp["nav"]["act_lat"] = act_lat
+    disp["nav"]["act_lon"] = act_lon
+
+
+def _fpl_activate(idx, reset_activation=False):
+    """Set active_idx and mirror into disp["nav"].  Called only from
+    the auto-advance path on this side (no editor here yet), so
+    reset_activation defaults False — the leg origin is the previous
+    waypoint, not the aircraft's current position."""
+    wps = disp["fpl"]["waypoints"]
+    if not (0 <= idx < len(wps)):
+        return
+    disp["fpl"]["active_idx"] = idx
+    _fpl_apply_active(reset_activation=reset_activation)
+    _ssync_publish_fpl()
+
+
+def _fpl_deactivate():
+    disp["fpl"]["active_idx"] = -1
+    disp["nav"]["ident"]   = ""
+    disp["nav"]["lat"]     = 0.0
+    disp["nav"]["lon"]     = 0.0
+    disp["nav"]["elev_ft"] = 0.0
+    _ssync_publish_fpl()
+
+
+def _fpl_check_advance(lat, lon):
+    """Called every frame.  When the aircraft is within
+    _FPL_ADVANCE_DIST_NM of the active waypoint, sequence to the next
+    leg.  Deactivates on reaching the final waypoint."""
+    wp = _fpl_current()
+    if wp is None:
+        return
+    dist_nm, _ = _nav_geo_dist_brg(lat, lon, wp["lat"], wp["lon"])
+    if dist_nm >= _FPL_ADVANCE_DIST_NM:
+        return
+    fpl = disp["fpl"]
+    if fpl["active_idx"] < len(fpl["waypoints"]) - 1:
+        _fpl_activate(fpl["active_idx"] + 1, reset_activation=False)
+    else:
+        _fpl_deactivate()
+
+
+def _ssync_publish_fpl():
+    """Broadcast the full plan to the peer.  Gated by the standard
+    publish_kinds check (so Pi 4 only TXes when the pilot has FPL
+    set to TX on this side).  Called from _fpl_activate /
+    _fpl_deactivate so auto-advance changes propagate to the MFD
+    when sync is configured that direction."""
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    fpl = disp.get("fpl", {})
+    _screen_sync.publish(_ssync_mod.KIND_FPL, {
+        "waypoints":  list(fpl.get("waypoints", [])),
+        "active_idx": int(fpl.get("active_idx", -1)),
+    })
+
+
 def _fpl_render_remaining():
     """Return [(lat, lon, ident), ...] for the polyline on the inset
     map starting at the active waypoint, or None when there's nothing
@@ -10213,6 +10312,14 @@ def render(surf, demo_mode, connected, data_stale=False):
     _update_terrain_alert(lat, lon, alt, speed, gps_ok,
                           track_deg=track, vsi_fpm=vspeed,
                           vso_kt=fp.get("vs0", VS0))
+
+    # Auto-sequence the active FPL leg when within the advance
+    # threshold.  Pi 4 owns this on the sim side (it has the GPS
+    # source); pi_zero has its own copy for the case where the GPS
+    # lives on the MFD instead.  GPS-gated so a bad fix can't blip
+    # us through the plan.
+    if gps_ok and _fpl_is_active():
+        _fpl_check_advance(lat, lon)
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground.
     # Shared-GL composite path renders sky+terrain directly into the default
