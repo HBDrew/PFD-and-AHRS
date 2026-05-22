@@ -203,6 +203,101 @@ Validation: bench against a known thermometer at room temperature
 (±1 °C); cross-check in flight against a handheld at level cruise
 (should converge once the probe equilibrates to ram-air temp).
 
+### PI5-UPGRADE  Pi 4 → Pi 5 display + carrier board + NVMe
+Status: **OPEN — planning, no hardware in hand yet**
+Target: hardware (Pi 5 + custom carrier board), `pi4/setup.sh`
+(GPU memory + display config branching), `Docs/REQUIREMENTS_DISPLAY_PI4.md`
+(processor + RAM minimums), `pi4/svt_renderer.py` (VideoCore VII
+tuning if needed), and a future renaming of `pi4/` once dual-host
+support stabilises.
+
+Scope: replace the Pi 4 display host with a Pi 5, mount it on a
+small custom carrier board the pilot is already considering for
+the cockpit power-supply story, and route the NVMe lane through
+that carrier board to a small M.2 SSD for fast tile / cache /
+boot storage.
+
+Locked-in decisions:
+  - **RAM: 8 GB.** $20 cost delta over 4 GB is in the noise vs the
+    project budget, and the Pi 5 unified the GPU and system memory
+    pools — the old `gpu_mem=256` carve-out in `pi4/setup.sh:77`
+    doesn't exist on Pi 5 (CMA / KMS share one pool). Headroom
+    matters more on Pi 5 than it did on Pi 4 because of that. The
+    open TODO queue is also RAM-shaped: ADS-B traffic, weather
+    radar tiles, full-CONUS SRTM resident in RAM (currently paged
+    from disk in `shared/terrain.py`) all eat hundreds of MB once
+    they land. 2 GB and 4 GB are ruled out; 16 GB is overkill.
+  - **Active cooler is mandatory**, not optional. Pi 5 throttles
+    aggressively without one and the cockpit thermal envelope
+    (REQ-AHRS-ENV-001: −20 °C to +70 °C) is unforgiving on the
+    hot end. Official Pi 5 Active Cooler is the bench default;
+    a passive heatsink + enclosure airflow might be enough once
+    the panel install is final, but assume active cooling for
+    the carrier-board layout (clearance for the fan + heatsink).
+  - **NVMe SSD**: 256 GB M.2 2230 or 2242 on the carrier board's
+    PCIe lane. ~$25 + ~$15 for the NVMe HAT pattern absorbed
+    into the carrier. Boots the Pi 5 directly (no SD card after
+    initial setup), holds the SRTM tile cache, OS, and headroom
+    for the planned ADS-B / weather / runway data growth.
+    Bigger speedup for the actual workload than the CPU bump.
+  - **Custom carrier board** (the host PCB the pilot is already
+    sketching for power):
+      - 5 V / 5 A buck regulator from aircraft 14 V or 28 V bus
+        to the Pi 5's USB-C input. Pi 5 wants up to 5 A under
+        load — sanity-check the existing aircraft 5 V reg
+        before reusing it; likely needs an upgrade.
+      - PCIe lane from the Pi 5's FFC connector to an on-board
+        M.2 socket (2230 / 2242 footprint).
+      - Header break-outs for the AHRS-to-display UART / USB
+        link, panel-mount touch and HDMI passthroughs, and
+        chassis mounting points so the whole stack drops into
+        the enclosure as one unit.
+      - Active-cooler clearance + fan power tap.
+
+Software deltas:
+  - `pi4/setup.sh:77` (`gpu_mem=256`) — branch the `config.txt`
+    edit by detected Pi model. Pi 5 silently ignores the setting
+    but it's worth being explicit so future readers don't think
+    it's doing something.
+  - `pi4/setup.sh` apt list — verify Pi 5 OS Bookworm package
+    names haven't drifted (`python3-pygame`, `python3-numpy` are
+    stable; the SDL / KMS stack may want re-checking).
+  - `pi4/svt_renderer.py` — VideoCore VII has different shader
+    perf characteristics from VI; the GL path probably just
+    works but is worth a bench-mark pass. If it does, an
+    optional 60 fps target (vs the current 30 fps in
+    REQ-DISP-PI4-RENDER-001) becomes plausible — but that's a
+    follow-up, not a blocker.
+  - KMS-only display path — Pi 5 has no legacy fbcon. The
+    current pygame init via SDL2/KMSDRM already works on Pi 4
+    Bookworm so this is probably a no-op, but verify on the
+    first Pi 5 bring-up.
+  - `Docs/REQUIREMENTS_DISPLAY_PI4.md` — bump REQ-DISP-PI4-HW-001
+    to mention Pi 5 as an alternate (or fold into a new
+    REQUIREMENTS_DISPLAY_PI5.md once the eventual `pi5/` rename
+    is decided). Drop REQ-DISP-PI4-HW-005 (`gpu_mem ≥ 256 MB`)
+    for the Pi 5 path since the setting doesn't exist there.
+  - `pi4/` directory rename: defer. Keep the existing tree
+    working on Pi 4 hardware as a fallback until at least one
+    Pi 5 spin has flown. Probably rename to `display/` or
+    `pi/` once both targets are first-class.
+
+Display: ROADOM 7" HDMI is HDMI — continues to work on Pi 5
+unchanged. Waveshare 3.5" DPI was already broken on rev A
+(WAVESHARE-35-DPI in this file); Pi 5's stricter DPI overlay
+story makes that path even less attractive. HDMI panel is the
+forward path.
+
+Backwards compatibility: the Pi 4 path stays supported in
+firmware until the Pi 5 build has flown enough hours to be the
+primary. Don't orphan existing hardware. Once both are stable,
+the `pi4/` rename and the dual-host plumbing can land together.
+
+Pairs with BOARD-REV-B / BOARD-REV-C (the AHRS-side carrier
+board and the display-side carrier board are independent spins,
+but the AHRS-to-display UART / USB story crosses both — keep
+the connector pinouts in sync when both layouts kick off).
+
 ### WAVESHARE-35-DPI  Pi 4 Waveshare 3.5" DPI panel won't initialise
 Status: **OPEN — low priority, blocked on time, ROADOM 7" HDMI works fine**
 Target: `/boot/firmware/config.txt`, possibly `pi4/config.py` profile
