@@ -107,6 +107,25 @@ _AIRSPACE_COLORS = {
 _AIRSPACE_DEFAULT = ((200, 200, 200), (200, 200, 200, 30))
 
 
+def _airspace_alt_label(asp):
+    """Format ceiling/floor as a sectional-style "100/SFC" string.
+    Hundreds of feet, surface = "SFC".  Returns "" when both are
+    missing so unlabeled polygons don't draw a meaningless fraction."""
+    flr = asp.get("floor_ft", 0) or 0
+    clg = asp.get("ceiling_ft", 0) or 0
+    if flr == 0 and clg == 0:
+        return ""
+    def fmt(ft):
+        if ft <= 0:
+            return "SFC"
+        return str(int(ft) // 100)
+    top = fmt(clg) if clg > 0 else ""
+    bot = fmt(flr)
+    if not top:
+        return bot
+    return f"{top}/{bot}"
+
+
 def _airspaces_query_nearby(airspaces, lat, lon, radius_nm):
     """Inline bbox cull — keeps render-side independent of any shared
     helper so the pi4 module stays self-contained."""
@@ -645,8 +664,22 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 w_px = max(xs) - min(xs); h_px = max(ys) - min(ys)
                 if w_px > 60 and h_px > 30:
                     cxp = sum(xs) // len(xs); cyp = sum(ys) // len(ys)
-                    surf.blit(font.render(asp["ident"], True, col),
-                              (cxp - 12, cyp - 8))
+                    id_surf = font.render(asp["ident"], True, col)
+                    alt_str = _airspace_alt_label(asp)
+                    if alt_str:
+                        alt_surf = font.render(alt_str, True, col)
+                        gap = 1
+                        total_h = id_surf.get_height() + gap + alt_surf.get_height()
+                        y0 = cyp - total_h // 2
+                        surf.blit(id_surf,
+                                  (cxp - id_surf.get_width() // 2, y0))
+                        surf.blit(alt_surf,
+                                  (cxp - alt_surf.get_width() // 2,
+                                   y0 + id_surf.get_height() + gap))
+                    else:
+                        surf.blit(id_surf,
+                                  (cxp - id_surf.get_width() // 2,
+                                   cyp - id_surf.get_height() // 2))
 
     # ── Runways ──────────────────────────────────────────────────────────────
     # Runway rectangles only carry useful detail at terminal-area zooms —

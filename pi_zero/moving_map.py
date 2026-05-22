@@ -122,6 +122,28 @@ _AIRSPACE_COLORS = {
 _AIRSPACE_DEFAULT = ((200, 200, 200), (200, 200, 200, 30))
 
 
+def _airspace_alt_label(asp):
+    """Format ceiling/floor as a sectional-style "100/SFC" string —
+    altitudes are in hundreds of feet, surface = "SFC", unlimited or
+    missing ceiling = blank.  Returns "" when both are 0 / unknown so
+    we don't dirty the map with empty fractions."""
+    flr = asp.get("floor_ft", 0) or 0
+    clg = asp.get("ceiling_ft", 0) or 0
+    if flr == 0 and clg == 0:
+        return ""
+    def fmt(ft):
+        if ft <= 0:
+            return "SFC"
+        # Round to hundreds.  Values like 4500 → "45"; 18000+ shown
+        # verbatim because pilots read "180" as flight-level intuitively.
+        return str(int(ft) // 100)
+    top = fmt(clg) if clg > 0 else ""
+    bot = fmt(flr)
+    if not top:
+        return bot
+    return f"{top}/{bot}"
+
+
 def _airspaces_query_nearby(airspaces, lat, lon, radius_nm):
     """Inline bbox cull — keeps the render path independent of the
     shared.airspaces import (which not every host carries — pi4 might
@@ -789,15 +811,31 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 w_px = max(xs) - min(xs); h_px = max(ys) - min(ys)
                 if w_px > 60 and h_px > 30:
                     cxp = sum(xs) // len(xs); cyp = sum(ys) // len(ys)
-                    key = (asp["ident"], id(font), "asp")
-                    lbl = _apt_label_cache.get(key)
-                    if lbl is None:
-                        lbl = font.render(asp["ident"], True, col)
-                        _apt_label_cache[key] = lbl
+                    alt_str = _airspace_alt_label(asp)
+                    key = (asp["ident"], alt_str, id(font), "asp")
+                    cached = _apt_label_cache.get(key)
+                    if cached is None:
+                        id_surf = font.render(asp["ident"], True, col)
+                        alt_surf = (font.render(alt_str, True, col)
+                                    if alt_str else None)
+                        cached = (id_surf, alt_surf)
+                        _apt_label_cache[key] = cached
                         if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
                             _apt_label_cache.popitem(last=False)
-                    surf.blit(lbl, (cxp - lbl.get_width() // 2,
-                                    cyp - lbl.get_height() // 2))
+                    id_surf, alt_surf = cached
+                    if alt_surf is not None:
+                        gap = 1
+                        total_h = id_surf.get_height() + gap + alt_surf.get_height()
+                        y0 = cyp - total_h // 2
+                        surf.blit(id_surf,
+                                  (cxp - id_surf.get_width() // 2, y0))
+                        surf.blit(alt_surf,
+                                  (cxp - alt_surf.get_width() // 2,
+                                   y0 + id_surf.get_height() + gap))
+                    else:
+                        surf.blit(id_surf,
+                                  (cxp - id_surf.get_width() // 2,
+                                   cyp - id_surf.get_height() // 2))
 
     # ── Runways ──────────────────────────────────────────────────────────────
     # Runway rectangles only carry useful detail at terminal-area zooms —

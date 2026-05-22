@@ -235,16 +235,13 @@ def _polygons_from(geometry):
 
 
 # Douglas-Peucker simplification tolerance in degrees.  At mid-latitudes
-# 1 deg lat ≈ 60 NM, so 0.005 deg ≈ 0.3 NM — well below the resolution
-# the moving map can render (one pixel ≈ 0.1-1 NM depending on zoom).
-# FAA Class B/C boundaries come with hundreds of vertices per polygon
-# capturing every notch and shelf; at MFD zoom levels we only need
-# 10-20 vertices to depict the shape correctly.  Cutting vertices at
-# build time keeps airspaces.json an order of magnitude smaller, which
-# matters on the Pi Zero (416 MB RAM): full-fidelity FAA Class Airspace
-# produces a 168 MB airspaces.json that OOMs the box on load; this
-# decimation brings it down to ~5-10 MB.
-_SIMPLIFY_TOL_DEG = 0.005
+# 1 deg lat ≈ 60 NM, so 0.002 deg ≈ 0.12 NM — well below per-pixel
+# resolution on the moving map but tight enough that the polygon
+# notches + shelves of Class B/C are visibly preserved.  First pass at
+# 0.005 deg produced visibly-clobbered vertices on real flight data;
+# 0.002 is the sweet spot — file size ~5 MB (vs 168 MB raw), still
+# comfortably loadable on Pi Zero (416 MB RAM).
+_SIMPLIFY_TOL_DEG = 0.002
 
 
 def _perp_dist2(p, a, b):
