@@ -75,13 +75,17 @@ _CLASS_MAP = (
     (re.compile(r"^\s*B\b|^\s*Class\s*B\b",  re.I), "B"),
     (re.compile(r"^\s*C\b|^\s*Class\s*C\b",  re.I), "C"),
     (re.compile(r"^\s*D\b|^\s*Class\s*D\b",  re.I), "D"),
+    # TFRs come from per-type datasets (stadium, defense, etc.) —
+    # checked before Restricted so a "Defense TFR" labelled as some
+    # restricted-area variant still classifies as TFR.
+    (re.compile(r"TFR|Stadium|Sport|Defense", re.I), "TFR"),
     # SUA — TYPE_CODE values are "MOA", "R-####", "P-####", "A-####",
-    # "W-####".  We treat Prohibited / Alert / Warning as "R" for
-    # rendering (all critical, drawn in red); the name still encodes
-    # which sub-type so the pilot can read it on the map.
+    # "W-####".  Prohibited / Alert / Warning historically all read
+    # as "R"; we now split P (Prohibited) into its own class for
+    # heavier visual emphasis.
     (re.compile(r"MOA",                       re.I), "MOA"),
+    (re.compile(r"^P-|Prohibited",            re.I), "P"),
     (re.compile(r"^R-|Restricted",            re.I), "R"),
-    (re.compile(r"^P-|Prohibited",            re.I), "R"),
     (re.compile(r"^W-|Warning",               re.I), "R"),
     (re.compile(r"^A-|Alert",                 re.I), "R"),
 )
@@ -183,21 +187,50 @@ def _ceiling_from(props):
     return 0
 
 
+def _safe_ring(coords):
+    """Return [(lat, lon), ...] from a list of [lon, lat] pairs.
+    Skips any individual vertex whose coords aren't two finite floats
+    (the FAA dumps occasionally include null coords or 3D points where
+    the third entry is altitude or NaN).  Returns None if fewer than
+    3 valid vertices remain — caller drops the ring."""
+    out = []
+    for p in coords:
+        if not isinstance(p, (list, tuple)) or len(p) < 2:
+            continue
+        try:
+            lon = float(p[0]); lat = float(p[1])
+        except (TypeError, ValueError):
+            continue
+        # Bounds sanity — anything past these is corrupt.  Floats
+        # comparisons here also reject NaN (NaN < NaN is False, so
+        # the conjunction fails).
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            continue
+        out.append((lat, lon))
+    return out if len(out) >= 3 else None
+
+
 def _polygons_from(geometry):
     """Yield closed rings as [(lat, lon), ...] from a GeoJSON geometry.
     Handles Polygon and MultiPolygon; ignores inner rings (holes)
-    because our renderer doesn't draw them yet."""
+    because our renderer doesn't draw them yet.  Defensive — bad
+    vertices and bad ring shapes get dropped silently rather than
+    crashing the build."""
     if not geometry:
         return
     gtype = geometry.get("type")
     coords = geometry.get("coordinates") or []
-    if gtype == "Polygon":
-        if coords and len(coords[0]) >= 3:
-            yield [(float(p[1]), float(p[0])) for p in coords[0]]
+    if gtype == "Polygon" and coords:
+        ring = _safe_ring(coords[0])
+        if ring:
+            yield ring
     elif gtype == "MultiPolygon":
         for poly in coords:
-            if poly and len(poly[0]) >= 3:
-                yield [(float(p[1]), float(p[0])) for p in poly[0]]
+            if not poly:
+                continue
+            ring = _safe_ring(poly[0])
+            if ring:
+                yield ring
 
 
 def feature_to_records(feature, class_hint=None):
@@ -242,30 +275,61 @@ def build_from_dir(data_dir, source_note=""):
     do the conversion in-process — no separate laptop step needed."""
     from pathlib import Path as _P
     out_records = []
-    stats = {"B": 0, "C": 0, "D": 0, "MOA": 0, "R": 0,
+    stats = {"B": 0, "C": 0, "D": 0, "MOA": 0, "R": 0, "P": 0, "TFR": 0,
              "files": 0, "skipped_no_class": 0,
-             "skipped_no_polygon": 0, "errors": []}
+             "skipped_no_polygon": 0, "skipped_bad_feature": 0,
+             "errors": []}
     data_path = _P(data_dir)
     if not data_path.is_dir():
         stats["errors"].append(f"directory not found: {data_dir}")
         return stats
+    # Hard per-file size cap so a 500 MB blob can't OOM the Pi.
+    # Typical Class Airspace dump is ~10-15 MB; SUA ~5 MB.  Bumping
+    # this won't help if the Pi can't hold the JSON in RAM anyway.
+    MAX_FILE_BYTES = 100 * 1024 * 1024
+    # Filename-based class hint — used when feature properties don't
+    # clearly identify the class.  Lets the FAA Stadium TFR / Defense
+    # TFR / Prohibited Areas datasets classify cleanly even when their
+    # TYPE_CODE / LOCAL_TYPE columns use names I haven't seen yet.
+    def _hint_for(name):
+        n = name.lower()
+        if "tfr" in n or "stadium" in n or "defense" in n: return "TFR"
+        if "prohibit" in n:                                return "P"
+        return None
+
     for gj in sorted(data_path.glob("*.geojson")):
         stats["files"] += 1
         try:
+            sz = gj.stat().st_size
+            if sz > MAX_FILE_BYTES:
+                stats["errors"].append(
+                    f"{gj.name}: {sz/1024/1024:.1f} MB exceeds "
+                    f"{MAX_FILE_BYTES/1024/1024:.0f} MB cap — skipped")
+                continue
             features = load_geojson(gj)
         except (json.JSONDecodeError, ValueError, OSError) as e:
             stats["errors"].append(f"{gj.name}: {e}")
             continue
+        hint = _hint_for(gj.name)
+        # Per-feature try/except — one bad polygon (unexpected
+        # geometry type, non-numeric coord, weird property value)
+        # must not kill the entire build.  Counts toward
+        # skipped_bad_feature for surfacing in the UI.
         for feat in features:
-            had_class = had_poly = False
-            for rec in feature_to_records(feat):
-                had_class = had_poly = True
-                out_records.append(rec)
-                stats[rec["class"]] = stats.get(rec["class"], 0) + 1
-            if not had_class:
-                stats["skipped_no_class"] += 1
-            elif not had_poly:
-                stats["skipped_no_polygon"] += 1
+            try:
+                had_class = had_poly = False
+                for rec in feature_to_records(feat, class_hint=hint):
+                    had_class = had_poly = True
+                    out_records.append(rec)
+                    stats[rec["class"]] = stats.get(rec["class"], 0) + 1
+                if not had_class:
+                    stats["skipped_no_class"] += 1
+                elif not had_poly:
+                    stats["skipped_no_polygon"] += 1
+            except Exception as e:    # noqa: BLE001 — defensive sink
+                stats["skipped_bad_feature"] += 1
+                if len(stats["errors"]) < 5:
+                    stats["errors"].append(f"{gj.name} feature: {e}")
     out_path = data_path / "airspaces.json"
     try:
         out_path.write_text(json.dumps({
@@ -281,13 +345,21 @@ def build_from_dir(data_dir, source_note=""):
 
 
 def load_geojson(path):
-    """Load a GeoJSON file and return the feature list."""
-    with open(path, "r", encoding="utf-8") as fh:
+    """Load a GeoJSON file and return the feature list.  Defensive
+    against:
+        * BOM at the start of the file (some Windows-saved exports)
+        * GeoJSON with no top-level 'type' but a 'features' array
+        * features list as None instead of empty list"""
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
         data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: top-level isn't a JSON object")
     if data.get("type") == "FeatureCollection":
-        return data.get("features", [])
+        return data.get("features") or []
     if data.get("type") == "Feature":
         return [data]
+    if isinstance(data.get("features"), list):
+        return data["features"]
     raise ValueError(f"{path}: not a GeoJSON Feature/FeatureCollection")
 
 

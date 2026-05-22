@@ -55,27 +55,19 @@ except ImportError:
 CACHE_FILENAME = "airspaces.json"
 
 # ── Direct-download sources ───────────────────────────────────────────
-# Map of `output filename → download URL`.  The AIRSPACE DATA screens
-# on both Pis iterate this dict, fetch each URL, save it under the
-# given filename in AIRSPACE_DIR, then auto-run the *.geojson →
-# airspaces.json converter.
+# Two buckets: "static" (B/C/D + SUA + Prohibited — refresh every
+# 28-day cycle) and "tfr" (Stadium / Defense TFRs — refresh more
+# often).  Each bucket maps `output filename → URL`; the
+# AIRSPACE DATA screens iterate per-bucket so the two get their own
+# download buttons + their own "last downloaded" timestamps.
 #
 # Defaults below use the FAA Open Data ArcGIS portal — the canonical
-# source for US Class Airspace and Special Use Airspace polygons.  The
-# `opendata.arcgis.com/api/v3/datasets/<UUID>_<LAYER>/downloads/data`
-# pattern is stable; the UUIDs are tied to the FAA's published
-# datasets and only change if the FAA re-publishes under a new item
-# (rare — typical 28-day chart cycle updates the DATA, not the URL).
-#
-# If a default 404s in the future:
-#   1. Visit https://adds-faa.opendata.arcgis.com/
-#   2. Find "Class Airspace" (or "Special Use Airspace")
-#   3. Click "I want to use this" → "Download" → "GeoJSON"
-#   4. Copy the URL → paste it here.
-#
-# Leaving a URL empty disables that source — BUILD still works on any
-# *.geojson files the pilot drops in manually.
-DOWNLOAD_SOURCES = {
+# source for US airspace polygons.  If a default 404s after a portal
+# reorg, visit https://adds-faa.opendata.arcgis.com or hub.arcgis.com,
+# find the dataset, click "I want to use this" → "Download" →
+# "GeoJSON", paste the URL here.
+
+DOWNLOAD_SOURCES_STATIC = {
     "class_airspace.geojson": (
         "https://hub.arcgis.com/api/v3/datasets/"
         "c6a62360338e408cb1512366ad61559e_0/downloads/data"
@@ -86,14 +78,36 @@ DOWNLOAD_SOURCES = {
         "dd0d1b726e504137ab3c41b21835d05b_0/downloads/data"
         "?format=geojson&spatialRefId=4326&where=1%3D1"
     ),
+    "prohibited.geojson": (
+        "https://hub.arcgis.com/api/v3/datasets/"
+        "354ee0c77484461198ebf728a2fca50c_0/downloads/data"
+        "?format=geojson&spatialRefId=4326&where=1%3D1"
+    ),
 }
-# Compat shim — older callers read a single DOWNLOAD_URL; we now expose
-# the dict but keep the name around so any code still referencing it
-# treats absence as "no auto-download configured".
-DOWNLOAD_URL = ""
+
+DOWNLOAD_SOURCES_TFR = {
+    "stadium_tfr.geojson": (
+        "https://hub.arcgis.com/api/v3/datasets/"
+        "67af16061c014365ae9218c489a321be_0/downloads/data"
+        "?format=geojson&spatialRefId=4326&where=1%3D1"
+    ),
+    "defense_tfr.geojson": (
+        "https://hub.arcgis.com/api/v3/datasets/"
+        "33b0758a796f45aa9a88e733d686c5c1_0/downloads/data"
+        "?format=geojson&spatialRefId=4326&where=1%3D1"
+    ),
+}
+
+# Combined view for any caller that wants every source.  Used by the
+# initial DOWNLOAD button when no bucket is specified.
+DOWNLOAD_SOURCES = {**DOWNLOAD_SOURCES_STATIC, **DOWNLOAD_SOURCES_TFR}
+DOWNLOAD_URL = ""   # legacy compat — empty disables the old single-URL path
 
 # Valid class strings — anything else gets silently dropped at load.
-VALID_CLASSES = ("B", "C", "D", "MOA", "R")
+# P (Prohibited) and TFR are distinct from R (Restricted): pilots want
+# different visual emphasis for "never enter" (P) vs "temporary
+# restriction" (TFR) vs "restricted when active" (R).
+VALID_CLASSES = ("B", "C", "D", "MOA", "R", "P", "TFR")
 
 # Bundled tiny example so the render path works without a download.
 # Real-world data should overwrite the json file at install / setup.
