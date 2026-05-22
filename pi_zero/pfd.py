@@ -246,7 +246,7 @@ disp["fpl"] = {
     "active_idx": -1,
 }
 # User-waypoint library — persistent across flights.  Every waypoint
-# created via +HERE or +LAT/LON is auto-saved here (dedup by ident),
+# created via +LAT/LON is auto-saved here (dedup by ident),
 # so the pilot can recall it onto any later flight plan via +LIB.
 # Stored as a dict containing the list so the existing
 # _PERSIST_COMPLEX_SUBTREES mechanism (which works on subtree keys)
@@ -254,17 +254,17 @@ disp["fpl"] = {
 disp["user_wpts"] = {
     "list": [],   # [{ident, lat, lon, elev_ft}, ...]
 }
-# In-progress user-waypoint entry — populated by the +HERE button (which
-# stashes the current aircraft position) and the +LAT/LON entry screen
-# (which collects the three fields one keyboard at a time).  Cleared on
-# save or cancel.  Not persisted — it's transient editor state.
+# In-progress user-waypoint entry — populated by the +LAT/LON entry
+# screen (which pre-fills the lat/lon fields with the current aircraft
+# position so the same path also handles "mark a point HERE").
+# Cleared on save or cancel.  Not persisted — transient editor state.
 disp["fpl_new"] = {
     "ident":   "",
-    "lat":     0.0,        # captured aircraft pos (HERE) or
-    "lon":     0.0,        # most recent parsed value (LAT/LON)
-    "lat_str": "",         # raw keyboard buffer for LAT/LON path
+    "lat":     0.0,
+    "lon":     0.0,
+    "lat_str": "",         # raw keyboard buffer
     "lon_str": "",
-    "source":  "",         # "here" | "latlon"
+    "source":  "",
 }
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
@@ -2975,8 +2975,6 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "pfd"
             elif act == "add_icao":
                 _fpl_open_add_keyboard()
-            elif act == "add_here":
-                _fpl_open_here_keyboard()
             elif act == "add_ll":
                 _fpl_open_latlon_entry()
             elif act == "add_lib":
@@ -3232,7 +3230,7 @@ def handle_event(event, demo_mode):
                 lbl, sty = hit
                 target  = disp["kbd_target"]
                 _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80}
-                _FPL_MAX = {"fpl_ident": 6, "fpl_here_ident": 6,
+                _FPL_MAX = {"fpl_ident": 6,
                             "fpl_latlon_ident": 6,
                             "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
                             "nav_ident": 6}
@@ -3289,34 +3287,6 @@ def handle_event(event, demo_mode):
                         region = hit[5] if len(hit) > 5 else ""
                         if _fpl_add_waypoint(ident, lat, lon, elev_ft,
                                               name=name, region=region):
-                            disp["kbd_buf"]   = ""
-                            disp["kbd_error"] = ""
-                            disp["mode"] = "fpl"
-                        else:
-                            disp["kbd_error"] = f"PLAN FULL ({_FPL_MAX_WAYPOINTS} MAX)"
-                        return True
-                    if target == "fpl_here_ident":
-                        # + HERE: appends with the lat/lon stashed when
-                        # the button was tapped.  Validates the typed
-                        # name against the FPL and airport DB so a
-                        # user-waypoint can't clobber an existing ident.
-                        if not buf:
-                            disp["kbd_buf"]   = ""
-                            disp["kbd_error"] = ""
-                            disp["mode"] = "fpl"
-                            return True
-                        candidate = buf.upper()[:6]
-                        _f, vmsg = _fpl_validate_user_ident(candidate)
-                        if _f:
-                            disp["kbd_error"] = vmsg.upper()
-                            return True
-                        n = disp["fpl_new"]
-                        if _fpl_add_waypoint(candidate,
-                                              n["lat"], n["lon"],
-                                              elev_ft=0.0, user=True):
-                            # Auto-save to library so this user wpt
-                            # is recallable from any later flight.
-                            _user_wpt_save(candidate, n["lat"], n["lon"])
                             disp["kbd_buf"]   = ""
                             disp["kbd_error"] = ""
                             disp["mode"] = "fpl"
@@ -5179,7 +5149,7 @@ def _fpl_check_advance(lat, lon):
 
 
 # ── User-waypoint library ────────────────────────────────────────────────
-# Persistent storage for waypoints the pilot creates via +HERE / +LAT/LON.
+# Persistent storage for waypoints the pilot creates via +LAT/LON.
 # Survives across flights and PFD restarts.  Dedup by ident — typing the
 # same name twice updates the coordinates rather than creating duplicates.
 
@@ -9048,7 +9018,7 @@ _FPL_ICON_W     = 32
 _FPL_ICON_GAP   = 4
 
 
-# Two action rows: row 1 has three "+" buttons (ICAO / HERE / LAT-LON),
+# Two action rows: row 1 has three "+" buttons (ICAO / LAT-LON / USER),
 # row 2 has DEACTIVATE.  Stacking lets each + button stay finger-sized
 # on the 480-px-wide screen instead of being squashed into thirds.
 _FPL_ACTIONS_GAP = 6
@@ -9062,9 +9032,11 @@ def _fpl_actions_rect():
 
 
 def _fpl_add_buttons():
-    """Return four rects for + ICAO / + HERE / + LL / + LIB."""
+    """Return three rects for + ICAO / + LAT/LON / + USER.  +HERE was
+    consolidated into +LAT/LON, which now pre-fills current aircraft
+    lat/lon so the same path also handles 'mark a point here'."""
     ax, ay, aw, ah = _fpl_actions_rect()
-    n = 4
+    n = 3
     gap = _FPL_ACTIONS_GAP
     bw = (aw - (n - 1) * gap) // n
     return [(ax + i * (bw + gap), ay, bw, ah) for i in range(n)]
@@ -9120,22 +9092,21 @@ def draw_fpl(surf):
     active_idx = disp.get("fpl", {}).get("active_idx", -1)
     is_active  = 0 <= active_idx < len(wps)
 
-    # ── Action row 1: + ICAO / + HERE / + LL / + USER ───────────────────
+    # ── Action row 1: + ICAO / + LAT/LON / + USER ───────────────────────
     full = len(wps) >= _FPL_MAX_WAYPOINTS
     add_style = "ok" if not full else "normal"
     add_rects = _fpl_add_buttons()
     # USER is always tappable even when FPL is full so the pilot can
     # still browse / delete library entries; the picker enforces the
     # cap on add.
-    labels  = ("+ ICAO", "+ HERE", "+ LL", "+ USER")
+    labels  = ("+ ICAO", "+ LAT/LON", "+ USER")
     styles  = (
-        add_style if not full else "normal",
         add_style if not full else "normal",
         add_style if not full else "normal",
         "ok",
     )
     if full:
-        labels = ("FULL", "FULL", "FULL", "+ USER")
+        labels = ("FULL", "FULL", "+ USER")
     for (ax, ay, aw, ah), lbl, st in zip(add_rects, labels, styles):
         _action_btn(surf, ax, ay, aw, ah, lbl, st, r=6)
 
@@ -9224,8 +9195,8 @@ def fpl_hit(x, y):
     """Hit-test the FPL screen.  Returns one of:
         ("back",      None)
         ("add_icao",  None)
-        ("add_here",  None)
         ("add_ll",    None)
+        ("add_lib",   None)
         ("deact",     None)
         ("activate",  idx)
         ("up",        idx)
@@ -9236,7 +9207,7 @@ def fpl_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return ("back", None)
     for rect, kind in zip(_fpl_add_buttons(),
-                           ("add_icao", "add_here", "add_ll", "add_lib")):
+                           ("add_icao", "add_ll", "add_lib")):
         ax, ay, aw, ah = rect
         if ax <= x <= ax + aw and ay <= y <= ay + ah:
             return (kind, None)
@@ -9416,7 +9387,7 @@ def _fpl_validate_user_ident(ident):
 # Scrollable list of saved user waypoints with ADD / DEL actions per row.
 # Reached from the FPL screen's + LIB button.  Tap ADD to drop the
 # waypoint into the current flight plan (same collision rules as
-# +HERE / +LAT/LON entry); tap DEL to remove from the library.
+# +LAT/LON entry); tap DEL to remove from the library.
 
 _UWP_HEADER_H  = 44
 _UWP_ROW_H     = 50
@@ -9448,7 +9419,7 @@ def draw_user_wpt_picker(surf):
     if not wps:
         _text(surf, "No saved user waypoints yet.", 14, (160, 180, 210),
               cx=DISPLAY_W // 2, cy=120)
-        _text(surf, "Waypoints created via + HERE or + LAT/LON in the",
+        _text(surf, "Waypoints created via + LAT/LON in the",
               11, (130, 150, 180), cx=DISPLAY_W // 2, cy=160)
         _text(surf, "flight plan are auto-saved here for re-use.",
               11, (130, 150, 180), cx=DISPLAY_W // 2, cy=180)
@@ -9515,30 +9486,23 @@ def user_wpt_picker_hit(x, y):
     return (None, None)
 
 
-def _fpl_open_here_keyboard():
-    """+ HERE: stash the current aircraft position and open the keyboard
-    so the pilot can name the waypoint.  ENTER appends the stored
-    position with the typed ident, marked as a user waypoint."""
-    disp["fpl_new"]["ident"]   = ""
-    disp["fpl_new"]["lat"]     = float(disp.get("lat", 0.0))
-    disp["fpl_new"]["lon"]     = float(disp.get("lon", 0.0))
-    disp["fpl_new"]["source"]  = "here"
-    disp["kbd_target"] = "fpl_here_ident"
-    disp["kbd_prev"]   = "fpl"
-    disp["kbd_buf"]    = ""
-    disp["kbd_error"]  = ""
-    disp["kbd_shift"]  = False
-    disp["mode"]       = "keyboard"
-
 
 def _fpl_open_latlon_entry():
-    """+ LAT/LON: clear pending entry and open the multi-field entry
-    screen.  Pilot taps each field to bring up the keyboard."""
+    """+ LAT/LON: open the multi-field entry screen with the current
+    aircraft position pre-filled so the same path also handles the
+    "create a waypoint HERE" case — pilot just types an ident and
+    taps SAVE without touching the lat/lon fields.  Edit lat/lon when
+    you want a different position."""
+    cur_lat = float(disp.get("lat", 0.0))
+    cur_lon = float(disp.get("lon", 0.0))
     disp["fpl_new"]["ident"]   = ""
-    disp["fpl_new"]["lat"]     = 0.0
-    disp["fpl_new"]["lon"]     = 0.0
-    disp["fpl_new"]["lat_str"] = ""
-    disp["fpl_new"]["lon_str"] = ""
+    disp["fpl_new"]["lat"]     = cur_lat
+    disp["fpl_new"]["lon"]     = cur_lon
+    # Pre-fill the string buffers so the entry-screen rows show the
+    # current position right away.  5 decimals ≈ 1 m precision, which
+    # is finer than GPS noise so we're not throwing away resolution.
+    disp["fpl_new"]["lat_str"] = f"{cur_lat:.5f}"
+    disp["fpl_new"]["lon_str"] = f"{cur_lon:.5f}"
     disp["fpl_new"]["source"]  = "latlon"
     disp["mode"]               = "fpl_latlon_entry"
 
@@ -9576,7 +9540,7 @@ def _fpl_commit_latlon():
         return ("lon", err)
     if not _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=True):
         return ("ident", f"plan full ({_FPL_MAX_WAYPOINTS} max)")
-    # Auto-save to library — same as the +HERE path.
+    # Auto-save to library so this entry is recallable later.
     _user_wpt_save(ident, lat, lon)
     n["ident"] = ""; n["lat"] = 0.0; n["lon"] = 0.0
     n["lat_str"] = ""; n["lon_str"] = ""; n["source"] = ""
@@ -10071,8 +10035,6 @@ def render(surf, demo_mode, connected, data_stale=False):
             title = "WAYPOINT"
         elif target == "fpl_ident":
             cur, title = "", "ICAO IDENT"
-        elif target == "fpl_here_ident":
-            cur, title = "", "WAYPOINT NAME"
         elif target == "fpl_latlon_ident":
             cur, title = disp["fpl_new"].get("ident", ""), "WAYPOINT NAME"
         elif target == "fpl_latlon_lat":
