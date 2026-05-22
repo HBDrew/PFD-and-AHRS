@@ -466,6 +466,39 @@ Needed:
   - State plumbing: _magtumble_active gate + _mag_cal_tumble_tick
 Reference: pi4 implementation in pi4/pfd.py and firmware/main.py.
 
+### DATA-USB-BUNDLER  Desktop "data update" tool + Pi-side USB ingest
+Status: **OPEN — deferred until in-aircraft refresh becomes painful**
+Long-term goal: mirror how certified avionics (Garmin G3X, Dynon,
+Avidyne) do 28-day cycle updates.  Pilot runs a desktop app at home
+with real internet, it builds a complete data bundle, writes to a
+labeled USB stick.  At the hangar the pilot inserts the stick into
+each Pi; a small daemon detects the mount, rsyncs the bundle to the
+runtime data dir, validates the manifest, restarts pfd.service.
+Both displays get the same data without needing any in-aircraft
+network.
+
+Bundle contents (all generation already exists, just needs glue):
+  - airspaces.json          via tools/build_airspaces_us.py
+  - SRTM .hgt tiles         via tools/compact_srtm.py
+  - airports cache (.npy)   via shared/airports.py
+  - obstacles cache         via shared/obstacles.py
+  - water tiles             via tools/build_water_tiles.py
+  - Natural Earth .npz      via shared/natural_earth.py
+  - manifest.json           cycle date + per-source version stamps
+
+Desktop app: probably Python tkinter or PyQt, cross-platform.  Could
+also ship as a CLI for power users.  Reuses the existing converter
+modules in tools/ + shared/ — no duplication.
+
+Pi-side ingest: systemd path-unit watching /media/pfd-data/, rsync
+into data/, atomic-replace each cache, systemctl restart pfd.service.
+~100 lines.
+
+When to build: as long as the in-Pi DOWNLOAD buttons work in the
+hangar with whatever LTE/WiFi is available, the existing flow is
+fine.  The moment a 28-day cycle update at the airport is a real
+pain (slow LTE, no signal, can't sit and wait), build this.
+
 ### DEPLOY-RSYNC  Friend-friendly deploy story (rsync recipe)
 Status: **OPEN**
 Multiple friends will be setting up displays — current workflow has too
