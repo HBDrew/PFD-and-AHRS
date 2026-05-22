@@ -3311,6 +3311,8 @@ def handle_event(event, demo_mode):
                     asp["dl_cancel"] = True
                 else:
                     _asp_start_download()
+            elif action == "build":
+                _asp_build_from_geojson()
             elif action == "install_example":
                 _asp_install_example()
             return True
@@ -4136,7 +4138,9 @@ _ss_drag = None
 _SS_DRAG_THRESHOLD = 8     # px before tap becomes drag
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         7,
-    "display_setup":      6,    # 5 standard rows + MAP LAYERS
+    "display_setup":      7,    # 5 standard rows + tall MAP LAYERS row
+                                # (counted as ≈2 row-slots tall for
+                                # scroll math — see _DSP_LAYERS_ROW_H)
     "system_setup":       9,
     "connectivity_setup": 6,
     "flight_profile":     8,
@@ -4303,11 +4307,22 @@ _DSP_MAP_LAYERS = [
 ]
 _DSP_LAYERS_PER_SUBROW = 4    # top row up to this many; rest spill to row 2
 _DSP_LAYERS_ROW_INDEX  = len(_DSP_ROWS)
-_DSP_LAYERS_BTN_W      = 70
-_DSP_LAYERS_BTN_G      = 6
-_DSP_LAYERS_BTN_H      = 26   # shorter than _DSP_BTN_H (40) so two pill
-                              # rows fit inside _SS_RH (62)
-_DSP_LAYERS_SUB_GAP    = 4
+_DSP_LAYERS_BTN_W      = 84   # roomier than the standard 70 so labels
+                              # like "CTRY" don't crowd the edge
+_DSP_LAYERS_BTN_G      = 8
+_DSP_LAYERS_BTN_H      = 44   # taller than _DSP_BTN_H (40) — pills had
+                              # been crushed to 26 to fit one _SS_RH;
+                              # row is now taller so the pills get
+                              # finger-sized
+_DSP_LAYERS_SUB_GAP    = 8
+# Map-layers row is taller than the standard _SS_RH to fit two
+# sub-rows of finger-sized pills.  The row index past it remains
+# unused (MAP LAYERS is the last row of display_setup) so growing
+# it doesn't shift anything; we just need _SS_DRAG_MODES to grant
+# enough scroll for the extra height (handled in _ss_max_scroll
+# below) — bumped display_setup's row count to compensate.
+_DSP_LAYERS_ROW_H      = (2 * _DSP_LAYERS_BTN_H
+                          + _DSP_LAYERS_SUB_GAP + 16)
 
 
 def _dsp_layers_subrow_count():
@@ -4335,12 +4350,15 @@ def _dsp_layers_geom(bx, bw, subrow_idx=0):
 
 
 def _dsp_layers_subrow_y(by, subrow_idx):
-    """Top y of the given pill sub-row inside a _SS_RH-tall row at by."""
+    """Top y of the given pill sub-row inside the taller MAP LAYERS row.
+    Centered vertically in _DSP_LAYERS_ROW_H, leaving room above the
+    pills for the row label / subtitle drawn by _setting_row at the
+    top edge."""
     n_sub = _dsp_layers_subrow_count()
-    if n_sub == 1:
-        return by + (_SS_RH - _DSP_LAYERS_BTN_H) // 2
     total_h = n_sub * _DSP_LAYERS_BTN_H + (n_sub - 1) * _DSP_LAYERS_SUB_GAP
-    y0 = by + (_SS_RH - total_h) // 2
+    # Center within the row, but leave the top 8 px free of the label
+    # area drawn by _setting_row.
+    y0 = by + max(8, (_DSP_LAYERS_ROW_H - total_h) // 2)
     return y0 + subrow_idx * (_DSP_LAYERS_BTN_H + _DSP_LAYERS_SUB_GAP)
 
 
@@ -4383,12 +4401,29 @@ def draw_display_setup(surf, ds):
             for i, (v, lbl) in enumerate(zip(opts_v, opts_l)):
                 _seg_btn(surf, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
 
-    # MAP LAYERS — packed multi-toggle row drawn after the standard ones.
-    # Two sub-rows of pills so the right edge stays clear of the row
-    # label on the left.
-    bx, by, bw, bh = _setting_row(surf, _DSP_LAYERS_ROW_INDEX,
-                                  "MAP LAYERS",
-                                  "Per-layer visibility on the MFD")
+    # MAP LAYERS — packed multi-toggle row drawn after the standard
+    # ones.  This row is taller than _SS_RH so two sub-rows of
+    # finger-sized pills fit comfortably; the rest of the display
+    # setup scrolls beneath it via the existing drag-to-scroll
+    # machinery.  Drawn manually (not via _setting_row) because we
+    # need the custom height.
+    bx = _SS_MX
+    bw = DISPLAY_W - 2 * _SS_MX
+    by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
+    bh = _DSP_LAYERS_ROW_H
+    pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=6)
+    gh = bh // 6
+    for i in range(gh):
+        t = 1.0 - i / gh
+        gc = (int(15 + t * 25), int(20 + t * 40), int(40 + t * 65))
+        pygame.draw.line(surf, gc, (bx + 6, by + 1 + i),
+                          (bx + bw - 6, by + 1 + i))
+    pygame.draw.rect(surf, (55, 75, 105), (bx, by, bw, bh),
+                     width=1, border_radius=6)
+    _text(surf, "MAP LAYERS", 14, WHITE, bold=True, x=bx + 14, y=by + 10)
+    _text(surf, "Per-layer visibility on the MFD", 10,
+          (120, 135, 155), x=bx + 14, y=by + 32)
+
     top_idx, bot_idx = _dsp_layers_subrow_split()
     for sub, indices in enumerate((top_idx, bot_idx)):
         if not indices:
@@ -4432,9 +4467,10 @@ def display_setup_hit(x, y, ds):
                 if bx_b <= x <= bx_b+bw_each:
                     return f"set:{key}:{v}"
 
-    # MAP LAYERS multi-toggle row — two sub-rows of pills.
+    # MAP LAYERS multi-toggle row — two sub-rows of pills inside the
+    # tall _DSP_LAYERS_ROW_H slot.
     by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
-    if by <= y <= by + _SS_RH:
+    if by <= y <= by + _DSP_LAYERS_ROW_H:
         bx = _SS_MX; bw = DISPLAY_W - 2 * _SS_MX
         top_idx, bot_idx = _dsp_layers_subrow_split()
         for sub, indices in enumerate((top_idx, bot_idx)):
@@ -7975,6 +8011,52 @@ def _asp_install_example():
         asp["dl_status"] = f"Error: {exc}"
 
 
+def _asp_build_from_geojson():
+    """In-process FAA GeoJSON → airspaces.json conversion.  Reads
+    every *.geojson in AIRSPACE_DIR, runs the converter from
+    tools/build_airspaces_us.py, writes airspaces.json next to the
+    sources, reloads.
+
+    Pilot workflow: scp / rsync the two FAA GeoJSON files (Class
+    Airspace + Special Use Airspace) into AIRSPACE_DIR, tap BUILD,
+    the converted polygons land on disk and the MFD picks them up
+    on the next render."""
+    asp = disp["asp"]
+    asp["dl_status"] = "Building airspaces.json from *.geojson…"
+
+    def _worker():
+        try:
+            # Late import — the tools/ dir is not on the runtime
+            # import path, so we attach it on first use.  This keeps
+            # the runtime cold-start cheap when nobody hits BUILD.
+            import sys as _sys
+            _tools = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "..", "tools")
+            _tools = os.path.abspath(_tools)
+            if _tools not in _sys.path:
+                _sys.path.insert(0, _tools)
+            import build_airspaces_us as _bldr
+            stats = _bldr.build_from_dir(
+                AIRSPACE_DIR,
+                source_note="FAA GeoJSON (built on pi_zero)")
+            _asp_reload()
+            if stats.get("files", 0) == 0:
+                asp["dl_status"] = (f"No *.geojson found in {AIRSPACE_DIR} "
+                                    f"— drop FAA exports there first")
+            elif stats.get("errors"):
+                asp["dl_status"] = f"Done with errors: {stats['errors'][0]}"
+            else:
+                asp["dl_status"] = (
+                    f"Done ✓  {stats['records']} polygons "
+                    f"(B:{stats['B']} C:{stats['C']} D:{stats['D']} "
+                    f"MOA:{stats['MOA']} R:{stats['R']})")
+        except Exception as exc:
+            asp["dl_status"] = f"Build failed: {exc}"
+
+    threading.Thread(target=_worker, daemon=True,
+                     name="AirspaceBuild").start()
+
+
 def _asp_download_thread():
     """Fetch asp_mod.DOWNLOAD_URL → airspaces.json.  Cancel-safe via
     asp["dl_cancel"].  Falls through to a clear error when no URL is
@@ -8071,20 +8153,26 @@ def draw_airspace_data(surf):
         _text(surf, "in shared/airspaces.py to enable network fetch.",
               9, (180, 140, 60), cx=DISPLAY_W // 2, cy=info_y + 80)
 
-    # Two action buttons side by side: DOWNLOAD | INSTALL EXAMPLE
+    # Three action buttons: DOWNLOAD | BUILD FROM GEOJSON | INSTALL EXAMPLE
     btn_y = info_y + info_h + 12
     btn_h = 48
-    half  = (bw - 10) // 2
+    third = (bw - 20) // 3
     downloading = asp.get("downloading", False)
     dl_disabled = not asp_mod.DOWNLOAD_URL
     dl_style    = "normal" if (not downloading and not dl_disabled) else "warn"
-    _action_btn(surf, bx, btn_y, half, btn_h,
+    _action_btn(surf, bx, btn_y, third, btn_h,
                 "DOWNLOAD" if not downloading else "CANCEL", dl_style)
-    _action_btn(surf, bx + half + 10, btn_y, half, btn_h,
-                "INSTALL EXAMPLE", "ok")
+    _action_btn(surf, bx + third + 10, btn_y, third, btn_h,
+                "BUILD", "normal")
+    _action_btn(surf, bx + 2 * (third + 10), btn_y, third, btn_h,
+                "EXAMPLE", "ok")
+    # Build-hint underneath: explains where to drop the GeoJSON files.
+    _text(surf, f"BUILD: reads *.geojson in {AIRSPACE_DIR}",
+          9, (140, 160, 185),
+          cx=DISPLAY_W // 2, cy=btn_y + btn_h + 6)
 
     # Progress / status line
-    prog_y = btn_y + btn_h + 10
+    prog_y = btn_y + btn_h + 16
     prog_h = 40
     pygame.draw.rect(surf, (0, 10, 24), (bx, prog_y, bw, prog_h),
                      border_radius=6)
@@ -8105,11 +8193,13 @@ def airspace_data_hit(x, y):
     info_y = 92; info_h = 96
     btn_y  = info_y + info_h + 12
     btn_h  = 48
-    half   = (bw - 10) // 2
+    third  = (bw - 20) // 3
     if btn_y <= y <= btn_y + btn_h:
-        if bx <= x <= bx + half:
+        if bx <= x <= bx + third:
             return "download"
-        if bx + half + 10 <= x <= bx + 2 * half + 10:
+        if bx + third + 10 <= x <= bx + 2 * third + 10:
+            return "build"
+        if bx + 2 * (third + 10) <= x <= bx + 3 * third + 20:
             return "install_example"
     return None
 

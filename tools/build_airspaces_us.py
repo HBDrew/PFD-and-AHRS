@@ -232,6 +232,54 @@ def feature_to_records(feature, class_hint=None):
         }
 
 
+def build_from_dir(data_dir, source_note=""):
+    """Find every *.geojson file in `data_dir`, run the FAA →
+    airspaces.json conversion across all of them, write the combined
+    output to `<data_dir>/airspaces.json`.  Returns a stats dict
+    suitable for surfacing in a UI.
+
+    This is the entrypoint the Pi-side AIRSPACE DATA screens call to
+    do the conversion in-process — no separate laptop step needed."""
+    from pathlib import Path as _P
+    out_records = []
+    stats = {"B": 0, "C": 0, "D": 0, "MOA": 0, "R": 0,
+             "files": 0, "skipped_no_class": 0,
+             "skipped_no_polygon": 0, "errors": []}
+    data_path = _P(data_dir)
+    if not data_path.is_dir():
+        stats["errors"].append(f"directory not found: {data_dir}")
+        return stats
+    for gj in sorted(data_path.glob("*.geojson")):
+        stats["files"] += 1
+        try:
+            features = load_geojson(gj)
+        except (json.JSONDecodeError, ValueError, OSError) as e:
+            stats["errors"].append(f"{gj.name}: {e}")
+            continue
+        for feat in features:
+            had_class = had_poly = False
+            for rec in feature_to_records(feat):
+                had_class = had_poly = True
+                out_records.append(rec)
+                stats[rec["class"]] = stats.get(rec["class"], 0) + 1
+            if not had_class:
+                stats["skipped_no_class"] += 1
+            elif not had_poly:
+                stats["skipped_no_polygon"] += 1
+    out_path = data_path / "airspaces.json"
+    try:
+        out_path.write_text(json.dumps({
+            "version": 1,
+            "source":  source_note or "FAA GeoJSON (pi-side build)",
+            "airspaces": out_records,
+        }, indent=2))
+    except OSError as e:
+        stats["errors"].append(f"write {out_path.name}: {e}")
+    stats["records"] = len(out_records)
+    stats["output"]  = str(out_path)
+    return stats
+
+
 def load_geojson(path):
     """Load a GeoJSON file and return the feature list."""
     with open(path, "r", encoding="utf-8") as fh:
