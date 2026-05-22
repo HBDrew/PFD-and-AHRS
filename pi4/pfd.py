@@ -4711,14 +4711,35 @@ def handle_event(event, demo_mode):
         # ── Airspace data screen taps ─────────────────────────────────────
         if mode == "airspace_data":
             action = airspace_data_hit(x, y)
+            asp = disp["asp"]
             if action == "back":
                 disp["mode"] = "system_setup"
-            elif action == "download":
-                asp = disp["asp"]
+            elif action == "download_static":
                 if asp.get("downloading"):
                     asp["dl_cancel"] = True
                 else:
-                    _asp_start_download()
+                    _asp_start_download(asp_mod.DOWNLOAD_SOURCES_STATIC,
+                                        "AIRSPACES")
+            elif action == "download_tfr":
+                if asp.get("downloading"):
+                    asp["dl_cancel"] = True
+                else:
+                    _asp_start_download(asp_mod.DOWNLOAD_SOURCES_TFR,
+                                        "TFRs")
+            elif action == "classes":
+                disp["mode"] = "airspace_classes"
+            return True
+
+        # ── Airspace per-class toggle screen taps ─────────────────────────
+        if mode == "airspace_classes":
+            action = airspace_classes_hit(x, y)
+            if action == "back":
+                disp["mode"] = "airspace_data"
+            elif isinstance(action, str) and action.startswith("toggle:"):
+                key = action.split(":", 1)[1]
+                ds = disp["ds"]
+                ds[key] = not ds.get(key, True)
+                _settings.mark_dirty()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -10304,6 +10325,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_airport_data(surf, disp["ad"]); return
     if mode == "airspace_data":
         draw_airspace_data(surf); return
+    if mode == "airspace_classes":
+        draw_airspace_classes(surf); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
 
