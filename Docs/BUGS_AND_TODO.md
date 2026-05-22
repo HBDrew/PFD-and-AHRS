@@ -11,33 +11,197 @@ notes with enough context to pick it up cold.
 ## Open
 
 ### BOARD-REV-B  Next AHRS PCB spin — index
-Status: **OPEN — sensor selection locked, layout work next**
+Status: **OPEN — scope + pinout locked, layout work next**
+Scope: still a Pico W carrier board, breakouts preserved where they
+exist on rev A. Rev B is the "add the parts we can't live without"
+spin; the strip-to-essentials production board is deferred to
+BOARD-REV-C.
 Locked-in decisions (see linked entries for the full rationale):
-  - **Airspeed transducer**: **TE MS4525DO ±1 psi** replaces the
-    SDP33-1500Pa. The SDP33 saturates at ~96 kt; S-21 cruise is
-    130 kt. See SDP31-AIRDATA "Higher-range swap path".
-  - **AOA transducer**: a **second MS4525DO** on the same I²C bus at
-    the alternate address (single BOM line covers both). See AOA-PROBE.
-  - Net result: rev B carries **2× MS4525DO** — one for pitot/static,
-    one for AOA — sharing the I²C bus, driver, and supply rails.
+  - **Airspeed transducer**: **TE MS4525DO-DS5AI001DP** (±1 psi,
+    A-cal, I²C 0x28) replaces the SDP33-1500Pa. The SDP33 saturates
+    at ~96 kt; S-21 cruise is 130 kt. See SDP31-AIRDATA "Higher-range
+    swap path".
+  - **AOA transducer**: a **second MS4525DO-DS5BI001DP** (±1 psi,
+    B-cal, I²C 0x36) on the same I²C bus. See AOA-PROBE.
+  - **MS4525 SKU note — important, supersedes earlier text:** the
+    MS4525DO has **no ADDR pin**; the I²C address is baked into the
+    interface-code letter of the part number. Putting two on one bus
+    requires **two different SKUs** (A-cal + B-cal). Earlier notes
+    in this file claiming "single BOM line covers both" are wrong.
+    Alternate paths if a single SKU is preferred at layout time:
+    (a) TCA9546A I²C mux, or (b) split across I²C0 (GP8/9) and I²C1.
   - **AOA probe head**: AlphaSystems Eagle preferred; 2-hole DIY
     flush probe as the cheap alternative.
-  - **Sensor footprint reservations**: keep the 0x22 SDP3x pad on rev
-    A's footprint plan; rev B replaces it with the second MS4525DO
-    footprint + a pair of silicone-hose nipples for the AOA probe lines.
+  - **Barometer**: **BME280 stays on its existing breakout** for
+    rev B. Ambient-cabin-pressure compromise is acknowledged; the
+    real fix (ported static plenum + BMP390 reflowed on the main
+    PCB) is deferred to BOARD-REV-C, where we can land the chip
+    directly without the breakout-sandwich plenum problem.
+  - **OAT probe**: add a DS18B20 stainless-tube probe on a flying
+    lead, 1-Wire on GP15. Replaces the BME280's self-heated die
+    temp for the airdata.py density / TAS / DA math. See OAT-PROBE.
+  - **Sensor footprint reservations**: keep the 0x22 SDP3x pad on
+    rev A's footprint plan; rev B replaces it with the second
+    MS4525DO footprint + a pair of silicone-hose nipples for the
+    AOA probe lines.
+
+Complete rev-B pinout (Pico W, 40-pin module):
+  Power
+    VBUS  (pin 40)  ← 5 V USB / aircraft 5 V
+    3V3(OUT) (pin 36)  → sensor 3V3 rail
+    VSYS  (pin 39)  → GPS only (NEO-6M wants ~5 V)
+    GND   (pins 3, 8, 13, 18, 23, 28, 38)
+  WT901 IMU — UART0
+    VCC → 3V3(OUT)/36   GND → GND
+    RX  ← GP0/1 (Pico TX)   TX → GP1/2 (Pico RX)
+  NEO-6M GPS — UART1
+    VCC → VSYS/39   GND → GND
+    RX  ← GP4/6 (Pico TX)   TX → GP5/7 (Pico RX)
+  BME280 breakout — I²C1 @ 0x76
+    VCC → 3V3(OUT)/36   GND → GND
+    SDA → GP2/4         SCL → GP3/5
+    SDO → GND (sets 0x76)   CSB → VCC if not tied
+  MS4525DO #1 (pitot/static, A-cal) — I²C1 @ 0x28
+    VDD → 3V3(OUT)/36   GND → GND
+    SDA → GP2/4         SCL → GP3/5
+    100 nF VDD–GND decoupling cap <5 mm from pins
+    Port "+" → pitot      Port "−" → static tee (with BME280 vent)
+  MS4525DO #2 (AOA, B-cal) — I²C1 @ 0x36
+    VDD → 3V3(OUT)/36   GND → GND
+    SDA → GP2/4         SCL → GP3/5
+    100 nF VDD–GND decoupling cap <5 mm from pins
+    Port "+" → AOA upper  Port "−" → AOA lower
+  I²C1 bus pull-ups (shared, one set for the whole bus)
+    2.2 kΩ SDA (GP2) → 3V3
+    2.2 kΩ SCL (GP3) → 3V3
+    (BME280 breakouts typically carry 10 kΩ pulls; combined parallel
+     ~1.8 kΩ is fine for 400 kHz with 3 devices. Drop the on-board
+     pair if a breakout with stronger pulls is used.)
+  DS18B20 OAT probe — 1-Wire on GP15
+    Red (VDD) → 3V3(OUT)/36   Black (GND) → GND
+    Yellow (DQ) → GP15/20
+    4.7 kΩ DQ → 3V3 pull-up
+    100 nF VDD–GND at the cable's PCB connector
+    Optional 100 Ω series R on DQ at Pico end (cable ESD)
+  Free / reserved: GP6–GP14, GP16–GP28 — leave broken out to a
+    header strip or castellations so rev B doubles as a dev board.
+
 Bench plan before the spin: finish air-data validation on the SDP33
 (it'll read up to ~96 kt fine — enough to bench-prove the IAS/TAS/wind
 math against a hand pump and against GPS GS in zero-wind taxi), then
 queue the layout work.
+
 Firmware to write when rev B lands:
-  - `firmware/ms4525.py` — TE protocol (different from Sensirion), one
-    driver covers both units. ~70 lines.
-  - `main.py` instantiates the driver twice, address-strapped.
-  - `airdata.py` is unchanged — it consumes `dp_pa` regardless of
-    which transducer produced it.
+  - `firmware/ms4525.py` — already in tree (rev-A bench builds also
+    accept the MS4525). `main.py` already instantiates one; rev B
+    just instantiates it twice with two addresses.
+  - `firmware/ds18b20.py` — new ~40-line wrapper around MicroPython
+    stock `onewire` + `ds18x20`, mirrors BME280 public interface
+    (`temperature_c`, `last_update_ms`, `update()`).
+  - `airdata.py` switches its `temp_c` argument from BME280 to the
+    DS18B20 when present; falls back to BME280 die temp when not.
+  - `main.py` instantiates the DS18B20 from a new `OAT_PROBE_ENABLE`
+    in `config.py`.
   - AOA math: linear calibration curve fit on first-flight data, then
     persisted; `aoa_deg` + `aoa_src` already reserved in the `$AHRS`
     JSON by the AOA-CALC entry, so the display side picks it up free.
+
+### BOARD-REV-C  Production-style strip-to-essentials AHRS board
+Status: **OPEN — parking lot, dependent on rev B in flight**
+Scope: drop the Pico W carrier-board pattern. Custom 4-layer PCB
+with the RP2350 + CYW43 Wi-Fi front-end + flash placed directly,
+along with the sensors that currently live on breakouts. Goal is
+a single board that needs no hand-assembled modules, suitable for
+small-batch JLC/OSHPark assembly.
+Locked-in (so far):
+  - **Baro upgrade — BMP390 with PCB-integrated static plenum.**
+    Reflow the BMP390 directly onto the main PCB with a 6–8 mm clear
+    keep-out ring around the chip; the printed enclosure carries a
+    plenum cap that compresses an O-ring onto that ring, with a
+    silicone-hose barb on the lid. Plumb the barb to the aircraft
+    static line. This is what the BME280-on-a-breakout pattern in
+    rev B can't do mechanically — the breakout's other parts are in
+    the seal path. See the rev-B baro discussion for the rejected
+    alternatives (Honeywell ABP2 has the noise floor wrong for VSI;
+    breakout + cap is brittle).
+  - **MS4525DOs reflowed alongside the BMP390.** Same SMT-assembly
+    pass at the fab; same two SKUs (A-cal 0x28, B-cal 0x36) unless
+    we revisit the mux option here.
+  - **DS18B20 OAT** stays on its flying lead — no change from rev B,
+    it's already the right shape.
+Open questions for the spin:
+  - Pi Pico module vs raw RP2350: BOM cost is comparable once you
+    add the CYW43 + flash + crystal, but raw saves ~8 mm of board
+    height, which matters for panel-mount thickness.
+  - Connector choice for the IMU + GPS + OAT cables (currently
+    flying leads).
+  - Whether to drop a USB-C jack (rev A uses the Pico's micro-USB).
+  - Conformal coating spec for the avionics-bay environment.
+
+### OAT-PROBE  External OAT probe replacing BME280 self-heated die temp
+Status: **OPEN — bundled into BOARD-REV-B**
+Target: hardware (rev B), new `firmware/ds18b20.py`, one-line
+swap in `firmware/airdata.py`, new field in `config.py`.
+Context: `firmware/bme280.py:80` exposes the BME280's compensated
+die temperature as `temperature_c`, and `firmware/airdata.py:70`
+feeds that into the density / TAS / density-altitude math. The
+BME280 sits inside the AHRS enclosure and the die self-heats a
+few °C above ambient cabin air — so OAT reads warm, density reads
+low, TAS reads high, DA reads high. The bias is silent: the
+firmware never warns, the displays never flag it. Fixing it means
+moving the temperature sensor out of the enclosure into the
+slipstream.
+
+Sensor selection: **Maxim DS18B20 in the stainless waterproof
+probe (1 m silicone-jacketed cable, 6 mm × 30 mm sealed tube).**
+~$8, ±0.5 °C out of the bag (1 °C error → ~30 ft DA error, well
+inside REQ-AHRS-AIR-004's ±200 ft budget). 1-Wire interface =
+one GPIO + a 4.7 kΩ pull-up. MicroPython has the driver in stock
+(`onewire` + `ds18x20`). Considered and rejected: SHT45 (better
+accuracy but SMD, would need a custom probe head + cable
+assembly); TMP117 (same problem); analog NTC (needs an ADC, no
+benefit over DS18B20).
+
+Wiring (Pico W pin numbers):
+  Red    (VDD) → 3V3(OUT) pin 36
+  Black  (GND) → GND
+  Yellow (DQ)  → GP15 / pin 20
+  Pull-up: 4.7 kΩ from DQ to 3V3
+  Optional: 100 Ω series R on DQ at the Pico end for cable ESD
+  Optional: 100 nF VDD–GND cap at the cable's PCB connector
+
+Mounting: drill the cowl, vent louver, or NACA scoop; bond the
+stainless tube with epoxy or a P-clamp; route the cable back to
+the AHRS box with strain relief at the enclosure exit. Avoid
+direct sunlight on the tube (radiative heating biases warm) and
+avoid the exhaust plume / engine compartment (very warm).
+
+Firmware:
+  - `firmware/ds18b20.py` — new, ~40 lines. Public interface mirrors
+    `bme280.py`: `temperature_c` (float, °C), `last_update_ms`
+    (int), `update()` (read sensor; return True on success).
+    Wraps MicroPython `onewire.OneWire(Pin(15))` +
+    `ds18x20.DS18X20(...)` with a single-device assumption.
+  - `firmware/config.py` — new section: `OAT_PROBE_ENABLE = True`,
+    `OAT_PROBE_PIN = 15`. Default `False` until rev B ships so
+    rev-A firmware is unchanged.
+  - `firmware/main.py` — instantiate the DS18B20 conditionally;
+    populate a new `oat_src` field on `state` ("probe" when DS18B20
+    healthy, "bme" when falling back to BME280 die temp).
+  - `firmware/airdata.py` — caller already passes `temp_c`
+    explicitly; `main.py` decides which sensor's reading to pass.
+    No change in `airdata.py` itself.
+  - `$AHRS` JSON gains `oat_src` so the displays can subscript the
+    OAT readout when the fallback is active (mirrors the existing
+    `baro_src` / `aoa_src` pattern). Existing `oat_c` field is
+    unchanged.
+  - Pi 4 + iPhone display: small `b` subscript on the OAT readout
+    when `oat_src == "bme"` so the pilot knows TAS / DA are
+    running on the self-heated fallback.
+
+Validation: bench against a known thermometer at room temperature
+(±1 °C); cross-check in flight against a handheld at level cruise
+(should converge once the probe equilibrates to ram-air temp).
 
 ### WAVESHARE-35-DPI  Pi 4 Waveshare 3.5" DPI panel won't initialise
 Status: **OPEN — low priority, blocked on time, ROADOM 7" HDMI works fine**
