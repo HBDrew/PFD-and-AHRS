@@ -10,6 +10,35 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
+Status: **OPEN — usable workaround documented**
+Today PFD picks the AHRS transport once at startup (USB if
+`/dev/ttyACM*` is enumerated within the first ~2 s of `main()`,
+otherwise Wi-Fi SSE).  That misses two real cases:
+  - **Late USB enumeration**: on the Pi Zero with `dwc2 dr_mode=host`
+    the Pico W enumerates around t+79 s, well after PFD has chosen
+    Wi-Fi and entered its retry loop.  Workaround: `sudo systemctl
+    restart pfd.service` once `ls /dev/ttyACM0` resolves.
+  - **Hot-plug / hot-unplug**: yanking the USB cable or losing the
+    Pico W's AP doesn't trigger a fallback; the pilot has to restart
+    PFD by hand.
+Wanted: a setting `ahrs_source` ∈ {auto, usb, wifi} surfaced on the
+Connectivity Setup screen as a three-pill segmented control.  A daemon
+thread polls every 2–3 s and:
+  - When `auto`: prefers USB if `/dev/ttyACM*` exists, else Wi-Fi.
+  - When `usb` (forced): retries `/dev/ttyACM*` until present; never
+    falls back to Wi-Fi on its own.
+  - When `wifi` (forced): never opens the serial port even if a Pico W
+    appears.
+  - Switches transports cleanly (stop old client, start new) without
+    needing a full PFD restart.
+  - Surfaces "AHRS DOWN — fallback in 5 s" hint on the AI in the
+    interim so the pilot isn't confused by a frozen attitude.
+Touches: `pi_zero/pfd.py` + `pi4/pfd.py` AHRS startup block,
+`shared/serial_client.py` + `shared/sse_client.py` lifecycle (need a
+clean `.stop()` + `.is_alive()` contract).  Estimated work: ~30 min
++ test.
+
 ### BOARD-REV-B  Next AHRS PCB spin — index
 Status: **OPEN — sensor selection locked, layout work next**
 Locked-in decisions (see linked entries for the full rationale):
