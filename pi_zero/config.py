@@ -67,6 +67,12 @@ OBSTACLE_DIR  = os.path.join(_HERE, "data", "obstacles")
 # ── Airport database (OurAirports CSV) ────────────────────────────────────────
 AIRPORT_DIR   = os.path.join(_HERE, "data", "airports")
 
+# ── Airspace boundaries (Class B/C/D + MOA + Restricted, US first-cut) ───────
+# JSON file at AIRSPACE_DIR/airspaces.json — see shared/airspaces.py for
+# schema.  Falls back to a bundled small example dataset when no file
+# is on disk, so the render path is visually verifiable out of the box.
+AIRSPACE_DIR  = os.path.join(_HERE, "data", "airspaces")
+
 # ── User settings persistence ─────────────────────────────────────────────────
 SETTINGS_PATH = os.path.join(_HERE, "data", "settings.json")
 

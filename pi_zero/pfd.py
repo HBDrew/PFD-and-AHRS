@@ -50,6 +50,7 @@ from terrain import (
 _srtm_set_resolution_preference("srtm3")
 import obstacles as obs_mod
 import airports as apt_mod
+import airspaces as asp_mod
 import water as water_mod
 import settings as _settings
 import screen_sync as _ssync_mod
@@ -138,6 +139,7 @@ disp["od"] = {                      # obstacle download/parse state
 }
 _obstacles = None           # loaded obstacle array (module-level)
 _airports  = None           # loaded airport array (module-level)
+_airspaces = None           # list of airspace records, or None until loaded
 disp["ad"] = {                      # airport download/parse state
     "downloading": False,
     "dl_status":   "",
@@ -170,6 +172,17 @@ disp["ds"] = {                      # display settings
     "map_show_obstacles": True,
     "map_show_state_lines": True,
     "map_show_country_lines": True,
+    # Airspace layer — master toggle + per-class.  Off by default for
+    # the first-cut data so the screen doesn't show stale or
+    # approximate polygons until the pilot has explicitly enabled
+    # them.  Per-class toggles let pilots hide MOAs / restricted /
+    # whatever isn't relevant to their flight.
+    "map_show_airspaces":   False,
+    "map_show_airspace_b":   True,
+    "map_show_airspace_c":   True,
+    "map_show_airspace_d":   True,
+    "map_show_airspace_moa": True,
+    "map_show_airspace_r":   True,
     # MFD bottom data strip — 8 user-selectable readout slots.  Each
     # entry is a kind id from _MFD_STRIP_KIND_IDS; user reconfigures
     # via tap-strip → chooser overlay.  See draw_mfd / draw_mfd_strip_setup.
@@ -4149,6 +4162,7 @@ _DSP_MAP_LAYERS = [
     ("map_show_obstacles",     "OBS"),
     ("map_show_state_lines",   "STA"),
     ("map_show_country_lines", "CTRY"),
+    ("map_show_airspaces",     "ASP"),
 ]
 _DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
 _DSP_LAYERS_BTN_W     = 70
@@ -8803,6 +8817,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
         # plan after the current direct-to.  None when no plan is
         # active or the active leg is also the final.
         fpl_remaining=_fpl_render_remaining(),
+        # Airspace polygons (Class B/C/D + MOA + Restricted).  Loaded
+        # in the background at startup; per-class display gates live
+        # in disp["ds"]["map_show_airspace_*"].
+        airspaces=_airspaces,
     )
     lat, lon = ac_lat, ac_lon
 
@@ -10087,6 +10105,22 @@ def _startup_load_airports():
         print("[PFD] Airports: no data on disk")
 
 
+def _startup_load_airspaces():
+    """Background thread: load airspace polygons.  Falls back to a
+    small bundled example dataset when no real data is on disk so the
+    render path is verifiable end-to-end before the pilot drops in a
+    NASR-derived file."""
+    global _airspaces
+    loaded = asp_mod.load(AIRSPACE_DIR)
+    if loaded is None:
+        loaded = asp_mod.load_bundled_example()
+        print(f"[PFD] Airspaces: no airspaces.json found at {AIRSPACE_DIR}; "
+              f"using bundled {len(loaded)}-record example")
+    else:
+        print(f"[PFD] Airspaces: {len(loaded)} polygons loaded")
+    _airspaces = loaded
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="PFD Display")
@@ -10177,6 +10211,8 @@ def main():
                      name="ObstacleLoad").start()
     threading.Thread(target=_startup_load_airports, daemon=True,
                      name="AirportLoad").start()
+    threading.Thread(target=_startup_load_airspaces, daemon=True,
+                     name="AirspaceLoad").start()
 
     # Disable vsync so display.flip() doesn't block waiting for the display's
     # vsync signal (which was taking ~82 ms at ~12 Hz on KMS/DRM, halving FPS).

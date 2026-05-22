@@ -100,6 +100,43 @@ _COUNTRY_LINE = (200, 180, 140)     # warm tan: admin_0 boundaries — distinct
                                     # and still read as separate features
 
 
+# ── Airspace palette (outline RGB, fill RGBA-or-None) ───────────────────────
+# Class B uses blue (matches FAA charting convention); C is magenta;
+# D dashed blue (but pygame doesn't do dashed natively, so solid blue
+# at thinner stroke); MOA amber; Restricted red.  Fill is low-alpha so
+# the polygon shades without hiding terrain underneath.
+_AIRSPACE_COLORS = {
+    "B":   ((100, 140, 255), (100, 140, 255, 40)),
+    "C":   ((220,  80, 220), (220,  80, 220, 40)),
+    "D":   ((110, 170, 255), (110, 170, 255, 30)),
+    "MOA": ((230, 170,  60), (230, 170,  60, 35)),
+    "R":   ((230,  60,  60), (230,  60,  60, 50)),
+}
+_AIRSPACE_DEFAULT = ((200, 200, 200), (200, 200, 200, 30))
+
+
+def _airspaces_query_nearby(airspaces, lat, lon, radius_nm):
+    """Inline bbox cull — keeps the render path independent of the
+    shared.airspaces import (which not every host carries — pi4 might
+    use a different airspace data path later)."""
+    if not airspaces:
+        return []
+    nm_per_deg = 60.0
+    cos_lat = max(0.05, math.cos(math.radians(lat)))
+    d_lat = radius_nm / nm_per_deg
+    d_lon = radius_nm / nm_per_deg / cos_lat
+    lat_lo = lat - d_lat; lat_hi = lat + d_lat
+    lon_lo = lon - d_lon; lon_hi = lon + d_lon
+    out = []
+    for a in airspaces:
+        bla_lo, bla_hi, blo_lo, blo_hi = a["bbox"]
+        if (bla_hi < lat_lo or bla_lo > lat_hi
+                or blo_hi < lon_lo or blo_lo > lon_hi):
+            continue
+        out.append(a)
+    return out
+
+
 # ── Hypsometric terrain tint cache ────────────────────────────────────────────
 # Building the tint is the only expensive work on the inset.  At cruise the
 # centre moves slowly, so quantising it lets one cached surface serve many
@@ -548,7 +585,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
            range_label=None, state_lines=None, country_lines=None,
            own_lat=None, own_lon=None, draw_corner_labels=True,
-           fpl_remaining=None):
+           fpl_remaining=None, airspaces=None, airspace_visible=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -690,6 +727,70 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             and range_nm >= 20):
         _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
                         cx, cy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+
+    # ── Airspaces (Class B/C/D + MOA + Restricted) ──────────────────────────
+    # Drawn between context lines and the rest so airspaces sit UNDER
+    # obstacles + airports + D2 (those are flight-critical and need to
+    # read on top) but OVER state/country lines.  Polygon points are
+    # projected the same way runways/airports are: cull by bbox first,
+    # then convert each (lat,lon) → screen.  Open outline + a low-alpha
+    # fill so the interior shades without obscuring terrain.
+    #
+    # Per-class display toggles ride in the same `settings` dict as the
+    # other layer toggles; missing keys default to ON.  airspace_visible
+    # is an additional CALLER filter (set of class strings) so the
+    # PFD's setup screen can layer in its own visibility logic without
+    # mutating settings.
+    if (airspaces is not None
+            and settings.get("map_show_airspaces", True)
+            and range_nm <= 80):
+        nearby_as = _airspaces_query_nearby(airspaces, lat, lon,
+                                             range_nm * 1.4)
+        for asp in nearby_as:
+            cls = asp["class"]
+            if airspace_visible is not None and cls not in airspace_visible:
+                continue
+            if not settings.get(f"map_show_airspace_{cls.lower()}", True):
+                continue
+            col, fill = _AIRSPACE_COLORS.get(cls, (_AIRSPACE_DEFAULT, None))
+            pts = [(int(px), int(py)) for px, py in
+                   (_project(la, lo) for la, lo in asp["polygon"])]
+            if len(pts) < 3:
+                continue
+            # Quick reject when the entire projected polygon falls off
+            # screen.  Bbox cull above kept us close but the rotation
+            # can still spin a polygon outside the inset rect.
+            xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+            if (max(xs) < x or min(xs) > x + w
+                    or max(ys) < y or min(ys) > y + h):
+                continue
+            if fill is not None:
+                # Translucent fill via per-shape SRCALPHA surface — cheap
+                # because the polygon count per frame is small.
+                bx0 = max(x, min(xs)); by0 = max(y, min(ys))
+                bx1 = min(x + w, max(xs)); by1 = min(y + h, max(ys))
+                bw_  = max(1, bx1 - bx0); bh_  = max(1, by1 - by0)
+                fs = pygame.Surface((bw_, bh_), pygame.SRCALPHA)
+                shifted = [(p[0] - bx0, p[1] - by0) for p in pts]
+                pygame.draw.polygon(fs, fill, shifted)
+                surf.blit(fs, (bx0, by0))
+            pygame.draw.polygon(surf, col, pts, 2)
+            # Ident label near the polygon's centroid — drawn only when
+            # the airspace covers enough screen area to read (otherwise
+            # the label clutters at wide zooms).
+            if font is not None:
+                w_px = max(xs) - min(xs); h_px = max(ys) - min(ys)
+                if w_px > 60 and h_px > 30:
+                    cxp = sum(xs) // len(xs); cyp = sum(ys) // len(ys)
+                    key = (asp["ident"], id(font), "asp")
+                    lbl = _apt_label_cache.get(key)
+                    if lbl is None:
+                        lbl = font.render(asp["ident"], True, col)
+                        _apt_label_cache[key] = lbl
+                        if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                            _apt_label_cache.popitem(last=False)
+                    surf.blit(lbl, (cxp - lbl.get_width() // 2,
+                                    cyp - lbl.get_height() // 2))
 
     # ── Runways ──────────────────────────────────────────────────────────────
     # Runway rectangles only carry useful detail at terminal-area zooms —
