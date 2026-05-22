@@ -5143,17 +5143,18 @@ def _fpl_check_advance(lat, lon):
 
 
 def _fpl_render_remaining():
-    """Return a list of (lat, lon) tuples starting at the active
+    """Return a list of (lat, lon, ident) tuples starting at the active
     waypoint and including every subsequent waypoint, for the moving
-    map to draw as a dimmer magenta polyline.  Returns None when
-    there's nothing forward of the active leg."""
+    map to draw as a dimmer magenta polyline with per-waypoint labels.
+    Returns None when there's nothing forward of the active leg."""
     if not _fpl_is_active():
         return None
     wps = disp["fpl"]["waypoints"]
     idx = disp["fpl"]["active_idx"]
     if idx >= len(wps) - 1:
         return None
-    return [(float(wp["lat"]), float(wp["lon"]))
+    return [(float(wp["lat"]), float(wp["lon"]),
+             str(wp.get("ident", "")))
             for wp in wps[idx:]]
 
 

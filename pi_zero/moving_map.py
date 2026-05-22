@@ -871,13 +871,18 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         # joined with a dimmer magenta line + small diamonds.  The
         # active leg itself is already drawn above by the D2 line; we
         # just extend the route forward.  Each leg is sampled along
-        # the great circle for the same reason the D2 line is.
+        # the great circle for the same reason the D2 line is.  Line
+        # width matches the D2 line (2 px) so the route reads as one
+        # continuous course on the map.  Every waypoint gets a label,
+        # regardless of zoom — at en-route ranges where airport labels
+        # are gated out the FPL idents are still the pilot's primary
+        # reference.
         if (fpl_remaining is not None
                 and len(fpl_remaining) >= 2
                 and not approach_active):
             faded = (140, 0, 140)   # dimmer magenta — clearly past-active
-            from_la, from_lo = fpl_remaining[0]
-            for next_la, next_lo in fpl_remaining[1:]:
+            from_la, from_lo, _from_ident = fpl_remaining[0]
+            for next_la, next_lo, next_ident in fpl_remaining[1:]:
                 n_seg = 16
                 pts = []
                 for i in range(n_seg + 1):
@@ -886,13 +891,22 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                                          next_la, next_lo, f)
                     px, py = _project(la, lo)
                     pts.append((int(px), int(py)))
-                pygame.draw.lines(surf, faded, False, pts, 1)
+                pygame.draw.lines(surf, faded, False, pts, 2)
                 npx, npy = _project(next_la, next_lo)
                 pygame.draw.polygon(surf, faded,
                                     [(int(npx),     int(npy) - d),
                                      (int(npx) + d, int(npy)),
                                      (int(npx),     int(npy) + d),
                                      (int(npx) - d, int(npy))])
+                if next_ident and font is not None:
+                    key = (next_ident, id(font), "fpl")
+                    lbl = _apt_label_cache.get(key)
+                    if lbl is None:
+                        lbl = font.render(next_ident, True, faded)
+                        _apt_label_cache[key] = lbl
+                        if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                            _apt_label_cache.popitem(last=False)
+                    surf.blit(lbl, (int(npx) + d + 3, int(npy) - d - 2))
                 from_la, from_lo = next_la, next_lo
         # Always-on D2 ident label next to the waypoint diamond.  The
         # airport-loop above caps labels at <= 10 nm and 40 nearest;
