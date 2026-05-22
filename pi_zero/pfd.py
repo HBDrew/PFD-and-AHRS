@@ -4288,10 +4288,10 @@ _DSP_ROWS = [
 
 # MAP LAYERS multi-toggle row — mirrors pi4's _DSP_MAP_LAYERS so the
 # Display setup screen has the same per-layer control across both
-# displays.  Five small pills packed into one row; tapping each toggles
-# the matching map_show_* boolean in disp["ds"].  moving_map.render
-# already gates each layer on these flags.  No RWY pill because the
-# pi_zero MFD doesn't render runways (passes runways_arr=None).
+# displays.  Pills are laid out in TWO sub-rows so the right edge
+# doesn't clobber the row label / subtitle on the left — single-row
+# layout with 7 pills overflows the 480-px screen.  Tapping each
+# toggles the matching map_show_* boolean in disp["ds"].
 _DSP_MAP_LAYERS = [
     ("map_show_terrain",       "TER"),
     ("map_show_water",         "WTR"),
@@ -4301,16 +4301,47 @@ _DSP_MAP_LAYERS = [
     ("map_show_country_lines", "CTRY"),
     ("map_show_airspaces",     "ASP"),
 ]
-_DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
-_DSP_LAYERS_BTN_W     = 70
-_DSP_LAYERS_BTN_G     = 6
+_DSP_LAYERS_PER_SUBROW = 4    # top row up to this many; rest spill to row 2
+_DSP_LAYERS_ROW_INDEX  = len(_DSP_ROWS)
+_DSP_LAYERS_BTN_W      = 70
+_DSP_LAYERS_BTN_G      = 6
+_DSP_LAYERS_BTN_H      = 26   # shorter than _DSP_BTN_H (40) so two pill
+                              # rows fit inside _SS_RH (62)
+_DSP_LAYERS_SUB_GAP    = 4
 
 
-def _dsp_layers_geom(bx, bw):
-    """Right-aligned x of the first map-layer pill in the row."""
+def _dsp_layers_subrow_count():
+    """How many sub-rows of pills (1 if everything fits the top row)."""
     n = len(_DSP_MAP_LAYERS)
+    return 1 if n <= _DSP_LAYERS_PER_SUBROW else 2
+
+
+def _dsp_layers_subrow_split():
+    """Indices [first row], [second row] for the pill layout."""
+    n = len(_DSP_MAP_LAYERS)
+    if n <= _DSP_LAYERS_PER_SUBROW:
+        return list(range(n)), []
+    return list(range(_DSP_LAYERS_PER_SUBROW)), list(range(_DSP_LAYERS_PER_SUBROW, n))
+
+
+def _dsp_layers_geom(bx, bw, subrow_idx=0):
+    """Right-aligned x for the first pill of the given sub-row."""
+    top, bot = _dsp_layers_subrow_split()
+    n = len(top) if subrow_idx == 0 else len(bot)
+    if n == 0:
+        return bx + bw
     total = n * _DSP_LAYERS_BTN_W + (n - 1) * _DSP_LAYERS_BTN_G
     return bx + bw - total - 14
+
+
+def _dsp_layers_subrow_y(by, subrow_idx):
+    """Top y of the given pill sub-row inside a _SS_RH-tall row at by."""
+    n_sub = _dsp_layers_subrow_count()
+    if n_sub == 1:
+        return by + (_SS_RH - _DSP_LAYERS_BTN_H) // 2
+    total_h = n_sub * _DSP_LAYERS_BTN_H + (n_sub - 1) * _DSP_LAYERS_SUB_GAP
+    y0 = by + (_SS_RH - total_h) // 2
+    return y0 + subrow_idx * (_DSP_LAYERS_BTN_H + _DSP_LAYERS_SUB_GAP)
 
 
 def _dsp_rx(row, bx, bw):
@@ -4353,16 +4384,23 @@ def draw_display_setup(surf, ds):
                 _seg_btn(surf, rx+i*(bw_each+_DSP_BTN_G), ry, bw_each, _DSP_BTN_H, lbl, v==cur)
 
     # MAP LAYERS — packed multi-toggle row drawn after the standard ones.
+    # Two sub-rows of pills so the right edge stays clear of the row
+    # label on the left.
     bx, by, bw, bh = _setting_row(surf, _DSP_LAYERS_ROW_INDEX,
                                   "MAP LAYERS",
                                   "Per-layer visibility on the MFD")
-    ry = by + (bh - _DSP_BTN_H) // 2
-    rx = _dsp_layers_geom(bx, bw)
-    for i, (key, lbl) in enumerate(_DSP_MAP_LAYERS):
-        active = bool(ds.get(key, True))
-        _seg_btn(surf,
-                 rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
-                 ry, _DSP_LAYERS_BTN_W, _DSP_BTN_H, lbl, active)
+    top_idx, bot_idx = _dsp_layers_subrow_split()
+    for sub, indices in enumerate((top_idx, bot_idx)):
+        if not indices:
+            continue
+        ry = _dsp_layers_subrow_y(by, sub)
+        rx = _dsp_layers_geom(bx, bw, sub)
+        for slot, i in enumerate(indices):
+            key, lbl = _DSP_MAP_LAYERS[i]
+            active = bool(ds.get(key, True))
+            _seg_btn(surf,
+                     rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
+                     ry, _DSP_LAYERS_BTN_W, _DSP_LAYERS_BTN_H, lbl, active)
     surf.set_clip(_prev_clip)
 
 
@@ -4394,15 +4432,21 @@ def display_setup_hit(x, y, ds):
                 if bx_b <= x <= bx_b+bw_each:
                     return f"set:{key}:{v}"
 
-    # MAP LAYERS multi-toggle row
+    # MAP LAYERS multi-toggle row — two sub-rows of pills.
     by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
     if by <= y <= by + _SS_RH:
-        bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
-        ry = by + (_SS_RH - _DSP_BTN_H) // 2
-        if ry <= y <= ry + _DSP_BTN_H:
-            rx = _dsp_layers_geom(bx, bw)
-            for i, (key, _lbl) in enumerate(_DSP_MAP_LAYERS):
-                bx_b = rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
+        bx = _SS_MX; bw = DISPLAY_W - 2 * _SS_MX
+        top_idx, bot_idx = _dsp_layers_subrow_split()
+        for sub, indices in enumerate((top_idx, bot_idx)):
+            if not indices:
+                continue
+            ry = _dsp_layers_subrow_y(by, sub)
+            if not (ry <= y <= ry + _DSP_LAYERS_BTN_H):
+                continue
+            rx = _dsp_layers_geom(bx, bw, sub)
+            for slot, i in enumerate(indices):
+                key, _lbl = _DSP_MAP_LAYERS[i]
+                bx_b = rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
                 if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
                     new_val = not bool(ds.get(key, True))
                     return f"set:{key}:{new_val}"
