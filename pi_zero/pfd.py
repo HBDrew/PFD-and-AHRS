@@ -993,7 +993,7 @@ def smooth_state():
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
               "ahrs_ok", "gps_ok", "baro_ok", "airdata_ok",
-              "pitch_trim", "roll_trim", "yaw_trim"):
+              "pitch_trim", "roll_trim", "yaw_trim", "fw_ver"):
         if k in snap:
             disp[k] = snap[k]
 
@@ -6341,7 +6341,7 @@ _SYS_INFO_Y  = 56
 _SYS_INFO_LH = 28
 
 
-_SYS_N_LINES = 7
+_SYS_N_LINES = 8
 _SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
 _SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # DISPLAY MODE row top
 _SYS_TERRAIN_Y = _SYS_MODE_Y + _SS_RH + 8         # TERRAIN DATA row top
@@ -6388,6 +6388,9 @@ def draw_system_setup(surf):
     _ahrs_port  = disp.get("cs", {}).get("ahrs_port", "\u2014")
     _ahrs_lbl   = (f"USB \u00b7 {_ahrs_port}" if _ahrs_xport == "usb"
                    else f"WiFi \u00b7 {_ahrs_port}")
+    _ahrs_fw = disp.get("fw_ver", "\u2014")
+    if not _ahrs_fw or _ahrs_fw == "\u2014":
+        _ahrs_fw = "unknown" if disp.get("ahrs_ok") else "no link"
     lines = [
         ("Firmware version",  _SYS_VERSION),
         ("Build date",        _SYS_BUILD),
@@ -6395,6 +6398,7 @@ def draw_system_setup(surf):
         ("Hardware",          "Pi Zero 2W + Pico W"),
         ("GPS",               _gps_status),
         ("AHRS link",         _ahrs_lbl),
+        ("AHRS firmware",     str(_ahrs_fw)),
         ("SRTM terrain data", "loaded" if os.path.isdir(SRTM_DIR) else "not found"),
     ]
     # SYSTEM uses absolute Y positions (not _ss_row_y), so apply the
