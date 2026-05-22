@@ -140,6 +140,15 @@ disp["od"] = {                      # obstacle download/parse state
 _obstacles = None           # loaded obstacle array (module-level)
 _airports  = None           # loaded airport array (module-level)
 _airspaces = None           # list of airspace records, or None until loaded
+# disp["asp"] mirrors disp["ad"]/disp["td"]/disp["od"]: status fields
+# surfaced on the AIRSPACE DATA subscreen + the AIRSPACE tile on the
+# system-setup screen.  Not persisted (it's recomputed on load).
+disp["asp"] = {
+    "records":   0,
+    "downloading": False,
+    "dl_status": "",
+    "dl_cancel": False,
+}
 disp["ad"] = {                      # airport download/parse state
     "downloading": False,
     "dl_status":   "",
@@ -3183,6 +3192,8 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "obstacle_data"
             elif action == "airport_data":
                 disp["mode"] = "airport_data"
+            elif action == "airspace_data":
+                disp["mode"] = "airspace_data"
             elif action == "ahrs_firmware":
                 _ss_reset_scroll("ahrs_firmware")
                 disp["mode"] = "ahrs_firmware"
@@ -3287,6 +3298,21 @@ def handle_event(event, demo_mode):
                 key = action.split(":", 1)[1]
                 disp["ad"][key] = not disp["ad"].get(key, False)
                 _settings.mark_dirty()
+            return True
+
+        # ── Airspace data screen taps ─────────────────────────────────────
+        if mode == "airspace_data":
+            action = airspace_data_hit(x, y)
+            if action == "back":
+                disp["mode"] = "system_setup"
+            elif action == "download":
+                asp = disp["asp"]
+                if asp.get("downloading"):
+                    asp["dl_cancel"] = True
+                else:
+                    _asp_start_download()
+            elif action == "install_example":
+                _asp_install_example()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -6213,10 +6239,11 @@ def draw_system_setup(surf):
     _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "OFF", not enabled)
     _seg_btn(surf, rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m, "ON",  enabled)
 
-    # Data download tiles: TERRAIN | OBSTACLE | AIRPORT (three columns)
-    third = (bw - 16) // 3
+    # Data download tiles: TERRAIN | OBSTACLE | AIRPORT | AIRSPACE
+    # (four columns \u2014 narrower than before but still finger-sized).
+    quarter = (bw - 24) // 4
     n_tiles, used_mb = _td_disk_stats()
-    _sys_data_tile(surf, bx,              terrain_y, third, _SS_RH,
+    _sys_data_tile(surf, bx,                       terrain_y, quarter, _SS_RH,
                    "TERRAIN",
                    f"{n_tiles} tile{'s' if n_tiles != 1 else ''}  \u00b7  {used_mb:.1f} MB",
                    active=True)
@@ -6230,7 +6257,7 @@ def draw_system_setup(surf):
             od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB"
     else:
         od_sub = "Tap to download"
-    _sys_data_tile(surf, bx+third+8,      terrain_y, third, _SS_RH,
+    _sys_data_tile(surf, bx + quarter + 8,         terrain_y, quarter, _SS_RH,
                    "OBSTACLE", od_sub, active=True)
     ad_cnt     = disp["ad"].get("records", 0)
     ad_expired = disp["ad"].get("expired", False)
@@ -6238,11 +6265,17 @@ def draw_system_setup(surf):
         if ad_expired:
             ad_sub = f"{ad_cnt:,} apts  \u00b7  \u26a0 EXP"
         else:
-            ad_sub = f"{ad_cnt:,} airports"
+            ad_sub = f"{ad_cnt:,} apts"
     else:
         ad_sub = "Tap to download"
-    _sys_data_tile(surf, bx+2*(third+8),  terrain_y, third, _SS_RH,
-                   "AIRPORTS", ad_sub, active=True)
+    _sys_data_tile(surf, bx + 2 * (quarter + 8),   terrain_y, quarter, _SS_RH,
+                   "AIRPORT", ad_sub, active=True)
+    # AIRSPACE tile \u2014 uses disp["asp"] for status (filled by the
+    # AIRSPACE DATA subscreen on load).
+    asp_cnt = disp.get("asp", {}).get("records", 0)
+    asp_sub = f"{asp_cnt} polygons" if asp_cnt else "Tap to set up"
+    _sys_data_tile(surf, bx + 3 * (quarter + 8),   terrain_y, quarter, _SS_RH,
+                   "AIRSPACE", asp_sub, active=True)
 
     half_w = (bw - 10) // 2
     # Layout: AHRS FIRMWARE (full-width), SIMULATOR+RESET (half-width), QUIT
@@ -6272,13 +6305,15 @@ def system_setup_hit(x, y):
         if rx+btn_w_m+gap_m <= x <= rx+2*btn_w_m+gap_m:
             return "set:mfd_enabled:on"
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
-        third = (bw - 16) // 3
-        if bx <= x <= bx+third:
+        quarter = (bw - 24) // 4
+        if bx <= x <= bx + quarter:
             return "terrain_data"
-        if bx+third+8 <= x <= bx+2*third+8:
+        if bx + quarter + 8 <= x <= bx + 2 * quarter + 8:
             return "obstacle_data"
-        if bx+2*(third+8) <= x <= bx+2*(third+8)+third:
+        if bx + 2 * (quarter + 8) <= x <= bx + 3 * quarter + 16:
             return "airport_data"
+        if bx + 3 * (quarter + 8) <= x <= bx + 4 * quarter + 24:
+            return "airspace_data"
     half_w = (bw - 10) // 2
     sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
     quit_y = sim_y       + _SYS_BTN_H + 10
@@ -7856,6 +7891,182 @@ def airport_data_hit(x, y, ad):
             return "cancel"
     if bx <= x <= bx+bw and btn_y <= y <= btn_y+btn_h:
         return "download"
+    return None
+
+
+# ── Airspace data management ────────────────────────────────────────────
+# Mirrors AIRPORT DATA: status strip + info box + action button +
+# progress.  Two action paths:
+#
+#   DOWNLOAD       — fetch airspaces.json from asp_mod.DOWNLOAD_URL.
+#                    Disabled with a hint when DOWNLOAD_URL is empty.
+#   INSTALL EXAMPLE — write the bundled small dataset to disk so the
+#                    pilot can verify the render path before sourcing
+#                    real data.
+#
+# After either, the module-level _airspaces is reloaded so the MFD's
+# inset picks up the new polygons without a restart.
+
+def _asp_reload():
+    """Re-read airspaces.json from disk + repopulate disp["asp"]."""
+    global _airspaces
+    loaded = asp_mod.load(AIRSPACE_DIR)
+    if loaded is None:
+        loaded = asp_mod.load_bundled_example()
+        disp["asp"]["records"] = 0
+    else:
+        disp["asp"]["records"] = len(loaded)
+    _airspaces = loaded
+
+
+def _asp_install_example():
+    """Write the bundled example dataset over airspaces.json."""
+    asp = disp["asp"]
+    asp["dl_status"] = "Writing example dataset…"
+    try:
+        asp_mod.write_example(AIRSPACE_DIR)
+        _asp_reload()
+        asp["dl_status"] = f"Done ✓  example dataset ({asp['records']} polygons)"
+    except Exception as exc:
+        asp["dl_status"] = f"Error: {exc}"
+
+
+def _asp_download_thread():
+    """Fetch asp_mod.DOWNLOAD_URL → airspaces.json.  Cancel-safe via
+    asp["dl_cancel"].  Falls through to a clear error when no URL is
+    configured."""
+    asp = disp["asp"]
+    asp["downloading"] = True
+    asp["dl_cancel"]   = False
+    if not asp_mod.DOWNLOAD_URL:
+        asp["dl_status"]   = ("No download URL set — tap INSTALL EXAMPLE "
+                              "or drop airspaces.json into "
+                              f"{AIRSPACE_DIR}/")
+        asp["downloading"] = False
+        return
+    os.makedirs(AIRSPACE_DIR, exist_ok=True)
+    path = os.path.join(AIRSPACE_DIR, asp_mod.CACHE_FILENAME)
+    asp["dl_status"] = f"Connecting to {asp_mod.DOWNLOAD_URL}…"
+    try:
+        req = urllib.request.Request(asp_mod.DOWNLOAD_URL,
+                                      headers={"User-Agent": "PFD-AHRS/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            with open(path + ".tmp", "wb") as out:
+                while True:
+                    if asp["dl_cancel"]:
+                        try: os.remove(path + ".tmp")
+                        except Exception: pass
+                        asp["dl_status"]   = "Cancelled"
+                        asp["downloading"] = False
+                        return
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = int(downloaded * 100 / total)
+                        asp["dl_status"] = f"Downloading: {pct}%"
+                    else:
+                        asp["dl_status"] = f"Downloading: {downloaded//1024} KB"
+        os.replace(path + ".tmp", path)
+        _asp_reload()
+        asp["dl_status"] = f"Done ✓  {disp['asp']['records']} polygons"
+    except Exception as exc:
+        asp["dl_status"] = f"Error: {exc}"
+    finally:
+        asp["downloading"] = False
+
+
+def _asp_start_download():
+    threading.Thread(target=_asp_download_thread, daemon=True,
+                     name="AirspaceDownload").start()
+
+
+def draw_airspace_data(surf):
+    """Full-screen airspace data management — same layout vocabulary
+    as draw_airport_data so the two screens feel like siblings."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "AIRSPACE DATA")
+    bx = _AD_MX; bw = DISPLAY_W - 2 * _AD_MX
+    asp = disp["asp"]
+    cnt = asp.get("records", 0)
+
+    # Status strip
+    pygame.draw.rect(surf, (0, 12, 32), (bx, 52, bw, 28), border_radius=4)
+    pygame.draw.rect(surf, (40, 60, 90), (bx, 52, bw, 28), width=1, border_radius=4)
+    if cnt:
+        stat_str = f"{cnt} airspace polygons on disk"
+        stat_col = (60, 220, 80)
+    else:
+        stat_str = "No airspaces.json found — using bundled example"
+        stat_col = (200, 180, 100)
+    _text(surf, stat_str, 14, stat_col, bold=True,
+          cx=DISPLAY_W // 2, cy=66)
+
+    info_y = 92
+    info_h = 96
+    pygame.draw.rect(surf, (0, 10, 26), (bx, info_y, bw, info_h),
+                     border_radius=6)
+    pygame.draw.rect(surf, (40, 55, 80), (bx, info_y, bw, info_h),
+                     width=1, border_radius=6)
+    _text(surf, "US Airspace Polygons (B/C/D/MOA/R)", 15, WHITE,
+          bold=True, cx=DISPLAY_W // 2, cy=info_y + 14)
+    _text(surf, "Rendered on the MFD moving map by class.",
+          10, (140, 160, 185), cx=DISPLAY_W // 2, cy=info_y + 32)
+    _text(surf, "Master toggle: Display Settings → ASP pill.",
+          10, (140, 160, 185), cx=DISPLAY_W // 2, cy=info_y + 48)
+    if asp_mod.DOWNLOAD_URL:
+        _text(surf, f"Source: {asp_mod.DOWNLOAD_URL}",
+              9, (120, 140, 165), cx=DISPLAY_W // 2, cy=info_y + 66)
+    else:
+        _text(surf, "No download URL configured — set DOWNLOAD_URL",
+              9, (180, 140, 60), cx=DISPLAY_W // 2, cy=info_y + 66)
+        _text(surf, "in shared/airspaces.py to enable network fetch.",
+              9, (180, 140, 60), cx=DISPLAY_W // 2, cy=info_y + 80)
+
+    # Two action buttons side by side: DOWNLOAD | INSTALL EXAMPLE
+    btn_y = info_y + info_h + 12
+    btn_h = 48
+    half  = (bw - 10) // 2
+    downloading = asp.get("downloading", False)
+    dl_disabled = not asp_mod.DOWNLOAD_URL
+    dl_style    = "normal" if (not downloading and not dl_disabled) else "warn"
+    _action_btn(surf, bx, btn_y, half, btn_h,
+                "DOWNLOAD" if not downloading else "CANCEL", dl_style)
+    _action_btn(surf, bx + half + 10, btn_y, half, btn_h,
+                "INSTALL EXAMPLE", "ok")
+
+    # Progress / status line
+    prog_y = btn_y + btn_h + 10
+    prog_h = 40
+    pygame.draw.rect(surf, (0, 10, 24), (bx, prog_y, bw, prog_h),
+                     border_radius=6)
+    pygame.draw.rect(surf, (35, 50, 75), (bx, prog_y, bw, prog_h),
+                     width=1, border_radius=6)
+    status = asp.get("dl_status", "")
+    if status:
+        col = ((60, 220, 80) if status.startswith("Done")
+               else (220, 130, 60) if status.startswith("Error")
+               else (160, 160, 170))
+        _text(surf, status, 11, col, cx=DISPLAY_W // 2, cy=prog_y + 20)
+
+
+def airspace_data_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _AD_MX; bw = DISPLAY_W - 2 * _AD_MX
+    info_y = 92; info_h = 96
+    btn_y  = info_y + info_h + 12
+    btn_h  = 48
+    half   = (bw - 10) // 2
+    if btn_y <= y <= btn_y + btn_h:
+        if bx <= x <= bx + half:
+            return "download"
+        if bx + half + 10 <= x <= bx + 2 * half + 10:
+            return "install_example"
     return None
 
 
@@ -9949,6 +10160,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_obstacle_data(surf, disp["od"]); return
     if mode == "airport_data":
         draw_airport_data(surf, disp["ad"]); return
+    if mode == "airspace_data":
+        draw_airspace_data(surf); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
 
@@ -10305,9 +10518,11 @@ def _startup_load_airspaces():
     loaded = asp_mod.load(AIRSPACE_DIR)
     if loaded is None:
         loaded = asp_mod.load_bundled_example()
+        disp["asp"]["records"] = 0
         print(f"[PFD] Airspaces: no airspaces.json found at {AIRSPACE_DIR}; "
               f"using bundled {len(loaded)}-record example")
     else:
+        disp["asp"]["records"] = len(loaded)
         print(f"[PFD] Airspaces: {len(loaded)} polygons loaded")
     _airspaces = loaded
 

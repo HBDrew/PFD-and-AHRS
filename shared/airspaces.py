@@ -54,6 +54,13 @@ except ImportError:
 
 CACHE_FILENAME = "airspaces.json"
 
+# Optional URL to fetch airspace data from on the AIRSPACE DATA
+# subscreen.  Empty string disables network download — the "INSTALL
+# EXAMPLE" button still works and writes the bundled dataset.  Plug
+# in a community-maintained airspaces.json URL when one is available;
+# the JSON must match the schema documented at the top of this file.
+DOWNLOAD_URL = ""
+
 # Valid class strings — anything else gets silently dropped at load.
 VALID_CLASSES = ("B", "C", "D", "MOA", "R")
 
