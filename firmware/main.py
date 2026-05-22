@@ -45,6 +45,8 @@ from config import (
     AHRS_GPS_TRACK_INTERVAL_S, AHRS_GPS_TRACK_ALPHA,
     AHRS_FWD_IN_SENSOR, AHRS_ALIGN_DURATION_S, FW_VERSION,
     AHRS_PITCH_ALIGN, AHRS_ROLL_ALIGN,
+    AHRS_DYN_GYRO_LO_DPS, AHRS_DYN_GYRO_HI_DPS,
+    AHRS_DYN_AC_LO_G, AHRS_DYN_AC_HI_G, AHRS_DYN_KP_SCALE_MIN,
     AHRS_DEBUG_PRINT, AHRS_DEBUG_PRINT_DECIM,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
@@ -704,13 +706,51 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
         state.get('roll_align',  0.0),
         state['orientation'])
 
+    # Dynamic gain scheduling: scale kp_acc down during active maneuvers
+    # so the gyro dominates through turns / climbs / taxi bumps.  Two
+    # detectors, both ramping linearly between LO (factor = 1) and HI
+    # (factor = MIN); whichever is more dynamic wins.
+    #
+    #   gyro factor: keys off total rotation rate.  Catches yaw-only
+    #     events (uncoordinated skid, rudder kicks) where the centripetal
+    #     compensation can't see what's happening because V × ω depends
+    #     on coordinated flight.
+    #
+    #   centripetal factor: keys off magnitude of the (V × ω) vector
+    #     we already subtracted from accel.  Catches sustained turns
+    #     where the residual after imperfect comp + small alignment
+    #     error would otherwise drag attitude.
+    #
+    # During quiescent flight both factors = 1.0 and the filter has full
+    # accel authority; in a turn they drop to AHRS_DYN_KP_SCALE_MIN
+    # (default 0.1) and the gyro carries the load.
+    gyro_mag_dps = math.degrees(math.sqrt(gx*gx + gy*gy + gz*gz))
+    a_c_mag = math.sqrt(acx*acx + acy*acy + acz*acz)
+    g_lo, g_hi = AHRS_DYN_GYRO_LO_DPS, AHRS_DYN_GYRO_HI_DPS
+    c_lo, c_hi = AHRS_DYN_AC_LO_G, AHRS_DYN_AC_HI_G
+    floor = AHRS_DYN_KP_SCALE_MIN
+    if gyro_mag_dps <= g_lo:
+        gf = 1.0
+    elif gyro_mag_dps >= g_hi:
+        gf = floor
+    else:
+        gf = 1.0 - (gyro_mag_dps - g_lo) / (g_hi - g_lo) * (1.0 - floor)
+    if a_c_mag <= c_lo:
+        cf = 1.0
+    elif a_c_mag >= c_hi:
+        cf = floor
+    else:
+        cf = 1.0 - (a_c_mag - c_lo) / (c_hi - c_lo) * (1.0 - floor)
+    dyn_scale = gf if gf < cf else cf
+    state['_dyn_kp_scale'] = dyn_scale   # diagnostic — surfaces in $AHRS
+
     # Pass ZUPT state into the filter so it can freeze the bias integrator
     # while stationary. Otherwise the integrator winds up to its clamp over
     # hours and the clamped bias produces a persistent attitude offset that
     # the accel correction can't pull back from.
     ahrs_filter.update(gx, gy, gz, ax, ay, az, mx, my, mz,
-                       dt=dt, freeze_bias=zupt)
-    a_c_mag = math.sqrt(acx*acx + acy*acy + acz*acz)
+                       dt=dt, freeze_bias=zupt,
+                       dyn_kp_scale=dyn_scale)
     return att_aid, a_c_mag
 
 

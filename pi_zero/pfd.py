@@ -9120,14 +9120,14 @@ def draw_fpl(surf):
     active_idx = disp.get("fpl", {}).get("active_idx", -1)
     is_active  = 0 <= active_idx < len(wps)
 
-    # ── Action row 1: + ICAO / + HERE / + LL / + LIB ────────────────────
+    # ── Action row 1: + ICAO / + HERE / + LL / + USER ───────────────────
     full = len(wps) >= _FPL_MAX_WAYPOINTS
     add_style = "ok" if not full else "normal"
     add_rects = _fpl_add_buttons()
-    # LIB is always tappable even when FPL is full so the pilot can
+    # USER is always tappable even when FPL is full so the pilot can
     # still browse / delete library entries; the picker enforces the
     # cap on add.
-    labels  = ("+ ICAO", "+ HERE", "+ LL", "+ LIB")
+    labels  = ("+ ICAO", "+ HERE", "+ LL", "+ USER")
     styles  = (
         add_style if not full else "normal",
         add_style if not full else "normal",
@@ -9135,7 +9135,7 @@ def draw_fpl(surf):
         "ok",
     )
     if full:
-        labels = ("FULL", "FULL", "FULL", "+ LIB")
+        labels = ("FULL", "FULL", "FULL", "+ USER")
     for (ax, ay, aw, ah), lbl, st in zip(add_rects, labels, styles):
         _action_btn(surf, ax, ay, aw, ah, lbl, st, r=6)
 
@@ -9443,7 +9443,7 @@ def _uwp_row_btn_rects(rect):
 
 
 def draw_user_wpt_picker(surf):
-    _screen_header(surf, "USER WAYPOINTS")
+    _screen_header(surf, "USER WAYPOINTS")  # same screen as before; button is +USER
     wps = disp.get("user_wpts", {}).get("list", [])
     if not wps:
         _text(surf, "No saved user waypoints yet.", 14, (160, 180, 210),

@@ -176,13 +176,39 @@ AHRS_MOUNTING  = 'normal'
 # The active source is broadcast as state['att_aid'] = 'tas' | 'gs' | 'basic'.
 AHRS_FILTER_ENABLE      = True
 
-# Mahony tuning. Defaults are conservative; bench-test then refine.
-AHRS_KP_ACC             = 1.0     # accel proportional gain (rad/s per unit error)
+# Mahony tuning.  kp_acc is the steady-state accel proportional gain;
+# dynamic gain scheduling (see AHRS_DYN_*) scales it DOWN during active
+# maneuvers so the gyro dominates through turns / climbs / taxi bumps,
+# then ramps back up when the aircraft is quasi-static.  This trades a
+# slower cold-start convergence (acceptable on a piston single — gyro
+# bias washes out in ~30 s of level flight) for substantially better
+# behaviour during the dynamic events where a high-trust accel pulls
+# attitude away from gyro-truth.
+AHRS_KP_ACC             = 0.30    # accel proportional gain — quiescent.
+                                  # Was 1.0; dropped after small sensor
+                                  # alignment errors were producing
+                                  # large pitch deviations in turns
+                                  # (a_c * sin(β) projecting onto
+                                  # pitch axis × kp_acc integrates).
 AHRS_KI_ACC             = 0.001   # accel integral gain — estimates gyro bias.
                                   # Keep small: any steady residual cross-product
                                   # error (centripetal mismatch, sensor noise)
                                   # winds the integrator up. Bench tested: 0.001
                                   # gives <0.05° drift over 5 min at 5° bank.
+
+# Dynamic gain scheduling.  The Mahony's effective kp_acc is multiplied
+# by a [0, 1] factor computed each tick from current gyro rate and the
+# magnitude of the centripetal-acceleration vector that's been
+# subtracted from the accel reading.  At full quiescence (sitting on
+# the ramp, no motion) factor = 1.0 and kp_acc is full strength.  In
+# any real maneuver the factor falls to AHRS_DYN_KP_SCALE_MIN and the
+# filter coasts on the gyro.
+AHRS_DYN_GYRO_HI_DPS    = 15.0    # above this gyro rate, dyn factor = MIN
+AHRS_DYN_GYRO_LO_DPS    = 3.0     # below this, dyn factor = 1.0
+                                  # (linear ramp between)
+AHRS_DYN_AC_HI_G        = 0.20    # above this centripetal mag, dyn factor = MIN
+AHRS_DYN_AC_LO_G        = 0.03    # below this, dyn factor = 1.0
+AHRS_DYN_KP_SCALE_MIN   = 0.10    # floor on the scaling factor
 AHRS_KP_MAG             = 0.10    # mag proportional gain (yaw correction).
                                   # Lowered from 0.5 after AHRS-ROLL-YAW-COUPLING
                                   # showed the higher gain was over-trusting mag

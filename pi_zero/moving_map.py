@@ -837,7 +837,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             fx, fy = _project(far_lat, far_lon)
             pygame.draw.line(surf, course_col,
                              (int(wpx), int(wpy)),
-                             (int(fx),  int(fy)), 2)
+                             (int(fx),  int(fy)), 3)
         else:
             # Plain D2: polyline along the great-circle from activation
             # to waypoint.  Drawing two endpoints joined by a straight
@@ -858,7 +858,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                                     direct_to["lat"], direct_to["lon"], f)
                 px, py = _project(la, lo)
                 pts.append((int(px), int(py)))
-            pygame.draw.lines(surf, course_col, False, pts, 2)
+            pygame.draw.lines(surf, course_col, False, pts, 3)
 
         d = 5
         pygame.draw.polygon(surf, course_col,
@@ -891,7 +891,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                                          next_la, next_lo, f)
                     px, py = _project(la, lo)
                     pts.append((int(px), int(py)))
-                pygame.draw.lines(surf, faded, False, pts, 2)
+                pygame.draw.lines(surf, faded, False, pts, 3)
                 npx, npy = _project(next_la, next_lo)
                 pygame.draw.polygon(surf, faded,
                                     [(int(npx),     int(npy) - d),

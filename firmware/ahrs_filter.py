@@ -87,7 +87,8 @@ class Mahony:
 
     # ----------------------------------------------------------------------
     def update(self, gx, gy, gz, ax, ay, az,
-               mx=None, my=None, mz=None, dt=0.02, freeze_bias=False):
+               mx=None, my=None, mz=None, dt=0.02, freeze_bias=False,
+               dyn_kp_scale=1.0):
         """
         Single filter step.
           gx, gy, gz : gyro rate (rad/s) in sensor frame
@@ -102,6 +103,11 @@ class Mahony:
                        so any non-zero accel cross-product error is noise,
                        and continuing to integrate it walks the bias estimate
                        up to its clamp over long stationary periods.
+          dyn_kp_scale: [0, 1] runtime scale on kp_acc.  Caller drops this
+                       toward 0 during active maneuvers so the filter coasts
+                       on the gyro through transients (centripetal residuals,
+                       lateral skid accel, taxi bumps).  At 1.0 the filter
+                       behaves as the steady-state Mahony.
         """
         q0, q1, q2, q3 = self.q0, self.q1, self.q2, self.q3
 
@@ -181,19 +187,26 @@ class Mahony:
         self.last_mag_weight = m_w
 
         # ── Weighted error and gyro-bias integration ──
-        ex = self.kp_acc * a_w * ex_a + self.kp_mag * m_w * ex_m
-        ey = self.kp_acc * a_w * ey_a + self.kp_mag * m_w * ey_m
-        ez = self.kp_acc * a_w * ez_a + self.kp_mag * m_w * ez_m
+        # dyn_kp_scale lets the caller drop accel authority during
+        # maneuvers without permanently retuning kp_acc.  Mag stays at
+        # full kp_mag — the gyro-rate gate above already attenuates mag
+        # during fast rotation.
+        eff_kp_acc = self.kp_acc * dyn_kp_scale
+        ex = eff_kp_acc * a_w * ex_a + self.kp_mag * m_w * ex_m
+        ey = eff_kp_acc * a_w * ey_a + self.kp_mag * m_w * ey_m
+        ez = eff_kp_acc * a_w * ez_a + self.kp_mag * m_w * ez_m
 
         if a_w > 0.0 and not freeze_bias:
             # Gyro-bias estimator: only consume accel-derived error. Mag
             # error is fed into the proportional path but kept out of the
             # integrator — a residual mag direction error (soft iron,
             # magnetic-deviation table mismatch) would otherwise be
-            # interpreted as a gyro bias and wind up over time.
-            self.bx += self.ki_acc * a_w * ex_a * dt
-            self.by += self.ki_acc * a_w * ey_a * dt
-            self.bz += self.ki_acc * a_w * ez_a * dt
+            # interpreted as a gyro bias and wind up over time.  Same
+            # dynamic scaling — if we don't trust the accel error for
+            # the proportional path, don't poison the bias with it.
+            self.bx += self.ki_acc * dyn_kp_scale * a_w * ex_a * dt
+            self.by += self.ki_acc * dyn_kp_scale * a_w * ey_a * dt
+            self.bz += self.ki_acc * dyn_kp_scale * a_w * ez_a * dt
             # Bound the integrator. Real MEMS bias is well under 1°/s;
             # if we ever hit the clamp something else has gone wrong (bad
             # mounting, accel transients during a long maneuver) and we'd
