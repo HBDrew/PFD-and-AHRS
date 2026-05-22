@@ -616,11 +616,11 @@ def _fpl_render_remaining():
 
 def _ssync_apply_fpl(data):
     """Receive a flight plan + active leg index from the peer (piZ).
-    Replaces local disp["fpl"] verbatim; the multi-leg polyline render
-    on this side's inset map keys off this same dict.  Does not write
-    back to disp["nav"] — the peer also sends KIND_NAV with the active
-    leg's position when nav sync is enabled, and conflating the two
-    could overwrite a Pi-4-side temporary D2 override."""
+    Replaces local disp["fpl"] verbatim and mirrors the active leg
+    into disp["nav"] so the CDI / D→ / inset's magenta course line
+    track the active waypoint — without this, the polyline refreshed
+    on leg changes but the D2 line stayed pointing at whatever the
+    first sync delivered."""
     global _ssync_suppress_publish
     _ssync_suppress_publish += 1
     try:
@@ -643,7 +643,30 @@ def _ssync_apply_fpl(data):
             except (TypeError, ValueError):
                 continue
         disp["fpl"]["waypoints"]  = clean
-        disp["fpl"]["active_idx"] = idx if 0 <= idx < len(clean) else -1
+        active_idx = idx if 0 <= idx < len(clean) else -1
+        disp["fpl"]["active_idx"] = active_idx
+
+        # Mirror the active leg into disp["nav"].  Leg origin =
+        # previous waypoint (or aircraft pos for the first leg) so
+        # CDI XTE is referenced to the correct course line.
+        if active_idx >= 0:
+            wp = clean[active_idx]
+            disp["nav"]["ident"]   = wp["ident"]
+            disp["nav"]["lat"]     = wp["lat"]
+            disp["nav"]["lon"]     = wp["lon"]
+            disp["nav"]["elev_ft"] = wp["elev_ft"]
+            if active_idx > 0:
+                prev = clean[active_idx - 1]
+                disp["nav"]["act_lat"] = prev["lat"]
+                disp["nav"]["act_lon"] = prev["lon"]
+            else:
+                disp["nav"]["act_lat"] = float(disp.get("lat", wp["lat"]))
+                disp["nav"]["act_lon"] = float(disp.get("lon", wp["lon"]))
+        else:
+            disp["nav"]["ident"]   = ""
+            disp["nav"]["lat"]     = 0.0
+            disp["nav"]["lon"]     = 0.0
+            disp["nav"]["elev_ft"] = 0.0
     finally:
         _ssync_suppress_publish -= 1
 
