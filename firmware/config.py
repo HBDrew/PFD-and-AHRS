@@ -265,7 +265,7 @@ AHRS_DEBUG_PRINT_DECIM    = 10     # at 50 Hz tick rate → ~5 Hz print rate
 # Firmware version date code — broadcast to the display so the pilot can
 # verify which build is running on the AHRS. Bump manually on each
 # meaningful release. YYYY-MM-DD format keeps it sortable and obvious.
-FW_VERSION                = "2026-05-17"
+FW_VERSION                = "2026-05-22"
 
 # Aircraft "forward" unit vector expressed in the WT901 sensor frame.
 # Used only for centripetal correction: a_c = ω_sensor × (V * fwd_sensor).
