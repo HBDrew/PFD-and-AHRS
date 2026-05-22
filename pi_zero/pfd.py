@@ -8058,48 +8058,78 @@ def _asp_build_from_geojson():
 
 
 def _asp_download_thread():
-    """Fetch asp_mod.DOWNLOAD_URL → airspaces.json.  Cancel-safe via
-    asp["dl_cancel"].  Falls through to a clear error when no URL is
-    configured."""
+    """Fetch every URL in asp_mod.DOWNLOAD_SOURCES, save each as the
+    keyed filename in AIRSPACE_DIR, then auto-build airspaces.json
+    from the freshly downloaded *.geojson files.  Cancel-safe via
+    asp["dl_cancel"]."""
     asp = disp["asp"]
     asp["downloading"] = True
     asp["dl_cancel"]   = False
-    if not asp_mod.DOWNLOAD_URL:
-        asp["dl_status"]   = ("No download URL set — tap INSTALL EXAMPLE "
-                              "or drop airspaces.json into "
-                              f"{AIRSPACE_DIR}/")
+    sources = getattr(asp_mod, "DOWNLOAD_SOURCES", {}) or {}
+    sources = {k: v for k, v in sources.items() if v}
+    if not sources:
+        asp["dl_status"]   = ("No download URLs configured — see "
+                              "shared/airspaces.py DOWNLOAD_SOURCES; "
+                              f"or drop *.geojson into {AIRSPACE_DIR}/ "
+                              "and tap BUILD")
         asp["downloading"] = False
         return
     os.makedirs(AIRSPACE_DIR, exist_ok=True)
-    path = os.path.join(AIRSPACE_DIR, asp_mod.CACHE_FILENAME)
-    asp["dl_status"] = f"Connecting to {asp_mod.DOWNLOAD_URL}…"
     try:
-        req = urllib.request.Request(asp_mod.DOWNLOAD_URL,
-                                      headers={"User-Agent": "PFD-AHRS/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            total = int(resp.headers.get("Content-Length", 0))
-            downloaded = 0
-            with open(path + ".tmp", "wb") as out:
-                while True:
-                    if asp["dl_cancel"]:
-                        try: os.remove(path + ".tmp")
-                        except Exception: pass
-                        asp["dl_status"]   = "Cancelled"
-                        asp["downloading"] = False
-                        return
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = int(downloaded * 100 / total)
-                        asp["dl_status"] = f"Downloading: {pct}%"
-                    else:
-                        asp["dl_status"] = f"Downloading: {downloaded//1024} KB"
-        os.replace(path + ".tmp", path)
+        for i, (fname, url) in enumerate(sources.items(), start=1):
+            if asp["dl_cancel"]:
+                asp["dl_status"]   = "Cancelled"
+                asp["downloading"] = False
+                return
+            label = f"[{i}/{len(sources)}] {fname}"
+            asp["dl_status"] = f"Fetching {label}…"
+            path = os.path.join(AIRSPACE_DIR, fname)
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "PFD-AHRS/1.0"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                with open(path + ".tmp", "wb") as out:
+                    while True:
+                        if asp["dl_cancel"]:
+                            try: os.remove(path + ".tmp")
+                            except Exception: pass
+                            asp["dl_status"]   = "Cancelled"
+                            asp["downloading"] = False
+                            return
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            pct = int(downloaded * 100 / total)
+                            asp["dl_status"] = (
+                                f"{label}: {pct}%  "
+                                f"({downloaded//1024} / {total//1024} KB)")
+                        else:
+                            asp["dl_status"] = (
+                                f"{label}: {downloaded//1024} KB")
+            os.replace(path + ".tmp", path)
+        # All sources fetched — convert in-process.
+        asp["dl_status"] = "Building airspaces.json…"
+        import sys as _sys
+        _tools = os.path.abspath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+        if _tools not in _sys.path:
+            _sys.path.insert(0, _tools)
+        import build_airspaces_us as _bldr
+        stats = _bldr.build_from_dir(
+            AIRSPACE_DIR, source_note="FAA GeoJSON (auto-downloaded)")
         _asp_reload()
-        asp["dl_status"] = f"Done ✓  {disp['asp']['records']} polygons"
+        if stats.get("errors"):
+            asp["dl_status"] = (f"Downloaded {len(sources)} files; "
+                                f"build had errors: {stats['errors'][0]}")
+        else:
+            asp["dl_status"] = (
+                f"Done ✓  {stats['records']} polygons "
+                f"(B:{stats['B']} C:{stats['C']} D:{stats['D']} "
+                f"MOA:{stats['MOA']} R:{stats['R']})")
     except Exception as exc:
         asp["dl_status"] = f"Error: {exc}"
     finally:
@@ -8144,21 +8174,24 @@ def draw_airspace_data(surf):
           10, (140, 160, 185), cx=DISPLAY_W // 2, cy=info_y + 32)
     _text(surf, "Master toggle: Display Settings → ASP pill.",
           10, (140, 160, 185), cx=DISPLAY_W // 2, cy=info_y + 48)
-    if asp_mod.DOWNLOAD_URL:
-        _text(surf, f"Source: {asp_mod.DOWNLOAD_URL}",
-              9, (120, 140, 165), cx=DISPLAY_W // 2, cy=info_y + 66)
+    src_count = len([v for v in
+                      getattr(asp_mod, "DOWNLOAD_SOURCES", {}).values()
+                      if v])
+    if src_count:
+        _text(surf, f"DOWNLOAD: fetch {src_count} FAA GeoJSON sources",
+              9, (140, 170, 200), cx=DISPLAY_W // 2, cy=info_y + 66)
+        _text(surf, "→ saved here, then auto-built into airspaces.json",
+              9, (120, 140, 165), cx=DISPLAY_W // 2, cy=info_y + 80)
     else:
-        _text(surf, "No download URL configured — set DOWNLOAD_URL",
+        _text(surf, "DOWNLOAD_SOURCES empty in shared/airspaces.py",
               9, (180, 140, 60), cx=DISPLAY_W // 2, cy=info_y + 66)
-        _text(surf, "in shared/airspaces.py to enable network fetch.",
-              9, (180, 140, 60), cx=DISPLAY_W // 2, cy=info_y + 80)
 
     # Three action buttons: DOWNLOAD | BUILD FROM GEOJSON | INSTALL EXAMPLE
     btn_y = info_y + info_h + 12
     btn_h = 48
     third = (bw - 20) // 3
     downloading = asp.get("downloading", False)
-    dl_disabled = not asp_mod.DOWNLOAD_URL
+    dl_disabled = not any(getattr(asp_mod, "DOWNLOAD_SOURCES", {}).values())
     dl_style    = "normal" if (not downloading and not dl_disabled) else "warn"
     _action_btn(surf, bx, btn_y, third, btn_h,
                 "DOWNLOAD" if not downloading else "CANCEL", dl_style)

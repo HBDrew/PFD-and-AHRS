@@ -54,11 +54,42 @@ except ImportError:
 
 CACHE_FILENAME = "airspaces.json"
 
-# Optional URL to fetch airspace data from on the AIRSPACE DATA
-# subscreen.  Empty string disables network download — the "INSTALL
-# EXAMPLE" button still works and writes the bundled dataset.  Plug
-# in a community-maintained airspaces.json URL when one is available;
-# the JSON must match the schema documented at the top of this file.
+# ── Direct-download sources ───────────────────────────────────────────
+# Map of `output filename → download URL`.  The AIRSPACE DATA screens
+# on both Pis iterate this dict, fetch each URL, save it under the
+# given filename in AIRSPACE_DIR, then auto-run the *.geojson →
+# airspaces.json converter.
+#
+# Defaults below use the FAA Open Data ArcGIS portal — the canonical
+# source for US Class Airspace and Special Use Airspace polygons.  The
+# `opendata.arcgis.com/api/v3/datasets/<UUID>_<LAYER>/downloads/data`
+# pattern is stable; the UUIDs are tied to the FAA's published
+# datasets and only change if the FAA re-publishes under a new item
+# (rare — typical 28-day chart cycle updates the DATA, not the URL).
+#
+# If a default 404s in the future:
+#   1. Visit https://adds-faa.opendata.arcgis.com/
+#   2. Find "Class Airspace" (or "Special Use Airspace")
+#   3. Click "I want to use this" → "Download" → "GeoJSON"
+#   4. Copy the URL → paste it here.
+#
+# Leaving a URL empty disables that source — BUILD still works on any
+# *.geojson files the pilot drops in manually.
+DOWNLOAD_SOURCES = {
+    "class_airspace.geojson": (
+        "https://opendata.arcgis.com/api/v3/datasets/"
+        "67885972e4e940b2aa6d74024901c561_0/downloads/data"
+        "?format=geojson&spatialRefId=4326"
+    ),
+    "special_use_airspace.geojson": (
+        "https://opendata.arcgis.com/api/v3/datasets/"
+        "12cdb097edaf483aa0c635f5f48bc31a_0/downloads/data"
+        "?format=geojson&spatialRefId=4326"
+    ),
+}
+# Compat shim — older callers read a single DOWNLOAD_URL; we now expose
+# the dict but keep the name around so any code still referencing it
+# treats absence as "no auto-download configured".
 DOWNLOAD_URL = ""
 
 # Valid class strings — anything else gets silently dropped at load.
