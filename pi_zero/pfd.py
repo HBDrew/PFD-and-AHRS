@@ -245,6 +245,15 @@ disp["fpl"] = {
     "waypoints":  [],
     "active_idx": -1,
 }
+# User-waypoint library — persistent across flights.  Every waypoint
+# created via +HERE or +LAT/LON is auto-saved here (dedup by ident),
+# so the pilot can recall it onto any later flight plan via +LIB.
+# Stored as a dict containing the list so the existing
+# _PERSIST_COMPLEX_SUBTREES mechanism (which works on subtree keys)
+# can persist it.  Idents are unique within the library.
+disp["user_wpts"] = {
+    "list": [],   # [{ident, lat, lon, elev_ft}, ...]
+}
 # In-progress user-waypoint entry — populated by the +HERE button (which
 # stashes the current aircraft position) and the +LAT/LON entry screen
 # (which collects the three fields one keyboard at a time).  Cleared on
@@ -2937,6 +2946,28 @@ def handle_event(event, demo_mode):
                     disp["mode"] = "fpl"
             return True
 
+        # ── User-waypoint picker (+ LIB) taps ─────────────────────────────
+        if mode == "user_wpt_picker":
+            act, payload = user_wpt_picker_hit(x, y)
+            if act == "back":
+                disp["mode"] = "fpl"
+            elif act == "add" and payload is not None:
+                # Collision check: refuse if already in plan.  Airport-
+                # DB collision is impossible because user_wpt_save
+                # already rejected that ident when it was added.
+                ident = str(payload.get("ident", ""))
+                in_plan = any(str(w.get("ident", "")).upper() == ident.upper()
+                              for w in disp["fpl"]["waypoints"])
+                if not in_plan:
+                    _fpl_add_waypoint(ident,
+                                       float(payload["lat"]),
+                                       float(payload["lon"]),
+                                       elev_ft=float(payload.get("elev_ft", 0.0)),
+                                       user=True)
+            elif act == "delete" and payload is not None:
+                _user_wpt_delete(str(payload.get("ident", "")))
+            return True
+
         # ── FPL screen taps ───────────────────────────────────────────────
         if mode == "fpl":
             act, payload = fpl_hit(x, y)
@@ -2948,6 +2979,8 @@ def handle_event(event, demo_mode):
                 _fpl_open_here_keyboard()
             elif act == "add_ll":
                 _fpl_open_latlon_entry()
+            elif act == "add_lib":
+                disp["mode"] = "user_wpt_picker"
             elif act == "deact":
                 _fpl_deactivate()
             elif act == "activate":
@@ -3281,6 +3314,9 @@ def handle_event(event, demo_mode):
                         if _fpl_add_waypoint(candidate,
                                               n["lat"], n["lon"],
                                               elev_ft=0.0, user=True):
+                            # Auto-save to library so this user wpt
+                            # is recallable from any later flight.
+                            _user_wpt_save(candidate, n["lat"], n["lon"])
                             disp["kbd_buf"]   = ""
                             disp["kbd_error"] = ""
                             disp["mode"] = "fpl"
@@ -5140,6 +5176,56 @@ def _fpl_check_advance(lat, lon):
         # Reached the final waypoint — deactivate so the magenta
         # course line clears.  The list stays for re-activation.
         _fpl_deactivate()
+
+
+# ── User-waypoint library ────────────────────────────────────────────────
+# Persistent storage for waypoints the pilot creates via +HERE / +LAT/LON.
+# Survives across flights and PFD restarts.  Dedup by ident — typing the
+# same name twice updates the coordinates rather than creating duplicates.
+
+_USER_WPT_MAX = 50   # cap so the picker stays single-screen
+
+
+def _user_wpt_save(ident, lat, lon, elev_ft=0.0):
+    """Add a waypoint to the library, or update its position if the
+    ident already exists.  No-op if the library is at _USER_WPT_MAX
+    capacity and the ident isn't already there."""
+    ident = str(ident).upper().strip()
+    if not ident:
+        return False
+    lib = disp["user_wpts"]["list"]
+    for w in lib:
+        if str(w.get("ident", "")).upper() == ident:
+            w["lat"] = float(lat)
+            w["lon"] = float(lon)
+            w["elev_ft"] = float(elev_ft)
+            _settings.mark_dirty()
+            return True
+    if len(lib) >= _USER_WPT_MAX:
+        return False
+    lib.append({"ident": ident, "lat": float(lat), "lon": float(lon),
+                "elev_ft": float(elev_ft)})
+    _settings.mark_dirty()
+    return True
+
+
+def _user_wpt_delete(ident):
+    """Remove `ident` from the library.  Idempotent — no-op if absent."""
+    ident = str(ident).upper()
+    lib = disp["user_wpts"]["list"]
+    disp["user_wpts"]["list"] = [
+        w for w in lib if str(w.get("ident", "")).upper() != ident
+    ]
+    _settings.mark_dirty()
+
+
+def _user_wpt_lookup(ident):
+    """Return the library entry for `ident` or None."""
+    ident = str(ident).upper()
+    for w in disp["user_wpts"]["list"]:
+        if str(w.get("ident", "")).upper() == ident:
+            return w
+    return None
 
 
 def _fpl_render_remaining():
@@ -8976,9 +9062,9 @@ def _fpl_actions_rect():
 
 
 def _fpl_add_buttons():
-    """Return three rects for the +ICAO / +HERE / +LAT/LON buttons."""
+    """Return four rects for + ICAO / + HERE / + LL / + LIB."""
     ax, ay, aw, ah = _fpl_actions_rect()
-    n = 3
+    n = 4
     gap = _FPL_ACTIONS_GAP
     bw = (aw - (n - 1) * gap) // n
     return [(ax + i * (bw + gap), ay, bw, ah) for i in range(n)]
@@ -9034,14 +9120,24 @@ def draw_fpl(surf):
     active_idx = disp.get("fpl", {}).get("active_idx", -1)
     is_active  = 0 <= active_idx < len(wps)
 
-    # ── Action row 1: + ICAO / + HERE / + LAT/LON ──────────────────────
+    # ── Action row 1: + ICAO / + HERE / + LL / + LIB ────────────────────
     full = len(wps) >= _FPL_MAX_WAYPOINTS
     add_style = "ok" if not full else "normal"
     add_rects = _fpl_add_buttons()
-    labels = ("+ ICAO", "+ HERE", "+ LAT/LON") if not full else (
-        "FULL", "FULL", "FULL")
-    for (ax, ay, aw, ah), lbl in zip(add_rects, labels):
-        _action_btn(surf, ax, ay, aw, ah, lbl, add_style, r=6)
+    # LIB is always tappable even when FPL is full so the pilot can
+    # still browse / delete library entries; the picker enforces the
+    # cap on add.
+    labels  = ("+ ICAO", "+ HERE", "+ LL", "+ LIB")
+    styles  = (
+        add_style if not full else "normal",
+        add_style if not full else "normal",
+        add_style if not full else "normal",
+        "ok",
+    )
+    if full:
+        labels = ("FULL", "FULL", "FULL", "+ LIB")
+    for (ax, ay, aw, ah), lbl, st in zip(add_rects, labels, styles):
+        _action_btn(surf, ax, ay, aw, ah, lbl, st, r=6)
 
     # ── Action row 2: DEACTIVATE ──────────────────────────────────────
     dx, dy, dw, dh = _fpl_deact_btn_rect()
@@ -9140,7 +9236,7 @@ def fpl_hit(x, y):
     if 8 <= x <= 80 and 6 <= y <= 37:
         return ("back", None)
     for rect, kind in zip(_fpl_add_buttons(),
-                           ("add_icao", "add_here", "add_ll")):
+                           ("add_icao", "add_here", "add_ll", "add_lib")):
         ax, ay, aw, ah = rect
         if ax <= x <= ax + aw and ay <= y <= ay + ah:
             return (kind, None)
@@ -9316,6 +9412,109 @@ def _fpl_validate_user_ident(ident):
     return ("", "")
 
 
+# ── User-waypoint picker (+ LIB) ────────────────────────────────────────
+# Scrollable list of saved user waypoints with ADD / DEL actions per row.
+# Reached from the FPL screen's + LIB button.  Tap ADD to drop the
+# waypoint into the current flight plan (same collision rules as
+# +HERE / +LAT/LON entry); tap DEL to remove from the library.
+
+_UWP_HEADER_H  = 44
+_UWP_ROW_H     = 50
+_UWP_ROW_GAP   = 4
+_UWP_ICON_W    = 56     # ADD / DEL action buttons
+
+
+def _uwp_row_rect(idx):
+    pad = 6
+    y0 = _UWP_HEADER_H + 8
+    return (pad, y0 + idx * (_UWP_ROW_H + _UWP_ROW_GAP),
+            DISPLAY_W - 2 * pad, _UWP_ROW_H)
+
+
+def _uwp_row_btn_rects(rect):
+    """Return (add_rect, del_rect) inside a row."""
+    bx, by, bw, bh = rect
+    iy = by + (bh - _UWP_ICON_W) // 2 + 4
+    ih = _UWP_ICON_W - 8
+    del_x = bx + bw - 6 - _UWP_ICON_W
+    add_x = del_x - 4 - _UWP_ICON_W
+    return ((add_x, iy, _UWP_ICON_W, ih),
+            (del_x, iy, _UWP_ICON_W, ih))
+
+
+def draw_user_wpt_picker(surf):
+    _screen_header(surf, "USER WAYPOINTS")
+    wps = disp.get("user_wpts", {}).get("list", [])
+    if not wps:
+        _text(surf, "No saved user waypoints yet.", 14, (160, 180, 210),
+              cx=DISPLAY_W // 2, cy=120)
+        _text(surf, "Waypoints created via + HERE or + LAT/LON in the",
+              11, (130, 150, 180), cx=DISPLAY_W // 2, cy=160)
+        _text(surf, "flight plan are auto-saved here for re-use.",
+              11, (130, 150, 180), cx=DISPLAY_W // 2, cy=180)
+        return
+
+    # Sort by ident for stable browsing — order of creation isn't
+    # meaningful once the library has several entries.
+    sorted_wps = sorted(wps, key=lambda w: str(w.get("ident", "")))
+    fpl_idents = {str(w.get("ident", "")).upper()
+                  for w in disp.get("fpl", {}).get("waypoints", [])}
+    plan_full = (len(disp.get("fpl", {}).get("waypoints", []))
+                 >= _FPL_MAX_WAYPOINTS)
+
+    for i, wp in enumerate(sorted_wps):
+        bx, by, bw, bh = _uwp_row_rect(i)
+        if by + bh > DISPLAY_H - 6:
+            break
+        in_fpl = str(wp.get("ident", "")).upper() in fpl_idents
+        bg = (0, 12, 32) if not in_fpl else (10, 26, 16)
+        oc = (60, 80, 110) if not in_fpl else (90, 160, 110)
+        pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=5)
+        pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=1, border_radius=5)
+        # Ident (left)
+        _text(surf, str(wp.get("ident", "")), 22, MAGENTA, bold=True,
+              x=bx + 14, y=by + 6)
+        # Lat/lon (subtitle)
+        sub = f"{float(wp.get('lat', 0)):.4f}, {float(wp.get('lon', 0)):.4f}"
+        _text(surf, sub, 12, (160, 180, 210), x=bx + 14, y=by + bh - 18)
+        # "IN PLAN" indicator if already in current FPL
+        if in_fpl:
+            _text(surf, "● in plan", 11, (90, 200, 130), bold=True,
+                  x=bx + 200, cy=by + bh // 2)
+        # ADD / DEL action buttons
+        add_r, del_r = _uwp_row_btn_rects((bx, by, bw, bh))
+        # ADD disabled (greyed) when already in FPL or plan full.
+        if in_fpl or plan_full:
+            pygame.draw.rect(surf, (10, 14, 22), add_r, border_radius=4)
+            pygame.draw.rect(surf, (40, 50, 64), add_r, width=1,
+                             border_radius=4)
+            _text(surf, "ADD", 13, (80, 90, 110), bold=True,
+                  cx=add_r[0] + add_r[2] // 2,
+                  cy=add_r[1] + add_r[3] // 2)
+        else:
+            _action_btn(surf, *add_r, "ADD", "ok", r=4)
+        _action_btn(surf, *del_r, "DEL", "danger", r=4)
+
+
+def user_wpt_picker_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return ("back", None)
+    wps = disp.get("user_wpts", {}).get("list", [])
+    sorted_wps = sorted(wps, key=lambda w: str(w.get("ident", "")))
+    for i, wp in enumerate(sorted_wps):
+        bx, by, bw, bh = _uwp_row_rect(i)
+        if not (bx <= x <= bx + bw and by <= y <= by + bh):
+            continue
+        add_r, del_r = _uwp_row_btn_rects((bx, by, bw, bh))
+        ax, ay, aw, ah = add_r
+        if ax <= x <= ax + aw and ay <= y <= ay + ah:
+            return ("add", wp)
+        dx, dy, dw, dh = del_r
+        if dx <= x <= dx + dw and dy <= y <= dy + dh:
+            return ("delete", wp)
+    return (None, None)
+
+
 def _fpl_open_here_keyboard():
     """+ HERE: stash the current aircraft position and open the keyboard
     so the pilot can name the waypoint.  ENTER appends the stored
@@ -9377,6 +9576,8 @@ def _fpl_commit_latlon():
         return ("lon", err)
     if not _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=True):
         return ("ident", f"plan full ({_FPL_MAX_WAYPOINTS} max)")
+    # Auto-save to library — same as the +HERE path.
+    _user_wpt_save(ident, lat, lon)
     n["ident"] = ""; n["lat"] = 0.0; n["lon"] = 0.0
     n["lat_str"] = ""; n["lon_str"] = ""; n["source"] = ""
     return ("", "")
@@ -9563,6 +9764,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_fpl(surf); return
     if mode == "fpl_latlon_entry":
         draw_fpl_latlon_entry(surf); return
+    if mode == "user_wpt_picker":
+        draw_user_wpt_picker(surf); return
     if mode == "system_setup":
         draw_system_setup(surf); return
     if mode == "ahrs_firmware":

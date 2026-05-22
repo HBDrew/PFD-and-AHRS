@@ -39,8 +39,9 @@ _PERSIST_SUBTREES = [
     "ad",    # Airport data: filter toggles (show_public, show_heli, etc.)
     "nav",   # Direct-to navigation: active waypoint ident, lat/lon, activation
     "fpl",   # Flight plan: ordered waypoint list + active leg index
+    "user_wpts",  # User waypoint library: persistent across flights
 ]
-_PERSIST_COMPLEX_SUBTREES = {"fpl"}
+_PERSIST_COMPLEX_SUBTREES = {"fpl", "user_wpts"}
 
 # Top-level scalar keys that persist as-is
 _PERSIST_SCALARS = [
