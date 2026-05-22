@@ -3311,10 +3311,6 @@ def handle_event(event, demo_mode):
                     asp["dl_cancel"] = True
                 else:
                     _asp_start_download()
-            elif action == "build":
-                _asp_build_from_geojson()
-            elif action == "install_example":
-                _asp_install_example()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -8186,23 +8182,16 @@ def draw_airspace_data(surf):
         _text(surf, "DOWNLOAD_SOURCES empty in shared/airspaces.py",
               9, (180, 140, 60), cx=DISPLAY_W // 2, cy=info_y + 66)
 
-    # Three action buttons: DOWNLOAD | BUILD FROM GEOJSON | INSTALL EXAMPLE
+    # Single action button: DOWNLOAD (auto-builds after fetch).
+    # CANCEL replaces it while a download is in flight.  TFR row will
+    # land here as a second download with its own date stamp once
+    # that data source is wired in.
     btn_y = info_y + info_h + 12
     btn_h = 48
-    third = (bw - 20) // 3
     downloading = asp.get("downloading", False)
-    dl_disabled = not any(getattr(asp_mod, "DOWNLOAD_SOURCES", {}).values())
-    dl_style    = "normal" if (not downloading and not dl_disabled) else "warn"
-    _action_btn(surf, bx, btn_y, third, btn_h,
+    dl_style    = "normal" if not downloading else "warn"
+    _action_btn(surf, bx, btn_y, bw, btn_h,
                 "DOWNLOAD" if not downloading else "CANCEL", dl_style)
-    _action_btn(surf, bx + third + 10, btn_y, third, btn_h,
-                "BUILD", "normal")
-    _action_btn(surf, bx + 2 * (third + 10), btn_y, third, btn_h,
-                "EXAMPLE", "ok")
-    # Build-hint underneath: explains where to drop the GeoJSON files.
-    _text(surf, f"BUILD: reads *.geojson in {AIRSPACE_DIR}",
-          9, (140, 160, 185),
-          cx=DISPLAY_W // 2, cy=btn_y + btn_h + 6)
 
     # Progress / status line
     prog_y = btn_y + btn_h + 16
@@ -8226,14 +8215,8 @@ def airspace_data_hit(x, y):
     info_y = 92; info_h = 96
     btn_y  = info_y + info_h + 12
     btn_h  = 48
-    third  = (bw - 20) // 3
-    if btn_y <= y <= btn_y + btn_h:
-        if bx <= x <= bx + third:
-            return "download"
-        if bx + third + 10 <= x <= bx + 2 * third + 10:
-            return "build"
-        if bx + 2 * (third + 10) <= x <= bx + 3 * third + 20:
-            return "install_example"
+    if btn_y <= y <= btn_y + btn_h and bx <= x <= bx + bw:
+        return "download"
     return None
 
 

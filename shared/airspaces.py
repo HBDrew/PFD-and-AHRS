@@ -77,9 +77,9 @@ CACHE_FILENAME = "airspaces.json"
 # *.geojson files the pilot drops in manually.
 DOWNLOAD_SOURCES = {
     "class_airspace.geojson": (
-        "https://opendata.arcgis.com/api/v3/datasets/"
-        "67885972e4e940b2aa6d74024901c561_0/downloads/data"
-        "?format=geojson&spatialRefId=4326"
+        "https://hub.arcgis.com/api/v3/datasets/"
+        "c6a62360338e408cb1512366ad61559e_0/downloads/data"
+        "?format=geojson&spatialRefId=4326&where=1%3D1"
     ),
     "special_use_airspace.geojson": (
         "https://hub.arcgis.com/api/v3/datasets/"
