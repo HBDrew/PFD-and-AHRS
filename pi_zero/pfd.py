@@ -8524,11 +8524,13 @@ _MFD_STRIP_AVAILABLE = (
     ("wpt",  "WPT",  True),
     ("btw",  "BTW",  True),
     ("dtk",  "DTK",  True),
-    ("dist", "DIST", True),
+    ("dist", "DIST", True),    # to active waypoint (current leg)
+    ("disw", "DISW", True),    # total distance through remaining FPL legs
     ("xte",  "XTE",  True),
-    ("ete",  "ETE",  True),
-    ("eta",  "ETA",  True),
-    ("etw",  "ETW",  True),
+    ("ete",  "ETE",  True),    # to active waypoint
+    ("etew", "ETEW", True),    # enroute time through entire remaining plan
+    ("eta",  "ETA",  True),    # clock at final destination
+    ("etw",  "ETW",  True),    # clock at next waypoint
 )
 _MFD_STRIP_KIND_IDS = tuple(k[0] for k in _MFD_STRIP_AVAILABLE)
 _MFD_STRIP_CAPTIONS = {k[0]: k[1] for k in _MFD_STRIP_AVAILABLE}
@@ -8729,12 +8731,32 @@ def _mfd_strip_format(kind, ctx):
         s = (f"{int(round(d_nm)):d}" if d_nm >= 1000.0
              else f"{d_nm:.1f}")
         return (caption, s, MAGENTA)
+    if kind == "disw":
+        # Total distance through every remaining leg of the plan —
+        # the "to final destination" companion to DIST's single-leg
+        # number.  Falls back to DIST when no plan is active (just the
+        # current direct-to).
+        if _fpl_is_active():
+            d_nm = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"])
+        else:
+            d_nm = ctx["dist_nm"]
+        s = (f"{int(round(d_nm)):d}" if d_nm >= 1000.0
+             else f"{d_nm:.1f}")
+        return (caption, s, MAGENTA)
     if kind == "xte":
         return (caption, f"{ctx['xte_nm']:+.1f}", MAGENTA)
     if kind == "ete":
         # Remaining time to the active leg's destination — single leg.
         return (caption,
                 _mfd_strip_ete_str(gs_kt, ctx["dist_nm"]), MAGENTA)
+    if kind == "etew":
+        # Enroute time through the WHOLE remaining plan — companion
+        # to ETE.  Falls back to ETE when no plan is active.
+        if _fpl_is_active():
+            total_nm = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"])
+        else:
+            total_nm = ctx["dist_nm"]
+        return (caption, _mfd_strip_ete_str(gs_kt, total_nm), MAGENTA)
     if kind == "etw":
         # Clock time at the NEXT waypoint (the active leg's dest).
         # When the plan has only one waypoint, equivalent to ETA.
