@@ -98,6 +98,11 @@ _AIRSPACE_COLORS = {
     "D":   ((110, 170, 255), (110, 170, 255, 30)),
     "MOA": ((230, 170,  60), (230, 170,  60, 35)),
     "R":   ((230,  60,  60), (230,  60,  60, 50)),
+    # Prohibited — heavier red than Restricted.  Pilots want clear
+    # visual emphasis between "restricted when active" and "never".
+    "P":   ((255,  20,  60), (255,  20,  60, 80)),
+    # TFRs — red-orange, same family as R/P but distinguishable.
+    "TFR": ((255, 130,   0), (255, 130,   0, 70)),
 }
 _AIRSPACE_DEFAULT = ((200, 200, 200), (200, 200, 200, 30))
 

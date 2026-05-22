@@ -111,6 +111,13 @@ _AIRSPACE_COLORS = {
     "D":   ((110, 170, 255), (110, 170, 255, 30)),
     "MOA": ((230, 170,  60), (230, 170,  60, 35)),
     "R":   ((230,  60,  60), (230,  60,  60, 50)),
+    # Prohibited — deeper red than Restricted, more opaque fill so a
+    # pilot doesn't have to read the ident to know it's a hard NO.
+    "P":   ((255,  20,  60), (255,  20,  60, 80)),
+    # TFRs — red-orange, distinct from R/P but in the same "do not
+    # enter" colour family.  Stadium + Defense TFRs both render here;
+    # the ident encodes which sub-type the pilot can read on the map.
+    "TFR": ((255, 130,   0), (255, 130,   0, 70)),
 }
 _AIRSPACE_DEFAULT = ((200, 200, 200), (200, 200, 200, 30))
 

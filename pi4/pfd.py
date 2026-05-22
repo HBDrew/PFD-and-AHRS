@@ -257,6 +257,8 @@ disp["ds"] = {                      # display settings
     "map_show_airspace_d":   True,
     "map_show_airspace_moa": True,
     "map_show_airspace_r":   True,
+    "map_show_airspace_p":   True,
+    "map_show_airspace_tfr": True,
     # Real-time SVT sun position (off → SE / mid-morning fixed lighting)
     "sun_realtime":      True,
 }
@@ -5542,7 +5544,8 @@ _ss_drag = None
 _SS_DRAG_THRESHOLD = 8
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         10,
-    "display_setup":      10,
+    "display_setup":      11,    # +1 to compensate for the taller
+                                  # MAP LAYERS row (two pill sub-rows)
     "system_setup":       9,
     "connectivity_setup": 6,
     "flight_profile":     8,
@@ -5693,9 +5696,10 @@ _DSP_MAP_ORIENT_LBLS  = ["TRK\u2191", "N\u2191"]
 _DSP_MAP_ORIENT_BW    = 80
 _DSP_MAP_ORIENT_GAP   = 24    # gap between orient pair and on/off pair
 
-# Multi-toggle MAP LAYERS row \u2014 packed five toggles (terrain / water /
-# airports / runways / obstacles) into one row.  Drawn separately from
-# _DSP_ROWS because the standard row schema is one control per row.
+# Multi-toggle MAP LAYERS row \u2014 pills wrap to two sub-rows so the
+# right edge doesn't clobber the row label.  Same pattern piZ uses.
+# Drawn separately from _DSP_ROWS because the standard row schema is
+# one control per row.
 _DSP_MAP_LAYERS = [
     ("map_show_terrain",      "TER"),
     ("map_show_water",        "WTR"),
@@ -5704,10 +5708,36 @@ _DSP_MAP_LAYERS = [
     ("map_show_obstacles",    "OBS"),
     ("map_show_state_lines",  "STA"),
     ("map_show_country_lines","CTRY"),
+    ("map_show_airspaces",    "ASP"),
 ]
-_DSP_LAYERS_ROW_INDEX = len(_DSP_ROWS)
-_DSP_LAYERS_BTN_W     = 70
-_DSP_LAYERS_BTN_G     = 6
+_DSP_LAYERS_PER_SUBROW = 4
+_DSP_LAYERS_ROW_INDEX  = len(_DSP_ROWS)
+_DSP_LAYERS_BTN_W      = 84
+_DSP_LAYERS_BTN_G      = 8
+_DSP_LAYERS_BTN_H      = 44
+_DSP_LAYERS_SUB_GAP    = 8
+_DSP_LAYERS_ROW_H      = (2 * _DSP_LAYERS_BTN_H
+                          + _DSP_LAYERS_SUB_GAP + 16)
+
+
+def _dsp_layers_subrow_count():
+    n = len(_DSP_MAP_LAYERS)
+    return 1 if n <= _DSP_LAYERS_PER_SUBROW else 2
+
+
+def _dsp_layers_subrow_split():
+    n = len(_DSP_MAP_LAYERS)
+    if n <= _DSP_LAYERS_PER_SUBROW:
+        return list(range(n)), []
+    return (list(range(_DSP_LAYERS_PER_SUBROW)),
+            list(range(_DSP_LAYERS_PER_SUBROW, n)))
+
+
+def _dsp_layers_subrow_y(by, subrow_idx):
+    n_sub = _dsp_layers_subrow_count()
+    total_h = n_sub * _DSP_LAYERS_BTN_H + (n_sub - 1) * _DSP_LAYERS_SUB_GAP
+    y0 = by + max(8, (_DSP_LAYERS_ROW_H - total_h) // 2)
+    return y0 + subrow_idx * (_DSP_LAYERS_BTN_H + _DSP_LAYERS_SUB_GAP)
 
 
 def _dsp_rx(row, bx, bw):
@@ -5720,9 +5750,12 @@ def _dsp_rx(row, bx, bw):
     return bx + bw - total - 14
 
 
-def _dsp_layers_geom(bx, bw):
-    """Right-aligned geometry for the MAP LAYERS multi-toggle row."""
-    n = len(_DSP_MAP_LAYERS)
+def _dsp_layers_geom(bx, bw, subrow_idx=0):
+    """Right-aligned x for the first pill of the given sub-row."""
+    top, bot = _dsp_layers_subrow_split()
+    n = len(top) if subrow_idx == 0 else len(bot)
+    if n == 0:
+        return bx + bw
     total = n * _DSP_LAYERS_BTN_W + (n - 1) * _DSP_LAYERS_BTN_G
     return bx + bw - total - 14
 
@@ -5759,18 +5792,38 @@ def draw_display_setup(surf, ds):
                              ry, _DSP_MAP_ORIENT_BW, _DSP_BTN_H,
                              lbl, v == cur_or)
 
-    # MAP LAYERS — five-toggle packed row.  Drawn after the homogeneous
-    # rows because the standard schema is one control per row.
-    bx, by, bw, bh = _setting_row(surf, _DSP_LAYERS_ROW_INDEX,
-                                  "MAP LAYERS",
-                                  "Per-layer visibility on the map inset")
-    ry = by + (bh - _DSP_BTN_H) // 2
-    rx = _dsp_layers_geom(bx, bw)
-    for i, (key, lbl) in enumerate(_DSP_MAP_LAYERS):
-        active = bool(ds.get(key, True))
-        _seg_btn(surf,
-                 rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
-                 ry, _DSP_LAYERS_BTN_W, _DSP_BTN_H, lbl, active)
+    # MAP LAYERS — packed multi-toggle row.  Pills wrap to two
+    # sub-rows so the right edge stays clear of the row label.
+    # Row is drawn manually with a custom (taller) height since
+    # _setting_row uses the standard _SS_RH.
+    bx = _SS_MX
+    bw = DISPLAY_W - 2 * _SS_MX
+    by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
+    bh = _DSP_LAYERS_ROW_H
+    pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=6)
+    gh = bh // 6
+    for i in range(gh):
+        t = 1.0 - i / gh
+        gc = (int(15 + t * 25), int(20 + t * 40), int(40 + t * 65))
+        pygame.draw.line(surf, gc, (bx + 6, by + 1 + i),
+                          (bx + bw - 6, by + 1 + i))
+    pygame.draw.rect(surf, (55, 75, 105), (bx, by, bw, bh),
+                     width=1, border_radius=6)
+    _text(surf, "MAP LAYERS", 14, WHITE, bold=True, x=bx + 14, y=by + 10)
+    _text(surf, "Per-layer visibility on the map inset",
+          10, (120, 135, 155), x=bx + 14, y=by + 32)
+    top_idx, bot_idx = _dsp_layers_subrow_split()
+    for sub, indices in enumerate((top_idx, bot_idx)):
+        if not indices:
+            continue
+        ry = _dsp_layers_subrow_y(by, sub)
+        rx = _dsp_layers_geom(bx, bw, sub)
+        for slot, i in enumerate(indices):
+            key, lbl = _DSP_MAP_LAYERS[i]
+            active = bool(ds.get(key, True))
+            _seg_btn(surf,
+                     rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
+                     ry, _DSP_LAYERS_BTN_W, _DSP_LAYERS_BTN_H, lbl, active)
     surf.set_clip(_prev_clip)
 
 
@@ -5808,15 +5861,22 @@ def display_setup_hit(x, y, ds):
                     if bx_b <= x <= bx_b + _DSP_MAP_ORIENT_BW:
                         return f"set:map_orient:{v}"
 
-    # MAP LAYERS multi-toggle row
+    # MAP LAYERS multi-toggle row — two sub-rows of pills inside the
+    # taller _DSP_LAYERS_ROW_H slot.
     by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
-    if by <= y <= by + _SS_RH:
-        bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
-        ry = by + (_SS_RH - _DSP_BTN_H) // 2
-        if ry <= y <= ry + _DSP_BTN_H:
-            rx = _dsp_layers_geom(bx, bw)
-            for i, (key, _lbl) in enumerate(_DSP_MAP_LAYERS):
-                bx_b = rx + i * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
+    if by <= y <= by + _DSP_LAYERS_ROW_H:
+        bx = _SS_MX; bw = DISPLAY_W - 2 * _SS_MX
+        top_idx, bot_idx = _dsp_layers_subrow_split()
+        for sub, indices in enumerate((top_idx, bot_idx)):
+            if not indices:
+                continue
+            ry = _dsp_layers_subrow_y(by, sub)
+            if not (ry <= y <= ry + _DSP_LAYERS_BTN_H):
+                continue
+            rx = _dsp_layers_geom(bx, bw, sub)
+            for slot, i in enumerate(indices):
+                key, _lbl = _DSP_MAP_LAYERS[i]
+                bx_b = rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
                 if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
                     new_val = not bool(ds.get(key, True))
                     return f"set:{key}:{new_val}"

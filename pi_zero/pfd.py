@@ -192,6 +192,8 @@ disp["ds"] = {                      # display settings
     "map_show_airspace_d":   True,
     "map_show_airspace_moa": True,
     "map_show_airspace_r":   True,
+    "map_show_airspace_p":   True,
+    "map_show_airspace_tfr": True,
     # MFD bottom data strip — 8 user-selectable readout slots.  Each
     # entry is a kind id from _MFD_STRIP_KIND_IDS; user reconfigures
     # via tap-strip → chooser overlay.  See draw_mfd / draw_mfd_strip_setup.
