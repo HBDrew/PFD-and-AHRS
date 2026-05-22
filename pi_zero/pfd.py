@@ -3305,14 +3305,35 @@ def handle_event(event, demo_mode):
         # ── Airspace data screen taps ─────────────────────────────────────
         if mode == "airspace_data":
             action = airspace_data_hit(x, y)
+            asp = disp["asp"]
             if action == "back":
                 disp["mode"] = "system_setup"
-            elif action == "download":
-                asp = disp["asp"]
+            elif action == "download_static":
                 if asp.get("downloading"):
                     asp["dl_cancel"] = True
                 else:
-                    _asp_start_download()
+                    _asp_start_download(asp_mod.DOWNLOAD_SOURCES_STATIC,
+                                        "AIRSPACES")
+            elif action == "download_tfr":
+                if asp.get("downloading"):
+                    asp["dl_cancel"] = True
+                else:
+                    _asp_start_download(asp_mod.DOWNLOAD_SOURCES_TFR,
+                                        "TFRs")
+            elif action == "classes":
+                disp["mode"] = "airspace_classes"
+            return True
+
+        # ── Airspace per-class toggle screen taps ─────────────────────────
+        if mode == "airspace_classes":
+            action = airspace_classes_hit(x, y)
+            if action == "back":
+                disp["mode"] = "airspace_data"
+            elif isinstance(action, str) and action.startswith("toggle:"):
+                key = action.split(":", 1)[1]
+                ds = disp["ds"]
+                ds[key] = not ds.get(key, True)
+                _settings.mark_dirty()
             return True
 
         # ── Terrain data screen taps ──────────────────────────────────────
@@ -8055,15 +8076,17 @@ def _asp_build_from_geojson():
                      name="AirspaceBuild").start()
 
 
-def _asp_download_thread():
-    """Fetch every URL in asp_mod.DOWNLOAD_SOURCES, save each as the
-    keyed filename in AIRSPACE_DIR, then auto-build airspaces.json
-    from the freshly downloaded *.geojson files.  Cancel-safe via
-    asp["dl_cancel"]."""
+def _asp_download_thread(sources=None, bucket_label="airspaces"):
+    """Fetch each URL in `sources` (dict of filename → URL) into
+    AIRSPACE_DIR, then auto-build airspaces.json from every *.geojson
+    in the dir.  `sources` defaults to ALL configured sources
+    (DOWNLOAD_SOURCES = static + TFR combined).  `bucket_label` shows
+    up in the status line so the pilot knows which bucket is running."""
     asp = disp["asp"]
     asp["downloading"] = True
     asp["dl_cancel"]   = False
-    sources = getattr(asp_mod, "DOWNLOAD_SOURCES", {}) or {}
+    if sources is None:
+        sources = getattr(asp_mod, "DOWNLOAD_SOURCES", {}) or {}
     sources = {k: v for k, v in sources.items() if v}
     if not sources:
         asp["dl_status"]   = ("No download URLs configured — see "
@@ -8079,7 +8102,7 @@ def _asp_download_thread():
                 asp["dl_status"]   = "Cancelled"
                 asp["downloading"] = False
                 return
-            label = f"[{i}/{len(sources)}] {fname}"
+            label = f"[{bucket_label} {i}/{len(sources)}] {fname}"
             asp["dl_status"] = f"Fetching {label}…"
             path = os.path.join(AIRSPACE_DIR, fname)
             req = urllib.request.Request(
@@ -8110,7 +8133,7 @@ def _asp_download_thread():
                                 f"{label}: {downloaded//1024} KB")
             os.replace(path + ".tmp", path)
         # All sources fetched — convert in-process.
-        asp["dl_status"] = "Building airspaces.json…"
+        asp["dl_status"] = f"Building airspaces.json ({bucket_label})…"
         import sys as _sys
         _tools = os.path.abspath(os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
@@ -8121,22 +8144,45 @@ def _asp_download_thread():
             AIRSPACE_DIR, source_note="FAA GeoJSON (auto-downloaded)")
         _asp_reload()
         if stats.get("errors"):
-            asp["dl_status"] = (f"Downloaded {len(sources)} files; "
+            asp["dl_status"] = (f"{bucket_label} downloaded; "
                                 f"build had errors: {stats['errors'][0]}")
         else:
             asp["dl_status"] = (
                 f"Done ✓  {stats['records']} polygons "
                 f"(B:{stats['B']} C:{stats['C']} D:{stats['D']} "
-                f"MOA:{stats['MOA']} R:{stats['R']})")
+                f"MOA:{stats['MOA']} R:{stats['R']} "
+                f"P:{stats.get('P',0)} TFR:{stats.get('TFR',0)})")
     except Exception as exc:
         asp["dl_status"] = f"Error: {exc}"
     finally:
         asp["downloading"] = False
 
 
-def _asp_start_download():
-    threading.Thread(target=_asp_download_thread, daemon=True,
-                     name="AirspaceDownload").start()
+def _asp_start_download(sources=None, bucket_label="airspaces"):
+    threading.Thread(
+        target=lambda: _asp_download_thread(sources, bucket_label),
+        daemon=True, name="AirspaceDownload").start()
+
+
+def _asp_bucket_mtime(filenames):
+    """Return the latest mtime across the given filenames in
+    AIRSPACE_DIR, or None if none of them exist on disk."""
+    latest = None
+    for fname in filenames:
+        path = os.path.join(AIRSPACE_DIR, fname)
+        if os.path.exists(path):
+            mt = os.path.getmtime(path)
+            if latest is None or mt > latest:
+                latest = mt
+    return latest
+
+
+def _asp_format_date(mtime):
+    """Compact date string for the on-screen 'last download' stamp."""
+    if mtime is None:
+        return "—"
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(mtime).strftime("%b %d")
 
 
 def draw_airspace_data(surf):
@@ -8172,32 +8218,41 @@ def draw_airspace_data(surf):
           10, (140, 160, 185), cx=DISPLAY_W // 2, cy=info_y + 32)
     _text(surf, "Master toggle: Display Settings → ASP pill.",
           10, (140, 160, 185), cx=DISPLAY_W // 2, cy=info_y + 48)
-    src_count = len([v for v in
-                      getattr(asp_mod, "DOWNLOAD_SOURCES", {}).values()
-                      if v])
-    if src_count:
-        _text(surf, f"DOWNLOAD: fetch {src_count} FAA GeoJSON sources",
-              9, (140, 170, 200), cx=DISPLAY_W // 2, cy=info_y + 66)
-        _text(surf, "→ saved here, then auto-built into airspaces.json",
-              9, (120, 140, 165), cx=DISPLAY_W // 2, cy=info_y + 80)
-    else:
-        _text(surf, "DOWNLOAD_SOURCES empty in shared/airspaces.py",
-              9, (180, 140, 60), cx=DISPLAY_W // 2, cy=info_y + 66)
+    _text(surf, "AIRSPACES: B/C/D + SUA + Prohibited  (28-day cycle)",
+          9, (140, 170, 200), cx=DISPLAY_W // 2, cy=info_y + 66)
+    _text(surf, "TFRs: Stadium + Defense  (refresh more often)",
+          9, (140, 170, 200), cx=DISPLAY_W // 2, cy=info_y + 80)
 
-    # Single action button: DOWNLOAD (auto-builds after fetch).
-    # CANCEL replaces it while a download is in flight.  TFR row will
-    # land here as a second download with its own date stamp once
-    # that data source is wired in.
+    # Two action buttons side by side, each with its own
+    # last-downloaded date.  CLASSES button below opens per-class
+    # toggle screen so pilot can hide MOAs but keep TFRs, etc.
     btn_y = info_y + info_h + 12
-    btn_h = 48
+    btn_h = 56
+    half  = (bw - 10) // 2
     downloading = asp.get("downloading", False)
     dl_style    = "normal" if not downloading else "warn"
-    _action_btn(surf, bx, btn_y, bw, btn_h,
-                "DOWNLOAD" if not downloading else "CANCEL", dl_style)
+
+    static_mt = _asp_bucket_mtime(asp_mod.DOWNLOAD_SOURCES_STATIC.keys())
+    tfr_mt    = _asp_bucket_mtime(asp_mod.DOWNLOAD_SOURCES_TFR.keys())
+    _action_btn(surf, bx, btn_y, half, btn_h,
+                "AIRSPACES" if not downloading else "CANCEL", dl_style)
+    _text(surf, f"last: {_asp_format_date(static_mt)}",
+          11, (140, 160, 185),
+          cx=bx + half // 2, cy=btn_y + btn_h + 12)
+    _action_btn(surf, bx + half + 10, btn_y, half, btn_h,
+                "TFRs" if not downloading else "CANCEL", dl_style)
+    _text(surf, f"last: {_asp_format_date(tfr_mt)}",
+          11, (140, 160, 185),
+          cx=bx + half + 10 + half // 2, cy=btn_y + btn_h + 12)
+
+    # CLASSES button — opens per-class display toggle screen.
+    cls_y = btn_y + btn_h + 28
+    cls_h = 44
+    _action_btn(surf, bx, cls_y, bw, cls_h, "CLASSES  →", "normal")
 
     # Progress / status line
-    prog_y = btn_y + btn_h + 16
-    prog_h = 40
+    prog_y = cls_y + cls_h + 12
+    prog_h = 36
     pygame.draw.rect(surf, (0, 10, 24), (bx, prog_y, bw, prog_h),
                      border_radius=6)
     pygame.draw.rect(surf, (35, 50, 75), (bx, prog_y, bw, prog_h),
@@ -8207,7 +8262,7 @@ def draw_airspace_data(surf):
         col = ((60, 220, 80) if status.startswith("Done")
                else (220, 130, 60) if status.startswith("Error")
                else (160, 160, 170))
-        _text(surf, status, 11, col, cx=DISPLAY_W // 2, cy=prog_y + 20)
+        _text(surf, status, 11, col, cx=DISPLAY_W // 2, cy=prog_y + 18)
 
 
 def airspace_data_hit(x, y):
@@ -8216,9 +8271,97 @@ def airspace_data_hit(x, y):
     bx = _AD_MX; bw = DISPLAY_W - 2 * _AD_MX
     info_y = 92; info_h = 96
     btn_y  = info_y + info_h + 12
-    btn_h  = 48
-    if btn_y <= y <= btn_y + btn_h and bx <= x <= bx + bw:
-        return "download"
+    btn_h  = 56
+    half   = (bw - 10) // 2
+    if btn_y <= y <= btn_y + btn_h:
+        if bx <= x <= bx + half:
+            return "download_static"
+        if bx + half + 10 <= x <= bx + 2 * half + 10:
+            return "download_tfr"
+    cls_y = btn_y + btn_h + 28
+    cls_h = 44
+    if cls_y <= y <= cls_y + cls_h and bx <= x <= bx + bw:
+        return "classes"
+    return None
+
+
+# ── AIRSPACE CLASSES toggle screen ──────────────────────────────────────────
+# Per-class display toggles (pilot wants to hide MOAs but keep TFRs, etc.).
+# Each row: class swatch + label + description + ON/OFF segmented control.
+# Settings keys live in disp["ds"] as map_show_airspace_<lower>.
+
+_ASP_CLS_ROWS = [
+    ("b",   "B",   "Class B  ·  major airline hub"),
+    ("c",   "C",   "Class C  ·  regional / busy general aviation"),
+    ("d",   "D",   "Class D  ·  control tower airports"),
+    ("moa", "MOA", "Military Operations Area"),
+    ("r",   "R",   "Restricted airspace"),
+    ("p",   "P",   "Prohibited airspace"),
+    ("tfr", "TFR", "Temporary Flight Restriction"),
+]
+
+
+def draw_airspace_classes(surf):
+    """Per-class airspace display toggles."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "AIRSPACE CLASSES")
+    bx = _AD_MX; bw = DISPLAY_W - 2 * _AD_MX
+    ds = disp["ds"]
+
+    _text(surf, "Hide individual airspace classes on the moving map.",
+          12, (140, 160, 185), cx=DISPLAY_W // 2, cy=60)
+    _text(surf, "Master toggle: Display Settings → ASP pill.",
+          10, (120, 140, 165), cx=DISPLAY_W // 2, cy=76)
+
+    rows_y0 = 92
+    row_h   = 46
+    row_gap = 6
+    for i, (suffix, lbl, desc) in enumerate(_ASP_CLS_ROWS):
+        ry = rows_y0 + i * (row_h + row_gap)
+        # Row background
+        pygame.draw.rect(surf, (0, 10, 28), (bx, ry, bw, row_h),
+                         border_radius=6)
+        pygame.draw.rect(surf, (45, 65, 95), (bx, ry, bw, row_h),
+                         width=1, border_radius=6)
+        # Class colour swatch
+        col, _fill = _mfd_map._AIRSPACE_COLORS.get(
+            lbl, _mfd_map._AIRSPACE_DEFAULT)
+        sw_w = 36; sw_h = row_h - 14
+        sx = bx + 8; sy = ry + 7
+        pygame.draw.rect(surf, (col[0]//4, col[1]//4, col[2]//4),
+                         (sx, sy, sw_w, sw_h), border_radius=4)
+        pygame.draw.rect(surf, col, (sx, sy, sw_w, sw_h),
+                         width=2, border_radius=4)
+        _text(surf, lbl, 16, col, bold=True,
+              cx=sx + sw_w // 2, cy=ry + row_h // 2)
+        # Label + description
+        _text(surf, desc, 14, WHITE, bold=True,
+              x=sx + sw_w + 12, y=ry + 6)
+        # ON/OFF segmented control on the right
+        key = f"map_show_airspace_{suffix}"
+        on  = bool(ds.get(key, True))
+        bt_w = 60; bt_h = row_h - 14
+        on_x  = bx + bw - 2 * bt_w - 12
+        off_x = bx + bw - bt_w - 6
+        _seg_btn(surf, on_x,  ry + 7, bt_w, bt_h, "ON",  on,  r=4)
+        _seg_btn(surf, off_x, ry + 7, bt_w, bt_h, "OFF", not on, r=4)
+
+
+def airspace_classes_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _AD_MX; bw = DISPLAY_W - 2 * _AD_MX
+    rows_y0 = 92
+    row_h   = 46
+    row_gap = 6
+    bt_w = 60; bt_h = row_h - 14
+    on_x  = bx + bw - 2 * bt_w - 12
+    off_x = bx + bw - bt_w - 6
+    for i, (suffix, _lbl, _desc) in enumerate(_ASP_CLS_ROWS):
+        ry = rows_y0 + i * (row_h + row_gap)
+        if ry + 7 <= y <= ry + 7 + bt_h:
+            if on_x <= x <= on_x + bt_w or off_x <= x <= off_x + bt_w:
+                return f"toggle:map_show_airspace_{suffix}"
     return None
 
 
@@ -10314,6 +10457,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_airport_data(surf, disp["ad"]); return
     if mode == "airspace_data":
         draw_airspace_data(surf); return
+    if mode == "airspace_classes":
+        draw_airspace_classes(surf); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
 

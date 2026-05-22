@@ -198,16 +198,21 @@ def load(data_dir: str):
 
     Each record:
         {class, ident, name, floor_ft, ceiling_ft, polygon, bbox}
-    where bbox = (lat_min, lat_max, lon_min, lon_max)."""
+    where bbox = (lat_min, lat_max, lon_min, lon_max).
+
+    The file is parsed in streaming fashion: one record object at a
+    time via `_iter_records_streaming`, so the Pi Zero's 512 MB RAM
+    isn't blown by the 2-3× spike that `json.load(whole_file)` causes
+    on a multi-hundred-MB airspaces.json."""
     path = os.path.join(data_dir, CACHE_FILENAME)
     if not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except (OSError, ValueError):
+        return list(_iter_records_streaming(path))
+    except Exception:
+        # Streaming parse should never crash PFD startup — fall back to
+        # "no airspace data on disk" if the file is corrupt / truncated.
         return None
-    return _records_from_raw(raw)
 
 
 def load_bundled_example():
@@ -217,29 +222,129 @@ def load_bundled_example():
     return _records_from_raw(_EXAMPLE_DATA)
 
 
+def _record_from_entry(entry):
+    """Validate + cook one raw airspace entry into the in-memory record
+    shape.  Returns None when the entry is unusable."""
+    cls = str(entry.get("class", "")).upper()
+    if cls not in VALID_CLASSES:
+        return None
+    poly = entry.get("polygon") or []
+    if len(poly) < 3:
+        return None
+    try:
+        poly = [(float(p[0]), float(p[1])) for p in poly]
+    except (TypeError, ValueError, IndexError):
+        return None
+    return {
+        "class":      cls,
+        "ident":      str(entry.get("ident", "")),
+        "name":       str(entry.get("name", "")),
+        "floor_ft":   int(entry.get("floor_ft",   0)),
+        "ceiling_ft": int(entry.get("ceiling_ft", 0)),
+        "polygon":    poly,
+        "bbox":       _bbox_of(poly),
+    }
+
+
 def _records_from_raw(raw):
     out = []
     for entry in raw.get("airspaces", []):
-        cls = str(entry.get("class", "")).upper()
-        if cls not in VALID_CLASSES:
-            continue
-        poly = entry.get("polygon") or []
-        if len(poly) < 3:
-            continue
-        try:
-            poly = [(float(p[0]), float(p[1])) for p in poly]
-        except (TypeError, ValueError, IndexError):
-            continue
-        out.append({
-            "class":      cls,
-            "ident":      str(entry.get("ident", "")),
-            "name":       str(entry.get("name", "")),
-            "floor_ft":   int(entry.get("floor_ft",   0)),
-            "ceiling_ft": int(entry.get("ceiling_ft", 0)),
-            "polygon":    poly,
-            "bbox":       _bbox_of(poly),
-        })
+        rec = _record_from_entry(entry)
+        if rec is not None:
+            out.append(rec)
     return out
+
+
+def _iter_records_streaming(path):
+    """Yield airspace records one at a time without loading the whole
+    file into RAM.  Uses a brace-counter to slice each object out of
+    the `"airspaces": [...]` array, then `json.loads` just that slice.
+
+    Worst case the buffer holds one airspace object — kilobytes, not
+    megabytes — so a 500 MB airspaces.json loads in a small constant
+    memory footprint on the Pi Zero."""
+    with open(path, "r", encoding="utf-8") as fh:
+        # Walk to the start of the "airspaces" array.  We deliberately
+        # tolerate the case where the array key appears anywhere in
+        # the top-level object — the converter emits it last but
+        # nothing in the format spec pins that.
+        buf = ""
+        chunk = 64 * 1024
+        marker = '"airspaces"'
+        while marker not in buf:
+            piece = fh.read(chunk)
+            if not piece:
+                return  # malformed or empty file
+            buf += piece
+        idx = buf.index(marker) + len(marker)
+        # Skip whitespace + colon + whitespace + opening bracket
+        while idx < len(buf) and buf[idx] in ' \t\r\n':
+            idx += 1
+        if idx >= len(buf) or buf[idx] != ':':
+            return
+        idx += 1
+        while True:
+            while idx < len(buf) and buf[idx] in ' \t\r\n':
+                idx += 1
+            if idx < len(buf):
+                break
+            buf = fh.read(chunk)
+            idx = 0
+            if not buf:
+                return
+        if buf[idx] != '[':
+            return
+        idx += 1
+        # Stream objects.  Track depth (brace count) + string state
+        # (so a `}` inside a string property doesn't terminate early).
+        depth = 0
+        in_str = False
+        escape = False
+        obj_start = -1
+        while True:
+            if idx >= len(buf):
+                more = fh.read(chunk)
+                if not more:
+                    return
+                # Trim already-consumed prefix so buf doesn't grow
+                # unbounded when an object isn't currently in progress.
+                if obj_start < 0:
+                    buf = more
+                    idx = 0
+                else:
+                    buf = buf[obj_start:] + more
+                    idx -= obj_start
+                    obj_start = 0
+            c = buf[idx]
+            if in_str:
+                if escape:
+                    escape = False
+                elif c == '\\':
+                    escape = True
+                elif c == '"':
+                    in_str = False
+            else:
+                if c == '"':
+                    in_str = True
+                elif c == '{':
+                    if depth == 0:
+                        obj_start = idx
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0 and obj_start >= 0:
+                        try:
+                            entry = json.loads(buf[obj_start:idx + 1])
+                        except ValueError:
+                            entry = None
+                        if entry is not None:
+                            rec = _record_from_entry(entry)
+                            if rec is not None:
+                                yield rec
+                        obj_start = -1
+                elif c == ']' and depth == 0:
+                    return
+            idx += 1
 
 
 _NM_PER_DEG_LAT = 60.0
