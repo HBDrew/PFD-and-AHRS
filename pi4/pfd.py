@@ -51,6 +51,7 @@ from config import *   # noqa: F403
 from sse_client import SSEClient
 import adsb as _adsb
 import wx as _wx
+import mapoverlay as _ovl
 from terrain import get_elevation_ft
 from svt_renderer import render_svt as render_svt_pygame
 
@@ -253,6 +254,7 @@ disp["ds"] = {                      # display settings
     "traffic_alt_band":  0,
     "traffic_range_nm":  0,
     "map_show_metar":    False,  # METAR station dots (off until WX selected)
+    "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_country_lines": True, # admin_0 boundaries at >= 20 nm
     "map_show_directto": True,
@@ -1531,8 +1533,15 @@ def _wx_view():
 
 def _update_weather():
     """Pull the latest METAR snapshot from the background poller into
-    disp["weather"] and mirror link diagnostics into cs."""
+    disp["weather"] and mirror link diagnostics into cs.  Polling only runs
+    when a weather overlay (METAR or NEXRAD) is selected — saves CPU +
+    network the rest of the time."""
     if _wx_client is None:
+        return
+    ds = disp["ds"]
+    show = bool(ds.get("map_show_metar") or ds.get("map_show_nexrad"))
+    _wx_client.paused = not show
+    if not show:
         return
     w = disp["weather"]
     w["metars"] = _wx_client.snapshot()
@@ -4293,39 +4302,13 @@ _multitouch_t0  = None   # time when 2nd finger touched down
 _last_map_rect = None
 
 
-# ── Map overlay quick-cycle (Weather / Airspace) ──────────────────────────────
+# ── Map overlay quick-cycle (Airspace / Traffic-only / METAR / NEXRAD) ────────
 # Traffic stays on always (safety); this cycles the *other* heavy overlays
-# one-at-a-time to keep the inset readable.  Drives the same ds booleans the
-# Display-setup pills do.
-_MAP_OVERLAY_ORDER = ["off", "wx", "asp"]
-
-
-def _map_overlay_state(ds):
-    wx  = bool(ds.get("map_show_metar"))
-    asp = bool(ds.get("map_show_airspaces"))
-    if wx and asp:
-        return "both"
-    if asp:
-        return "asp"
-    if wx:
-        return "wx"
-    return "off"
-
-
-def _map_overlay_label(ds):
-    return {"off": "OVLY", "wx": "WX", "asp": "ASP",
-            "both": "WX+AS"}[_map_overlay_state(ds)]
-
-
-def _map_overlay_cycle(ds):
-    """Advance off → WX → ASP → off and apply the matching ds booleans."""
-    cur = _map_overlay_state(ds)
-    i = (_MAP_OVERLAY_ORDER.index(cur) if cur in _MAP_OVERLAY_ORDER
-         else len(_MAP_OVERLAY_ORDER) - 1)
-    nxt = _MAP_OVERLAY_ORDER[(i + 1) % len(_MAP_OVERLAY_ORDER)]
-    ds["map_show_metar"]     = (nxt == "wx")
-    ds["map_show_airspaces"] = (nxt == "asp")
-    return nxt
+# one-at-a-time to keep the inset readable.  Logic in shared/mapoverlay.py
+# (unit-tested); drives the same ds booleans the Display-setup pills do.
+_map_overlay_state = _ovl.state
+_map_overlay_label = _ovl.label
+_map_overlay_cycle = _ovl.cycle
 
 
 def _current_str_for_kbd(target, prev_mode):
@@ -5902,6 +5885,7 @@ _DSP_MAP_LAYERS = [
     ("map_show_obstacles",    "OBS"),
     ("map_show_traffic",      "TFC"),
     ("map_show_metar",        "MET"),
+    ("map_show_nexrad",       "NEX"),
     ("map_show_state_lines",  "STA"),
     ("map_show_country_lines","CTRY"),
     ("map_show_airspaces",    "ASP"),
@@ -10964,8 +10948,9 @@ def render(surf, demo_mode, connected, data_stale=False):
         # OVLY label — bottom-left of the inset; tap there to cycle the
         # WX / Airspace overlay (traffic stays on).  Colour hints the state.
         _ov_state = _map_overlay_state(disp["ds"])
-        _ov_col = {"off": (150, 160, 170), "wx": (0, 200, 0),
-                   "asp": (40, 120, 255), "both": (0, 200, 255)}[_ov_state]
+        _ov_col = {"tfc": (150, 160, 170), "wx": (0, 200, 0),
+                   "nexrad": (0, 200, 255), "asp": (40, 120, 255),
+                   "multi": (220, 200, 80)}.get(_ov_state, (150, 160, 170))
         _mx, _my, _mw, _mh = rect
         _text(surf, _map_overlay_label(disp["ds"]), 11, _ov_col, bold=True,
               x=_mx + 4, y=_my + _mh - 15)

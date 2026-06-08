@@ -38,6 +38,7 @@ from config import *   # noqa: F403
 from sse_client import SSEClient
 import adsb as _adsb
 import wx as _wx
+import mapoverlay as _ovl
 from terrain import (
     get_elevation_ft, get_elevation_ft_combined,
     coarse_tile_list, coarse_tile_url, coarse_tile_path, coarse_disk_stats,
@@ -187,6 +188,7 @@ disp["ds"] = {                      # display settings
     "traffic_alt_band":  0,
     "traffic_range_nm":  0,
     "map_show_metar":    False,  # METAR station dots (off until WX selected)
+    "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     "map_show_state_lines": True,
     "map_show_country_lines": True,
     # Airspace layer — master toggle + per-class.  Off by default for
@@ -4448,11 +4450,14 @@ _DSP_MAP_LAYERS = [
     ("map_show_obstacles",     "OBS"),
     ("map_show_traffic",       "TFC"),
     ("map_show_metar",         "MET"),
+    ("map_show_nexrad",        "NEX"),
     ("map_show_state_lines",   "STA"),
     ("map_show_country_lines", "CTRY"),
     ("map_show_airspaces",     "ASP"),
 ]
-_DSP_LAYERS_PER_SUBROW = 4    # top row up to this many; rest spill to row 2
+_DSP_LAYERS_PER_SUBROW = 5    # top row up to this many; rest spill to row 2
+                              # (5 keeps two balanced rows now there are 10
+                              # layers, and 5×84 px still fits the 480 screen)
 _DSP_LAYERS_ROW_INDEX  = len(_DSP_ROWS)
 _DSP_LAYERS_BTN_W      = 84   # roomier than the standard 70 so labels
                               # like "CTRY" don't crowd the edge
@@ -5728,8 +5733,15 @@ def _wx_view():
 
 def _update_weather():
     """Pull the latest METAR snapshot from the background poller into
-    disp["weather"] and mirror link diagnostics into cs."""
+    disp["weather"] and mirror link diagnostics into cs.  Polling only runs
+    when a weather overlay (METAR or NEXRAD) is actually selected — saves
+    CPU + network the rest of the time."""
     if _wx_client is None:
+        return
+    ds = disp["ds"]
+    show = bool(ds.get("map_show_metar") or ds.get("map_show_nexrad"))
+    _wx_client.paused = not show
+    if not show:
         return
     w = disp["weather"]
     w["metars"] = _wx_client.snapshot()
@@ -9702,39 +9714,14 @@ def _mfd_orient_label_hit(x, y):
     return bx <= x <= bx + bw and by <= y <= by + bh
 
 
-# ── Map overlay quick-cycle (Weather / Airspace) ──────────────────────────────
+# ── Map overlay quick-cycle (Airspace / Traffic-only / METAR / NEXRAD) ────────
 # Traffic stays on always (safety); this single control cycles the *other*
-# heavy overlays one-at-a-time to keep the map readable.  It drives the same
-# ds booleans the Display-setup pills do, so the two stay consistent.
-_MAP_OVERLAY_ORDER = ["off", "wx", "asp"]
-
-
-def _map_overlay_state(ds):
-    wx  = bool(ds.get("map_show_metar"))
-    asp = bool(ds.get("map_show_airspaces"))
-    if wx and asp:
-        return "both"            # only reachable via the Setup pills
-    if asp:
-        return "asp"
-    if wx:
-        return "wx"
-    return "off"
-
-
-def _map_overlay_label(ds):
-    return {"off": "OVLY", "wx": "WX", "asp": "ASP",
-            "both": "WX+AS"}[_map_overlay_state(ds)]
-
-
-def _map_overlay_cycle(ds):
-    """Advance off → WX → ASP → off and apply the matching ds booleans."""
-    cur = _map_overlay_state(ds)
-    i = (_MAP_OVERLAY_ORDER.index(cur) if cur in _MAP_OVERLAY_ORDER
-         else len(_MAP_OVERLAY_ORDER) - 1)         # "both" → next is off
-    nxt = _MAP_OVERLAY_ORDER[(i + 1) % len(_MAP_OVERLAY_ORDER)]
-    ds["map_show_metar"]     = (nxt == "wx")
-    ds["map_show_airspaces"] = (nxt == "asp")
-    return nxt
+# heavy overlays one-at-a-time to keep the map readable.  Logic lives in
+# shared/mapoverlay.py (unit-tested); it drives the same ds booleans the
+# Display-setup pills do, so the two stay consistent.
+_map_overlay_state = _ovl.state
+_map_overlay_label = _ovl.label
+_map_overlay_cycle = _ovl.cycle
 
 
 def _mfd_overlay_btn_rect():

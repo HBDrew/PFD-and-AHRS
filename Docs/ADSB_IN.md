@@ -176,13 +176,17 @@ courtesy to the free aggregators.
   wherever you're looking. Flight-category station dots (green VFR / blue
   MVFR / red IFR / magenta LIFR) render on both maps. Tap a dot on the MFD
   for the decoded readout. Source-agnostic `disp["weather"]`.
-- **Overlay quick-cycle.** Traffic stays on always (safety); a single
-  on-map control cycles the heavy overlays one-at-a-time to keep the map
-  readable: **off → WX → Airspace → off**. On the Pi Zero MFD it's the
-  **OVLY** button under the RNG label; on the Pi 4 inset it's the
-  **bottom-left corner** (label shows the current state). Both drive the
-  same `ds["map_show_metar"]` / `ds["map_show_airspaces"]` booleans the
-  Setup → Display pills (MET / ASP) use, so they stay consistent.
+- **Overlay quick-cycle** (`shared/mapoverlay.py`, unit-tested). Traffic
+  stays on always (safety); a single on-map control cycles the heavy
+  overlays one-at-a-time to keep the map readable and CPU low:
+  **Airspace → Traffic → METAR → NEXRAD** (labels ASP / TFC / MET / NEX).
+  "Traffic" (TFC) is the traffic-only state — no heavy overlay added;
+  traffic + your base map still show. On the Pi Zero MFD it's the button
+  under the RNG label; on the Pi 4 inset it's the **bottom-left corner**
+  (label shows the current state). Both drive the same `ds["map_show_*"]`
+  booleans the Setup → Display pills (MET / NEX / ASP) use, so they stay
+  consistent. The weather poller only runs while METAR/NEXRAD is the active
+  overlay — no CPU/network spent on weather you're not looking at.
 
 **Planned:**
 - **NEXRAD raster** weather overlay (internet first — aviationweather.gov /
