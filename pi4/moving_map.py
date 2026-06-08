@@ -611,6 +611,47 @@ def _draw_traffic(surf, traffic, project, rot_deg, px_per_nm, font, rect):
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _rot_deg_for(orient, hdg_deg, track_deg):
+    """Map rotation in degrees (track-up uses track when valid, else heading;
+    north-up is 0).  Callers pass track_deg=None when GPS track is unreliable."""
+    if orient != "trk":
+        return 0.0
+    if track_deg is None or track_deg == 0.0:
+        return float(hdg_deg or 0.0)
+    return float(track_deg)
+
+
+def make_projector(rect, lat, lon, orient, range_nm, hdg_deg, track_deg):
+    """Return (project, unproject) closures matching render()'s projection,
+    for hit-testing (airport/METAR taps) and pan drags."""
+    x, y, w, h = rect
+    rot_deg = _rot_deg_for(orient, hdg_deg, track_deg)
+    px_per_nm = min(w, h) / 2.0 / max(0.5, range_nm)
+    cx, cy = x + w / 2.0, y + h / 2.0
+    cos_lat = max(0.05, math.cos(math.radians(lat)))
+    rr = math.radians(rot_deg)
+    sin_r, cos_r = math.sin(rr), math.cos(rr)
+
+    def project(la, lo):
+        n_nm = (la - lat) * _NM_PER_DEG_LAT
+        e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+        if rot_deg:
+            e_nm, n_nm = (e_nm * cos_r - n_nm * sin_r,
+                          e_nm * sin_r + n_nm * cos_r)
+        return cx + e_nm * px_per_nm, cy - n_nm * px_per_nm
+
+    def unproject(sx, sy):
+        e_nm = (sx - cx) / px_per_nm
+        n_nm = -(sy - cy) / px_per_nm
+        if rot_deg:
+            e_nm, n_nm = (e_nm * cos_r + n_nm * sin_r,
+                          -e_nm * sin_r + n_nm * cos_r)
+        return (lat + n_nm / _NM_PER_DEG_LAT,
+                lon + e_nm / (_NM_PER_DEG_LAT * cos_lat))
+
+    return project, unproject
+
+
 def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_nm, settings,
            airports_arr=None, runways_arr=None, obstacles_arr=None,
@@ -619,7 +660,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_label=None, state_lines=None, country_lines=None,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
            traffic=None, metars=None, nexrad=None,
-           draw_corner_labels=True):
+           draw_corner_labels=True, own_lat=None, own_lon=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1023,12 +1064,20 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             own_rot = float(hdg_deg or 0.0)
         else:
             own_rot = float(track_deg)
+    # When panned (own_lat/own_lon given and away from the map centre),
+    # project the aircraft to its real screen position instead of pinning
+    # the chevron to the centre.
+    if (own_lat is not None and own_lon is not None
+            and (abs(own_lat - lat) > 1e-9 or abs(own_lon - lon) > 1e-9)):
+        ox, oy = _project(own_lat, own_lon)
+    else:
+        ox, oy = cx, cy
     s = 7
     base_pts = [(0, -s), (s, s), (0, s * 0.4), (-s, s)]
     cr = math.cos(math.radians(own_rot))
     sr = math.sin(math.radians(own_rot))
-    rotated = [(cx + p[0] * cr - p[1] * sr,
-                cy + p[0] * sr + p[1] * cr) for p in base_pts]
+    rotated = [(ox + p[0] * cr - p[1] * sr,
+                oy + p[0] * sr + p[1] * cr) for p in base_pts]
     pygame.draw.polygon(surf, _OWNSHIP,
                         [(int(rx), int(ry)) for rx, ry in rotated])
 

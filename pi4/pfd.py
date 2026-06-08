@@ -260,6 +260,8 @@ disp["ds"] = {                      # display settings
     # Full-screen MFD: gate for the 3-finger PFD↔MFD swap.  Default on for
     # the larger HDMI screens (that's where a full-screen map earns its keep).
     "mfd_enabled":       True,
+    # MFD bottom data strip — 8 user-selectable readout slots.
+    "mfd_strip_kinds":  ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "eta"],
     "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_country_lines": True, # admin_0 boundaries at >= 20 nm
     "map_show_directto": True,
@@ -351,6 +353,11 @@ disp["traffic"] = {
 disp["weather"] = {
     "metars": [], "online": False, "n": 0,
 }
+# When set (tapping a METAR dot on the MFD), holds the station for the
+# decoded-METAR readout panel.  None = no panel.
+disp["wx_popup"] = None
+# MFD pan offset.  lat/lon None = follow the aircraft; set = panned map.
+disp["mfd_pan"] = {"lat": None, "lon": None}
 # Mirror of the peer's flight plan (received over screen sync).  The
 # Pi 4 PFD doesn't edit FPLs today — it just renders the active leg
 # (via disp["nav"]) and the multi-leg polyline on its inset map.  When
@@ -4447,7 +4454,35 @@ def handle_event(event, demo_mode):
     # screen, watch MOTION to detect a scroll-drag, and on BUTTONUP either
     # consume the drag (no action fires) or replay the tap at the up
     # position so the underlying row-hit code runs as if nothing happened.
-    global _ss_drag, _dispatch_replay
+    global _ss_drag, _dispatch_replay, _mfd_drag
+    # ── MFD pan drag ──────────────────────────────────────────────────────────
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _mfd_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        x, y = pos
+        dx = x - _mfd_drag["down_x"]
+        dy = y - _mfd_drag["down_y"]
+        if (not _mfd_drag["is_drag"]
+                and (abs(dx) > _MFD_DRAG_THRESHOLD or abs(dy) > _MFD_DRAG_THRESHOLD)):
+            _mfd_drag["is_drag"] = True
+        if _mfd_drag["is_drag"]:
+            unproj = _mfd_drag["unproject"]
+            la0, lo0 = unproj(_mfd_drag["down_x"], _mfd_drag["down_y"])
+            la1, lo1 = unproj(x, y)
+            disp["mfd_pan"]["lat"] = _mfd_drag["base_lat"] - (la1 - la0)
+            disp["mfd_pan"]["lon"] = _mfd_drag["base_lon"] - (lo1 - lo0)
+        _mfd_drag["pos"] = (x, y)
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _mfd_drag is not None:
+        d = _mfd_drag
+        _mfd_drag = None
+        if not d["is_drag"]:
+            # A tap (not a pan): open a METAR readout when the WX overlay is up.
+            if disp["ds"].get("map_show_metar"):
+                _mfd_metar_tap(*d["pos"])
+        return True
+
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
         pos = event.pos if hasattr(event, "pos") else (
             int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
@@ -4490,8 +4525,12 @@ def handle_event(event, demo_mode):
 
         mode = disp["mode"]
 
-        # ── Full-screen MFD chrome (3-finger swap returns to PFD too) ──────
+        # ── Full-screen MFD ───────────────────────────────────────────────
         if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+            # A METAR readout is up → any tap dismisses it.
+            if disp.get("wx_popup"):
+                disp["wx_popup"] = None
+                return True
             r = _p4_mfd_rects()
 
             def _in(rc):
@@ -4506,6 +4545,8 @@ def handle_event(event, demo_mode):
                 cur = disp["ds"].get("map_orient", "trk")
                 disp["ds"]["map_orient"] = "nrth" if cur == "trk" else "trk"
                 _settings.mark_dirty()
+            elif _mfd_is_panned() and _in(r["center"]):
+                _mfd_clear_pan()
             elif _in(r["zoom_in"]):
                 cur = int(disp["ds"].get("map_zoom_nm", 10))
                 disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
@@ -4516,7 +4557,23 @@ def handle_event(event, demo_mode):
                 disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur,
                                                               allow_auto=has_d2)
                 _settings.mark_dirty()
-            # Swallow all other taps on the MFD (no PFD bug-drags / numpad).
+            elif _in(r["d2"]) or _in(r["fpl"]) or _mfd_strip_hit(x, y):
+                # Direct-to entry, the flight-plan editor, and strip-slot
+                # configuration land in the next phase of the MFD port.  For
+                # now D2/nav + the plan sync in from the Pi Zero MFD, so the
+                # strip's WPT/DIST/ETE slots still populate.  Swallow the tap.
+                pass
+            else:
+                # Tap/drag on the map → start a pan.  MOTION converts to a
+                # pan; UP without motion runs the METAR hit-test.
+                cen_lat, cen_lon = _mfd_effective_center()
+                _, unproj = _map_mod.make_projector(
+                    (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon,
+                    _mfd_last_orient, _mfd_last_range,
+                    disp.get("yaw", 0.0), _mfd_last_track)
+                _mfd_drag = {"down_x": x, "down_y": y, "pos": (x, y),
+                             "is_drag": False, "base_lat": cen_lat,
+                             "base_lon": cen_lon, "unproject": unproj}
             return True
 
         # Defer tap-fire on drag-capable setup screens — except taps inside
@@ -10538,28 +10595,338 @@ _P4_MFD_BH  = 48
 _P4_MFD_PAD = 8
 
 
+# Bottom data strip — 8 configurable readout slots (mirrors pi_zero).
+_MFD_STRIP_H   = 56
+_MFD_STRIP_SLOT_COUNT = 8
+_MFD_STRIP_AVAILABLE = (
+    ("gs", "GS", False), ("as", "AS", False), ("tas", "TAS", False),
+    ("trk", "TRK", False), ("hdg", "HDG", False), ("alt", "ALT", False),
+    ("agl", "AGL", False), ("vs", "VS", False), ("time", "UTC", False),
+    ("baro", "BARO", False), ("sat", "SAT", False),
+    ("wpt", "WPT", True), ("btw", "BTW", True), ("dtk", "DTK", True),
+    ("dist", "DIST", True), ("disw", "DISW", True), ("xte", "XTE", True),
+    ("ete", "ETE", True), ("etew", "ETEW", True), ("eta", "ETA", True),
+    ("etw", "ETW", True),
+)
+_MFD_STRIP_KIND_IDS = tuple(k[0] for k in _MFD_STRIP_AVAILABLE)
+_MFD_STRIP_CAPTIONS = {k[0]: k[1] for k in _MFD_STRIP_AVAILABLE}
+_MFD_STRIP_NEEDS_D2 = {k[0]: k[2] for k in _MFD_STRIP_AVAILABLE}
+_MFD_STRIP_DEFAULT  = ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "eta"]
+_D2_DIM = (110, 90, 110)
+_P4_MFD_ZOOM = 64          # zoom button square
+
+
+def _fpl_total_remaining_nm(lat, lon):
+    """Distance from the aircraft through the active + remaining legs."""
+    if not _fpl_is_active():
+        return 0.0
+    wps = disp["fpl"]["waypoints"]
+    idx = disp["fpl"]["active_idx"]
+    total, _ = _nav_geo_dist_brg(lat, lon, wps[idx]["lat"], wps[idx]["lon"])
+    for i in range(idx, len(wps) - 1):
+        leg, _ = _nav_geo_dist_brg(wps[i]["lat"], wps[i]["lon"],
+                                   wps[i + 1]["lat"], wps[i + 1]["lon"])
+        total += leg
+    return total
+
+
+def _mfd_strip_rect():
+    return (0, DISPLAY_H - _MFD_STRIP_H, DISPLAY_W, _MFD_STRIP_H)
+
+
+def _mfd_strip_hit(x, y):
+    sx, sy, sw, sh = _mfd_strip_rect()
+    return sx <= x <= sx + sw and sy <= y <= sy + sh
+
+
+def _mfd_strip_kinds():
+    cur = list(disp["ds"].get("mfd_strip_kinds", _MFD_STRIP_DEFAULT))
+    out = []
+    for i in range(_MFD_STRIP_SLOT_COUNT):
+        k = cur[i] if i < len(cur) else _MFD_STRIP_DEFAULT[i]
+        if k not in _MFD_STRIP_KIND_IDS:
+            k = _MFD_STRIP_DEFAULT[i]
+        out.append(k)
+    return out
+
+
+def _mfd_strip_ete_str(gs_kt, dist_nm):
+    if gs_kt < 3.0 or dist_nm <= 0.0:
+        return "--:--"
+    hours = dist_nm / gs_kt
+    if hours < 1.0:
+        mm, ss = divmod(int(round(hours * 3600)), 60)
+        return f"{mm}:{ss:02d}"
+    if hours < 99.0:
+        h_, rem = divmod(int(round(hours * 3600)), 3600)
+        mm, _ = divmod(rem, 60)
+        return f"{h_}:{mm:02d}"
+    return "--:--"
+
+
+def _mfd_strip_eta_str(gs_kt, dist_nm):
+    if gs_kt < 3.0 or dist_nm <= 0.0 or dist_nm / max(1e-6, gs_kt) >= 99.0:
+        return "--:--"
+    eta_t = time.time() + int(round(dist_nm / gs_kt * 3600))
+    return time.strftime("%H:%MZ", time.gmtime(eta_t))
+
+
+def _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2):
+    ctx = {
+        "lat": lat, "lon": lon, "alt": alt, "hdg": hdg, "track": track,
+        "gs_kt": gs_kt, "ias": float(disp.get("ias_kt", 0.0)),
+        "tas": float(disp.get("tas_kt", 0.0)),
+        "vs": float(disp.get("vspeed", 0.0)),
+        "baro_hpa": float(disp.get("baro_hpa", BARO_DEFAULT_HPA)),
+        "sats": int(disp.get("sats", 0)), "d2": d2,
+    }
+    if _has_terrain:
+        try:
+            ctx["agl"] = max(0.0, alt - get_elevation_ft(SRTM_DIR, lat, lon))
+        except Exception:
+            ctx["agl"] = None
+    if d2 is not None:
+        dist_nm, brg = _nav_geo_dist_brg(lat, lon, d2["lat"], d2["lon"])
+        ctx["dist_nm"] = dist_nm
+        ctx["brg"] = brg
+        act_lat = float(d2.get("act_lat", lat))
+        act_lon = float(d2.get("act_lon", lon))
+        _, dtk = _nav_geo_dist_brg(act_lat, act_lon, d2["lat"], d2["lon"])
+        ctx["dtk"] = dtk
+        ctx["xte_nm"] = _nav_xtk_nm(act_lat, act_lon, d2["lat"], d2["lon"],
+                                    lat, lon)
+    return ctx
+
+
+def _mfd_strip_format(kind, ctx):
+    d2 = ctx.get("d2")
+    gs_kt = ctx["gs_kt"]
+    if kind == "gs":
+        return ("GS", f"{int(round(gs_kt)):3d}", WHITE)
+    if kind == "as":
+        v = ctx["ias"]
+        return ("AS", f"{int(round(v)):3d}" if v > 0 else "---", WHITE)
+    if kind == "tas":
+        v = ctx["tas"]
+        return ("TAS", f"{int(round(v)):3d}" if v > 0 else "---", WHITE)
+    if kind == "trk":
+        s = (f"{int(round(ctx['track'])) % 360:03d}°"
+             if gs_kt >= HDG_TRK_MIN_KT else "---°")
+        return ("TRK", s, WHITE)
+    if kind == "hdg":
+        return ("HDG", f"{int(round(ctx['hdg'])) % 360:03d}°", WHITE)
+    if kind == "alt":
+        return ("ALT", f"{int(round(ctx['alt'] / 20.0) * 20):5d}", WHITE)
+    if kind == "agl":
+        v = ctx.get("agl")
+        if v is None:
+            return ("AGL", "----", (140, 140, 140))
+        return ("AGL", f"{int(round(v / 10.0) * 10):5d}", WHITE)
+    if kind == "vs":
+        return ("VS", f"{int(round(ctx['vs'])):+5d}", WHITE)
+    if kind == "time":
+        return ("UTC", time.strftime("%H:%MZ", time.gmtime()), WHITE)
+    if kind == "baro":
+        hpa = ctx["baro_hpa"]
+        if disp["ds"].get("baro_unit", "inhg") == "inhg":
+            return ("BARO", f"{hpa * 0.02953:.2f}", WHITE)
+        return ("BARO", f"{int(round(hpa)):4d}", WHITE)
+    if kind == "sat":
+        return ("SAT", f"{ctx['sats']:2d}", WHITE)
+
+    caption = _MFD_STRIP_CAPTIONS.get(kind, "?")
+    if d2 is None:
+        return (caption, "--", _D2_DIM)
+    if kind == "wpt":
+        return (caption, d2.get("ident", "----"), MAGENTA)
+    if kind == "btw":
+        return (caption, f"{int(round(ctx['brg'])) % 360:03d}°", MAGENTA)
+    if kind == "dtk":
+        return (caption, f"{int(round(ctx['dtk'])) % 360:03d}°", MAGENTA)
+    if kind == "dist":
+        d_nm = ctx["dist_nm"]
+        return (caption, f"{int(round(d_nm)):d}" if d_nm >= 1000 else f"{d_nm:.1f}", MAGENTA)
+    if kind == "disw":
+        d_nm = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"]) if _fpl_is_active() else ctx["dist_nm"]
+        return (caption, f"{int(round(d_nm)):d}" if d_nm >= 1000 else f"{d_nm:.1f}", MAGENTA)
+    if kind == "xte":
+        return (caption, f"{ctx['xte_nm']:+.1f}", MAGENTA)
+    if kind == "ete":
+        return (caption, _mfd_strip_ete_str(gs_kt, ctx["dist_nm"]), MAGENTA)
+    if kind == "etew":
+        total = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"]) if _fpl_is_active() else ctx["dist_nm"]
+        return (caption, _mfd_strip_ete_str(gs_kt, total), MAGENTA)
+    if kind == "etw":
+        return (caption, _mfd_strip_eta_str(gs_kt, ctx["dist_nm"]), MAGENTA)
+    if kind == "eta":
+        total = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"]) if _fpl_is_active() else ctx["dist_nm"]
+        return (caption, _mfd_strip_eta_str(gs_kt, total), MAGENTA)
+    return (caption, "--", _D2_DIM)
+
+
+# ── MFD pan ───────────────────────────────────────────────────────────────────
+def _mfd_effective_center():
+    pan = disp.get("mfd_pan", {})
+    if pan.get("lat") is not None and pan.get("lon") is not None:
+        return float(pan["lat"]), float(pan["lon"])
+    return (disp.get("lat", DEMO_LAT), disp.get("lon", DEMO_LON))
+
+
+def _mfd_is_panned():
+    pan = disp.get("mfd_pan", {})
+    return pan.get("lat") is not None and pan.get("lon") is not None
+
+
+def _mfd_clear_pan():
+    disp["mfd_pan"]["lat"] = None
+    disp["mfd_pan"]["lon"] = None
+
+
+# Pan-drag state + last-rendered map params (so tap/drag projection matches
+# what's on screen, including AUTO-resolved range / forced north-up).
+_mfd_drag = None
+_mfd_last_range = 10
+_mfd_last_orient = "trk"
+_mfd_last_track = None
+_MFD_DRAG_THRESHOLD = 8
+
+_mfd_apt_font = None
+
+
+def _mfd_get_apt_font():
+    global _mfd_apt_font
+    if _mfd_apt_font is None:
+        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", 18, bold=True)
+    return _mfd_apt_font
+
+
+# ── METAR readout popup (tap a station) ───────────────────────────────────────
+def _wrap_text(text, font, max_w):
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        trial = w if not cur else cur + " " + w
+        if font.size(trial)[0] <= max_w:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _draw_wx_popup(surf):
+    m = disp.get("wx_popup")
+    if not m:
+        return
+    pw = min(620, DISPLAY_W - 40)
+    ph = 300
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    cat = m.get("fltcat", "")
+    _text(surf, m.get("icao", "----"), 30, (235, 235, 235), bold=True,
+          x=px + 18, y=py + 12)
+    _text(surf, cat or "—", 26, _wx.cat_color(cat), bold=True,
+          x=px + pw - 120, y=py + 15)
+    wd, ws, wg = m.get("wdir"), m.get("wspd"), m.get("wgst")
+    if ws is None:
+        wind = "Wind —"
+    elif ws == 0:
+        wind = "Wind calm"
+    else:
+        d = "VRB" if wd in (None, "VRB") else f"{int(wd):03d}°"
+        wind = f"Wind {d} {int(ws)} kt" + (f" G{int(wg)}" if wg else "")
+    vis = m.get("visib_mi")
+    ceil = m.get("ceiling_ft")
+    alt = m.get("altim_hpa")
+    t, dp = m.get("temp_c"), m.get("dewp_c")
+    age = m.get("age_min")
+    rows = [
+        wind,
+        f"Vis {vis:g} sm" if vis is not None else "Vis —",
+        f"Ceiling {int(ceil)} ft" if ceil is not None else "No ceiling",
+        (f"Alt {alt * 0.0295300:.2f} inHg / {int(round(alt))} hPa"
+         if alt else "Alt —"),
+        (f"Temp {t:.0f}° / Dew {dp:.0f}°C"
+         if t is not None and dp is not None else ""),
+        f"Observed {int(age)} min ago" if age is not None else "",
+    ]
+    yy = py + 60
+    for rr in rows:
+        if rr:
+            _text(surf, rr, 22, (210, 220, 230), x=px + 18, y=yy)
+            yy += 28
+    raw = m.get("raw", "")
+    if raw:
+        f = pygame.font.SysFont("DejaVu Sans", 18)
+        yy = max(yy + 6, py + ph - 70)
+        for ln in _wrap_text(raw, f, pw - 36)[:2]:
+            _text(surf, ln, 18, (150, 200, 240), x=px + 18, y=yy)
+            yy += 22
+    _text(surf, "tap to close", 16, (140, 150, 160),
+          cx=DISPLAY_W // 2, cy=py + ph - 14)
+
+
+def _mfd_metar_tap(tap_x, tap_y, tap_px=28):
+    metars = disp.get("weather", {}).get("metars") or []
+    if not metars:
+        return False
+    cen_lat, cen_lon = _mfd_effective_center()
+    project, _ = _map_mod.make_projector(
+        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
+        _mfd_last_range, disp.get("yaw", 0.0), _mfd_last_track)
+    best_d2 = (tap_px + 1) ** 2
+    best = None
+    for m in metars:
+        la, lo = m.get("lat"), m.get("lon")
+        if la is None or lo is None:
+            continue
+        sx, sy = project(la, lo)
+        dd = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+        if dd < best_d2:
+            best_d2 = dd
+            best = m
+    if best is None:
+        return False
+    disp["wx_popup"] = dict(best)
+    return True
+
+
 def _p4_mfd_rects():
     """Chrome button rects for the full-screen MFD (keyed by name)."""
     W, H = DISPLAY_W, DISPLAY_H
     p, bw, bh = _P4_MFD_PAD, _P4_MFD_BW, _P4_MFD_BH
+    z = _P4_MFD_ZOOM
+    _, sy, _, _ = _mfd_strip_rect()        # zoom buttons sit above the strip
+    zy = sy - 6 - z
     return {
-        "ovly":     (p, p, bw, bh),                       # top-left
-        "pfd":      (W - bw - p, p, bw, bh),              # top-right (back)
-        "orient":   (W - bw - p, p + bh + p, bw, bh),     # under PFD
-        "zoom_out": (p, H - bh - p, bw, bh),              # bottom-left
-        "zoom_in":  (W - bw - p, H - bh - p, bw, bh),     # bottom-right
+        "d2":       (p, p, bw, bh),                       # top-left
+        "fpl":      (W - bw - p, p, bw, bh),              # top-right
+        "pfd":      (W - bw - p, p + bh + p, bw, bh),     # under FPL (back)
+        "ovly":     (p, p + bh + p, bw, bh),              # under D2
+        "orient":   (p, p + 2 * (bh + p), bw, bh),        # under OVLY
+        "center":   (W - bw - p, p + 2 * (bh + p), bw, bh),  # CTR (when panned)
+        "zoom_out": (p, zy, z, z),                        # above strip, left
+        "zoom_in":  (W - z - p, zy, z, z),                # above strip, right
     }
 
 
 def draw_mfd(surf, connected=True, data_stale=False):
-    """Full-screen moving map for the larger screens.  Reuses the same caches
-    and render path as the PFD inset, plus tappable chrome (overlay cycle,
-    orientation, zoom, and a PFD button to return)."""
+    """Full-screen moving map for the larger screens — pans, configurable
+    bottom data strip, overlay cycle, zoom, direct-to, and a PFD button."""
     surf.fill((0, 0, 0))
     rect = (0, 0, DISPLAY_W, DISPLAY_H)
     ds = disp["ds"]
-    lat = disp.get("lat", DEMO_LAT)
-    lon = disp.get("lon", DEMO_LON)
+    ac_lat = disp.get("lat", DEMO_LAT)
+    ac_lon = disp.get("lon", DEMO_LON)
+    cen_lat, cen_lon = _mfd_effective_center()
     alt = disp.get("alt", 0.0)
     hdg = disp.get("yaw", 0.0)
     track = disp.get("track", hdg)
@@ -10587,9 +10954,9 @@ def draw_mfd(surf, connected=True, data_stale=False):
     zoom_pref = int(ds.get("map_zoom_nm", 10))
     if zoom_pref == _map_mod.ZOOM_AUTO:
         if d2.get("ident"):
-            cos_lat = max(0.05, math.cos(math.radians(lat)))
-            n_nm = (d2["lat"] - lat) * 60.0
-            e_nm = (d2["lon"] - lon) * 60.0 * cos_lat
+            cos_lat = max(0.05, math.cos(math.radians(cen_lat)))
+            n_nm = (d2["lat"] - cen_lat) * 60.0
+            e_nm = (d2["lon"] - cen_lon) * 60.0 * cos_lat
             eff_range = _map_mod.auto_fit_range(math.hypot(n_nm, e_nm) * 1.10)
         else:
             eff_range = _map_mod.ZOOM_LEVELS[-1]
@@ -10598,13 +10965,17 @@ def draw_mfd(surf, connected=True, data_stale=False):
         eff_range = zoom_pref
         eff_label = None
     eff_orient = "nrth" if eff_range > 40 else ds.get("map_orient", "trk")
+    global _mfd_last_range, _mfd_last_orient, _mfd_last_track
+    _mfd_last_range, _mfd_last_orient, _mfd_last_track = (
+        eff_range, eff_orient, map_track)
 
     _map_mod.render(
-        surf, rect, lat, lon, alt, hdg, map_track, eff_orient, eff_range, ds,
+        surf, rect, cen_lat, cen_lon, alt, hdg, map_track, eff_orient,
+        eff_range, ds,
         airports_arr=_airports, runways_arr=_runways, obstacles_arr=_obstacles,
         srtm_dir=SRTM_DIR, water_dir=WATER_DIR,
         direct_to=d2 if d2.get("ident") else None,
-        font=_get_font(15, bold=True),
+        font=_mfd_get_apt_font(),
         airport_types_visible=types_vis, gs_kt=gs_kt,
         vso_kt=disp["fp"].get("vs0", VS0),
         range_label=eff_label,
@@ -10614,10 +10985,30 @@ def draw_mfd(surf, connected=True, data_stale=False):
         traffic=disp.get("traffic", {}).get("targets"),
         metars=disp.get("weather", {}).get("metars"),
         nexrad=_nexrad_render_arg(),
+        own_lat=ac_lat, own_lon=ac_lon,
         draw_corner_labels=False)
 
-    # ── Chrome ───────────────────────────────────────────────────────────
+    # ── Bottom data strip ──────────────────────────────────────────────────
+    sx, sy, sw, sh = _mfd_strip_rect()
+    plate = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    plate.fill((0, 8, 22, 190))
+    surf.blit(plate, (sx, sy))
+    pygame.draw.line(surf, (60, 80, 110), (sx, sy), (sx + sw - 1, sy), 1)
+    ctx = _mfd_strip_ctx(cen_lat, cen_lon, alt, hdg, track, gs_kt,
+                         d2 if d2.get("ident") else None)
+    col_w = sw // _MFD_STRIP_SLOT_COUNT
+    for i, kind in enumerate(_mfd_strip_kinds()):
+        cap, val, col = _mfd_strip_format(kind, ctx)
+        cx = sx + col_w // 2 + col_w * i
+        _text(surf, cap, 13, (140, 170, 200), bold=True, cx=cx, y=sy + 5)
+        _text(surf, val, 26, col, bold=True, cx=cx, cy=sy + 36)
+
+    # ── Chrome ─────────────────────────────────────────────────────────────
     r = _p4_mfd_rects()
+    d2_style = "warn" if d2.get("ident") else "normal"
+    d2_label = f"D→ {d2['ident']}" if d2.get("ident") else "D→"
+    _action_btn(surf, *r["d2"], d2_label, d2_style, r=6)
+    _action_btn(surf, *r["fpl"], "FPL", "normal", r=6)
     _action_btn(surf, *r["pfd"], "PFD", "normal", r=6)
     ov_state = _map_overlay_state(ds)
     _action_btn(surf, *r["ovly"], _map_overlay_label(ds),
@@ -10625,19 +11016,19 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _action_btn(surf, *r["orient"],
                 "TRK↑" if ds.get("map_orient", "trk") == "trk" else "N↑",
                 "normal", r=6)
+    if _mfd_is_panned():
+        _action_btn(surf, *r["center"], "CTR", "ok", r=6)
     _action_btn(surf, *r["zoom_out"], "−", "normal", r=8)
     _action_btn(surf, *r["zoom_in"], "+", "normal", r=8)
 
     rng_lbl = (f"{eff_range:g} NM" if eff_label is None
                else f"AUTO · {eff_range:g} NM")
     _text(surf, rng_lbl, 20, CYAN, bold=True, cx=DISPLAY_W // 2, cy=22)
-    if d2.get("ident"):
-        _text(surf, f"D→ {d2['ident']}", 18, (220, 0, 220), bold=True,
-              cx=DISPLAY_W // 2, cy=48)
     if not connected or data_stale:
         _text(surf, "NO LINK" if not connected else "DATA STALE",
-              18, (240, 90, 90), bold=True,
-              cx=DISPLAY_W // 2, cy=DISPLAY_H - 20)
+              18, (240, 90, 90), bold=True, cx=DISPLAY_W // 2, cy=sy - 12)
+
+    _draw_wx_popup(surf)
 
 
 def render(surf, demo_mode, connected, data_stale=False):
