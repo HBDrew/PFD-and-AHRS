@@ -75,6 +75,15 @@ ADSB_PROX_FT   = 1200     # proximate-traffic altitude envelope
 ADSB_ALERT_NM  = 3.0      # alert (resolution) range envelope (red)
 ADSB_ALERT_FT  = 600      # alert altitude envelope
 
+# ── Traffic source (built-in internet feed) ───────────────────────────────────
+# The display always listens for GDL90/UDP (radio / SDR bridge).  It can ALSO
+# run an internal internet feed so traffic works without a separate script.
+# traffic_source: "auto" (feed on) | "radio" (feed off, external only) |
+# "internet" (feed on).  Cycled by tapping the ADS-B label on the MFD.
+TRAFFIC_FEED_SOURCE   = "airplanes_live"   # aggregator (airplanes_live/adsb_lol/adsb_fi)
+TRAFFIC_FEED_RADIUS_NM = 80
+TRAFFIC_FEED_INTERVAL_S = 8
+
 # ── Weather (internet METARs; NEXRAD + FIS-B later) ───────────────────────────
 # Pulled from aviationweather.gov (free, no key) around the *map view* (so
 # panning/zooming over CONUS loads weather for wherever you're looking, not

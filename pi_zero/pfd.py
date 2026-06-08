@@ -37,6 +37,7 @@ import pygame.gfxdraw
 from config import *   # noqa: F403
 from sse_client import SSEClient
 import adsb as _adsb
+import adsb_feed as _afeed
 import wx as _wx
 import nexrad as _nexrad
 import mapoverlay as _ovl
@@ -261,6 +262,7 @@ disp["cs"] = {                      # connectivity settings
     # ADS-B IN — listen for GDL90 traffic on UDP.  Diagnostics mirror the
     # AHRS link fields so the Connectivity screen can show an ADS-B row.
     "adsb_enabled":   True,     # start the GDL90/UDP listener at boot
+    "traffic_source": "auto",   # "auto" | "radio" | "internet" (built-in feed)
     "adsb_port":      ADSB_UDP_PORT,
     "adsb_online":    False,    # receiver feeding us GDL90 right now
     "adsb_rx":        0,        # GDL90 messages decoded OK
@@ -363,6 +365,7 @@ SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 # ── Module-level SSE handle (set in main, restarted by handle_event) ─────────
 _sse_client  = None
 _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
+_traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traffic_source
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
 _nexrad_client = None # NexradClient (internet radar poller) when enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
@@ -3812,6 +3815,9 @@ def handle_event(event, demo_mode):
                 print(f"[MFD] overlay → {nxt}")
                 _settings.mark_dirty()
                 return True
+            if _mfd_source_status_hit(x, y):
+                print(f"[MFD] traffic source → {_mfd_cycle_traffic_source()}")
+                return True
             if _mfd_strip_hit(x, y):
                 disp["mode"] = "mfd_strip_setup"
                 disp["mss_sel"] = 0   # currently-selected slot index
@@ -5732,6 +5738,14 @@ def _update_traffic(demo_mode):
     own_lat = float(disp.get("lat", DEMO_LAT))
     own_lon = float(disp.get("lon", DEMO_LON))
     own_alt = float(disp.get("alt", 0.0))
+
+    # Built-in internet feed runs unless source is "radio" (external only),
+    # we're in demo (synthetic traffic), or there's no GPS fix yet (a feed
+    # query at 0,0 is pointless).
+    if _traffic_feed is not None:
+        src = disp["cs"].get("traffic_source", "auto")
+        _traffic_feed.paused = (src == "radio" or demo_mode
+                                or not disp.get("gps_ok", False))
 
     online = False
     live = []
@@ -9871,51 +9885,76 @@ def _mfd_clear_pan():
     disp["mfd_pan"]["lon"] = None
 
 
+_mfd_adsb_status_rect = None   # tap zone to cycle traffic_source
+
+
 def _mfd_draw_source_status(surf):
-    """Top-centre source health: ADS-B / WX / NEX with live state + data age.
-    Green = receiving, amber = enabled but no data yet, grey = off."""
+    """Source health, stacked down the LEFT side (clear of the forward view).
+    Only shows the labels relevant to what's on screen: ADS-B always (with
+    the traffic source mode, tap to cycle), WX when the METAR overlay is up,
+    NEX when the NEXRAD overlay is up.  Green = receiving, amber = enabled
+    but no data, with data age for WX/NEX."""
+    global _mfd_adsb_status_rect
     now = time.monotonic()
     ds = disp["ds"]
 
-    def age(client):
-        u = getattr(client, "updated_s", 0.0) or 0.0
+    def age(c):
+        u = getattr(c, "updated_s", 0.0) or 0.0
         if u <= 0:
-            return "—"
+            return ""
         a = now - u
-        return f"{int(a)}s" if a < 60 else f"{int(a / 60)}m"
+        return f" {int(a)}s" if a < 60 else f" {int(a / 60)}m"
 
-    segs = []
-    a = _adsb_client
-    if a is None:
-        segs.append(("ADS-B off", (110, 120, 130)))
-    elif a.connected:
-        segs.append((f"ADS-B {disp.get('traffic', {}).get('n_total', 0)}",
-                     (60, 220, 90)))
-    else:
-        segs.append(("ADS-B …", (220, 160, 60)))
-    w = _wx_client
-    if w is None or not ds.get("map_show_metar"):
-        segs.append(("WX off", (110, 120, 130)))
-    elif w.connected:
-        segs.append((f"WX {disp.get('weather', {}).get('n', 0)} {age(w)}",
-                     (60, 220, 90)))
-    else:
-        segs.append((f"WX … {age(w)}", (220, 160, 60)))
-    n = _nexrad_client
-    if n is None or not ds.get("map_show_nexrad"):
-        segs.append(("NEX off", (110, 120, 130)))
-    elif n.connected:
-        segs.append((f"NEX {age(n)}", (60, 220, 90)))
-    else:
-        segs.append((f"NEX … {age(n)}", (220, 160, 60)))
-
+    ox, oy, _ow, oh = _mfd_overlay_btn_rect()
+    x = ox
+    y = oy + oh + 12
     f = _get_font(13, bold=True)
-    gap = 14
-    widths = [f.size(t)[0] for t, _ in segs]
-    x = DISPLAY_W // 2 - (sum(widths) + gap * (len(segs) - 1)) // 2
-    for (t, c), wd in zip(segs, widths):
-        _text(surf, t, 13, c, bold=True, x=x, y=6)
-        x += wd + gap
+    _mfd_adsb_status_rect = None
+
+    if _adsb_client is not None:
+        src = disp["cs"].get("traffic_source", "auto")
+        mode = {"auto": "AUTO", "radio": "RADIO",
+                "internet": "INET"}.get(src, "AUTO")
+        if _adsb_client.connected:
+            txt = f"ADS-B {mode} {disp.get('traffic', {}).get('n_total', 0)}"
+            col = (60, 220, 90)
+        else:
+            txt = f"ADS-B {mode} …"
+            col = (220, 160, 60)
+        _text(surf, txt, 13, col, bold=True, x=x, y=y)
+        _mfd_adsb_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, 20)
+        y += 20
+    if ds.get("map_show_metar") and _wx_client is not None:
+        if _wx_client.connected:
+            txt = f"WX {disp.get('weather', {}).get('n', 0)}{age(_wx_client)}"
+            col = (60, 220, 90)
+        else:
+            txt = f"WX …{age(_wx_client)}"
+            col = (220, 160, 60)
+        _text(surf, txt, 13, col, bold=True, x=x, y=y)
+        y += 20
+    if ds.get("map_show_nexrad") and _nexrad_client is not None:
+        if _nexrad_client.connected:
+            txt = f"NEX{age(_nexrad_client)}"
+            col = (60, 220, 90)
+        else:
+            txt = f"NEX …{age(_nexrad_client)}"
+            col = (220, 160, 60)
+        _text(surf, txt, 13, col, bold=True, x=x, y=y)
+
+
+def _mfd_source_status_hit(x, y):
+    r = _mfd_adsb_status_rect
+    return r is not None and r[0] <= x <= r[0]+r[2] and r[1] <= y <= r[1]+r[3]
+
+
+def _mfd_cycle_traffic_source():
+    order = ["auto", "radio", "internet"]
+    cur = disp["cs"].get("traffic_source", "auto")
+    nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+    disp["cs"]["traffic_source"] = nxt
+    _settings.mark_dirty()
+    return nxt
 
 
 def draw_mfd(surf, connected=True, data_stale=False):
@@ -11032,6 +11071,7 @@ def _mfd_chrome_hit(x, y):
     if _mfd_center_btn_hit(x, y):   return True
     if _mfd_orient_label_hit(x, y): return True
     if _mfd_overlay_btn_hit(x, y):  return True
+    if _mfd_source_status_hit(x, y): return True
     # RNG label (under D2) is a passive readout but still claims its rect
     # so a hot finger doesn't accidentally pan the map.
     rx, ry, rw, rh = _mfd_rng_label_rect()
@@ -12065,6 +12105,16 @@ def main():
             stale_s=ADSB_STALE_S)
         _adsb_client.start()
         print(f"[PFD] ADS-B listening for GDL90 on UDP {_adsb_client.port}")
+        # Built-in internet traffic feed → loopback into the listener above.
+        # Starts paused; _update_traffic un-pauses it per traffic_source.
+        global _traffic_feed
+        _traffic_feed = _afeed.TrafficFeed(
+            pos_fn=lambda: (float(disp.get("lat", DEMO_LAT)),
+                            float(disp.get("lon", DEMO_LON))),
+            out_port=int(disp["cs"].get("adsb_port", ADSB_UDP_PORT)),
+            source=TRAFFIC_FEED_SOURCE, radius_nm=TRAFFIC_FEED_RADIUS_NM,
+            interval_s=TRAFFIC_FEED_INTERVAL_S)
+        _traffic_feed.start()
 
     # Internet weather poller (METARs), centred on the live GPS fix.  Needs
     # internet; it just retries quietly when offline.
@@ -12209,6 +12259,8 @@ def main():
         _sse_client.stop()
     if _adsb_client:
         _adsb_client.stop()
+    if _traffic_feed:
+        _traffic_feed.stop()
     if _wx_client:
         _wx_client.stop()
     if _nexrad_client:

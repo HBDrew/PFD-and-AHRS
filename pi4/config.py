@@ -156,4 +156,4 @@ except ImportError:
 # source status) down on the 10".  config_local.py may set MFD_FONT_SCALE
 # explicitly to fine-tune; otherwise it's derived from DISPLAY_PROFILE.
 if "MFD_FONT_SCALE" not in dir():
-    MFD_FONT_SCALE = 0.65 if DISPLAY_PROFILE == "roadom_10" else 1.0
+    MFD_FONT_SCALE = 0.55 if DISPLAY_PROFILE == "roadom_10" else 1.0
