@@ -11176,9 +11176,10 @@ _mfd_apt_font = None
 def _mfd_get_apt_font():
     global _mfd_apt_font
     if _mfd_apt_font is None:
-        # Big enough to read at arm's length on the full-screen MFD (the
-        # inset uses its own small font).
-        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", 36, bold=True)
+        # 36 pt on the 7"; scaled down on the physically larger 10" panel
+        # (both are 1024×600) via MFD_FONT_SCALE so airport names aren't huge.
+        pt = max(12, int(round(36 * globals().get("MFD_FONT_SCALE", 1.0))))
+        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", pt, bold=True)
     return _mfd_apt_font
 
 

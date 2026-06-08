@@ -149,3 +149,11 @@ try:
     from config_local import *  # noqa: F401,F403
 except ImportError:
     pass
+
+# ── MFD font scale (physical size, derived AFTER local overrides) ─────────────
+# Both ROADOM panels are 1024×600, but the 10" is physically larger so the
+# same pixel font reads bigger.  Scale MFD label text (airport names, strip,
+# source status) down on the 10".  config_local.py may set MFD_FONT_SCALE
+# explicitly to fine-tune; otherwise it's derived from DISPLAY_PROFILE.
+if "MFD_FONT_SCALE" not in dir():
+    MFD_FONT_SCALE = 0.65 if DISPLAY_PROFILE == "roadom_10" else 1.0
