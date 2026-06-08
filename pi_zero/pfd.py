@@ -9871,6 +9871,53 @@ def _mfd_clear_pan():
     disp["mfd_pan"]["lon"] = None
 
 
+def _mfd_draw_source_status(surf):
+    """Top-centre source health: ADS-B / WX / NEX with live state + data age.
+    Green = receiving, amber = enabled but no data yet, grey = off."""
+    now = time.monotonic()
+    ds = disp["ds"]
+
+    def age(client):
+        u = getattr(client, "updated_s", 0.0) or 0.0
+        if u <= 0:
+            return "—"
+        a = now - u
+        return f"{int(a)}s" if a < 60 else f"{int(a / 60)}m"
+
+    segs = []
+    a = _adsb_client
+    if a is None:
+        segs.append(("ADS-B off", (110, 120, 130)))
+    elif a.connected:
+        segs.append((f"ADS-B {disp.get('traffic', {}).get('n_total', 0)}",
+                     (60, 220, 90)))
+    else:
+        segs.append(("ADS-B …", (220, 160, 60)))
+    w = _wx_client
+    if w is None or not ds.get("map_show_metar"):
+        segs.append(("WX off", (110, 120, 130)))
+    elif w.connected:
+        segs.append((f"WX {disp.get('weather', {}).get('n', 0)} {age(w)}",
+                     (60, 220, 90)))
+    else:
+        segs.append((f"WX … {age(w)}", (220, 160, 60)))
+    n = _nexrad_client
+    if n is None or not ds.get("map_show_nexrad"):
+        segs.append(("NEX off", (110, 120, 130)))
+    elif n.connected:
+        segs.append((f"NEX {age(n)}", (60, 220, 90)))
+    else:
+        segs.append((f"NEX … {age(n)}", (220, 160, 60)))
+
+    f = _get_font(13, bold=True)
+    gap = 14
+    widths = [f.size(t)[0] for t, _ in segs]
+    x = DISPLAY_W // 2 - (sum(widths) + gap * (len(segs) - 1)) // 2
+    for (t, c), wd in zip(segs, widths):
+        _text(surf, t, 13, c, bold=True, x=x, y=6)
+        x += wd + gap
+
+
 def draw_mfd(surf, connected=True, data_stale=False):
     """Full-screen moving map.  Reuses pi_zero's already-loaded airport +
     obstacle + terrain caches; pulls the active direct-to from disp["nav"]
@@ -10046,6 +10093,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
               16, (240, 90, 90), bold=True,
               cx=DISPLAY_W // 2, cy=DISPLAY_H - 18)
 
+    _mfd_draw_source_status(surf)
     # METAR readout panel (drawn last so it sits over the map + chrome).
     _draw_wx_popup(surf)
 
