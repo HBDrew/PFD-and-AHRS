@@ -163,7 +163,8 @@ disp["fp"] = {                      # flight-profile values
     "vno":    VNO,  "vne": VNE,  "va":  VA,
     "vy":     VY,   "vx":  VX,
 }
-disp["display_mode"]  = "pfd"       # "pfd" | "mfd" (MFD not yet implemented)
+disp["display_mode"]  = "pfd"       # "pfd" | "mfd" — runtime view selector
+                                    # (3-finger hold swaps; boots to PFD)
 disp["td"] = {                      # terrain download state
     "downloading": False,
     "dl_region":   "",
@@ -256,6 +257,9 @@ disp["ds"] = {                      # display settings
     "traffic_range_nm":  0,
     "map_show_metar":    False,  # METAR station dots (off until WX selected)
     "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
+    # Full-screen MFD: gate for the 3-finger PFD↔MFD swap.  Default on for
+    # the larger HDMI screens (that's where a full-screen map earns its keep).
+    "mfd_enabled":       True,
     "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_country_lines": True, # admin_0 boundaries at >= 20 nm
     "map_show_directto": True,
@@ -4324,6 +4328,8 @@ _touch_t0      = {}
 _bug_dragging  = None    # "hdg" | "alt"
 _active_fingers = {}     # finger_id → touch-down time (ms)
 _multitouch_t0  = None   # time when 2nd finger touched down
+_multitouch_max_fingers = 0  # peak finger count this gesture — 2 = setup,
+                             # 3 = PFD↔MFD swap (same scheme as pi_zero)
 
 # Moving-map inset state.  _last_map_rect is updated each frame by the
 # render loop so the touch handler can hit-test against it for the
@@ -4376,6 +4382,7 @@ def _open_numpad(target):
 
 def handle_event(event, demo_mode):
     global _bug_dragging, _active_fingers, _multitouch_t0, _sim_state
+    global _multitouch_max_fingers
 
     if event.type == pygame.QUIT:
         return False
@@ -4426,11 +4433,14 @@ def handle_event(event, demo_mode):
         _active_fingers[event.finger_id] = pygame.time.get_ticks()
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
             _multitouch_t0 = pygame.time.get_ticks()
+        if len(_active_fingers) > _multitouch_max_fingers:
+            _multitouch_max_fingers = len(_active_fingers)
 
     if event.type == pygame.FINGERUP:
         _active_fingers.pop(event.finger_id, None)
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
+            _multitouch_max_fingers = 0
 
     # ── Drag-to-scroll on setup screens ──────────────────────────────────────
     # We defer the tap-fire on BUTTONDOWN inside a drag-capable setup
@@ -4479,6 +4489,35 @@ def handle_event(event, demo_mode):
         x, y = pos
 
         mode = disp["mode"]
+
+        # ── Full-screen MFD chrome (3-finger swap returns to PFD too) ──────
+        if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+            r = _p4_mfd_rects()
+
+            def _in(rc):
+                return rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]
+            if _in(r["pfd"]):
+                disp["display_mode"] = "pfd"
+                _settings.mark_dirty()
+            elif _in(r["ovly"]):
+                _map_overlay_cycle(disp["ds"])
+                _settings.mark_dirty()
+            elif _in(r["orient"]):
+                cur = disp["ds"].get("map_orient", "trk")
+                disp["ds"]["map_orient"] = "nrth" if cur == "trk" else "trk"
+                _settings.mark_dirty()
+            elif _in(r["zoom_in"]):
+                cur = int(disp["ds"].get("map_zoom_nm", 10))
+                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
+                _settings.mark_dirty()
+            elif _in(r["zoom_out"]):
+                cur = int(disp["ds"].get("map_zoom_nm", 10))
+                has_d2 = bool((disp.get("nav") or {}).get("ident"))
+                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur,
+                                                              allow_auto=has_d2)
+                _settings.mark_dirty()
+            # Swallow all other taps on the MFD (no PFD bug-drags / numpad).
+            return True
 
         # Defer tap-fire on drag-capable setup screens — except taps inside
         # the title bar (back button), which still fire immediately.
@@ -4710,6 +4749,15 @@ def handle_event(event, demo_mode):
             action = system_setup_hit(x, y)
             if action == "back":
                 disp["mode"] = "setup"
+            elif action == "mode_pfd":
+                disp["display_mode"] = "pfd"
+                disp["mode"] = "pfd"
+                _settings.mark_dirty()
+            elif action == "mode_mfd":
+                disp["ds"]["mfd_enabled"] = True
+                disp["display_mode"] = "mfd"
+                disp["mode"] = "pfd"      # leave setup; MFD shows in pfd mode
+                _settings.mark_dirty()
             elif action == "terrain_data":
                 disp["mode"] = "terrain_data"
             elif action == "obstacle_data":
@@ -7102,19 +7150,15 @@ def draw_system_setup(surf):
         _text(surf, k, 12, (120,140,165), x=bx+14, y=ty)
         _text(surf, v, 13, WHITE, bold=True, x=bx+310, y=ty)
 
-    # DISPLAY MODE row
-    _setting_row(surf, 0, "DISPLAY MODE", "Primary Flight Display or Multi-Function Display",
+    # DISPLAY MODE row — PFD / MFD (also switchable by the 3-finger hold).
+    _setting_row(surf, 0, "DISPLAY MODE", "Primary Flight Display or Multi-Function Display  ·  3-finger hold swaps",
                  _y_override=_SYS_MODE_Y)
     cur = disp.get("display_mode", "pfd")
     btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
     rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
     ry = _SYS_MODE_Y + (_SS_RH - btn_h_m) // 2
-    _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "PFD", cur == "pfd")
-    # MFD — disabled placeholder
-    pygame.draw.rect(surf, (0,8,18), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), border_radius=5)
-    pygame.draw.rect(surf, (35,45,60), (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m), width=2, border_radius=5)
-    _text(surf, "MFD", 14, (50,60,75), bold=False, cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2-7)
-    _text(surf, "coming soon", 9, (45,55,70), cx=rx+btn_w_m+gap_m+btn_w_m//2, cy=ry+btn_h_m//2+8)
+    _seg_btn(surf, rx, ry, btn_w_m, btn_h_m, "PFD", cur == "pfd")
+    _seg_btn(surf, rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m, "MFD", cur == "mfd")
 
     # Data download tiles: TERRAIN | OBSTACLE | AIRPORT | AIRSPACE
     # (four columns \u2014 mirrors the piZ system-setup layout).
@@ -7163,9 +7207,28 @@ def draw_system_setup(surf):
     surf.set_clip(_prev_clip)
 
 
+def _sys_mode_btn_rects():
+    """(pfd_rect, mfd_rect) for the DISPLAY MODE segmented buttons — shared
+    by draw + hit-test so they stay aligned."""
+    bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
+    btn_h_m = _DSP_BTN_H; btn_w_m = 110; gap_m = _DSP_BTN_G
+    rx = bx + bw - 2*(btn_w_m+gap_m) + gap_m - 14
+    ry = _SYS_MODE_Y + (_SS_RH - btn_h_m) // 2
+    return ((rx, ry, btn_w_m, btn_h_m),
+            (rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m))
+
+
 def system_setup_hit(x, y):
     if _back_hit(x, y):
         return "back"
+    _pfd_r, _mfd_r = _sys_mode_btn_rects()
+
+    def _in(rc):
+        return rc[0] <= x <= rc[0]+rc[2] and rc[1] <= y <= rc[1]+rc[3]
+    if _in(_pfd_r):
+        return "mode_pfd"
+    if _in(_mfd_r):
+        return "mode_mfd"
     bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
     if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
         quarter = (bw - 24) // 4
@@ -10469,6 +10532,114 @@ def _draw_extended_centerline(surf, ai_rect, r, lat, lon, alt_ft,
 
 
 # ── Main render function ──────────────────────────────────────────────────────
+# ── Full-screen MFD (larger HDMI screens) ─────────────────────────────────────
+_P4_MFD_BW  = 120
+_P4_MFD_BH  = 48
+_P4_MFD_PAD = 8
+
+
+def _p4_mfd_rects():
+    """Chrome button rects for the full-screen MFD (keyed by name)."""
+    W, H = DISPLAY_W, DISPLAY_H
+    p, bw, bh = _P4_MFD_PAD, _P4_MFD_BW, _P4_MFD_BH
+    return {
+        "ovly":     (p, p, bw, bh),                       # top-left
+        "pfd":      (W - bw - p, p, bw, bh),              # top-right (back)
+        "orient":   (W - bw - p, p + bh + p, bw, bh),     # under PFD
+        "zoom_out": (p, H - bh - p, bw, bh),              # bottom-left
+        "zoom_in":  (W - bw - p, H - bh - p, bw, bh),     # bottom-right
+    }
+
+
+def draw_mfd(surf, connected=True, data_stale=False):
+    """Full-screen moving map for the larger screens.  Reuses the same caches
+    and render path as the PFD inset, plus tappable chrome (overlay cycle,
+    orientation, zoom, and a PFD button to return)."""
+    surf.fill((0, 0, 0))
+    rect = (0, 0, DISPLAY_W, DISPLAY_H)
+    ds = disp["ds"]
+    lat = disp.get("lat", DEMO_LAT)
+    lon = disp.get("lon", DEMO_LON)
+    alt = disp.get("alt", 0.0)
+    hdg = disp.get("yaw", 0.0)
+    track = disp.get("track", hdg)
+    gs_kt = disp.get("speed", 0.0)
+    map_track = track if gs_kt >= 3.0 else None
+
+    d2 = dict(disp.get("nav") or {})
+    _ap = disp.get("approach") or {}
+    d2["approach_active"] = bool(_ap.get("active"))
+    if _ap.get("active"):
+        d2["approach_course_deg"] = float(_ap.get("course_deg", 0.0))
+        d2["approach_final_nm"]   = _hits_mod.DEFAULT_FINAL_NM
+
+    _ad = disp.get("ad", {})
+    types_vis = set()
+    if _ad.get("show_public", True):
+        types_vis.update({"S", "M", "L"})
+    if _ad.get("show_heli", True):
+        types_vis.add("H")
+    if _ad.get("show_seaplane", False):
+        types_vis.add("W")
+    if _ad.get("show_other", False):
+        types_vis.add("B")
+
+    zoom_pref = int(ds.get("map_zoom_nm", 10))
+    if zoom_pref == _map_mod.ZOOM_AUTO:
+        if d2.get("ident"):
+            cos_lat = max(0.05, math.cos(math.radians(lat)))
+            n_nm = (d2["lat"] - lat) * 60.0
+            e_nm = (d2["lon"] - lon) * 60.0 * cos_lat
+            eff_range = _map_mod.auto_fit_range(math.hypot(n_nm, e_nm) * 1.10)
+        else:
+            eff_range = _map_mod.ZOOM_LEVELS[-1]
+        eff_label = "AUTO"
+    else:
+        eff_range = zoom_pref
+        eff_label = None
+    eff_orient = "nrth" if eff_range > 40 else ds.get("map_orient", "trk")
+
+    _map_mod.render(
+        surf, rect, lat, lon, alt, hdg, map_track, eff_orient, eff_range, ds,
+        airports_arr=_airports, runways_arr=_runways, obstacles_arr=_obstacles,
+        srtm_dir=SRTM_DIR, water_dir=WATER_DIR,
+        direct_to=d2 if d2.get("ident") else None,
+        font=_get_font(15, bold=True),
+        airport_types_visible=types_vis, gs_kt=gs_kt,
+        vso_kt=disp["fp"].get("vs0", VS0),
+        range_label=eff_label,
+        state_lines=_state_lines, country_lines=_country_lines,
+        fpl_remaining=_fpl_render_remaining(),
+        airspaces=_airspaces,
+        traffic=disp.get("traffic", {}).get("targets"),
+        metars=disp.get("weather", {}).get("metars"),
+        nexrad=_nexrad_render_arg(),
+        draw_corner_labels=False)
+
+    # ── Chrome ───────────────────────────────────────────────────────────
+    r = _p4_mfd_rects()
+    _action_btn(surf, *r["pfd"], "PFD", "normal", r=6)
+    ov_state = _map_overlay_state(ds)
+    _action_btn(surf, *r["ovly"], _map_overlay_label(ds),
+                "ok" if ov_state != "tfc" else "normal", r=6)
+    _action_btn(surf, *r["orient"],
+                "TRK↑" if ds.get("map_orient", "trk") == "trk" else "N↑",
+                "normal", r=6)
+    _action_btn(surf, *r["zoom_out"], "−", "normal", r=8)
+    _action_btn(surf, *r["zoom_in"], "+", "normal", r=8)
+
+    rng_lbl = (f"{eff_range:g} NM" if eff_label is None
+               else f"AUTO · {eff_range:g} NM")
+    _text(surf, rng_lbl, 20, CYAN, bold=True, cx=DISPLAY_W // 2, cy=22)
+    if d2.get("ident"):
+        _text(surf, f"D→ {d2['ident']}", 18, (220, 0, 220), bold=True,
+              cx=DISPLAY_W // 2, cy=48)
+    if not connected or data_stale:
+        _text(surf, "NO LINK" if not connected else "DATA STALE",
+              18, (240, 90, 90), bold=True,
+              cx=DISPLAY_W // 2, cy=DISPLAY_H - 20)
+
+
 def render(surf, demo_mode, connected, data_stale=False):
     mode = disp.get("mode", "pfd")
 
@@ -10517,6 +10688,12 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_airspace_classes(surf); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
+
+    # ── Full-screen MFD (3-finger swap) ──────────────────────────────────────
+    # Pure-2D map; skip the SVT/PFD render entirely (saves the terrain pass).
+    if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+        draw_mfd(surf, connected=connected, data_stale=data_stale)
+        return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
     # Shared-GL path already cleared surf to transparent at the top of
@@ -11946,7 +12123,7 @@ def main():
     demo       = DemoState() if demo_mode else None
     connected  = False
     data_stale = False
-    global _link_lost_t, _multitouch_t0, _active_fingers
+    global _link_lost_t, _multitouch_t0, _active_fingers, _multitouch_max_fingers
 
     if not demo_mode:
         global _sse_client
@@ -12067,14 +12244,30 @@ def main():
             connected  = True
             data_stale = False
 
-        # 2-finger hold → enter setup screen (EXIT button returns to PFD)
+        # Multi-finger holds (same scheme as pi_zero):
+        #   • exactly 2 fingers held LONG_PRESS_MS (800 ms)  → enter setup
+        #   • 3+ fingers held MFD_SWAP_HOLD_MS (2 s)         → swap PFD ↔ MFD
+        # The 3-finger threshold is longer so a 2-finger setup hold can't
+        # accidentally trigger the swap when a 3rd finger grazes the screen.
         if (_multitouch_t0 is not None
                 and len(_active_fingers) >= 2
-                and pygame.time.get_ticks() - _multitouch_t0 >= LONG_PRESS_MS
                 and disp["mode"] == "pfd"):
-            disp["mode"] = "setup"
-            _active_fingers.clear()
-            _multitouch_t0 = None
+            dt = pygame.time.get_ticks() - _multitouch_t0
+            if (_multitouch_max_fingers >= 3
+                    and dt >= MFD_SWAP_HOLD_MS
+                    and disp["ds"].get("mfd_enabled", True)):
+                disp["display_mode"] = (
+                    "mfd" if disp.get("display_mode", "pfd") == "pfd"
+                    else "pfd")
+                _settings.mark_dirty()
+                _active_fingers.clear()
+                _multitouch_t0 = None
+                _multitouch_max_fingers = 0
+            elif _multitouch_max_fingers == 2 and dt >= LONG_PRESS_MS:
+                disp["mode"] = "setup"
+                _active_fingers.clear()
+                _multitouch_t0 = None
+                _multitouch_max_fingers = 0
 
         # Render
         _t0 = time.monotonic()
