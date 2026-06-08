@@ -195,6 +195,14 @@ def run(args):
           f"-> {args.out_host}:{args.out_port} every {interval:g}s")
     while True:
         lat, lon = pos()
+        # Always send a heartbeat first — the 'I'm alive' beacon a real
+        # source emits every second.  This is what lets the display tell
+        # "feed running, no aircraft in range" (link up) apart from "feed
+        # not running" (link down), even when 0 aircraft are returned.
+        try:
+            out.sendto(gdl90.encode_heartbeat(), dest)
+        except OSError:
+            pass
         try:
             acs = fetch(args.source, lat, lon, args.radius)
             n = emit(acs, out, dest)

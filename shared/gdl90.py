@@ -25,6 +25,8 @@ Each decoder returns a dict with a "kind" key; unknown / malformed
 messages are skipped.
 """
 
+import time
+
 # ── Framing constants ─────────────────────────────────────────────────────────
 _FLAG    = 0x7E    # frame delimiter
 _ESC     = 0x7D    # control-escape byte
@@ -293,6 +295,22 @@ def frame_message(payload):
     body.append(crc & 0xFF)
     body.append((crc >> 8) & 0xFF)
     return bytes([_FLAG]) + bytes(_stuff(body)) + bytes([_FLAG])
+
+
+def encode_heartbeat(gps_valid=True, utc_ok=True, timestamp=None):
+    """Build a GDL90 Heartbeat (0x00) frame — the once-per-second 'I'm alive'
+    beacon a real ADS-B source emits regardless of traffic.  Sources that send
+    this let the receiver distinguish 'link up, no aircraft in range' from
+    'link down'.  Inverse of _decode_heartbeat."""
+    if timestamp is None:
+        t = time.gmtime()
+        timestamp = t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec
+    ts = timestamp & 0x1FFFF
+    st1 = (0x80 if gps_valid else 0) | 0x01        # GPS valid + UAT initialised
+    st2 = (0x01 if utc_ok else 0) | (((ts >> 16) & 1) << 7)
+    body = bytes([MSG_HEARTBEAT, st1, st2, ts & 0xFF, (ts >> 8) & 0xFF,
+                  0x00, 0x00])
+    return frame_message(body)
 
 
 def encode_traffic(address, lat, lon, alt_ft, gs_kt=0, track_deg=0.0,

@@ -142,6 +142,13 @@ def run(sbs_host, sbs_port, out_host, out_port, emit_hz=1.0):
                     pass
                 now = time.monotonic()
                 if now - last_emit >= emit_period:
+                    # Heartbeat first — keeps the display's link 'up' even
+                    # when no aircraft are being tracked, so 'no traffic' is
+                    # distinguishable from 'bridge down'.
+                    try:
+                        out.sendto(gdl90.encode_heartbeat(), dest)
+                    except OSError:
+                        pass
                     n = emit_frames(table, out, dest, now)
                     prune(table, now)
                     last_emit = now
