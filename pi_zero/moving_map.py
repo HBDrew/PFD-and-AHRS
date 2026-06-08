@@ -578,9 +578,9 @@ def _draw_metars(surf, metars, project, rect):
             continue
         col = _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN)
         ix, iy = int(sx), int(sy)
-        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 5)      # dark halo
-        pygame.draw.circle(surf, col, (ix, iy), 4)
-        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 4, 1)   # crisp edge
+        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 10)     # dark halo
+        pygame.draw.circle(surf, col, (ix, iy), 8)
+        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 8, 1)   # crisp edge
 
 
 # ── ADS-B traffic layer ─────────────────────────────────────────────────────

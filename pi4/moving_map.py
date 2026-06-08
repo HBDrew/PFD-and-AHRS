@@ -509,9 +509,11 @@ def _draw_metars(surf, metars, project, rect):
             continue
         col = _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN)
         ix, iy = int(sx), int(sy)
-        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 5)
-        pygame.draw.circle(surf, col, (ix, iy), 4)
-        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 4, 1)
+        # Smaller than the piZ MFD dots — the inset is tiny and packs
+        # airports/traffic into the same area.
+        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 8)
+        pygame.draw.circle(surf, col, (ix, iy), 6)
+        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 6, 1)
 
 
 # ── ADS-B traffic layer ─────────────────────────────────────────────────────

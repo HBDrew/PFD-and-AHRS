@@ -4270,7 +4270,7 @@ _ss_drag = None
 _SS_DRAG_THRESHOLD = 8     # px before tap becomes drag
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         7,
-    "display_setup":      7,    # 5 standard rows + tall MAP LAYERS row
+    "display_setup":      9,    # 7 standard rows + tall MAP LAYERS row
                                 # (counted as ≈2 row-slots tall for
                                 # scroll math — see _DSP_LAYERS_ROW_H)
     "system_setup":       9,

@@ -5723,8 +5723,8 @@ _ss_drag = None
 _SS_DRAG_THRESHOLD = 8
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         10,
-    "display_setup":      11,    # +1 to compensate for the taller
-                                  # MAP LAYERS row (two pill sub-rows)
+    "display_setup":      13,    # 11 standard rows + taller MAP LAYERS row
+                                  # (two pill sub-rows ≈ 2 slots)
     "system_setup":       9,
     "connectivity_setup": 6,
     "flight_profile":     8,
