@@ -370,6 +370,11 @@ disp["fpl"] = {
 # Saved named flight plans (persistent).  Same schema as pi_zero so a plan
 # saved on either screen loads on the other.
 disp["fpl_saved"] = {"plans": []}   # [{name, waypoints:[...]}]
+# User-waypoint library (persistent) — +LAT/LON entries auto-save here.
+disp["user_wpts"] = {"list": []}    # [{ident, lat, lon, elev_ft}, ...]
+# In-progress +LAT/LON user-waypoint entry (transient; cleared on save/cancel).
+disp["fpl_new"] = {"ident": "", "lat": 0.0, "lon": 0.0,
+                   "lat_str": "", "lon_str": "", "source": ""}
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
     "init_alt":   5000.0,
@@ -792,8 +797,44 @@ def _fpl_render_remaining():
 
 
 # ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
-_FPL_MAX_WAYPOINTS = 30
-_FPL_SAVED_MAX     = 20
+_FPL_MAX_WAYPOINTS = 20     # matches pi_zero
+_FPL_SAVED_MAX     = 8
+_USER_WPT_MAX      = 50
+
+
+def _user_wpt_save(ident, lat, lon, elev_ft=0.0):
+    ident = str(ident).upper().strip()
+    if not ident:
+        return False
+    lib = disp["user_wpts"]["list"]
+    for w in lib:
+        if str(w.get("ident", "")).upper() == ident:
+            w["lat"], w["lon"], w["elev_ft"] = float(lat), float(lon), float(elev_ft)
+            _settings.mark_dirty()
+            return True
+    if len(lib) >= _USER_WPT_MAX:
+        return False
+    lib.append({"ident": ident, "lat": float(lat), "lon": float(lon),
+                "elev_ft": float(elev_ft)})
+    _settings.mark_dirty()
+    return True
+
+
+def _user_wpt_delete(ident):
+    ident = str(ident).upper()
+    disp["user_wpts"]["list"] = [
+        w for w in disp["user_wpts"]["list"]
+        if str(w.get("ident", "")).upper() != ident]
+    _settings.mark_dirty()
+
+
+def _fpl_open_save_keyboard():
+    disp["kbd_target"] = "fpl_save_name"
+    disp["kbd_prev"]   = "fpl"
+    disp["kbd_buf"]    = ""
+    disp["kbd_error"]  = ""
+    disp["kbd_shift"]  = False
+    disp["mode"]       = "keyboard"
 
 
 def _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=False,
@@ -4551,7 +4592,34 @@ def handle_event(event, demo_mode):
     # screen, watch MOTION to detect a scroll-drag, and on BUTTONUP either
     # consume the drag (no action fires) or replay the tap at the up
     # position so the underlying row-hit code runs as if nothing happened.
-    global _ss_drag, _dispatch_replay, _mfd_drag
+    global _ss_drag, _dispatch_replay, _mfd_drag, _fpl_drag, _fpl_scroll
+    # ── FPL list scroll drag (defer-replay; taps still fire) ──────────────────
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _fpl_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        _, y = pos
+        dy = y - _fpl_drag["down_y"]
+        if not _fpl_drag["is_drag"] and abs(dy) > _FPL_DRAG_THRESHOLD:
+            _fpl_drag["is_drag"] = True
+        if _fpl_drag["is_drag"]:
+            wps = disp.get("fpl", {}).get("waypoints", [])
+            max_s = _fpl_max_scroll(len(wps))
+            _fpl_scroll = max(0, min(max_s, _fpl_drag["scroll_at_down"] - dy))
+        _fpl_drag["pos"] = pos
+        return True
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _fpl_drag is not None:
+        d = _fpl_drag
+        _fpl_drag = None
+        if not d["is_drag"]:
+            _dispatch_replay = True
+            try:
+                handle_event(pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN, {"pos": d["pos"], "button": 1}),
+                    demo_mode)
+            finally:
+                _dispatch_replay = False
+        return True
+
     # ── MFD pan drag ──────────────────────────────────────────────────────────
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _mfd_drag is not None:
         pos = event.pos if hasattr(event, "pos") else (
@@ -4920,50 +4988,77 @@ def handle_event(event, demo_mode):
                 _settings.mark_dirty()
             return True
 
+        # FPL list area defers for a possible scroll-drag; action-bar /
+        # header taps (above the list) fall straight through to fpl_hit.
+        if not _dispatch_replay and mode == "fpl":
+            list_top, list_bot = _fpl_list_area_y()
+            if list_top <= y <= list_bot:
+                _fpl_drag = {"down_x": x, "down_y": y, "pos": (x, y),
+                             "scroll_at_down": _fpl_scroll, "is_drag": False}
+                return True
+
         # ── FPL editor ────────────────────────────────────────────────────
         if mode == "fpl":
-            global _fpl_scroll
             act, payload = fpl_hit(x, y)
             if act == "back":
                 disp["mode"] = "pfd"
-            elif act == "scroll_up":
-                _fpl_scroll = max(0, _fpl_scroll - 1)
-            elif act == "scroll_down":
-                _fpl_scroll += 1
-            elif act == "activate":
-                _fpl_activate(int(payload))
-            elif act == "up":
-                j = int(payload)
-                if j > 0:
-                    _fpl_swap(j, j - 1)
-            elif act == "down":
-                j = int(payload)
-                if j < len(disp["fpl"]["waypoints"]) - 1:
-                    _fpl_swap(j, j + 1)
-            elif act == "del":
-                _fpl_remove(int(payload))
-            elif act == "act":
-                if payload == "add":
-                    disp["kbd_target"] = "fpl_add"
-                    disp["kbd_prev"]   = "fpl"
-                    disp["kbd_buf"]    = ""
-                    disp["kbd_error"]  = ""
-                    disp["mode"]       = "keyboard"
-                elif payload == "nrst":
-                    ni = _nav_lookup_nearest()
-                    hit = _nav_lookup_ident(ni) if ni else None
-                    if hit:
-                        _fpl_add_waypoint(hit[0], hit[1], hit[2], hit[3])
-                elif payload == "save":
-                    disp["kbd_target"] = "fpl_save_name"
-                    disp["kbd_prev"]   = "fpl"
-                    disp["kbd_buf"]    = ""
-                    disp["kbd_error"]  = ""
-                    disp["mode"]       = "keyboard"
-                elif payload == "load":
+            elif act == "add_icao":
+                _fpl_open_add_keyboard()
+            elif act == "add_ll":
+                _fpl_open_latlon_entry()
+            elif act == "add_lib":
+                disp["mode"] = "user_wpt_picker"
+            elif act == "save":
+                if disp.get("fpl", {}).get("waypoints", []):
+                    _fpl_open_save_keyboard()
+            elif act == "load":
+                if disp.get("fpl_saved", {}).get("plans", []):
                     disp["mode"] = "fpl_plan_picker"
-                elif payload == "deact":
-                    _fpl_deactivate()
+            elif act == "deact":
+                _fpl_deactivate()
+            elif act == "activate":
+                _fpl_activate(payload, reset_activation=True)
+            elif act == "up" and payload > 0:
+                _fpl_swap(payload, payload - 1)
+            elif act == "down":
+                _fpl_swap(payload, payload + 1)
+            elif act == "delete":
+                _fpl_remove(payload)
+            return True
+
+        # ── +LAT/LON user-waypoint entry ──────────────────────────────────
+        if mode == "fpl_latlon_entry":
+            act, payload = fpl_latlon_entry_hit(x, y)
+            if act in ("back", "cancel"):
+                disp["fle_err_field"] = ""
+                disp["fle_err_msg"] = ""
+                disp["mode"] = "fpl"
+            elif act == "edit":
+                _fle_open_kbd(payload)
+            elif act == "save":
+                field, msg = _fpl_commit_latlon()
+                if field:
+                    disp["fle_err_field"] = field
+                    disp["fle_err_msg"] = msg
+                else:
+                    disp["fle_err_field"] = ""
+                    disp["fle_err_msg"] = ""
+                    disp["mode"] = "fpl"
+            return True
+
+        # ── User-waypoint picker (+ USER) ─────────────────────────────────
+        if mode == "user_wpt_picker":
+            act, payload = user_wpt_picker_hit(x, y)
+            if act == "back":
+                disp["mode"] = "fpl"
+            elif act == "add" and payload is not None:
+                ident = str(payload.get("ident", ""))
+                field, _msg = _fpl_validate_user_ident(ident)
+                if not field:
+                    _fpl_add_waypoint(ident, payload["lat"], payload["lon"],
+                                      payload.get("elev_ft", 0.0), user=True)
+            elif act == "delete" and payload is not None:
+                _user_wpt_delete(payload.get("ident", ""))
             return True
 
         # ── FPL plan picker (LOAD) ────────────────────────────────────────
@@ -4971,11 +5066,11 @@ def handle_event(event, demo_mode):
             act, payload = fpl_plan_picker_hit(x, y)
             if act == "back":
                 disp["mode"] = "fpl"
-            elif act == "load":
-                _fpl_plan_load(payload)
+            elif act == "load" and payload is not None:
+                _fpl_plan_load(payload.get("name", ""))
                 disp["mode"] = "fpl"
-            elif act == "del":
-                _fpl_plan_delete(payload)
+            elif act == "delete" and payload is not None:
+                _fpl_plan_delete(payload.get("name", ""))
             return True
 
         if mode == "system_setup":
@@ -5242,7 +5337,12 @@ def handle_event(event, demo_mode):
                 lbl, sty = hit
                 target  = disp["kbd_target"]
                 _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80}
-                if disp.get("kbd_prev") == "connectivity_setup":
+                _FPL_KBD_MAX = {"fpl_ident": 6, "fpl_latlon_ident": 6,
+                                "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
+                                "fpl_save_name": 16, "nav_ident": 6}
+                if target in _FPL_KBD_MAX:
+                    max_len = _FPL_KBD_MAX[target]
+                elif disp.get("kbd_prev") == "connectivity_setup":
                     max_len = _CS_MAX.get(target, 32)
                 else:
                     max_len = next((f[3] for f in _FP_FIELDS if f[0]==target), 16)
@@ -5338,29 +5438,52 @@ def handle_event(event, demo_mode):
                         disp["kbd_error"] = ""
                         disp["mode"] = disp["kbd_prev"]
                         return True
-                    elif target == "fpl_add":
-                        # Add a waypoint to the flight plan by ICAO ident.
-                        cand = buf.upper()
-                        if not cand:
-                            disp["mode"] = disp["kbd_prev"]
+                    elif target == "fpl_ident":
+                        # FPL append by ICAO ident → fpl screen.
+                        if not buf:
+                            disp["kbd_buf"] = ""; disp["kbd_error"] = ""
+                            disp["mode"] = "fpl"
+                            return True
+                        candidate = buf.upper()
+                        hit = _nav_lookup_ident(candidate)
+                        if hit is None:
+                            disp["kbd_error"] = f"UNKNOWN WAYPOINT  {candidate}"
+                            return True
+                        ident, lat, lon, elev_ft = hit[:4]
+                        name = hit[4] if len(hit) > 4 else ""
+                        region = hit[5] if len(hit) > 5 else ""
+                        if _fpl_add_waypoint(ident, lat, lon, elev_ft,
+                                             name=name, region=region):
+                            disp["kbd_buf"] = ""; disp["kbd_error"] = ""
+                            disp["mode"] = "fpl"
                         else:
-                            hit = _nav_lookup_ident(cand)
-                            if hit:
-                                _fpl_add_waypoint(hit[0], hit[1], hit[2], hit[3])
-                                disp["kbd_buf"] = ""
-                                disp["kbd_error"] = ""
-                                disp["mode"] = disp["kbd_prev"]
-                            else:
-                                disp["kbd_error"] = f"UNKNOWN WAYPOINT  {cand}"
+                            disp["kbd_error"] = f"PLAN FULL ({_FPL_MAX_WAYPOINTS} MAX)"
                         return True
                     elif target == "fpl_save_name":
-                        ok, reason = _fpl_plan_save(buf)
-                        if ok:
-                            disp["kbd_buf"] = ""
-                            disp["kbd_error"] = ""
-                            disp["mode"] = disp["kbd_prev"]
-                        else:
-                            disp["kbd_error"] = reason.upper()
+                        if not buf:
+                            disp["kbd_buf"] = ""; disp["kbd_error"] = ""
+                            disp["mode"] = "fpl"
+                            return True
+                        ok, msg = _fpl_plan_save(buf)
+                        if not ok:
+                            disp["kbd_error"] = msg.upper()
+                            return True
+                        disp["kbd_buf"] = ""; disp["kbd_error"] = ""
+                        disp["mode"] = "fpl"
+                        return True
+                    elif target == "fpl_latlon_ident":
+                        disp["fpl_new"]["ident"] = buf.upper()[:6]
+                        disp["kbd_buf"] = ""; disp["kbd_error"] = ""
+                        disp["mode"] = "fpl_latlon_entry"
+                        return True
+                    elif target in ("fpl_latlon_lat", "fpl_latlon_lon"):
+                        axis = "lat" if target.endswith("lat") else "lon"
+                        disp["fpl_new"][f"{axis}_str"] = buf
+                        v, _err = _fpl_parse_latlon(buf, axis)
+                        if v is not None:
+                            disp["fpl_new"][axis] = v
+                        disp["kbd_buf"] = ""; disp["kbd_error"] = ""
+                        disp["mode"] = "fpl_latlon_entry"
                         return True
                     elif buf:
                         if disp["kbd_prev"] == "connectivity_setup":
@@ -11220,9 +11343,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
     ov_state = _map_overlay_state(ds)
     _action_btn(surf, *r["ovly"], _map_overlay_label(ds),
                 "ok" if ov_state != "tfc" else "normal", r=6)
-    _action_btn(surf, *r["orient"],
-                "TRK↑" if ds.get("map_orient", "trk") == "trk" else "N↑",
-                "normal", r=6)
+    # Orientation: a tappable CYAN label (like piZ), not a button.
+    ox, oy, ow, oh = r["orient"]
+    _text(surf, "TRK↑" if ds.get("map_orient", "trk") == "trk" else "N↑",
+          20, CYAN, bold=True, cx=ox + ow // 2, cy=oy + oh // 2)
     if _mfd_is_panned():
         _action_btn(surf, *r["center"], "CTR", "ok", r=6)
     _action_btn(surf, *r["zoom_out"], "−", "normal", r=8)
@@ -11320,175 +11444,526 @@ def mfd_strip_setup_hit(x, y):
     return (None, None)
 
 
-# ── FPL editor (tap the MFD FPL button) ───────────────────────────────────────
-_FPL_ACT_H    = 50
-_FPL_ROW_H    = 64
-_FPL_ROW_GAP  = 6
-_FPL_ICON_W   = 54
-_fpl_scroll   = 0
+# ── FPL editor (tap the MFD FPL button) — ported verbatim from pi_zero ─────────
+_FPL_HEADER_H   = 44
+_FPL_ACTIONS_H  = 50
+_FPL_ROW_H      = 80
+_FPL_ROW_GAP    = 6
+_FPL_ICON_W     = 56
+_FPL_ICON_GAP   = 6
+_FPL_ACTIONS_GAP = 6
+_FPL_SAVELOAD_H  = 44
+_FPL_DEACT_H     = 36
+_fpl_scroll = 0
+_fpl_drag = None
+_FPL_DRAG_THRESHOLD = 8
 
 
-def _fpl_action_btns():
-    pad, gap, n = 8, 6, 5
-    bw = (DISPLAY_W - 2 * pad - (n - 1) * gap) // n
-    y = _MSS_HEADER_H + 8
-    labels = [("add", "+ ICAO"), ("nrst", "NRST"), ("save", "SAVE"),
-              ("load", "LOAD"), ("deact", "DEACT")]
-    return [(k, lbl, (pad + i * (bw + gap), y, bw, _FPL_ACT_H))
-            for i, (k, lbl) in enumerate(labels)]
+def _fpl_actions_rect():
+    pad = 6
+    return (pad, _FPL_HEADER_H + 6, DISPLAY_W - 2 * pad, _FPL_ACTIONS_H)
+
+
+def _fpl_add_buttons():
+    ax, ay, aw, ah = _fpl_actions_rect()
+    n = 3
+    gap = _FPL_ACTIONS_GAP
+    bw = (aw - (n - 1) * gap) // n
+    return [(ax + i * (bw + gap), ay, bw, ah) for i in range(n)]
+
+
+def _fpl_saveload_btns():
+    ax, ay, aw, _ = _fpl_actions_rect()
+    by = ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+    gap = _FPL_ACTIONS_GAP
+    bw = (aw - gap) // 2
+    return ((ax, by, bw, _FPL_SAVELOAD_H),
+            (ax + bw + gap, by, aw - bw - gap, _FPL_SAVELOAD_H))
+
+
+def _fpl_deact_btn_rect():
+    ax, ay, aw, _ = _fpl_actions_rect()
+    by = (ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+          + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP)
+    return (ax, by, aw, _FPL_DEACT_H)
 
 
 def _fpl_list_y0():
-    return _MSS_HEADER_H + 8 + _FPL_ACT_H + 10
+    return (_FPL_HEADER_H + 6 + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+            + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP + _FPL_DEACT_H + 8)
 
 
-def _fpl_visible_rows():
-    h = DISPLAY_H - _fpl_list_y0() - 8
-    return max(1, h // (_FPL_ROW_H + _FPL_ROW_GAP))
+def _fpl_row_rect(idx):
+    y0 = _fpl_list_y0() - _fpl_scroll
+    pad = 6
+    return (pad, y0 + idx * (_FPL_ROW_H + _FPL_ROW_GAP),
+            DISPLAY_W - 2 * pad, _FPL_ROW_H)
 
 
-def _fpl_max_scroll(n):
-    return max(0, n - _fpl_visible_rows())
+def _fpl_max_scroll(n_rows):
+    visible_h = DISPLAY_H - _fpl_list_y0() - 6
+    content_h = n_rows * (_FPL_ROW_H + _FPL_ROW_GAP) - _FPL_ROW_GAP
+    return max(0, content_h - visible_h)
 
 
-def _fpl_row_rect(pos):
-    y = _fpl_list_y0() + pos * (_FPL_ROW_H + _FPL_ROW_GAP)
-    return (8, y, DISPLAY_W - 16, _FPL_ROW_H)
+def _fpl_list_area_y():
+    return _fpl_list_y0(), DISPLAY_H - 6
 
 
-def _fpl_scroll_btns(n):
-    """(up_rect, down_rect) when the list overflows, else (None, None)."""
-    if n <= _fpl_visible_rows():
-        return (None, None)
-    bw = 54
-    x = DISPLAY_W - bw - 8
-    return ((x, _fpl_list_y0(), bw, 54),
-            (x, DISPLAY_H - 54 - 8, bw, 54))
+def _fpl_row_icon_rects(rect):
+    bx, by, bw, bh = rect
+    iy = by + (bh - _FPL_ICON_W) // 2
+    ih = _FPL_ICON_W
+    del_x  = bx + bw - 6 - _FPL_ICON_W
+    down_x = del_x  - _FPL_ICON_GAP - _FPL_ICON_W
+    up_x   = down_x - _FPL_ICON_GAP - _FPL_ICON_W
+    return ((up_x, iy, _FPL_ICON_W, ih),
+            (down_x, iy, _FPL_ICON_W, ih),
+            (del_x, iy, _FPL_ICON_W, ih))
+
+
+def _fpl_icon_btn(surf, rect, glyph, dim=False):
+    bx, by, bw, bh = rect
+    bg = (8, 18, 32) if not dim else (4, 8, 14)
+    oc = (80, 100, 130) if not dim else (40, 50, 70)
+    tc = WHITE if not dim else (90, 100, 120)
+    pygame.draw.rect(surf, bg, rect, border_radius=5)
+    pygame.draw.rect(surf, oc, rect, width=1, border_radius=5)
+    _text(surf, glyph, 34, tc, bold=True, cx=bx + bw // 2, cy=by + bh // 2 + 1)
 
 
 def draw_fpl(surf):
-    global _fpl_scroll
     _screen_header(surf, "FLIGHT PLAN")
-    for k, lbl, rect in _fpl_action_btns():
-        style = "warn" if (k == "deact" and _fpl_is_active()) else "normal"
-        _action_btn(surf, *rect, lbl, style, r=6)
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    active_idx = disp.get("fpl", {}).get("active_idx", -1)
+    is_active  = 0 <= active_idx < len(wps)
 
-    wps = disp["fpl"]["waypoints"]
-    n = len(wps)
-    _fpl_scroll = max(0, min(_fpl_max_scroll(n), _fpl_scroll))
-    act_idx = disp["fpl"]["active_idx"]
-    lat = disp.get("lat", DEMO_LAT)
-    lon = disp.get("lon", DEMO_LON)
+    full = len(wps) >= _FPL_MAX_WAYPOINTS
+    add_style = "ok" if not full else "normal"
+    add_rects = _fpl_add_buttons()
+    labels  = ("+ ICAO", "+ LAT/LON", "+ USER")
+    styles  = (add_style if not full else "normal",
+               add_style if not full else "normal", "ok")
+    if full:
+        labels = ("FULL", "FULL", "+ USER")
+    for (ax, ay, aw, ah), lbl, st in zip(add_rects, labels, styles):
+        _action_btn(surf, ax, ay, aw, ah, lbl, st, r=6)
 
-    if n == 0:
-        _text(surf, "No waypoints — tap “+ ICAO” to add", 18,
-              (140, 150, 170), cx=DISPLAY_W // 2, cy=_fpl_list_y0() + 50)
+    save_r, load_r = _fpl_saveload_btns()
+    n_saved = len(disp.get("fpl_saved", {}).get("plans", []))
+    if wps:
+        _action_btn(surf, *save_r, "SAVE", "ok", r=6)
+    else:
+        sx, sy, sw, sh = save_r
+        pygame.draw.rect(surf, (10, 14, 22), save_r, border_radius=6)
+        pygame.draw.rect(surf, (40, 48, 62), save_r, width=1, border_radius=6)
+        _text(surf, "SAVE", 15, (80, 90, 110), bold=True,
+              cx=sx + sw // 2, cy=sy + sh // 2)
+    if n_saved:
+        _action_btn(surf, *load_r, f"LOAD ({n_saved})", "normal", r=6)
+    else:
+        lx, ly, lw, lh = load_r
+        pygame.draw.rect(surf, (10, 14, 22), load_r, border_radius=6)
+        pygame.draw.rect(surf, (40, 48, 62), load_r, width=1, border_radius=6)
+        _text(surf, "LOAD", 15, (80, 90, 110), bold=True,
+              cx=lx + lw // 2, cy=ly + lh // 2)
 
-    up_r, dn_r = _fpl_scroll_btns(n)
-    list_w = DISPLAY_W - 16 - (62 if up_r else 0)
-    vis = _fpl_visible_rows()
-    for pos in range(vis):
-        j = _fpl_scroll + pos
-        if j >= n:
-            break
-        wp = wps[j]
-        rx, ry, _rw, rh = _fpl_row_rect(pos)
-        rw = list_w
-        active = (j == act_idx)
-        pygame.draw.rect(surf, (40, 0, 40) if active else (0, 14, 30),
-                         (rx, ry, rw, rh), border_radius=6)
-        pygame.draw.rect(surf, MAGENTA if active else (60, 80, 110),
-                         (rx, ry, rw, rh), width=2 if active else 1,
+    dx, dy, dw, dh = _fpl_deact_btn_rect()
+    if is_active:
+        _action_btn(surf, dx, dy, dw, dh, "DEACTIVATE", "warn", r=6)
+    else:
+        pygame.draw.rect(surf, (10, 14, 22), (dx, dy, dw, dh), border_radius=6)
+        pygame.draw.rect(surf, (40, 48, 62), (dx, dy, dw, dh), width=1,
                          border_radius=6)
-        _text(surf, f"{j+1}", 14, (140, 150, 170), bold=True,
-              x=rx + 10, y=ry + rh // 2 - 8)
-        _text(surf, str(wp.get("ident", "")), 26,
-              MAGENTA if active else WHITE, bold=True, x=rx + 46, y=ry + 8)
-        sub = wp.get("name", "") or ("USER WPT" if wp.get("user") else "")
-        if sub:
-            _text(surf, sub[:34], 13, (150, 170, 190), x=rx + 46, y=ry + 40)
-        d_nm, brg = _nav_geo_dist_brg(lat, lon, wp["lat"], wp["lon"])
-        _text(surf, f"{d_nm:.1f} nm  {int(round(brg)) % 360:03d}°", 15,
-              (180, 200, 220), x=rx + rw - 3 * _FPL_ICON_W - 170,
-              y=ry + rh // 2 - 9)
-        ix = rx + rw - 3 * _FPL_ICON_W - 6
-        for gi, glyph in enumerate(("↑", "↓", "✕")):
-            _action_btn(surf, ix + gi * _FPL_ICON_W, ry + 6,
-                        _FPL_ICON_W - 4, rh - 12, glyph,
-                        "danger" if glyph == "✕" else "normal", r=5)
+        _text(surf, "DEACTIVATE", 14, (80, 90, 110), bold=True,
+              cx=dx + dw // 2, cy=dy + dh // 2)
 
-    if up_r:
-        _action_btn(surf, *up_r, "▲", "normal", r=6)
-        _action_btn(surf, *dn_r, "▼", "normal", r=6)
+    if not wps:
+        _text(surf, "No waypoints yet — tap + ICAO / + LAT/LON / + USER",
+              14, (140, 160, 190), cx=DISPLAY_W // 2, cy=_fpl_list_y0() + 60)
+        _text(surf, "Each ident becomes a leg.  Tap a row to activate it.",
+              11, (110, 130, 160), cx=DISPLAY_W // 2, cy=_fpl_list_y0() + 90)
+        return
+
+    global _fpl_scroll
+    list_top, list_bot = _fpl_list_area_y()
+    _fpl_scroll = max(0, min(_fpl_scroll, _fpl_max_scroll(len(wps))))
+    prev_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, list_top, DISPLAY_W, list_bot - list_top))
+
+    for i, wp in enumerate(wps):
+        bx, by, bw, bh = _fpl_row_rect(i)
+        if by + bh < list_top or by > list_bot:
+            continue
+        is_this_active = (i == active_idx)
+        bg = (0, 40, 18) if is_this_active else (0, 12, 32)
+        oc = (60, 200, 90) if is_this_active else (60, 80, 110)
+        pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=5)
+        pygame.draw.rect(surf, oc, (bx, by, bw, bh),
+                         width=2 if is_this_active else 1, border_radius=5)
+        _text(surf, f"{i+1}", 20, (160, 180, 200), bold=True,
+              x=bx + 14, cy=by + bh // 2)
+        ident_col = MAGENTA if is_this_active else WHITE
+        _text(surf, wp.get("ident", ""), 32, ident_col, bold=True,
+              x=bx + 56, y=by + 10)
+        wp_name   = str(wp.get("name", "") or "")
+        wp_region = str(wp.get("region", "") or "")
+        wp_user   = bool(wp.get("user"))
+        if wp_user:
+            sub = f"USER  ·  {wp['lat']:.4f}, {wp['lon']:.4f}"
+            sub_col = (200, 180, 130)
+        elif wp_name:
+            sub = f"{wp_name}, {wp_region}" if wp_region else wp_name
+            sub_col = (150, 175, 205)
+        else:
+            sub = f"{wp['lat']:.4f}, {wp['lon']:.4f}"
+            sub_col = (130, 150, 180)
+        max_sub_x = bx + bw - 6 - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 14
+        sub_font = _get_font(18, bold=False)
+        while sub and sub_font.size(sub)[0] > (max_sub_x - (bx + 56)):
+            sub = sub[:-1]
+        _text(surf, sub, 18, sub_col, x=bx + 56, y=by + bh - 26)
+        if is_this_active:
+            _text(surf, "● ACTIVE", 15, (60, 220, 100), bold=True,
+                  x=bx + bw - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 108,
+                  y=by + 12)
+        up_r, dn_r, del_r = _fpl_row_icon_rects((bx, by, bw, bh))
+        _fpl_icon_btn(surf, up_r, "↑", dim=(i == 0))
+        _fpl_icon_btn(surf, dn_r, "↓", dim=(i == len(wps) - 1))
+        _fpl_icon_btn(surf, del_r, "✕")
+
+    surf.set_clip(prev_clip)
+    max_s = _fpl_max_scroll(len(wps))
+    if max_s > 0:
+        bar_w = 4
+        bar_x = DISPLAY_W - bar_w - 2
+        track_h = list_bot - list_top
+        thumb_h = max(20, int(track_h * track_h / (track_h + max_s)))
+        thumb_y = list_top + int((track_h - thumb_h) * _fpl_scroll / max_s)
+        pygame.draw.rect(surf, (40, 50, 70),
+                         (bar_x, list_top, bar_w, track_h), border_radius=2)
+        pygame.draw.rect(surf, (120, 150, 190),
+                         (bar_x, thumb_y, bar_w, thumb_h), border_radius=2)
 
 
 def fpl_hit(x, y):
     if _back_hit(x, y):
         return ("back", None)
-    for k, _lbl, rect in _fpl_action_btns():
-        bx, by, bw, bh = rect
-        if bx <= x <= bx + bw and by <= y <= by + bh:
-            return ("act", k)
-    n = len(disp["fpl"]["waypoints"])
-    up_r, dn_r = _fpl_scroll_btns(n)
-    if up_r:
-        for tag, rc in (("scroll_up", up_r), ("scroll_down", dn_r)):
-            bx, by, bw, bh = rc
-            if bx <= x <= bx + bw and by <= y <= by + bh:
-                return (tag, None)
-    list_w = DISPLAY_W - 16 - (62 if up_r else 0)
-    vis = _fpl_visible_rows()
-    for pos in range(vis):
-        j = _fpl_scroll + pos
-        if j >= n:
-            break
-        rx, ry, _rw, rh = _fpl_row_rect(pos)
-        if not (ry <= y <= ry + rh):
+    for rect, kind in zip(_fpl_add_buttons(), ("add_icao", "add_ll", "add_lib")):
+        ax, ay, aw, ah = rect
+        if ax <= x <= ax + aw and ay <= y <= ay + ah:
+            return (kind, None)
+    save_r, load_r = _fpl_saveload_btns()
+    for rect, kind in ((save_r, "save"), (load_r, "load")):
+        ax, ay, aw, ah = rect
+        if ax <= x <= ax + aw and ay <= y <= ay + ah:
+            return (kind, None)
+    dx, dy, dw, dh = _fpl_deact_btn_rect()
+    if dx <= x <= dx + dw and dy <= y <= dy + dh:
+        return ("deact", None)
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    for i in range(len(wps)):
+        bx, by, bw, bh = _fpl_row_rect(i)
+        if not (bx <= x <= bx + bw and by <= y <= by + bh):
             continue
-        ix = rx + list_w - 3 * _FPL_ICON_W - 6
-        if x >= ix:
-            gi = int((x - ix) // _FPL_ICON_W)
-            return (("up", "down", "del")[min(2, gi)], j)
-        return ("activate", j)
+        up_r, dn_r, del_r = _fpl_row_icon_rects((bx, by, bw, bh))
+        rx, ry, rw, rh = up_r
+        if rx <= x <= rx + rw and ry <= y <= ry + rh:
+            return ("up", i)
+        rx, ry, rw, rh = dn_r
+        if rx <= x <= rx + rw and ry <= y <= ry + rh:
+            return ("down", i)
+        rx, ry, rw, rh = del_r
+        if rx <= x <= rx + rw and ry <= y <= ry + rh:
+            return ("delete", i)
+        return ("activate", i)
+    return (None, None)
+
+
+def _fpl_open_add_keyboard():
+    disp["kbd_target"] = "fpl_ident"
+    disp["kbd_prev"]   = "fpl"
+    disp["kbd_buf"]    = ""
+    disp["kbd_error"]  = ""
+    disp["kbd_shift"]  = False
+    disp["mode"]       = "keyboard"
+
+
+# ── +LAT/LON entry screen ─────────────────────────────────────────────────────
+_FLE_HEADER_H  = 44
+_FLE_ROW_H     = 60
+_FLE_ROW_GAP   = 10
+_FLE_FOOTER_H  = 56
+
+
+def _fle_field_rect(i):
+    pad = 6
+    y0 = _FLE_HEADER_H + 12
+    return (pad, y0 + i * (_FLE_ROW_H + _FLE_ROW_GAP),
+            DISPLAY_W - 2 * pad, _FLE_ROW_H)
+
+
+def _fle_footer_rects():
+    pad = 6
+    fy = DISPLAY_H - _FLE_FOOTER_H - pad
+    half = (DISPLAY_W - 2 * pad - _FPL_ACTIONS_GAP) // 2
+    return ((pad, fy, half, _FLE_FOOTER_H),
+            (pad + half + _FPL_ACTIONS_GAP, fy, half, _FLE_FOOTER_H))
+
+
+def _fle_open_kbd(target_axis):
+    n = disp["fpl_new"]
+    if target_axis == "ident":
+        disp["kbd_target"] = "fpl_latlon_ident"; disp["kbd_buf"] = n.get("ident", "")
+    elif target_axis == "lat":
+        disp["kbd_target"] = "fpl_latlon_lat"; disp["kbd_buf"] = n.get("lat_str", "")
+    elif target_axis == "lon":
+        disp["kbd_target"] = "fpl_latlon_lon"; disp["kbd_buf"] = n.get("lon_str", "")
+    else:
+        return
+    disp["kbd_prev"] = "fpl_latlon_entry"
+    disp["kbd_error"] = ""
+    disp["kbd_shift"] = False
+    disp["mode"] = "keyboard"
+
+
+def draw_fpl_latlon_entry(surf):
+    _screen_header(surf, "ADD USER WAYPOINT")
+    n = disp["fpl_new"]
+    fields = [
+        ("IDENT", "ident",   n.get("ident", ""),   "name (e.g. FISH, RDV1)"),
+        ("LAT",   "lat_str", n.get("lat_str", ""), "decimal degrees, e.g. 34.523"),
+        ("LON",   "lon_str", n.get("lon_str", ""), "decimal degrees, e.g. -111.789"),
+    ]
+    err_field, err_msg = disp.get("fle_err_field", ""), disp.get("fle_err_msg", "")
+    for i, (label, key, val, hint) in enumerate(fields):
+        bx, by, bw, bh = _fle_field_rect(i)
+        is_err = (err_field and (
+            (err_field == "ident" and key == "ident")
+            or (err_field == "lat" and key == "lat_str")
+            or (err_field == "lon" and key == "lon_str")))
+        bg = (28, 14, 14) if is_err else (0, 12, 32)
+        oc = (200, 80, 80) if is_err else (60, 80, 110)
+        pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=6)
+        pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=1, border_radius=6)
+        _text(surf, label, 12, (160, 180, 210), bold=True, x=bx + 14, y=by + 8)
+        if val:
+            _text(surf, val, 22, WHITE, bold=True, x=bx + 14, cy=by + bh // 2 + 8)
+        else:
+            _text(surf, hint, 12, (100, 110, 130), x=bx + 14, cy=by + bh // 2 + 8)
+        _text(surf, "edit ›", 11, (130, 150, 180), x=bx + bw - 60, cy=by + bh // 2)
+    if err_msg:
+        _text(surf, err_msg, 13, (240, 120, 120), bold=True,
+              cx=DISPLAY_W // 2, y=DISPLAY_H - _FLE_FOOTER_H - 28)
+    (cx_, cy_, cw_, ch_), (sx_, sy_, sw_, sh_) = _fle_footer_rects()
+    _action_btn(surf, cx_, cy_, cw_, ch_, "CANCEL", "normal", r=8)
+    _action_btn(surf, sx_, sy_, sw_, sh_, "SAVE", "ok", r=8)
+
+
+def fpl_latlon_entry_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    for i, axis in enumerate(("ident", "lat", "lon")):
+        bx, by, bw, bh = _fle_field_rect(i)
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return ("edit", axis)
+    (cx_, cy_, cw_, ch_), (sx_, sy_, sw_, sh_) = _fle_footer_rects()
+    if cx_ <= x <= cx_ + cw_ and cy_ <= y <= cy_ + ch_:
+        return ("cancel", None)
+    if sx_ <= x <= sx_ + sw_ and sy_ <= y <= sy_ + sh_:
+        return ("save", None)
+    return (None, None)
+
+
+def _fpl_validate_user_ident(ident):
+    ident = (ident or "").strip().upper()
+    if not ident:
+        return ("ident", "ident is required")
+    for i, wp in enumerate(disp["fpl"]["waypoints"]):
+        if str(wp.get("ident", "")).upper() == ident:
+            return ("ident", f"'{ident}' already in plan (row {i+1})")
+    if _nav_lookup_ident(ident) is not None:
+        return ("ident", f"'{ident}' is an airport ident — pick another")
+    return ("", "")
+
+
+def _fpl_open_latlon_entry():
+    cur_lat = float(disp.get("lat", 0.0))
+    cur_lon = float(disp.get("lon", 0.0))
+    disp["fpl_new"]["ident"]   = ""
+    disp["fpl_new"]["lat"]     = cur_lat
+    disp["fpl_new"]["lon"]     = cur_lon
+    disp["fpl_new"]["lat_str"] = f"{cur_lat:.5f}"
+    disp["fpl_new"]["lon_str"] = f"{cur_lon:.5f}"
+    disp["fpl_new"]["source"]  = "latlon"
+    disp["mode"]               = "fpl_latlon_entry"
+
+
+def _fpl_parse_latlon(s, axis):
+    s = s.strip()
+    if not s:
+        return (None, "empty")
+    try:
+        v = float(s)
+    except ValueError:
+        return (None, f"can't parse '{s}'")
+    if axis == "lat" and not (-90.0 <= v <= 90.0):
+        return (None, "lat out of range")
+    if axis == "lon" and not (-180.0 <= v <= 180.0):
+        return (None, "lon out of range")
+    return (v, "")
+
+
+def _fpl_commit_latlon():
+    n = disp["fpl_new"]
+    ident = n["ident"].strip().upper()
+    field, msg = _fpl_validate_user_ident(ident)
+    if field:
+        return (field, msg)
+    lat, err = _fpl_parse_latlon(n["lat_str"], "lat")
+    if lat is None:
+        return ("lat", err)
+    lon, err = _fpl_parse_latlon(n["lon_str"], "lon")
+    if lon is None:
+        return ("lon", err)
+    if not _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=True):
+        return ("ident", f"plan full ({_FPL_MAX_WAYPOINTS} max)")
+    _user_wpt_save(ident, lat, lon)
+    n["ident"] = ""; n["lat"] = 0.0; n["lon"] = 0.0
+    n["lat_str"] = ""; n["lon_str"] = ""; n["source"] = ""
+    return ("", "")
+
+
+# ── User-waypoint picker (+ USER) ─────────────────────────────────────────────
+_UWP_HEADER_H  = 44
+_UWP_ROW_H     = 50
+_UWP_ROW_GAP   = 4
+_UWP_ICON_W    = 56
+
+
+def _uwp_row_rect(idx):
+    pad = 6
+    y0 = _UWP_HEADER_H + 8
+    return (pad, y0 + idx * (_UWP_ROW_H + _UWP_ROW_GAP),
+            DISPLAY_W - 2 * pad, _UWP_ROW_H)
+
+
+def _uwp_row_btn_rects(rect):
+    bx, by, bw, bh = rect
+    iy = by + (bh - _UWP_ICON_W) // 2 + 4
+    ih = _UWP_ICON_W - 8
+    del_x = bx + bw - 6 - _UWP_ICON_W
+    add_x = del_x - 4 - _UWP_ICON_W
+    return ((add_x, iy, _UWP_ICON_W, ih), (del_x, iy, _UWP_ICON_W, ih))
+
+
+def draw_user_wpt_picker(surf):
+    _screen_header(surf, "USER WAYPOINTS")
+    wps = disp.get("user_wpts", {}).get("list", [])
+    if not wps:
+        _text(surf, "No saved user waypoints yet.", 14, (160, 180, 210),
+              cx=DISPLAY_W // 2, cy=120)
+        _text(surf, "Waypoints created via + LAT/LON are auto-saved here.",
+              11, (130, 150, 180), cx=DISPLAY_W // 2, cy=160)
+        return
+    sorted_wps = sorted(wps, key=lambda w: str(w.get("ident", "")))
+    fpl_idents = {str(w.get("ident", "")).upper()
+                  for w in disp.get("fpl", {}).get("waypoints", [])}
+    plan_full = (len(disp.get("fpl", {}).get("waypoints", [])) >= _FPL_MAX_WAYPOINTS)
+    for i, wp in enumerate(sorted_wps):
+        bx, by, bw, bh = _uwp_row_rect(i)
+        if by + bh > DISPLAY_H - 6:
+            break
+        in_fpl = str(wp.get("ident", "")).upper() in fpl_idents
+        bg = (0, 12, 32) if not in_fpl else (10, 26, 16)
+        oc = (60, 80, 110) if not in_fpl else (90, 160, 110)
+        pygame.draw.rect(surf, bg, (bx, by, bw, bh), border_radius=5)
+        pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=1, border_radius=5)
+        _text(surf, str(wp.get("ident", "")), 22, MAGENTA, bold=True,
+              x=bx + 14, y=by + 6)
+        sub = f"{float(wp.get('lat', 0)):.4f}, {float(wp.get('lon', 0)):.4f}"
+        _text(surf, sub, 12, (160, 180, 210), x=bx + 14, y=by + bh - 18)
+        if in_fpl:
+            _text(surf, "● in plan", 11, (90, 200, 130), bold=True,
+                  x=bx + 200, cy=by + bh // 2)
+        add_r, del_r = _uwp_row_btn_rects((bx, by, bw, bh))
+        if in_fpl or plan_full:
+            pygame.draw.rect(surf, (10, 14, 22), add_r, border_radius=4)
+            pygame.draw.rect(surf, (40, 50, 64), add_r, width=1, border_radius=4)
+            _text(surf, "ADD", 13, (80, 90, 110), bold=True,
+                  cx=add_r[0] + add_r[2] // 2, cy=add_r[1] + add_r[3] // 2)
+        else:
+            _action_btn(surf, *add_r, "ADD", "ok", r=4)
+        _action_btn(surf, *del_r, "DEL", "danger", r=4)
+
+
+def user_wpt_picker_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    wps = disp.get("user_wpts", {}).get("list", [])
+    sorted_wps = sorted(wps, key=lambda w: str(w.get("ident", "")))
+    for i, wp in enumerate(sorted_wps):
+        bx, by, bw, bh = _uwp_row_rect(i)
+        if not (bx <= x <= bx + bw and by <= y <= by + bh):
+            continue
+        add_r, del_r = _uwp_row_btn_rects((bx, by, bw, bh))
+        ax, ay, aw, ah = add_r
+        if ax <= x <= ax + aw and ay <= y <= ay + ah:
+            return ("add", wp)
+        dx, dy, dw, dh = del_r
+        if dx <= x <= dx + dw and dy <= y <= dy + dh:
+            return ("delete", wp)
     return (None, None)
 
 
 def draw_fpl_plan_picker(surf):
     _screen_header(surf, "LOAD PLAN")
-    plans = disp["fpl_saved"]["plans"]
+    plans = disp.get("fpl_saved", {}).get("plans", [])
     if not plans:
-        _text(surf, "No saved plans", 18, (140, 150, 170),
-              cx=DISPLAY_W // 2, cy=140)
+        _text(surf, "No saved plans yet.", 14, (160, 180, 210),
+              cx=DISPLAY_W // 2, cy=120)
+        _text(surf, "Build a plan, then tap SAVE to store it here.",
+              11, (130, 150, 180), cx=DISPLAY_W // 2, cy=160)
         return
-    for i, p in enumerate(plans[:8]):
-        ry = 58 + i * 62
-        pygame.draw.rect(surf, (0, 14, 30), (8, ry, DISPLAY_W - 16, 54),
-                         border_radius=6)
-        pygame.draw.rect(surf, (60, 80, 110), (8, ry, DISPLAY_W - 16, 54),
-                         width=1, border_radius=6)
-        _text(surf, p.get("name", "?"), 22, WHITE, bold=True, x=20, y=ry + 15)
+    sorted_plans = sorted(plans, key=lambda p: str(p.get("name", "")).upper())
+    for i, p in enumerate(sorted_plans):
+        bx, by, bw, bh = _uwp_row_rect(i)
+        if by + bh > DISPLAY_H - 6:
+            break
+        pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=5)
+        pygame.draw.rect(surf, (60, 80, 110), (bx, by, bw, bh), width=1,
+                         border_radius=5)
+        _text(surf, str(p.get("name", "")), 22, WHITE, bold=True,
+              x=bx + 14, y=by + 6)
         wps = p.get("waypoints", [])
-        if wps:
-            _text(surf, f"{len(wps)} wpt · {wps[0].get('ident','')}"
-                        f"→{wps[-1].get('ident','')}", 14, (150, 170, 190),
-                  x=320, y=ry + 19)
-        _action_btn(surf, DISPLAY_W - 2 * 110 - 16, ry + 5, 104, 44,
-                    "LOAD", "ok", r=5)
-        _action_btn(surf, DISPLAY_W - 110 - 8, ry + 5, 100, 44,
-                    "DEL", "danger", r=5)
+        nwp = len(wps)
+        if nwp:
+            sub = (f"{nwp} wpt{'s' if nwp != 1 else ''}  ·  "
+                   f"{wps[0].get('ident','?')} → {wps[-1].get('ident','?')}")
+        else:
+            sub = "empty"
+        _text(surf, sub, 12, (160, 180, 210), x=bx + 14, y=by + bh - 18)
+        load_r, del_r = _uwp_row_btn_rects((bx, by, bw, bh))
+        _action_btn(surf, *load_r, "LOAD", "ok", r=4)
+        _action_btn(surf, *del_r, "DEL", "danger", r=4)
 
 
 def fpl_plan_picker_hit(x, y):
     if _back_hit(x, y):
         return ("back", None)
-    for i, p in enumerate(disp["fpl_saved"]["plans"][:8]):
-        ry = 58 + i * 62
-        if not (ry <= y <= ry + 54):
+    plans = disp.get("fpl_saved", {}).get("plans", [])
+    sorted_plans = sorted(plans, key=lambda p: str(p.get("name", "")).upper())
+    for i, p in enumerate(sorted_plans):
+        bx, by, bw, bh = _uwp_row_rect(i)
+        if not (bx <= x <= bx + bw and by <= y <= by + bh):
             continue
-        if x >= DISPLAY_W - 110 - 8:
-            return ("del", p.get("name", ""))
-        if x >= DISPLAY_W - 2 * 110 - 16:
-            return ("load", p.get("name", ""))
+        load_r, del_r = _uwp_row_btn_rects((bx, by, bw, bh))
+        lx, ly, lw, lh = load_r
+        if lx <= x <= lx + lw and ly <= y <= ly + lh:
+            return ("load", p)
+        dx, dy, dw, dh = del_r
+        if dx <= x <= dx + dw and dy <= y <= dy + dh:
+            return ("delete", p)
     return (None, None)
 
 
@@ -11544,6 +12019,10 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_mfd_strip_setup(surf); return
     if mode == "fpl":
         draw_fpl(surf); return
+    if mode == "fpl_latlon_entry":
+        draw_fpl_latlon_entry(surf); return
+    if mode == "user_wpt_picker":
+        draw_user_wpt_picker(surf); return
     if mode == "fpl_plan_picker":
         draw_fpl_plan_picker(surf); return
 
