@@ -4643,9 +4643,11 @@ def handle_event(event, demo_mode):
         d = _mfd_drag
         _mfd_drag = None
         if not d["is_drag"]:
-            # A tap (not a pan): open a METAR readout when the WX overlay is up.
-            if disp["ds"].get("map_show_metar"):
-                _mfd_metar_tap(*d["pos"])
+            # A tap (not a pan): METAR readout when the WX overlay is up,
+            # otherwise an airport hit-test → D2 confirm (like piZ).
+            if not (disp["ds"].get("map_show_metar")
+                    and _mfd_metar_tap(*d["pos"])):
+                _mfd_airport_tap(*d["pos"])
         return True
 
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
@@ -11223,6 +11225,79 @@ def _mfd_metar_tap(tap_x, tap_y, tap_px=28):
     if best is None:
         return False
     disp["wx_popup"] = dict(best)
+    return True
+
+
+def _mfd_airport_tap(tap_x, tap_y, tap_px=26):
+    """Hit-test airports against an MFD map tap; on a hit open the D2
+    confirm modal (like piZ).  Uses the same projection + visible-type /
+    zoom-band gates as the renderer so only on-screen airports are pickable."""
+    if _airports is None:
+        return False
+    range_nm = _mfd_last_range or 10
+    if range_nm > 40 or range_nm <= 0:
+        return False
+    if range_nm > 20:
+        allowed_band = {"L"}
+    elif range_nm > 10:
+        allowed_band = {"M", "L"}
+    elif range_nm > 5:
+        allowed_band = {"S", "M", "L"}
+    else:
+        allowed_band = None
+    cen_lat, cen_lon = _mfd_effective_center()
+    project, _ = _map_mod.make_projector(
+        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
+        range_nm, disp.get("yaw", 0.0), _mfd_last_track)
+    apt_types = {
+        "S": disp["ad"].get("show_public", True),
+        "M": disp["ad"].get("show_public", True),
+        "L": disp["ad"].get("show_public", True),
+        "H": disp["ad"].get("show_heli", True),
+        "W": disp["ad"].get("show_seaplane", False),
+        "B": disp["ad"].get("show_other", False),
+    }
+    nearby = apt_mod.query_nearby(_airports, cen_lat, cen_lon,
+                                  radius_nm=range_nm * 1.4)
+    if nearby is None or len(nearby) == 0:
+        return False
+    best_d2 = (tap_px + 1) ** 2
+    best = None
+    if hasattr(nearby, "dtype"):
+        considered = 0
+        for i in range(len(nearby)):
+            if considered >= 40:
+                break
+            atype = str(nearby["atype"][i])
+            if allowed_band is not None and atype not in allowed_band:
+                continue
+            if not apt_types.get(atype, False):
+                continue
+            sx, sy = project(float(nearby["lat"][i]), float(nearby["lon"][i]))
+            dd = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+            if dd < best_d2:
+                best_d2 = dd
+                best = str(nearby["ident"][i])
+            considered += 1
+    else:
+        considered = 0
+        for r in nearby:
+            if considered >= 40:
+                break
+            atype = getattr(r, "atype", "")
+            if allowed_band is not None and atype not in allowed_band:
+                continue
+            if not apt_types.get(atype, False):
+                continue
+            sx, sy = project(float(r.lat), float(r.lon))
+            dd = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+            if dd < best_d2:
+                best_d2 = dd
+                best = r.ident
+            considered += 1
+    if best is None:
+        return False
+    _nav_open_confirm(best, "pfd")
     return True
 
 
