@@ -258,7 +258,8 @@ disp["cs"] = {                      # connectivity settings
     "sync_publish_nav":  False, "sync_consume_nav":  False,
     "sync_publish_ahrs": False, "sync_consume_ahrs": False,
     "sync_publish_gps":  False, "sync_consume_gps":  False,
-    "sync_publish_fpl":  False, "sync_consume_fpl":  False,
+    # Flight plans share both ways (no master/slave) — single ON/OFF.
+    "sync_fpl_enabled":  True,
     # ADS-B IN — listen for GDL90 traffic on UDP.  Diagnostics mirror the
     # AHRS link fields so the Connectivity screen can show an ADS-B row.
     "adsb_enabled":   True,     # start the GDL90/UDP listener at boot
@@ -393,12 +394,15 @@ def _ssync_kinds_from_cs(direction):
               _ssync_mod.KIND_GPS):
         if cs.get(f"sync_{direction}_{k}", False):
             out.add(k)
-    # Flight plans are ALWAYS bidirectional — no master/slave.  The active
-    # plan (KIND_FPL) and the saved-plan / user-waypoint library
-    # (KIND_FPLLIB) sync both ways on every screen, so an edit on any screen
-    # propagates and a plan stored on any screen can be loaded anywhere.
-    out.add(_ssync_mod.KIND_FPL)
-    out.add(_ssync_mod.KIND_FPLLIB)
+    # Flight plans are ALWAYS bidirectional when sharing is on — no
+    # master/slave.  The active plan (KIND_FPL) and the saved-plan /
+    # user-waypoint library (KIND_FPLLIB) sync both ways on every screen,
+    # so an edit on any screen propagates and a plan stored on any screen
+    # can be loaded anywhere.  A single SHARE FPL toggle gates both
+    # directions (no separate TX/RX) to avoid echo confusion.
+    if cs.get("sync_fpl_enabled", True):
+        out.add(_ssync_mod.KIND_FPL)
+        out.add(_ssync_mod.KIND_FPLLIB)
     return out
 
 
@@ -3168,6 +3172,11 @@ def handle_event(event, demo_mode):
                 _ssync_refresh_kinds()
             elif action and action.startswith("transport:"):
                 disp["cs"]["sync_transport"] = action.split(":", 1)[1]
+                _settings.mark_dirty()
+                _ssync_refresh_kinds()
+            elif action == "toggle_fpl_share":
+                disp["cs"]["sync_fpl_enabled"] = not disp["cs"].get(
+                    "sync_fpl_enabled", True)
                 _settings.mark_dirty()
                 _ssync_refresh_kinds()
             elif action and action.startswith("set_mode:"):
@@ -6424,14 +6433,16 @@ _SCS_KINDS = (
     ("nav",  "NAV (D2)", "waypoint ident + activation point"),
     ("ahrs", "AHRS",     "pitch / roll / yaw — pick one direction"),
     ("gps",  "GPS",      "lat / lon / alt / speed / track — pick one"),
-    ("fpl",  "FPL",      "full flight plan + active leg — pick one direction"),
+    ("fpl",  "SHARE FPL", "flight plans + saved library sync both ways"),
 )
 # Stream sensors / state mirrors: exactly one of OFF/TX/RX.  See
 # pi4/pfd.py for the rationale — both-on creates a
 # publish→receive→republish echo loop.  Bugs/baro/nav don't have
 # this problem (they only publish on user edits, gated by
 # _ssync_suppress_publish).
-_SCS_MUTEX_KINDS = {"ahrs", "gps", "fpl"}
+_SCS_MUTEX_KINDS = {"ahrs", "gps"}
+# FPL is a single ON/OFF "share both ways" toggle — no master/slave.
+_SCS_TOGGLE_KINDS = {"fpl"}
 
 _SCS_PILL_W = 86
 _SCS_PILL_H = 36
@@ -6656,7 +6667,11 @@ def draw_screen_sync_setup(surf, cs):
     for i, (kind, label, sub) in enumerate(_SCS_KINDS,
                                             start=_SCS_ROW_KINDS_OFS):
         bx2, by2, bw2, bh2 = _setting_row(surf, i, label, sub)
-        if kind in _SCS_MUTEX_KINDS:
+        if kind in _SCS_TOGGLE_KINDS:
+            _, rect = _scs_pill_rects(by2, bh2)   # single ON/OFF (rightmost)
+            on = cs.get("sync_fpl_enabled", True)
+            _seg_btn(surf, *rect, "ON" if on else "OFF", on)
+        elif kind in _SCS_MUTEX_KINDS:
             mode = _scs_mutex_mode(cs, kind)
             off_r, tx_r, rx_r = _scs_mutex_rects(by2, bh2)
             _seg_btn(surf, *off_r, "OFF", mode == "off")
@@ -6708,6 +6723,12 @@ def screen_sync_setup_hit(x, y, cs):
                                          start=_SCS_ROW_KINDS_OFS):
         by = _ss_row_y(i)
         if not (by <= y <= by + _SS_RH):
+            continue
+        if kind in _SCS_TOGGLE_KINDS:
+            _, rect = _scs_pill_rects(by, _SS_RH)
+            rx_, ry_, rw_, rh_ = rect
+            if rx_ <= x <= rx_ + rw_ and ry_ <= y <= ry_ + rh_:
+                return "toggle_fpl_share"
             continue
         if kind in _SCS_MUTEX_KINDS:
             off_r, tx_r, rx_r = _scs_mutex_rects(by, _SS_RH)

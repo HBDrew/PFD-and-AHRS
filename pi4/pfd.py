@@ -326,7 +326,7 @@ disp["cs"] = {                      # connectivity settings
     "sync_publish_nav":  False, "sync_consume_nav":  False,
     "sync_publish_ahrs": False, "sync_consume_ahrs": False,
     "sync_publish_gps":  False, "sync_consume_gps":  False,
-    "sync_publish_fpl":  False, "sync_consume_fpl":  False,
+    "sync_fpl_enabled":  True,   # single SHARE FPL toggle (both ways, no echo)
     # ADS-B IN — listen for GDL90 traffic on UDP.  Diagnostics mirror the
     # AHRS link fields so the Connectivity screen can show an ADS-B row.
     "adsb_enabled":   True,
@@ -503,10 +503,13 @@ def _ssync_kinds_from_cs(direction):
               _ssync_mod.KIND_GPS):
         if cs.get(f"sync_{direction}_{k}", False):
             out.add(k)
-    # Flight plans are ALWAYS bidirectional — no master/slave.  Active plan
-    # (KIND_FPL) + saved-plan/user-wpt library (KIND_FPLLIB) sync both ways.
-    out.add(_ssync_mod.KIND_FPL)
-    out.add(_ssync_mod.KIND_FPLLIB)
+    # Flight plans are ALWAYS bidirectional when sharing is on — no
+    # master/slave.  Active plan (KIND_FPL) + saved-plan/user-wpt library
+    # (KIND_FPLLIB) sync both ways.  A single SHARE FPL toggle gates both
+    # directions (no separate TX/RX) to avoid echo confusion.
+    if cs.get("sync_fpl_enabled", True):
+        out.add(_ssync_mod.KIND_FPL)
+        out.add(_ssync_mod.KIND_FPLLIB)
     return out
 
 
@@ -4991,6 +4994,11 @@ def handle_event(event, demo_mode):
                 disp["cs"]["sync_transport"] = action.split(":", 1)[1]
                 _settings.mark_dirty()
                 _ssync_refresh_kinds()
+            elif action == "toggle_fpl_share":
+                disp["cs"]["sync_fpl_enabled"] = not disp["cs"].get(
+                    "sync_fpl_enabled", True)
+                _settings.mark_dirty()
+                _ssync_refresh_kinds()
             elif action and action.startswith("set_mode:"):
                 # AHRS/GPS mutex selector: one of off / tx / rx.
                 _, kind, mode = action.split(":", 2)
@@ -7297,14 +7305,18 @@ _SCS_KINDS = (
     ("nav",  "NAV (D2)", "waypoint ident + activation point"),
     ("ahrs", "AHRS",     "pitch / roll / yaw — pick one direction"),
     ("gps",  "GPS",      "lat / lon / alt / speed / track — pick one"),
-    ("fpl",  "FPL",      "full flight plan + active leg — pick one"),
+    ("fpl",  "SHARE FPL", "flight plans + saved library sync both ways"),
 )
 # Stream sensors: exactly one of OFF/TX/RX.  If both TX and RX were
 # on, the periodic publisher would rebroadcast each peer packet right
 # back as if it were our own data, creating a feedback loop that
 # jitters the display.  Bugs/baro/nav don't have this problem (they
 # only publish on user edits, gated by _ssync_suppress_publish).
-_SCS_MUTEX_KINDS = {"ahrs", "gps", "fpl"}
+_SCS_MUTEX_KINDS = {"ahrs", "gps"}
+# Flight plans use a single ON/OFF share toggle (both directions at once,
+# no master/slave).  Echo is prevented by INSTANCE_ID dedup +
+# _ssync_suppress_publish, so there's no need for separate TX/RX.
+_SCS_TOGGLE_KINDS = {"fpl"}
 
 _SCS_PILL_W = 86
 _SCS_PILL_H = 36
@@ -7467,7 +7479,11 @@ def draw_screen_sync_setup(surf, cs):
     for i, (kind, label, sub) in enumerate(_SCS_KINDS,
                                             start=_SCS_ROW_KINDS_OFS):
         bx2, by2, bw2, bh2 = _setting_row(surf, i, label, sub)
-        if kind in _SCS_MUTEX_KINDS:
+        if kind in _SCS_TOGGLE_KINDS:
+            _, rect = _scs_pill_rects(by2, bh2)   # single ON/OFF (rightmost)
+            on = cs.get("sync_fpl_enabled", True)
+            _seg_btn(surf, *rect, "ON" if on else "OFF", on)
+        elif kind in _SCS_MUTEX_KINDS:
             mode = _scs_mutex_mode(cs, kind)
             off_r, tx_r, rx_r = _scs_mutex_rects(by2, bh2)
             _seg_btn(surf, *off_r, "OFF", mode == "off")
@@ -7510,6 +7526,12 @@ def screen_sync_setup_hit(x, y, cs):
                                          start=_SCS_ROW_KINDS_OFS):
         by = _ss_row_y(i)
         if not (by <= y <= by + _SS_RH):
+            continue
+        if kind in _SCS_TOGGLE_KINDS:
+            _, rect = _scs_pill_rects(by, _SS_RH)
+            rx_, ry_, rw_, rh_ = rect
+            if rx_ <= x <= rx_ + rw_ and ry_ <= y <= ry_ + rh_:
+                return "toggle_fpl_share"
             continue
         if kind in _SCS_MUTEX_KINDS:
             off_r, tx_r, rx_r = _scs_mutex_rects(by, _SS_RH)
@@ -11546,9 +11568,13 @@ def draw_mfd(surf, connected=True, data_stale=False):
     ctx = _mfd_strip_ctx(cen_lat, cen_lon, alt, hdg, track, gs_kt,
                          d2 if d2.get("ident") else None)
     col_w = sw // _MFD_STRIP_SLOT_COUNT
-    _fsc = globals().get("MFD_FONT_SCALE", 1.0)   # scale strip text for 10"
-    _cap_pt = max(9, int(round(13 * _fsc)))
-    _val_pt = max(14, int(round(26 * _fsc)))
+    # Data-strip text uses a gentler scale than the map labels: the airport
+    # names needed to shrink a lot on the 10", but the strip caption/value
+    # got too small at the same factor.  MFD_STRIP_FONT_SCALE backs off.
+    _fsc = globals().get("MFD_STRIP_FONT_SCALE",
+                         globals().get("MFD_FONT_SCALE", 1.0))
+    _cap_pt = max(11, int(round(13 * _fsc)))
+    _val_pt = max(18, int(round(26 * _fsc)))
     for i, kind in enumerate(_mfd_strip_kinds()):
         cap, val, col = _mfd_strip_format(kind, ctx)
         cx = sx + col_w // 2 + col_w * i

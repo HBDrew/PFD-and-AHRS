@@ -157,3 +157,9 @@ except ImportError:
 # explicitly to fine-tune; otherwise it's derived from DISPLAY_PROFILE.
 if "MFD_FONT_SCALE" not in dir():
     MFD_FONT_SCALE = 0.55 if DISPLAY_PROFILE == "roadom_10" else 1.0
+
+# The bottom data strip needs only a gentle reduction on the 10" — the map
+# airport names had to shrink a lot more, so the strip uses its own scale to
+# keep caption/value text legible.  config_local.py may override.
+if "MFD_STRIP_FONT_SCALE" not in dir():
+    MFD_STRIP_FONT_SCALE = 0.8 if DISPLAY_PROFILE == "roadom_10" else 1.0
