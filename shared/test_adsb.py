@@ -1,0 +1,137 @@
+"""
+test_adsb.py – standalone unit tests for the ADS-B traffic manager.
+
+Run:  python3 shared/test_adsb.py
+"""
+
+import os
+import sys
+import time
+import socket
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import gdl90  # noqa: E402
+import adsb   # noqa: E402
+
+_passed = 0
+
+
+def check(cond, msg):
+    global _passed
+    assert cond, f"FAIL: {msg}"
+    _passed += 1
+
+
+def approx(a, b, tol):
+    return abs(a - b) <= tol
+
+
+def test_relative_geometry():
+    # Target due north, 2 NM, 1000 ft above.
+    own = (34.0, -111.0, 8000)
+    tlat = 34.0 + 2.0 / 60.0          # 2 NM north
+    rel = adsb.relative({"lat": tlat, "lon": -111.0, "alt_ft": 9000}, *own)
+    check(approx(rel["range_nm"], 2.0, 0.02), f"range {rel['range_nm']}")
+    check(approx(rel["bearing_deg"], 0.0, 1.0) or
+          approx(rel["bearing_deg"], 360.0, 1.0), f"bearing {rel['bearing_deg']}")
+    check(rel["rel_alt_ft"] == 1000, f"rel_alt {rel['rel_alt_ft']}")
+    # Target due east.
+    tlon = -111.0 + (2.0 / 60.0) / __import__("math").cos(
+        __import__("math").radians(34.0))
+    rel = adsb.relative({"lat": 34.0, "lon": tlon, "alt_ft": 8000}, *own)
+    check(approx(rel["bearing_deg"], 90.0, 1.0), f"east bearing {rel['bearing_deg']}")
+
+
+def test_relative_missing_position():
+    rel = adsb.relative({"lat": None, "lon": None, "alt_ft": None},
+                        34.0, -111.0, 8000)
+    check(rel["range_nm"] is None and rel["bearing_deg"] is None, "no position")
+    check(rel["rel_alt_ft"] is None, "no rel alt")
+
+
+def test_threat_levels():
+    near = adsb.relative({"lat": 34.0 + 1.0 / 60.0, "lon": -111.0,
+                          "alt_ft": 8100}, 34.0, -111.0, 8000)
+    check(adsb.threat_level(near) == "alert", "close+co-altitude → alert")
+    mid = adsb.relative({"lat": 34.0 + 5.0 / 60.0, "lon": -111.0,
+                         "alt_ft": 8800}, 34.0, -111.0, 8000)
+    check(adsb.threat_level(mid) == "proximate", "5 NM/800 ft → proximate")
+    far = adsb.relative({"lat": 34.0 + 20.0 / 60.0, "lon": -111.0,
+                         "alt_ft": 8000}, 34.0, -111.0, 8000)
+    check(adsb.threat_level(far) == "other", "20 NM → other")
+    flagged = adsb.relative({"lat": 34.5, "lon": -111.0, "alt_ft": 8000,
+                             "alert": True}, 34.0, -111.0, 8000)
+    check(adsb.threat_level(flagged) == "alert", "source alert flag honoured")
+
+
+def test_demo_targets_shape():
+    ts = adsb.demo_targets(34.0, -111.0, 8000, t=5.0)
+    check(len(ts) == 4, f"4 demo targets, got {len(ts)}")
+    for d in ts:
+        check(d["lat"] is not None and d["lon"] is not None, "demo has position")
+        rel = adsb.relative(d, 34.0, -111.0, 8000)
+        check(rel["range_nm"] is not None, "demo target relativises")
+    # Deterministic in t.
+    a = adsb.demo_targets(34.0, -111.0, 8000, t=5.0)
+    b = adsb.demo_targets(34.0, -111.0, 8000, t=5.0)
+    check(a == b, "demo targets reproducible for same t")
+
+
+def test_ingest_and_expire():
+    c = adsb.ADSBClient(stale_s=0.2)
+    f = gdl90.encode_traffic(0xABCDEF, 34.1, -111.1, 7500, callsign="TEST1")
+    c._ingest(f)
+    check(c.count() == 1, "ingest stored one target")
+    snap = c.snapshot()
+    check(snap[0]["icao"] == "ABCDEF", "snapshot icao")
+    check(snap[0]["callsign"] == "TEST1", "snapshot callsign")
+    check(c.rx_count == 1, "rx_count incremented")
+    # Position-less report is dropped.
+    f0 = gdl90.encode_traffic(0x000111, 0.0, 0.0, 5000)
+    c._ingest(f0)
+    check(c.count() == 1, "lat/lon 0,0 report dropped")
+    # Expiry after the stale window.
+    time.sleep(0.25)
+    check(c.snapshot() == [], "target expired after stale window")
+    check(c.count() == 0, "expired target pruned")
+
+
+def test_udp_loopback():
+    """End-to-end: bind the listener, send a real UDP datagram to it,
+    and confirm the target shows up."""
+    port = 47654
+    c = adsb.ADSBClient(port=port, stale_s=5.0, bind_addr="127.0.0.1")
+    c.start()
+    time.sleep(0.3)                                  # let the socket bind
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    frame = gdl90.encode_traffic(0x123456, 34.2, -111.2, 6500,
+                                 callsign="UDP1")
+    try:
+        for _ in range(20):
+            tx.sendto(frame, ("127.0.0.1", port))
+            time.sleep(0.05)
+            if c.count() >= 1:
+                break
+        snap = c.snapshot()
+        check(any(t["icao"] == "123456" for t in snap),
+              f"UDP-delivered target present, got {[t['icao'] for t in snap]}")
+        check(c.connected is True, "client marked connected after rx")
+    finally:
+        tx.close()
+        c.stop()
+        c.join(timeout=2.0)
+    check(not c.is_alive(), "client thread stops cleanly")
+
+
+def main():
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+    print(f"ALL ADSB TESTS PASSED ({_passed} checks, {len(tests)} cases)")
+
+
+if __name__ == "__main__":
+    main()
