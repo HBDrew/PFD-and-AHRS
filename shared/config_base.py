@@ -75,6 +75,12 @@ ADSB_PROX_FT   = 1200     # proximate-traffic altitude envelope
 ADSB_ALERT_NM  = 3.0      # alert (resolution) range envelope (red)
 ADSB_ALERT_FT  = 600      # alert altitude envelope
 
+# ── Weather (internet METARs; NEXRAD + FIS-B later) ───────────────────────────
+# Pulled from aviationweather.gov (free, no key) around the aircraft's GPS
+# fix.  Needs internet (AHRS on USB, or everything on a shared Starlink LAN).
+WX_RADIUS_NM   = 150      # METAR query radius around ownship
+WX_INTERVAL_S  = 120      # poll cadence (METARs update ~hourly; be polite)
+
 # ── Proximity alert lookahead ─────────────────────────────────────────────────
 ALERT_TIME_S         = 60     # lookahead window in seconds
 ALERT_RADIUS_MIN_NM  = 1.0    # floor — always check at least this far ahead

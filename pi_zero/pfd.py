@@ -37,6 +37,7 @@ import pygame.gfxdraw
 from config import *   # noqa: F403
 from sse_client import SSEClient
 import adsb as _adsb
+import wx as _wx
 from terrain import (
     get_elevation_ft, get_elevation_ft_combined,
     coarse_tile_list, coarse_tile_url, coarse_tile_path, coarse_disk_stats,
@@ -185,6 +186,7 @@ disp["ds"] = {                      # display settings
     # range is nautical miles.  Alert-class threats ignore both.
     "traffic_alt_band":  0,
     "traffic_range_nm":  0,
+    "map_show_metar":    False,  # METAR station dots (off until WX selected)
     "map_show_state_lines": True,
     "map_show_country_lines": True,
     # Airspace layer — master toggle + per-class.  Off by default for
@@ -262,6 +264,13 @@ disp["cs"] = {                      # connectivity settings
     "adsb_err":       0,        # socket / decode errors
     "adsb_last_err":  "",
     "adsb_uplink":    0,        # FIS-B uplink frames seen (weather)
+    # Internet weather (METARs) — needs internet (AHRS on USB, or all on a
+    # shared Starlink LAN).  Diagnostics are runtime-only.
+    "wx_enabled":     True,
+    "wx_online":      False,
+    "wx_rx":          0,
+    "wx_err":         0,
+    "wx_last_err":    "",
 }
 disp["nav"] = {                     # direct-to navigation
     "ident":   "",      # ICAO/local ID of active waypoint, "" = none
@@ -314,6 +323,13 @@ disp["traffic"] = {
     "n_total": 0,       # total live targets before declutter
     "alert":   False,   # any target in the alert (resolution) envelope
 }
+# Live weather — METAR stations near the aircraft, fed by the internet
+# poller (shared/wx.WxClient).  Not persisted.
+disp["weather"] = {
+    "metars": [],      # station dicts from wx.parse_metars
+    "online": False,   # last poll succeeded
+    "n":      0,
+}
 # In-progress user-waypoint entry — populated by the +LAT/LON entry
 # screen (which pre-fills the lat/lon fields with the current aircraft
 # position so the same path also handles "mark a point HERE").
@@ -341,6 +357,7 @@ SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 # ── Module-level SSE handle (set in main, restarted by handle_event) ─────────
 _sse_client  = None
 _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
+_wx_client   = None   # WxClient (internet METAR poller) when weather enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
@@ -4416,6 +4433,7 @@ _DSP_MAP_LAYERS = [
     ("map_show_airports",      "APT"),
     ("map_show_obstacles",     "OBS"),
     ("map_show_traffic",       "TFC"),
+    ("map_show_metar",         "MET"),
     ("map_show_state_lines",   "STA"),
     ("map_show_country_lines", "CTRY"),
     ("map_show_airspaces",     "ASP"),
@@ -5682,6 +5700,22 @@ def _update_traffic(demo_mode):
     tr["n"]       = len(shown)
     tr["n_total"] = len(rel)
     tr["alert"]   = any_alert
+
+
+def _update_weather():
+    """Pull the latest METAR snapshot from the background poller into
+    disp["weather"] and mirror link diagnostics into cs."""
+    if _wx_client is None:
+        return
+    w = disp["weather"]
+    w["metars"] = _wx_client.snapshot()
+    w["online"] = _wx_client.connected
+    w["n"]      = len(w["metars"])
+    cs = disp["cs"]
+    cs["wx_online"]   = _wx_client.connected
+    cs["wx_rx"]       = _wx_client.rx_count
+    cs["wx_err"]      = _wx_client.err_count
+    cs["wx_last_err"] = _wx_client.last_err
 
 
 def _fpl_render_remaining():
@@ -9780,6 +9814,8 @@ def draw_mfd(surf, connected=True, data_stale=False):
         # ADS-B traffic — relativised + threat-classified each frame in
         # _update_traffic; gated by ds["map_show_traffic"] (TFC pill).
         traffic=disp.get("traffic", {}).get("targets"),
+        # METAR station dots — gated by ds["map_show_metar"] (MET pill / OVLY).
+        metars=disp.get("weather", {}).get("metars"),
     )
     lat, lon = ac_lat, ac_lon
 
@@ -11703,6 +11739,17 @@ def main():
         _adsb_client.start()
         print(f"[PFD] ADS-B listening for GDL90 on UDP {_adsb_client.port}")
 
+    # Internet weather poller (METARs), centred on the live GPS fix.  Needs
+    # internet; it just retries quietly when offline.
+    if disp["cs"].get("wx_enabled", True):
+        global _wx_client
+        _wx_client = _wx.WxClient(
+            pos_fn=lambda: (float(disp.get("lat", DEMO_LAT)),
+                            float(disp.get("lon", DEMO_LON))),
+            radius_nm=WX_RADIUS_NM, interval_s=WX_INTERVAL_S)
+        _wx_client.start()
+        print(f"[PFD] Weather poller started (METAR r={WX_RADIUS_NM}nm)")
+
     _show_boot_splash(surf, _flip)
 
     running = True
@@ -11720,6 +11767,7 @@ def main():
 
         # Refresh ADS-B traffic against the freshly smoothed ownship fix.
         _update_traffic(demo_mode)
+        _update_weather()
 
         # Push AHRS / GPS to peer screens (rate-limited inside the helpers).
         _ssync_publish_ahrs()
@@ -11823,6 +11871,8 @@ def main():
         _sse_client.stop()
     if _adsb_client:
         _adsb_client.stop()
+    if _wx_client:
+        _wx_client.stop()
     _settings.flush()
     pygame.quit()
 

@@ -58,7 +58,9 @@ _SKIP_KEYS = {
            "wifi_ok",
            # ADS-B link diagnostics are runtime-only (set by the listener).
            "adsb_online", "adsb_rx", "adsb_err", "adsb_last_err",
-           "adsb_uplink"},
+           "adsb_uplink",
+           # Weather link diagnostics are runtime-only (set by the poller).
+           "wx_online", "wx_rx", "wx_err", "wx_last_err"},
     "ad": {"downloading", "dl_status", "dl_cancel", "parsing",
            "records", "used_mb", "dl_date", "age_days", "expired"},
     "ss": {"mag_cal"},   # calibration state is runtime-only

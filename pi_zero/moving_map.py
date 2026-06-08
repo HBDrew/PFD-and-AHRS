@@ -96,6 +96,11 @@ _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
 _TFC_ALERT     = (255, 60, 60)
 _TFC_PROXIMATE = (255, 180, 0)
 _TFC_OTHER     = (0, 220, 255)
+# METAR flight-category colours — mirror shared/wx.FLIGHT_CAT_COLORS so a
+# station dot reads the same standard VFR/MVFR/IFR/LIFR ramp pilots expect.
+_WX_CAT_COLORS = {"VFR": (0, 200, 0), "MVFR": (40, 120, 255),
+                  "IFR": (235, 40, 40), "LIFR": (220, 0, 220)}
+_WX_UNKNOWN    = (160, 160, 160)
 _STATE_LINE  = (110, 130, 160)      # muted slate-blue: admin_1 boundaries
                                     # — visible over tint without competing
                                     # with airports / D2
@@ -557,6 +562,27 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
         pygame.draw.lines(surf, color, False, pts, 1)
 
 
+# ── Weather (METAR) layer ───────────────────────────────────────────────────
+def _draw_metars(surf, metars, project, rect):
+    """Draw METAR stations as flight-category-coloured dots (green/blue/red/
+    magenta).  Most stations sit on airports, so this effectively colours the
+    field by current conditions.  ``metars`` are station dicts from
+    shared/wx.parse_metars."""
+    x, y, w, h = rect
+    for m in metars:
+        la, lo = m.get("lat"), m.get("lon")
+        if la is None or lo is None:
+            continue
+        sx, sy = project(la, lo)
+        if not (x - 6 <= sx <= x + w + 6 and y - 6 <= sy <= y + h + 6):
+            continue
+        col = _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN)
+        ix, iy = int(sx), int(sy)
+        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 5)      # dark halo
+        pygame.draw.circle(surf, col, (ix, iy), 4)
+        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 4, 1)   # crisp edge
+
+
 # ── ADS-B traffic layer ─────────────────────────────────────────────────────
 _TFC_COLORS = {"alert": _TFC_ALERT, "proximate": _TFC_PROXIMATE,
                "other": _TFC_OTHER}
@@ -680,7 +706,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_label=None, state_lines=None, country_lines=None,
            own_lat=None, own_lon=None, draw_corner_labels=True,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
-           traffic=None):
+           traffic=None, metars=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1135,9 +1161,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     _apt_label_cache.popitem(last=False)
             surf.blit(d2_lbl, (int(wpx) + d + 3, int(wpy) - d - 2))
 
+    # ── Weather (METAR station dots) ───────────────────────────────────────
+    if metars and settings.get("map_show_metar", True):
+        _draw_metars(surf, metars, _project, rect)
+
     # ── ADS-B traffic ──────────────────────────────────────────────────────
-    # Drawn above map features but below the range ring + own-ship chevron
-    # so the pilot's own symbol always stays on top.
+    # Drawn above map features (incl. weather) but below the range ring +
+    # own-ship chevron so the pilot's own symbol always stays on top.
     if traffic and settings.get("map_show_traffic", True):
         _draw_traffic(surf, traffic, _project, rot_deg, px_per_nm, font, rect)
 

@@ -93,6 +93,10 @@ _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
 _TFC_ALERT     = (255, 60, 60)
 _TFC_PROXIMATE = (255, 180, 0)
 _TFC_OTHER     = (0, 220, 255)
+# METAR flight-category colours — mirror shared/wx.FLIGHT_CAT_COLORS.
+_WX_CAT_COLORS = {"VFR": (0, 200, 0), "MVFR": (40, 120, 255),
+                  "IFR": (235, 40, 40), "LIFR": (220, 0, 220)}
+_WX_UNKNOWN    = (160, 160, 160)
 
 # Airspace outline + fill colours by class.  Mirrors piZ moving_map so
 # a polygon reads the same on both inset views.  Fill is low-alpha
@@ -491,6 +495,25 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
         pygame.draw.lines(surf, color, False, pts, 1)
 
 
+# ── Weather (METAR) layer ───────────────────────────────────────────────────
+def _draw_metars(surf, metars, project, rect):
+    """Draw METAR stations as flight-category-coloured dots (green/blue/red/
+    magenta).  Mirrors the piZ implementation."""
+    x, y, w, h = rect
+    for m in metars:
+        la, lo = m.get("lat"), m.get("lon")
+        if la is None or lo is None:
+            continue
+        sx, sy = project(la, lo)
+        if not (x - 6 <= sx <= x + w + 6 and y - 6 <= sy <= y + h + 6):
+            continue
+        col = _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN)
+        ix, iy = int(sx), int(sy)
+        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 5)
+        pygame.draw.circle(surf, col, (ix, iy), 4)
+        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 4, 1)
+
+
 # ── ADS-B traffic layer ─────────────────────────────────────────────────────
 _TFC_COLORS = {"alert": _TFC_ALERT, "proximate": _TFC_PROXIMATE,
                "other": _TFC_OTHER}
@@ -551,7 +574,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
            range_label=None, state_lines=None, country_lines=None,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
-           traffic=None):
+           traffic=None, metars=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -916,9 +939,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                               (int(npx) + d + 3, int(npy) - d - 2))
                 from_la, from_lo = next_la, next_lo
 
+    # ── Weather (METAR station dots) ───────────────────────────────────────
+    if metars and settings.get("map_show_metar", True):
+        _draw_metars(surf, metars, _project, rect)
+
     # ── ADS-B traffic ──────────────────────────────────────────────────────
-    # Above map features but below the range ring + own-ship chevron so the
-    # pilot's own symbol always stays on top.
+    # Above map features (incl. weather) but below the range ring + own-ship
+    # chevron so the pilot's own symbol always stays on top.
     if traffic and settings.get("map_show_traffic", True):
         _draw_traffic(surf, traffic, _project, rot_deg, px_per_nm, font, rect)
 
