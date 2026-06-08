@@ -11316,6 +11316,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
         nexrad=_nexrad_render_arg(),
         own_lat=ac_lat, own_lon=ac_lon,
         symbol_scale=2.0,            # bigger airport dots on the big MFD
+        # While actively dragging a pan, skip the heavy layers (terrain
+        # tint, airspace, NEXRAD, METAR, obstacles, airports) so the map
+        # tracks the finger; they repaint on release.
+        fast=bool(_mfd_drag is not None and _mfd_drag.get("is_drag")),
         draw_corner_labels=False)
 
     # ── Bottom data strip ──────────────────────────────────────────────────

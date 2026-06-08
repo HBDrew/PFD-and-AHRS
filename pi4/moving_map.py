@@ -659,7 +659,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
            traffic=None, metars=None, nexrad=None,
            draw_corner_labels=True, own_lat=None, own_lon=None,
-           symbol_scale=1.0):
+           symbol_scale=1.0, fast=False):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -738,7 +738,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # tint entirely at the widest zoom — state lines, the D2 line, and
     # the range ring still give whole-leg context.
     if (settings.get("map_show_terrain", True) and srtm_dir
-            and range_nm <= _TINT_RENDER_MAX_NM and not wx_active):
+            and range_nm <= _TINT_RENDER_MAX_NM and not wx_active
+            and not fast):
         oversize = 1.0 if orient == "nrth" else 1.45
         _wd = water_dir if settings.get("map_show_water", True) else ""
         tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
@@ -779,7 +780,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     surf.blit(veil, (x, y))
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
-    if nexrad is not None and settings.get("map_show_nexrad", False):
+    if (nexrad is not None and settings.get("map_show_nexrad", False)
+            and not fast):
         _draw_nexrad(surf, nexrad, _project, px_per_nm, cos_lat, rot_deg)
 
     # ── State / province lines + country lines ─────────────────────────────
@@ -807,7 +809,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # the same `settings` dict as the other layer toggles.
     if (airspaces is not None
             and settings.get("map_show_airspaces", True)
-            and range_nm <= 80):
+            and range_nm <= 80 and not fast):
         nearby_as = _airspaces_query_nearby(airspaces, lat, lon,
                                              range_nm * 1.4)
         x_r, y_r, w_r, h_r = rect
@@ -878,7 +880,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # Above 10 nm range, obstacle dots turn into useless speckle (and
     # the pilot is too far away to care), so they're hidden regardless
     # of the master toggle.
-    if (settings.get("map_show_obstacles", True)
+    if (not fast and settings.get("map_show_obstacles", True)
             and obstacles_arr is not None
             and range_nm <= 10 and not wx_active):
         nearby = _obs_mod.query_nearby(obstacles_arr, lat, lon,
@@ -900,8 +902,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # Above 40 nm the airport dots smear into noise — the destination is
     # still marked by the D2 waypoint diamond drawn below, which is what
     # the pilot actually cares about at whole-leg scale.
-    if (settings.get("map_show_airports", True) and airports_arr is not None
-            and range_nm <= 40):
+    if (not fast and settings.get("map_show_airports", True)
+            and airports_arr is not None and range_nm <= 40):
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
@@ -1038,7 +1040,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 from_la, from_lo = next_la, next_lo
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
-    if metars and settings.get("map_show_metar", True):
+    if metars and settings.get("map_show_metar", True) and not fast:
         _draw_metars(surf, metars, _project, rect)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────

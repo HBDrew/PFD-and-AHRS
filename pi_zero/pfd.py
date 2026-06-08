@@ -9909,6 +9909,9 @@ def draw_mfd(surf, connected=True, data_stale=False):
         metars=disp.get("weather", {}).get("metars"),
         # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"] (NEX).
         nexrad=_nexrad_render_arg(),
+        # While dragging a pan, skip the heavy layers so the map tracks the
+        # finger; they repaint on release.
+        fast=bool(_mfd_drag is not None and _mfd_drag.get("is_drag")),
     )
     lat, lon = ac_lat, ac_lon
 
