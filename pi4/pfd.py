@@ -367,6 +367,9 @@ disp["fpl"] = {
     "waypoints":  [],
     "active_idx": -1,
 }
+# Saved named flight plans (persistent).  Same schema as pi_zero so a plan
+# saved on either screen loads on the other.
+disp["fpl_saved"] = {"plans": []}   # [{name, waypoints:[...]}]
 disp["sim"] = {                     # flight simulator state
     "preset_idx": 0,    # index into SIM_PRESETS
     "init_alt":   5000.0,
@@ -786,6 +789,95 @@ def _fpl_render_remaining():
     return [(float(w["lat"]), float(w["lon"]),
              str(w.get("ident", "")))
             for w in wps[idx:]]
+
+
+# ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
+_FPL_MAX_WAYPOINTS = 30
+_FPL_SAVED_MAX     = 20
+
+
+def _fpl_add_waypoint(ident, lat, lon, elev_ft=0.0, user=False,
+                      name="", region=""):
+    wps = disp["fpl"]["waypoints"]
+    if len(wps) >= _FPL_MAX_WAYPOINTS:
+        return False
+    wps.append({"ident": str(ident), "lat": float(lat), "lon": float(lon),
+                "elev_ft": float(elev_ft), "user": bool(user),
+                "name": str(name), "region": str(region)})
+    _settings.mark_dirty()
+    _ssync_publish_fpl()
+    return True
+
+
+def _fpl_remove(idx):
+    wps = disp["fpl"]["waypoints"]
+    if not (0 <= idx < len(wps)):
+        return
+    cur = disp["fpl"]["active_idx"]
+    del wps[idx]
+    if cur == idx:
+        _fpl_deactivate()
+    elif cur > idx:
+        disp["fpl"]["active_idx"] = cur - 1
+        _fpl_apply_active()
+    _settings.mark_dirty()
+    _ssync_publish_fpl()
+
+
+def _fpl_swap(i, j):
+    wps = disp["fpl"]["waypoints"]
+    if not (0 <= i < len(wps) and 0 <= j < len(wps)):
+        return
+    wps[i], wps[j] = wps[j], wps[i]
+    cur = disp["fpl"]["active_idx"]
+    if cur == i:
+        disp["fpl"]["active_idx"] = j
+    elif cur == j:
+        disp["fpl"]["active_idx"] = i
+    if _fpl_is_active():
+        _fpl_apply_active()
+    _settings.mark_dirty()
+    _ssync_publish_fpl()
+
+
+def _fpl_plan_save(name):
+    name = str(name).strip()
+    if not name:
+        return (False, "empty name")
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    if not wps:
+        return (False, "no waypoints to save")
+    snapshot = [dict(w) for w in wps]
+    plans = disp["fpl_saved"]["plans"]
+    for p in plans:
+        if str(p.get("name", "")).upper() == name.upper():
+            p["name"] = name
+            p["waypoints"] = snapshot
+            _settings.mark_dirty()
+            return (True, "")
+    if len(plans) >= _FPL_SAVED_MAX:
+        return (False, f"saved-plan limit ({_FPL_SAVED_MAX})")
+    plans.append({"name": name, "waypoints": snapshot})
+    _settings.mark_dirty()
+    return (True, "")
+
+
+def _fpl_plan_delete(name):
+    name = str(name).upper()
+    disp["fpl_saved"]["plans"] = [
+        p for p in disp["fpl_saved"]["plans"]
+        if str(p.get("name", "")).upper() != name]
+    _settings.mark_dirty()
+
+
+def _fpl_plan_load(name):
+    name = str(name).upper()
+    for p in disp["fpl_saved"]["plans"]:
+        if str(p.get("name", "")).upper() == name:
+            disp["fpl"]["waypoints"] = [dict(w) for w in p.get("waypoints", [])]
+            _fpl_deactivate()
+            return True
+    return False
 
 
 def _ssync_apply_fpl(data):
@@ -4557,12 +4649,20 @@ def handle_event(event, demo_mode):
                 disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur,
                                                               allow_auto=has_d2)
                 _settings.mark_dirty()
-            elif _in(r["d2"]) or _in(r["fpl"]) or _mfd_strip_hit(x, y):
-                # Direct-to entry, the flight-plan editor, and strip-slot
-                # configuration land in the next phase of the MFD port.  For
-                # now D2/nav + the plan sync in from the Pi Zero MFD, so the
-                # strip's WPT/DIST/ETE slots still populate.  Swallow the tap.
-                pass
+            elif _in(r["d2"]):
+                # Direct-to entry — reuse the PFD's nav keyboard (NEAREST /
+                # CANCEL FP / APPR / ENTER → nav_confirm).  kbd_prev="pfd"
+                # so it returns to the MFD (display_mode stays "mfd").
+                disp["kbd_target"] = "nav_ident"
+                disp["kbd_prev"]   = "pfd"
+                disp["kbd_buf"]    = ""
+                disp["kbd_error"]  = ""
+                disp["mode"]       = "keyboard"
+            elif _mfd_strip_hit(x, y):
+                disp["mode"] = "mfd_strip_setup"
+                disp["mss_sel"] = 0
+            elif _in(r["fpl"]):
+                disp["mode"] = "fpl"
             else:
                 # Tap/drag on the map → start a pan.  MOTION converts to a
                 # pan; UP without motion runs the METAR hit-test.
@@ -4802,6 +4902,80 @@ def handle_event(event, demo_mode):
             return True
 
         # ── System screen taps ────────────────────────────────────────────
+        # ── MFD strip-slot chooser ────────────────────────────────────────
+        if mode == "mfd_strip_setup":
+            act, payload = mfd_strip_setup_hit(x, y)
+            if act == "back":
+                disp["mode"] = "pfd"        # MFD runs under mode == "pfd"
+            elif act == "slot":
+                disp["mss_sel"] = int(payload)
+            elif act == "kind":
+                kinds = _mfd_strip_kinds()
+                sel = int(disp.get("mss_sel", 0)) % _MFD_STRIP_SLOT_COUNT
+                kinds[sel] = payload
+                disp["ds"]["mfd_strip_kinds"] = kinds
+                disp["mss_sel"] = (sel + 1) % _MFD_STRIP_SLOT_COUNT
+                _settings.mark_dirty()
+            return True
+
+        # ── FPL editor ────────────────────────────────────────────────────
+        if mode == "fpl":
+            global _fpl_scroll
+            act, payload = fpl_hit(x, y)
+            if act == "back":
+                disp["mode"] = "pfd"
+            elif act == "scroll_up":
+                _fpl_scroll = max(0, _fpl_scroll - 1)
+            elif act == "scroll_down":
+                _fpl_scroll += 1
+            elif act == "activate":
+                _fpl_activate(int(payload))
+            elif act == "up":
+                j = int(payload)
+                if j > 0:
+                    _fpl_swap(j, j - 1)
+            elif act == "down":
+                j = int(payload)
+                if j < len(disp["fpl"]["waypoints"]) - 1:
+                    _fpl_swap(j, j + 1)
+            elif act == "del":
+                _fpl_remove(int(payload))
+            elif act == "act":
+                if payload == "add":
+                    disp["kbd_target"] = "fpl_add"
+                    disp["kbd_prev"]   = "fpl"
+                    disp["kbd_buf"]    = ""
+                    disp["kbd_error"]  = ""
+                    disp["mode"]       = "keyboard"
+                elif payload == "nrst":
+                    ni = _nav_lookup_nearest()
+                    hit = _nav_lookup_ident(ni) if ni else None
+                    if hit:
+                        _fpl_add_waypoint(hit[0], hit[1], hit[2], hit[3])
+                elif payload == "save":
+                    disp["kbd_target"] = "fpl_save_name"
+                    disp["kbd_prev"]   = "fpl"
+                    disp["kbd_buf"]    = ""
+                    disp["kbd_error"]  = ""
+                    disp["mode"]       = "keyboard"
+                elif payload == "load":
+                    disp["mode"] = "fpl_plan_picker"
+                elif payload == "deact":
+                    _fpl_deactivate()
+            return True
+
+        # ── FPL plan picker (LOAD) ────────────────────────────────────────
+        if mode == "fpl_plan_picker":
+            act, payload = fpl_plan_picker_hit(x, y)
+            if act == "back":
+                disp["mode"] = "fpl"
+            elif act == "load":
+                _fpl_plan_load(payload)
+                disp["mode"] = "fpl"
+            elif act == "del":
+                _fpl_plan_delete(payload)
+            return True
+
         if mode == "system_setup":
             action = system_setup_hit(x, y)
             if action == "back":
@@ -5161,6 +5335,30 @@ def handle_event(event, demo_mode):
                         disp["kbd_buf"] = ""
                         disp["kbd_error"] = ""
                         disp["mode"] = disp["kbd_prev"]
+                        return True
+                    elif target == "fpl_add":
+                        # Add a waypoint to the flight plan by ICAO ident.
+                        cand = buf.upper()
+                        if not cand:
+                            disp["mode"] = disp["kbd_prev"]
+                        else:
+                            hit = _nav_lookup_ident(cand)
+                            if hit:
+                                _fpl_add_waypoint(hit[0], hit[1], hit[2], hit[3])
+                                disp["kbd_buf"] = ""
+                                disp["kbd_error"] = ""
+                                disp["mode"] = disp["kbd_prev"]
+                            else:
+                                disp["kbd_error"] = f"UNKNOWN WAYPOINT  {cand}"
+                        return True
+                    elif target == "fpl_save_name":
+                        ok, reason = _fpl_plan_save(buf)
+                        if ok:
+                            disp["kbd_buf"] = ""
+                            disp["kbd_error"] = ""
+                            disp["mode"] = disp["kbd_prev"]
+                        else:
+                            disp["kbd_error"] = reason.upper()
                         return True
                     elif buf:
                         if disp["kbd_prev"] == "connectivity_setup":
@@ -11031,6 +11229,258 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _draw_wx_popup(surf)
 
 
+# ── MFD strip-slot chooser (tap the data strip) ───────────────────────────────
+_MSS_HEADER_H  = 44
+_MSS_SLOT_H    = 56
+_MSS_SLOT_GAP  = 4
+_MSS_GRID_GAP  = 6
+_MSS_GRID_COLS = 7          # 21 kinds → 3 rows of 7 on the wide screen
+
+
+def _mss_slot_rects():
+    pad = 8
+    n = _MFD_STRIP_SLOT_COUNT
+    pw = (DISPLAY_W - 2 * pad - (n - 1) * _MSS_SLOT_GAP) // n
+    y = _MSS_HEADER_H + 10
+    return [(pad + i * (pw + _MSS_SLOT_GAP), y, pw, _MSS_SLOT_H)
+            for i in range(n)]
+
+
+def _mss_grid_rects():
+    pad = 8
+    n = len(_MFD_STRIP_AVAILABLE)
+    cols = _MSS_GRID_COLS
+    cw = (DISPLAY_W - 2 * pad - (cols - 1) * _MSS_GRID_GAP) // cols
+    ch = 64
+    y0 = _MSS_HEADER_H + 10 + _MSS_SLOT_H + 20
+    out = []
+    for i in range(n):
+        r, c = divmod(i, cols)
+        out.append((pad + c * (cw + _MSS_GRID_GAP),
+                    y0 + r * (ch + _MSS_GRID_GAP), cw, ch))
+    return out
+
+
+def draw_mfd_strip_setup(surf):
+    _screen_header(surf, "MFD STRIP")
+    sel = max(0, min(_MFD_STRIP_SLOT_COUNT - 1, int(disp.get("mss_sel", 0))))
+    kinds = _mfd_strip_kinds()
+    for i, (rect, kind) in enumerate(zip(_mss_slot_rects(), kinds)):
+        bx, by, bw, bh = rect
+        is_sel = (i == sel)
+        pygame.draw.rect(surf, (0, 40, 60) if is_sel else (0, 12, 32), rect,
+                         border_radius=5)
+        pygame.draw.rect(surf, CYAN if is_sel else (60, 80, 110), rect,
+                         width=2 if is_sel else 1, border_radius=5)
+        _text(surf, f"{i+1}", 11, (140, 150, 170), bold=True,
+              cx=bx + bw // 2, y=by + 4)
+        _text(surf, _MFD_STRIP_CAPTIONS.get(kind, "?"), 20,
+              CYAN if is_sel else WHITE, bold=True,
+              cx=bx + bw // 2, cy=by + bh // 2 + 4)
+    _text(surf, "tap a slot, then a readout below — auto-advances", 12,
+          (140, 150, 170), cx=DISPLAY_W // 2,
+          y=_MSS_HEADER_H + 12 + _MSS_SLOT_H)
+    for (kind, cap, needs_d2), rect in zip(_MFD_STRIP_AVAILABLE,
+                                           _mss_grid_rects()):
+        bx, by, bw, bh = rect
+        in_use = (kinds[sel] == kind)
+        pygame.draw.rect(surf, (0, 55, 65) if in_use else (0, 18, 38), rect,
+                         border_radius=4)
+        pygame.draw.rect(surf, CYAN if in_use else (60, 80, 110), rect,
+                         width=1, border_radius=4)
+        tc = CYAN if in_use else (WHITE if not needs_d2 else MAGENTA)
+        _text(surf, cap, 20, tc, bold=True, cx=bx + bw // 2, cy=by + bh // 2 - 6)
+        if needs_d2:
+            _text(surf, "needs D2", 10, (140, 100, 130),
+                  cx=bx + bw // 2, y=by + bh - 16)
+
+
+def mfd_strip_setup_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    for i, rect in enumerate(_mss_slot_rects()):
+        bx, by, bw, bh = rect
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return ("slot", i)
+    for (kind, _c, _n), rect in zip(_MFD_STRIP_AVAILABLE, _mss_grid_rects()):
+        bx, by, bw, bh = rect
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return ("kind", kind)
+    return (None, None)
+
+
+# ── FPL editor (tap the MFD FPL button) ───────────────────────────────────────
+_FPL_ACT_H    = 50
+_FPL_ROW_H    = 64
+_FPL_ROW_GAP  = 6
+_FPL_ICON_W   = 54
+_fpl_scroll   = 0
+
+
+def _fpl_action_btns():
+    pad, gap, n = 8, 6, 5
+    bw = (DISPLAY_W - 2 * pad - (n - 1) * gap) // n
+    y = _MSS_HEADER_H + 8
+    labels = [("add", "+ ICAO"), ("nrst", "NRST"), ("save", "SAVE"),
+              ("load", "LOAD"), ("deact", "DEACT")]
+    return [(k, lbl, (pad + i * (bw + gap), y, bw, _FPL_ACT_H))
+            for i, (k, lbl) in enumerate(labels)]
+
+
+def _fpl_list_y0():
+    return _MSS_HEADER_H + 8 + _FPL_ACT_H + 10
+
+
+def _fpl_visible_rows():
+    h = DISPLAY_H - _fpl_list_y0() - 8
+    return max(1, h // (_FPL_ROW_H + _FPL_ROW_GAP))
+
+
+def _fpl_max_scroll(n):
+    return max(0, n - _fpl_visible_rows())
+
+
+def _fpl_row_rect(pos):
+    y = _fpl_list_y0() + pos * (_FPL_ROW_H + _FPL_ROW_GAP)
+    return (8, y, DISPLAY_W - 16, _FPL_ROW_H)
+
+
+def _fpl_scroll_btns(n):
+    """(up_rect, down_rect) when the list overflows, else (None, None)."""
+    if n <= _fpl_visible_rows():
+        return (None, None)
+    bw = 54
+    x = DISPLAY_W - bw - 8
+    return ((x, _fpl_list_y0(), bw, 54),
+            (x, DISPLAY_H - 54 - 8, bw, 54))
+
+
+def draw_fpl(surf):
+    global _fpl_scroll
+    _screen_header(surf, "FLIGHT PLAN")
+    for k, lbl, rect in _fpl_action_btns():
+        style = "warn" if (k == "deact" and _fpl_is_active()) else "normal"
+        _action_btn(surf, *rect, lbl, style, r=6)
+
+    wps = disp["fpl"]["waypoints"]
+    n = len(wps)
+    _fpl_scroll = max(0, min(_fpl_max_scroll(n), _fpl_scroll))
+    act_idx = disp["fpl"]["active_idx"]
+    lat = disp.get("lat", DEMO_LAT)
+    lon = disp.get("lon", DEMO_LON)
+
+    if n == 0:
+        _text(surf, "No waypoints — tap “+ ICAO” to add", 18,
+              (140, 150, 170), cx=DISPLAY_W // 2, cy=_fpl_list_y0() + 50)
+
+    up_r, dn_r = _fpl_scroll_btns(n)
+    list_w = DISPLAY_W - 16 - (62 if up_r else 0)
+    vis = _fpl_visible_rows()
+    for pos in range(vis):
+        j = _fpl_scroll + pos
+        if j >= n:
+            break
+        wp = wps[j]
+        rx, ry, _rw, rh = _fpl_row_rect(pos)
+        rw = list_w
+        active = (j == act_idx)
+        pygame.draw.rect(surf, (40, 0, 40) if active else (0, 14, 30),
+                         (rx, ry, rw, rh), border_radius=6)
+        pygame.draw.rect(surf, MAGENTA if active else (60, 80, 110),
+                         (rx, ry, rw, rh), width=2 if active else 1,
+                         border_radius=6)
+        _text(surf, f"{j+1}", 14, (140, 150, 170), bold=True,
+              x=rx + 10, y=ry + rh // 2 - 8)
+        _text(surf, str(wp.get("ident", "")), 26,
+              MAGENTA if active else WHITE, bold=True, x=rx + 46, y=ry + 8)
+        sub = wp.get("name", "") or ("USER WPT" if wp.get("user") else "")
+        if sub:
+            _text(surf, sub[:34], 13, (150, 170, 190), x=rx + 46, y=ry + 40)
+        d_nm, brg = _nav_geo_dist_brg(lat, lon, wp["lat"], wp["lon"])
+        _text(surf, f"{d_nm:.1f} nm  {int(round(brg)) % 360:03d}°", 15,
+              (180, 200, 220), x=rx + rw - 3 * _FPL_ICON_W - 170,
+              y=ry + rh // 2 - 9)
+        ix = rx + rw - 3 * _FPL_ICON_W - 6
+        for gi, glyph in enumerate(("↑", "↓", "✕")):
+            _action_btn(surf, ix + gi * _FPL_ICON_W, ry + 6,
+                        _FPL_ICON_W - 4, rh - 12, glyph,
+                        "danger" if glyph == "✕" else "normal", r=5)
+
+    if up_r:
+        _action_btn(surf, *up_r, "▲", "normal", r=6)
+        _action_btn(surf, *dn_r, "▼", "normal", r=6)
+
+
+def fpl_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    for k, _lbl, rect in _fpl_action_btns():
+        bx, by, bw, bh = rect
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return ("act", k)
+    n = len(disp["fpl"]["waypoints"])
+    up_r, dn_r = _fpl_scroll_btns(n)
+    if up_r:
+        for tag, rc in (("scroll_up", up_r), ("scroll_down", dn_r)):
+            bx, by, bw, bh = rc
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                return (tag, None)
+    list_w = DISPLAY_W - 16 - (62 if up_r else 0)
+    vis = _fpl_visible_rows()
+    for pos in range(vis):
+        j = _fpl_scroll + pos
+        if j >= n:
+            break
+        rx, ry, _rw, rh = _fpl_row_rect(pos)
+        if not (ry <= y <= ry + rh):
+            continue
+        ix = rx + list_w - 3 * _FPL_ICON_W - 6
+        if x >= ix:
+            gi = int((x - ix) // _FPL_ICON_W)
+            return (("up", "down", "del")[min(2, gi)], j)
+        return ("activate", j)
+    return (None, None)
+
+
+def draw_fpl_plan_picker(surf):
+    _screen_header(surf, "LOAD PLAN")
+    plans = disp["fpl_saved"]["plans"]
+    if not plans:
+        _text(surf, "No saved plans", 18, (140, 150, 170),
+              cx=DISPLAY_W // 2, cy=140)
+        return
+    for i, p in enumerate(plans[:8]):
+        ry = 58 + i * 62
+        pygame.draw.rect(surf, (0, 14, 30), (8, ry, DISPLAY_W - 16, 54),
+                         border_radius=6)
+        pygame.draw.rect(surf, (60, 80, 110), (8, ry, DISPLAY_W - 16, 54),
+                         width=1, border_radius=6)
+        _text(surf, p.get("name", "?"), 22, WHITE, bold=True, x=20, y=ry + 15)
+        wps = p.get("waypoints", [])
+        if wps:
+            _text(surf, f"{len(wps)} wpt · {wps[0].get('ident','')}"
+                        f"→{wps[-1].get('ident','')}", 14, (150, 170, 190),
+                  x=320, y=ry + 19)
+        _action_btn(surf, DISPLAY_W - 2 * 110 - 16, ry + 5, 104, 44,
+                    "LOAD", "ok", r=5)
+        _action_btn(surf, DISPLAY_W - 110 - 8, ry + 5, 100, 44,
+                    "DEL", "danger", r=5)
+
+
+def fpl_plan_picker_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    for i, p in enumerate(disp["fpl_saved"]["plans"][:8]):
+        ry = 58 + i * 62
+        if not (ry <= y <= ry + 54):
+            continue
+        if x >= DISPLAY_W - 110 - 8:
+            return ("del", p.get("name", ""))
+        if x >= DISPLAY_W - 2 * 110 - 16:
+            return ("load", p.get("name", ""))
+    return (None, None)
+
+
 def render(surf, demo_mode, connected, data_stale=False):
     mode = disp.get("mode", "pfd")
 
@@ -11079,6 +11529,12 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_airspace_classes(surf); return
     if mode == "sim_setup":
         draw_sim_setup(surf); return
+    if mode == "mfd_strip_setup":
+        draw_mfd_strip_setup(surf); return
+    if mode == "fpl":
+        draw_fpl(surf); return
+    if mode == "fpl_plan_picker":
+        draw_fpl_plan_picker(surf); return
 
     # ── Full-screen MFD (3-finger swap) ──────────────────────────────────────
     # Pure-2D map; skip the SVT/PFD render entirely (saves the terrain pass).
