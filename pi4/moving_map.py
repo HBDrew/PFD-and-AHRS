@@ -501,20 +501,17 @@ _nexrad_scaled = {"seq": None, "w": 0, "h": 0, "surf": None}
 _nexrad_rot    = {"key": None, "surf": None}
 
 
-def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat, rot_deg):
-    """Blit NEXRAD georeferenced to its lat/lon bbox.  North-up = one
-    scale+blit; track-up rotates about the map centre (cached by rounded
-    heading).  Mirrors the piZ version."""
+def _draw_nexrad(surf, nexrad, project, px_per_nm, cos_lat, rot_deg):
+    """Blit NEXRAD geo-locked to its lat/lon bbox: positioned via the same
+    `project` as every other layer (pans + rotates with the map) and rotated
+    to match in track-up.  Scaled + rotated surfaces are cached.  Mirrors the
+    piZ version."""
     surface, bbox, seq = nexrad
     if surface is None or bbox is None:
         return
     w, s, e, n = bbox
-    x_w = cx + (w - lon) * _NM_PER_DEG_LAT * cos_lat * px_per_nm
-    x_e = cx + (e - lon) * _NM_PER_DEG_LAT * cos_lat * px_per_nm
-    y_n = cy - (n - lat) * _NM_PER_DEG_LAT * px_per_nm
-    y_s = cy - (s - lat) * _NM_PER_DEG_LAT * px_per_nm
-    dest_w = int(round(x_e - x_w))
-    dest_h = int(round(y_s - y_n))
+    dest_w = int(round((e - w) * _NM_PER_DEG_LAT * cos_lat * px_per_nm))
+    dest_h = int(round((n - s) * _NM_PER_DEG_LAT * px_per_nm))
     if dest_w < 2 or dest_h < 2 or dest_w > 4000 or dest_h > 4000:
         return
     c = _nexrad_scaled
@@ -533,7 +530,8 @@ def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat, rot_deg):
         img = rc["surf"]
     else:
         img = base
-    rect = img.get_rect(center=(int(round(cx)), int(round(cy))))
+    cxp, cyp = project((s + n) / 2.0, (w + e) / 2.0)
+    rect = img.get_rect(center=(int(round(cxp)), int(round(cyp))))
     surf.blit(img, rect.topleft)
 
 
@@ -781,8 +779,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
     if nexrad is not None and settings.get("map_show_nexrad", False):
-        _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat,
-                     rot_deg)
+        _draw_nexrad(surf, nexrad, _project, px_per_nm, cos_lat, rot_deg)
 
     # ── State / province lines + country lines ─────────────────────────────
     # Only useful once the inset is showing whole-region context; at close
