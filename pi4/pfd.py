@@ -247,6 +247,10 @@ disp["ds"] = {                      # display settings
     "map_show_runways":  True,
     "map_show_obstacles": True,
     "map_show_traffic":  True,      # ADS-B traffic diamonds (when fed GDL90)
+    # Traffic declutter (0 = show all).  alt band is ± relative feet;
+    # range is nautical miles.  Alert-class threats ignore both.
+    "traffic_alt_band":  0,
+    "traffic_range_nm":  0,
     "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_country_lines": True, # admin_0 boundaries at >= 20 nm
     "map_show_directto": True,
@@ -325,7 +329,7 @@ disp["cs"] = {                      # connectivity settings
 # (or the demo generator).  Targets are relativised + threat-classified
 # and sorted nearest-first.  Not persisted.
 disp["traffic"] = {
-    "targets": [], "online": False, "n": 0, "alert": False,
+    "targets": [], "online": False, "n": 0, "n_total": 0, "alert": False,
 }
 # Mirror of the peer's flight plan (received over screen sync).  The
 # Pi 4 PFD doesn't edit FPLs today — it just renders the active leg
@@ -1485,10 +1489,18 @@ def _update_traffic(demo_mode):
     rel.sort(key=lambda d: (d.get("range_nm") is None,
                             d.get("range_nm") or 1e9))
 
+    # Declutter filters (alert-class threats always survive).  alt_band /
+    # range of 0 mean "show all".
+    shown = _adsb.filter_targets(
+        rel,
+        alt_band_ft=int(disp["ds"].get("traffic_alt_band", 0)),
+        range_nm=float(disp["ds"].get("traffic_range_nm", 0)))
+
     tr = disp["traffic"]
-    tr["targets"] = rel
+    tr["targets"] = shown
     tr["online"]  = online
-    tr["n"]       = len(rel)
+    tr["n"]       = len(shown)
+    tr["n_total"] = len(rel)
     tr["alert"]   = any_alert
 
 
@@ -5781,6 +5793,10 @@ _DSP_ROWS = [
      ["1","2","5","10","20","40","80","160","AUTO"], 50),
     ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
      [False, True],      ["FIXED", "REAL"],   80),
+    ("traffic_alt_band", "TFC ALT",  "Hide traffic beyond ± band",
+     [0, 2000, 5000, 10000], ["ALL", "±2k", "±5k", "±10k"], 64),
+    ("traffic_range_nm", "TFC RANGE", "Hide traffic beyond range (nm)",
+     [0, 5, 10, 20, 40], ["ALL", "5", "10", "20", "40"], 56),
 ]
 # Trailing controls for the MAP INSET row (orientation), drawn to the
 # left of the standard segmented control by hand.

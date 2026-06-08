@@ -181,6 +181,10 @@ disp["ds"] = {                      # display settings
     "map_show_airports": True,
     "map_show_obstacles": True,
     "map_show_traffic":  True,   # ADS-B traffic diamonds (when a receiver feeds us)
+    # Traffic declutter (0 = show all).  alt band is ± relative feet;
+    # range is nautical miles.  Alert-class threats ignore both.
+    "traffic_alt_band":  0,
+    "traffic_range_nm":  0,
     "map_show_state_lines": True,
     "map_show_country_lines": True,
     # Airspace layer — master toggle + per-class.  Off by default for
@@ -306,7 +310,8 @@ disp["traffic"] = {
                        #   range_nm, bearing_deg, track_deg, vvel_fpm,
                        #   threat, ...}]
     "online":  False,  # True when a receiver is feeding us GDL90
-    "n":       0,       # live target count
+    "n":       0,       # displayed target count (after declutter)
+    "n_total": 0,       # total live targets before declutter
     "alert":   False,   # any target in the alert (resolution) envelope
 }
 # In-progress user-waypoint entry — populated by the +LAT/LON entry
@@ -2950,10 +2955,12 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "setup"
             elif action and action.startswith("set:"):
                 _, key, val_str = action.split(":", 2)
-                # Convert "True" / "False" strings back to bools for any
-                # boolean-valued setting (night_mode + all map_show_*).
+                # Coerce by token: True/False → bool, digits → int (traffic
+                # alt-band / range), else keep the string (unit selectors).
                 if val_str in ("True", "False"):
                     disp["ds"][key] = (val_str == "True")
+                elif val_str.lstrip("-").isdigit():
+                    disp["ds"][key] = int(val_str)
                 else:
                     disp["ds"][key] = val_str
                 _settings.mark_dirty()
@@ -4391,6 +4398,10 @@ _DSP_ROWS = [
      None, None, None),
     ("night_mode", "NIGHT MODE",   "Dim red cockpit lighting",
      [False, True],      ["OFF","ON"],        100),
+    ("traffic_alt_band", "TFC ALT",  "Hide traffic beyond ± band",
+     [0, 2000, 5000, 10000], ["ALL","±2k","±5k","±10k"], 56),
+    ("traffic_range_nm", "TFC RANGE", "Hide traffic beyond range (nm)",
+     [0, 5, 10, 20, 40], ["ALL","5","10","20","40"], 48),
 ]
 
 # MAP LAYERS multi-toggle row — mirrors pi4's _DSP_MAP_LAYERS so the
@@ -5658,10 +5669,18 @@ def _update_traffic(demo_mode):
     rel.sort(key=lambda d: (d.get("range_nm") is None,
                             d.get("range_nm") or 1e9))
 
+    # Declutter filters (alert-class threats always survive).  alt_band /
+    # range of 0 mean "show all".
+    shown = _adsb.filter_targets(
+        rel,
+        alt_band_ft=int(disp["ds"].get("traffic_alt_band", 0)),
+        range_nm=float(disp["ds"].get("traffic_range_nm", 0)))
+
     tr = disp["traffic"]
-    tr["targets"] = rel
+    tr["targets"] = shown
     tr["online"]  = online
-    tr["n"]       = len(rel)
+    tr["n"]       = len(shown)
+    tr["n_total"] = len(rel)
     tr["alert"]   = any_alert
 
 

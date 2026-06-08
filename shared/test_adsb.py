@@ -67,6 +67,47 @@ def test_threat_levels():
     check(adsb.threat_level(flagged) == "alert", "source alert flag honoured")
 
 
+def test_filter_targets():
+    own = (34.0, -111.0, 8000)
+    near_alert = adsb.relative({"lat": 34.0 + 1.0 / 60.0, "lon": -111.0,
+                                "alt_ft": 8100}, *own)
+    near_alert["threat"] = "alert"
+    co_alt_far = adsb.relative({"lat": 34.0 + 30.0 / 60.0, "lon": -111.0,
+                                "alt_ft": 8000}, *own)        # 30 NM, co-alt
+    co_alt_far["threat"] = "other"
+    high_near = adsb.relative({"lat": 34.0 + 2.0 / 60.0, "lon": -111.0,
+                               "alt_ft": 16000}, *own)        # 2 NM, +8000 ft
+    high_near["threat"] = "other"
+    no_alt = adsb.relative({"lat": 34.0 + 2.0 / 60.0, "lon": -111.0,
+                            "alt_ft": None}, *own)
+    no_alt["threat"] = "other"
+    targets = [near_alert, co_alt_far, high_near, no_alt]
+
+    # No limits → everything passes.
+    check(len(adsb.filter_targets(targets)) == 4, "no filter keeps all")
+
+    # ±5000 ft band drops the +8000 ft target, keeps the unknown-altitude one.
+    band = adsb.filter_targets(targets, alt_band_ft=5000)
+    check(high_near not in band, "high target dropped by alt band")
+    check(no_alt in band, "unknown-altitude target kept under alt band")
+    check(near_alert in band, "alert target survives alt band")
+
+    # 10 NM range drops the 30 NM target.
+    rng = adsb.filter_targets(targets, range_nm=10)
+    check(co_alt_far not in rng, "far target dropped by range")
+    check(high_near in rng, "near target kept by range")
+
+    # A genuine alert is never decluttered, even with tight filters.
+    tight = adsb.filter_targets(targets, alt_band_ft=10, range_nm=0.5)
+    check(near_alert in tight, "alert never hidden by filters")
+    check(co_alt_far not in tight and high_near not in tight,
+          "non-threats hidden by tight filters")
+    # keep_alert=False lets even an alert be filtered (not used by the app).
+    check(near_alert not in adsb.filter_targets(
+        [near_alert], range_nm=0.5, keep_alert=False),
+        "keep_alert=False allows filtering threats")
+
+
 def test_demo_targets_shape():
     ts = adsb.demo_targets(34.0, -111.0, 8000, t=5.0)
     check(len(ts) == 4, f"4 demo targets, got {len(ts)}")

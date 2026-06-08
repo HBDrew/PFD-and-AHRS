@@ -212,6 +212,30 @@ def threat_level(rel, proximate_nm=6.0, proximate_ft=1200,
     return "other"
 
 
+def filter_targets(targets, alt_band_ft=0, range_nm=0, keep_alert=True):
+    """Declutter a relativised+classified target list.
+
+    Hides targets whose relative altitude exceeds ±``alt_band_ft`` or whose
+    range exceeds ``range_nm`` (0 = no limit for either).  Targets with an
+    unknown altitude or range are never hidden by that respective filter —
+    better to show an uncertain target than drop it.  When ``keep_alert`` is
+    set, "alert"-class threats always pass regardless of the filters, so the
+    declutter view can never suppress a genuine collision hazard."""
+    out = []
+    for t in targets:
+        if keep_alert and t.get("threat") == "alert":
+            out.append(t)
+            continue
+        ra = t.get("rel_alt_ft")
+        if alt_band_ft and ra is not None and abs(ra) > alt_band_ft:
+            continue
+        rng = t.get("range_nm")
+        if range_nm and rng is not None and rng > range_nm:
+            continue
+        out.append(t)
+    return out
+
+
 # ── Demo traffic generator ────────────────────────────────────────────────────
 # Lets the ADS-B render path be exercised in --demo without a receiver.  A
 # handful of targets orbit / track past the demo aircraft position.
