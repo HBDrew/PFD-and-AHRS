@@ -51,6 +51,7 @@ from config import *   # noqa: F403
 from sse_client import SSEClient
 import adsb as _adsb
 import wx as _wx
+import nexrad as _nexrad
 import mapoverlay as _ovl
 from terrain import get_elevation_ft
 from svt_renderer import render_svt as render_svt_pygame
@@ -454,7 +455,10 @@ def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
 _sse_client  = None
 _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
+_nexrad_client = None # NexradClient (internet radar poller) when enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
+# Decoded NEXRAD image cache (pygame surface); re-decoded only on new image.
+_nexrad_decoded = {"seq": -1, "surf": None, "bbox": None}
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
 # ── Screen-to-screen sync ────────────────────────────────────────────────────
@@ -1552,6 +1556,31 @@ def _update_weather():
     cs["wx_rx"]       = _wx_client.rx_count
     cs["wx_err"]      = _wx_client.err_count
     cs["wx_last_err"] = _wx_client.last_err
+
+
+def _update_nexrad():
+    """Pause/resume the radar poller with the overlay; decode a new image to
+    a pygame surface only when one arrives (seq change)."""
+    if _nexrad_client is None:
+        return
+    show = bool(disp["ds"].get("map_show_nexrad"))
+    _nexrad_client.paused = not show
+    if not show:
+        return
+    png, bbox, seq = _nexrad_client.snapshot()
+    if png is not None and seq != _nexrad_decoded["seq"]:
+        try:
+            img = pygame.image.load(io.BytesIO(png)).convert_alpha()
+            _nexrad_decoded.update(seq=seq, surf=img, bbox=bbox)
+        except Exception as e:                                # noqa: BLE001
+            print(f"[NEXRAD] decode failed: {e}")
+
+
+def _nexrad_render_arg():
+    if not disp["ds"].get("map_show_nexrad") or _nexrad_decoded["surf"] is None:
+        return None
+    return (_nexrad_decoded["surf"], _nexrad_decoded["bbox"],
+            _nexrad_decoded["seq"])
 
 
 # ── Font helpers ──────────────────────────────────────────────────────────────
@@ -10944,6 +10973,8 @@ def render(surf, demo_mode, connected, data_stale=False):
             traffic=disp.get("traffic", {}).get("targets"),
             # METAR station dots — gated by ds["map_show_metar"] (MET / OVLY).
             metars=disp.get("weather", {}).get("metars"),
+            # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"].
+            nexrad=_nexrad_render_arg(),
         )
         # OVLY label — bottom-left of the inset; tap there to cycle the
         # WX / Airspace overlay (traffic stays on).  Colour hints the state.
@@ -11969,6 +12000,11 @@ def main():
         _wx_client = _wx.WxClient(view_fn=_wx_view, interval_s=WX_INTERVAL_S)
         _wx_client.start()
         print("[PFD] Weather poller started (METAR, follows inset zoom)")
+        global _nexrad_client
+        _nexrad_client = _nexrad.NexradClient(view_fn=_wx_view,
+                                              interval_s=NEXRAD_INTERVAL_S)
+        _nexrad_client.start()
+        print("[PFD] NEXRAD poller started (radar, follows inset zoom)")
 
     running = True
     while running:
@@ -11988,6 +12024,7 @@ def main():
         # Refresh ADS-B traffic against the freshly smoothed ownship fix.
         _update_traffic(demo_mode)
         _update_weather()
+        _update_nexrad()
 
         # Push AHRS / GPS to peer screens (rate-limited inside the helpers).
         _ssync_publish_ahrs()
@@ -12103,6 +12140,8 @@ def main():
         _adsb_client.stop()
     if _wx_client:
         _wx_client.stop()
+    if _nexrad_client:
+        _nexrad_client.stop()
     # Flush any pending settings changes to disk before exiting
     _settings.flush()
     pygame.quit()

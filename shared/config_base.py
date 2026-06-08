@@ -85,6 +85,8 @@ WX_MIN_RADIUS_NM = 60     # floor — always pull at least this much context
 WX_MAX_RADIUS_NM = 250    # cap — biggest single query (AWC-friendly)
 WX_RADIUS_ZOOM_K = 1.8    # query radius = map range × this (clamped min/max)
 WX_INTERVAL_S    = 120    # periodic refresh cadence (METARs update ~hourly)
+NEXRAD_INTERVAL_S = 300   # radar refresh cadence (NEXRAD updates ~5 min)
+NEXRAD_MAX_PX     = 480   # fetched raster long-side px (decode/scale cost)
 
 # ── Proximity alert lookahead ─────────────────────────────────────────────────
 ALERT_TIME_S         = 60     # lookahead window in seconds

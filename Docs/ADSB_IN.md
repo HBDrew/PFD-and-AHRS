@@ -188,12 +188,25 @@ courtesy to the free aggregators.
   consistent. The weather poller only runs while METAR/NEXRAD is the active
   overlay — no CPU/network spent on weather you're not looking at.
 
+- **Weather — NEXRAD raster** (`shared/nexrad.py`). Composite reflectivity
+  from the Iowa Environmental Mesonet WMS (free, no key), fetched for the
+  current map view (same `view_fn` as METARs) and only while the NEXRAD
+  overlay is active. Rendered **north-up** (no per-frame rotation — lowest
+  CPU; aligned in north-up mode), georeferenced to its lat/lon bbox, blitted
+  semi-transparent under the symbols. The scaled/dimmed surface is cached, so
+  the per-frame cost is one blit; it's re-decoded only when a new image
+  arrives (~5 min) or the zoom changes.
+- **Weather declutters the base map.** While METAR or NEXRAD is the active
+  overlay, the terrain tint and obstacle/tower symbols are suppressed —
+  cleaner weather picture, and skipping the tint build is the biggest CPU
+  saving the inset has.
+
 **Planned:**
-- **NEXRAD raster** weather overlay (internet first — aviationweather.gov /
-  IEM tiles — then FIS-B). Its own `map_show_nexrad` layer + OVLY cycle
-  slot. Will reuse the same view-following fetch (`view_fn`) as METARs so it
-  loads for whatever map area is panned/zoomed into. Needs image fetch +
-  georeferencing + alpha blit under the symbols.
+- **FIS-B (978 UAT) weather** without internet (uplink frames already
+  captured/counted; decode the APDU + NEXRAD blocks into the same
+  `disp["weather"]` / nexrad surface).
+- Optional track-up rotation for the NEXRAD raster (cached per heading) if
+  the north-up-in-track-up mismatch proves distracting.
 - **FIS-B (978 UAT) weather** without internet: the uplink frames (0x07)
   are already captured/counted; decoding the APDU + NEXRAD blocks feeds the
   same `disp["weather"]`.

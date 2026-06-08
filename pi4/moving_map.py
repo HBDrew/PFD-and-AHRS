@@ -495,6 +495,35 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
         pygame.draw.lines(surf, color, False, pts, 1)
 
 
+# ── NEXRAD reflectivity raster ──────────────────────────────────────────────
+_NEXRAD_ALPHA = 150
+_nexrad_scaled = {"seq": None, "w": 0, "h": 0, "surf": None}
+
+
+def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat):
+    """Blit the NEXRAD image north-up, georeferenced to its lat/lon bbox
+    (no rotation even in track-up; lowest CPU).  Mirrors the piZ version."""
+    surface, bbox, seq = nexrad
+    if surface is None or bbox is None:
+        return
+    w, s, e, n = bbox
+    x_w = cx + (w - lon) * _NM_PER_DEG_LAT * cos_lat * px_per_nm
+    x_e = cx + (e - lon) * _NM_PER_DEG_LAT * cos_lat * px_per_nm
+    y_n = cy - (n - lat) * _NM_PER_DEG_LAT * px_per_nm
+    y_s = cy - (s - lat) * _NM_PER_DEG_LAT * px_per_nm
+    dest_w = int(round(x_e - x_w))
+    dest_h = int(round(y_s - y_n))
+    if dest_w < 2 or dest_h < 2 or dest_w > 4000 or dest_h > 4000:
+        return
+    c = _nexrad_scaled
+    if c["seq"] != seq or c["w"] != dest_w or c["h"] != dest_h:
+        scaled = pygame.transform.smoothscale(surface, (dest_w, dest_h))
+        scaled.fill((255, 255, 255, _NEXRAD_ALPHA),
+                    special_flags=pygame.BLEND_RGBA_MULT)
+        c.update(seq=seq, w=dest_w, h=dest_h, surf=scaled)
+    surf.blit(c["surf"], (int(round(x_w)), int(round(y_n))))
+
+
 # ── Weather (METAR) layer ───────────────────────────────────────────────────
 def _draw_metars(surf, metars, project, rect):
     """Draw METAR stations as flight-category-coloured dots (green/blue/red/
@@ -576,7 +605,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
            range_label=None, state_lines=None, country_lines=None,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
-           traffic=None, metars=None):
+           traffic=None, metars=None, nexrad=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -638,6 +667,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     old_clip = surf.get_clip()
     surf.set_clip(rect)
 
+    # Weather overlay active → drop terrain tint + obstacle/tower symbols
+    # (declutters the weather picture and skips the costly tint build).
+    wx_active = ((metars and settings.get("map_show_metar", False))
+                 or (nexrad is not None
+                     and settings.get("map_show_nexrad", False)))
+
     # ── Hypsometric terrain tint ─────────────────────────────────────────────
     # Water sampling is gated on the same map_show_water toggle the user
     # already has on the Display setup screen — off → cells render as
@@ -649,7 +684,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # tint entirely at the widest zoom — state lines, the D2 line, and
     # the range ring still give whole-leg context.
     if (settings.get("map_show_terrain", True) and srtm_dir
-            and range_nm <= _TINT_RENDER_MAX_NM):
+            and range_nm <= _TINT_RENDER_MAX_NM and not wx_active):
         oversize = 1.0 if orient == "nrth" else 1.45
         _wd = water_dir if settings.get("map_show_water", True) else ""
         tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
@@ -688,6 +723,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     veil = pygame.Surface((w, h), pygame.SRCALPHA)
     veil.fill((0, 0, 0, 60))
     surf.blit(veil, (x, y))
+
+    # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
+    if nexrad is not None and settings.get("map_show_nexrad", False):
+        _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat)
 
     # ── State / province lines + country lines ─────────────────────────────
     # Only useful once the inset is showing whole-region context; at close
@@ -787,7 +826,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # of the master toggle.
     if (settings.get("map_show_obstacles", True)
             and obstacles_arr is not None
-            and range_nm <= 10):
+            and range_nm <= 10 and not wx_active):
         nearby = _obs_mod.query_nearby(obstacles_arr, lat, lon,
                                        radius_nm=range_nm * 1.4,
                                        alt_ft=alt_ft)
