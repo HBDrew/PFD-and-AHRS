@@ -108,6 +108,7 @@ class NexradClient(threading.Thread):
         self._bbox      = None
         self._seq       = 0
         self._fetched_at = 0.0
+        self._stamp_at   = 0.0            # monotonic of last *age* stamp
         self._fetch_ctr  = None
         self._lock      = threading.Lock()
         self._stop      = threading.Event()
@@ -151,13 +152,20 @@ class NexradClient(threading.Thread):
 
     def _fetch(self, lat, lon, radius):
         png, bbox = self.fetch_fn(lat, lon, radius, self.max_px)
+        now = time.monotonic()
         with self._lock:
             self._png = png
             self._bbox = bbox
             self._seq += 1
-        self._fetched_at = time.monotonic()
+        self._fetched_at = now
         self._fetch_ctr = (lat, lon, radius)
-        self.updated_s = self._fetched_at
+        # The national mosaic updates ~every 5 min uniformly, so the product
+        # age is the same wherever you pan.  Advance the displayed age only on
+        # the first fetch or the periodic refresh — never on a pan / zoom
+        # refetch, which just reloads a different crop of the same-vintage radar.
+        if self._stamp_at == 0.0 or (now - self._stamp_at) >= self.interval_s:
+            self.updated_s = now
+            self._stamp_at = now
         self.rx_count += 1
         self.connected = True
 

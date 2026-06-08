@@ -182,6 +182,7 @@ class WxClient(threading.Thread):
         self.updated_s  = 0.0
         self._metars      = []
         self._fetched_at  = 0.0          # monotonic of last successful fetch
+        self._stamp_at    = 0.0          # monotonic of last *age* stamp
         self._fetch_ctr   = None         # (lat, lon, radius) of last fetch
         self._lock        = threading.Lock()
         self._stop        = threading.Event()
@@ -228,11 +229,18 @@ class WxClient(threading.Thread):
 
     def _fetch(self, lat, lon, radius):
         metars = self.fetch_fn(lat, lon, radius)
+        now = time.monotonic()
         with self._lock:
             self._metars = metars
-        self._fetched_at = time.monotonic()
+        self._fetched_at = now
         self._fetch_ctr  = (lat, lon, radius)
-        self.updated_s   = self._fetched_at
+        # Advance the displayed data age only on the first fetch or the
+        # periodic refresh — a pan / zoom refetch loads a different area of
+        # the same-vintage observations, so it must not reset the "age" the
+        # pilot sees (observations update ~hourly, not when you scroll).
+        if self._stamp_at == 0.0 or (now - self._stamp_at) >= self.interval_s:
+            self.updated_s = now
+            self._stamp_at = now
         self.rx_count   += 1
         self.connected   = True
 

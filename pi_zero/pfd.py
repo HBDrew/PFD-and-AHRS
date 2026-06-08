@@ -5756,10 +5756,18 @@ def _update_traffic(demo_mode):
         _traffic_feed.paused = (src == "radio" or demo_mode
                                 or not disp.get("gps_ok", False))
 
+    # RADIO and INTERNET are kept on SEPARATE paths so they can never be
+    # confused: the radio/SDR bridge arrives on GDL90/UDP via _adsb_client,
+    # the internet feed has its own in-process snapshot.  Each target is
+    # tagged with its source; on a duplicate ICAO the radio (real local
+    # sensor) wins.  Split R/I counts let the pilot verify the radio is
+    # actually producing targets even in AUTO.
     online = False
-    live = []
+    radio = []
     if _adsb_client is not None:
-        live = _adsb_client.snapshot()
+        radio = _adsb_client.snapshot()
+        for t in radio:
+            t["src"] = "radio"
         online = _adsb_client.connected
         cs = disp["cs"]
         cs["adsb_online"]   = online
@@ -5767,13 +5775,22 @@ def _update_traffic(demo_mode):
         cs["adsb_err"]      = _adsb_client.err_count
         cs["adsb_last_err"] = _adsb_client.last_err
         cs["adsb_uplink"]   = _adsb_client.uplink_count
-    # Real traffic (live receiver, the GDL90 bridge, or the internet feed)
-    # always wins; the synthetic demo targets only fill in when nothing real
-    # is arriving, so pointing a feed at the demo location shows live traffic.
-    if live:
-        raw = live
+    inet = []
+    if _traffic_feed is not None and not _traffic_feed.paused:
+        inet = _traffic_feed.snapshot()      # already tagged src="internet"
+
+    if radio or inet:
+        by_icao = {}
+        for t in inet:
+            by_icao[t.get("icao")] = t
+        for t in radio:                       # radio overrides on dup ICAO
+            by_icao[t.get("icao")] = t
+        raw = list(by_icao.values())
+        online = online or bool(inet)
     elif demo_mode:
         raw = _adsb.demo_targets(own_lat, own_lon, own_alt, time.monotonic())
+        for t in raw:
+            t["src"] = "demo"
         online = True
     else:
         raw = []
@@ -5806,7 +5823,22 @@ def _update_traffic(demo_mode):
     tr["online"]  = online
     tr["n"]       = len(shown)
     tr["n_total"] = len(rel)
+    tr["n_radio"] = sum(1 for t in rel if t.get("src") == "radio")
+    tr["n_inet"]  = sum(1 for t in rel if t.get("src") == "internet")
     tr["alert"]   = any_alert
+
+
+def _traffic_to_draw():
+    """Traffic list for the map.  On the dedicated TFC overlay the full
+    (declutter-filtered) list is shown; on every other page traffic is clamped
+    to nearby 'safety' targets — within a few miles and a few thousand feet —
+    so distant aircraft don't clutter a weather / airspace picture.  Alert-
+    class threats are never clamped out."""
+    shown = disp.get("traffic", {}).get("targets") or []
+    if _map_overlay_state(disp["ds"]) == "tfc":
+        return shown
+    return _adsb.filter_targets(shown, alt_band_ft=TRAFFIC_SAFETY_FT,
+                                range_nm=TRAFFIC_SAFETY_NM, keep_alert=True)
 
 
 def _wx_view():
@@ -9936,12 +9968,20 @@ def _mfd_draw_source_status(surf):
         src = disp["cs"].get("traffic_source", "auto")
         mode = {"auto": "AUTO", "radio": "RADIO",
                 "internet": "INET"}.get(src, "AUTO")
-        if _adsb_client.connected:
-            txt = f"ADS-B {mode} {disp.get('traffic', {}).get('n_total', 0)}"
-            col = (60, 220, 90)
-        else:
-            txt = f"ADS-B {mode} …"
-            col = (220, 160, 60)
+        tr = disp.get("traffic", {})
+        nr, ni = tr.get("n_radio", 0), tr.get("n_inet", 0)
+        # Split counts: R = radio/SDR targets, I = internet-feed targets.
+        # RADIO mode pauses the feed so I never shows there.
+        parts = [f"ADS-B {mode}"]
+        if src != "internet":
+            parts.append(f"R{nr}")
+        if src != "radio":
+            parts.append(f"I{ni}")
+        txt = " ".join(parts)
+        live = (nr > 0 or ni > 0) or _adsb_client.connected
+        col = (60, 220, 90) if live else (220, 160, 60)
+        if not live:
+            txt += " …"
         _text(surf, txt, 13, col, bold=True, x=x, y=y)
         _mfd_adsb_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, 20)
         y += 20
@@ -10070,8 +10110,9 @@ def draw_mfd(surf, connected=True, data_stale=False):
         # in disp["ds"]["map_show_airspace_*"].
         airspaces=_airspaces,
         # ADS-B traffic — relativised + threat-classified each frame in
-        # _update_traffic; gated by ds["map_show_traffic"] (TFC pill).
-        traffic=disp.get("traffic", {}).get("targets"),
+        # _update_traffic.  Clamped to nearby safety traffic on non-TFC
+        # overlays so it doesn't clutter the weather / airspace picture.
+        traffic=_traffic_to_draw(),
         # METAR station dots — gated by ds["map_show_metar"] (MET pill / OVLY).
         metars=disp.get("weather", {}).get("metars"),
         # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"] (NEX).
@@ -12129,12 +12170,15 @@ def main():
         # Built-in internet traffic feed → loopback into the listener above.
         # Starts paused; _update_traffic un-pauses it per traffic_source.
         global _traffic_feed
+        # In-process (loopback=False): the internet feed keeps its own target
+        # table read via snapshot(), separate from the GDL90/UDP radio listener
+        # so the two sources never co-mingle and RADIO can't be net traffic.
         _traffic_feed = _afeed.TrafficFeed(
             pos_fn=lambda: (float(disp.get("lat", DEMO_LAT)),
                             float(disp.get("lon", DEMO_LON))),
-            out_port=int(disp["cs"].get("adsb_port", ADSB_UDP_PORT)),
             source=TRAFFIC_FEED_SOURCE, radius_nm=TRAFFIC_FEED_RADIUS_NM,
-            interval_s=TRAFFIC_FEED_INTERVAL_S)
+            interval_s=TRAFFIC_FEED_INTERVAL_S,
+            loopback=False, stale_s=ADSB_STALE_S)
         _traffic_feed.start()
 
     # Internet weather poller (METARs), centred on the live GPS fix.  Needs

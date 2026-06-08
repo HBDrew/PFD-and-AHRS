@@ -75,6 +75,15 @@ ADSB_PROX_FT   = 1200     # proximate-traffic altitude envelope
 ADSB_ALERT_NM  = 3.0      # alert (resolution) range envelope (red)
 ADSB_ALERT_FT  = 600      # alert altitude envelope
 
+# Always-on "safety" traffic clamp.  Traffic is drawn on every map page for
+# situational awareness — but on the non-traffic overlays (airspace / METAR /
+# NEXRAD) and the PFD inset it's clamped to *nearby* targets only, so distant
+# aircraft don't clutter a weather picture.  The dedicated TFC overlay lifts
+# the clamp and shows everything (still subject to the declutter filters).
+# Alert-class threats are NEVER clamped out.
+TRAFFIC_SAFETY_NM = 7.0   # a few miles
+TRAFFIC_SAFETY_FT = 3000  # a few thousand feet
+
 # ── Traffic source (built-in internet feed) ───────────────────────────────────
 # The display always listens for GDL90/UDP (radio / SDR bridge).  It can ALSO
 # run an internal internet feed so traffic works without a separate script.
