@@ -88,6 +88,11 @@ _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
 _D2_MAGENTA  = (220, 0, 220)
 _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
+# ADS-B traffic symbol colours, TCAS-style: red resolution-class alert,
+# amber proximate, cyan everything else with a position.
+_TFC_ALERT     = (255, 60, 60)
+_TFC_PROXIMATE = (255, 180, 0)
+_TFC_OTHER     = (0, 220, 255)
 
 # Airspace outline + fill colours by class.  Mirrors piZ moving_map so
 # a polygon reads the same on both inset views.  Fill is low-alpha
@@ -486,6 +491,57 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
         pygame.draw.lines(surf, color, False, pts, 1)
 
 
+# ── ADS-B traffic layer ─────────────────────────────────────────────────────
+_TFC_COLORS = {"alert": _TFC_ALERT, "proximate": _TFC_PROXIMATE,
+               "other": _TFC_OTHER}
+
+
+def _draw_traffic(surf, traffic, project, rot_deg, px_per_nm, font, rect):
+    """Draw ADS-B traffic diamonds with a heading leader and relative-
+    altitude data tag.  ``traffic`` is a list of relativised target dicts
+    (see adsb.relative / threat_level).  Mirrors the piZ implementation so
+    a target reads identically on both inset views."""
+    x, y, w, h = rect
+    for t in traffic:
+        tlat, tlon = t.get("lat"), t.get("lon")
+        if tlat is None or tlon is None:
+            continue
+        sx, sy = project(tlat, tlon)
+        if not (x - 12 <= sx <= x + w + 12 and y - 12 <= sy <= y + h + 12):
+            continue
+        ix, iy = int(sx), int(sy)
+        threat = t.get("threat", "other")
+        col = _TFC_COLORS.get(threat, _TFC_OTHER)
+
+        trk = t.get("track_deg")
+        if trk is not None:
+            a = math.radians((trk - rot_deg) % 360.0)
+            lx = ix + 12 * math.sin(a)
+            ly = iy - 12 * math.cos(a)
+            pygame.draw.line(surf, col, (ix, iy), (int(lx), int(ly)), 1)
+
+        d = 5
+        pts = [(ix, iy - d), (ix + d, iy), (ix, iy + d), (ix - d, iy)]
+        if threat in ("alert", "proximate"):
+            pygame.draw.polygon(surf, col, pts)
+        else:
+            pygame.draw.polygon(surf, col, pts, 1)
+
+        if font is not None:
+            ra = t.get("rel_alt_ft")
+            if ra is not None:
+                hundreds = int(round(ra / 100.0))
+                sign = "+" if hundreds >= 0 else "−"
+                tag = f"{sign}{abs(hundreds):02d}"
+            else:
+                tag = "?"
+            vv = t.get("vvel_fpm")
+            if vv is not None and abs(vv) >= 200:
+                tag += "↑" if vv > 0 else "↓"
+            lbl = font.render(tag, True, col)
+            surf.blit(lbl, (ix + d + 2, iy - d - 1))
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
@@ -494,7 +550,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            srtm_dir="", water_dir="", direct_to=None, font=None,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
            range_label=None, state_lines=None, country_lines=None,
-           fpl_remaining=None, airspaces=None, airspace_visible=None):
+           fpl_remaining=None, airspaces=None, airspace_visible=None,
+           traffic=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -858,6 +915,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     surf.blit(font.render(next_ident, True, faded),
                               (int(npx) + d + 3, int(npy) - d - 2))
                 from_la, from_lo = next_la, next_lo
+
+    # ── ADS-B traffic ──────────────────────────────────────────────────────
+    # Above map features but below the range ring + own-ship chevron so the
+    # pilot's own symbol always stays on top.
+    if traffic and settings.get("map_show_traffic", True):
+        _draw_traffic(surf, traffic, _project, rot_deg, px_per_nm, font, rect)
 
     # ── Range ring ───────────────────────────────────────────────────────────
     # Shrink the ring 2 px inside the inset's shorter axis so the frame
