@@ -40,8 +40,9 @@ _PERSIST_SUBTREES = [
     "nav",   # Direct-to navigation: active waypoint ident, lat/lon, activation
     "fpl",   # Flight plan: ordered waypoint list + active leg index
     "user_wpts",  # User waypoint library: persistent across flights
+    "fpl_saved",  # Named saved flight plans: recallable across flights
 ]
-_PERSIST_COMPLEX_SUBTREES = {"fpl", "user_wpts"}
+_PERSIST_COMPLEX_SUBTREES = {"fpl", "user_wpts", "fpl_saved"}
 
 # Top-level scalar keys that persist as-is
 _PERSIST_SCALARS = [

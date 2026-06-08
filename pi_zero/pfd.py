@@ -279,6 +279,14 @@ disp["fpl"] = {
 disp["user_wpts"] = {
     "list": [],   # [{ident, lat, lon, elev_ft}, ...]
 }
+# Saved flight plans — named snapshots of the waypoint list, persistent
+# across flights.  SAVE on the FPL page stores the current waypoints under
+# a pilot-typed name; LOAD recalls one back into disp["fpl"]["waypoints"].
+# Same _PERSIST_COMPLEX_SUBTREES path as fpl / user_wpts.  Names are unique
+# (case-insensitive) — saving over an existing name overwrites it.
+disp["fpl_saved"] = {
+    "plans": [],   # [{name, waypoints:[{ident,lat,lon,elev_ft,user,name,region}]}]
+}
 # In-progress user-waypoint entry — populated by the +LAT/LON entry
 # screen (which pre-fills the lat/lon fields with the current aircraft
 # position so the same path also handles "mark a point HERE").
@@ -3112,6 +3120,22 @@ def handle_event(event, demo_mode):
                 _user_wpt_delete(str(payload.get("ident", "")))
             return True
 
+        # ── Saved-plan picker (LOAD) taps ─────────────────────────────────
+        if mode == "fpl_plan_picker":
+            act, payload = fpl_plan_picker_hit(x, y)
+            if act == "back":
+                disp["mode"] = "fpl"
+            elif act == "load" and payload is not None:
+                _fpl_plan_load(str(payload.get("name", "")))
+                disp["mode"] = "fpl"
+            elif act == "delete" and payload is not None:
+                _fpl_plan_delete(str(payload.get("name", "")))
+                # If that was the last plan, drop back to the FPL page so
+                # the pilot isn't stuck on an empty picker.
+                if not disp.get("fpl_saved", {}).get("plans", []):
+                    disp["mode"] = "fpl"
+            return True
+
         # ── FPL screen taps ───────────────────────────────────────────────
         if mode == "fpl":
             act, payload = fpl_hit(x, y)
@@ -3123,6 +3147,14 @@ def handle_event(event, demo_mode):
                 _fpl_open_latlon_entry()
             elif act == "add_lib":
                 disp["mode"] = "user_wpt_picker"
+            elif act == "save":
+                # Only meaningful with waypoints present; the button is
+                # greyed otherwise but guard here too.
+                if disp.get("fpl", {}).get("waypoints", []):
+                    _fpl_open_save_keyboard()
+            elif act == "load":
+                if disp.get("fpl_saved", {}).get("plans", []):
+                    disp["mode"] = "fpl_plan_picker"
             elif act == "deact":
                 _fpl_deactivate()
             elif act == "activate":
@@ -3413,6 +3445,7 @@ def handle_event(event, demo_mode):
                 _FPL_MAX = {"fpl_ident": 6,
                             "fpl_latlon_ident": 6,
                             "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
+                            "fpl_save_name": 16,
                             "nav_ident": 6}
                 if target in _FPL_MAX:
                     max_len = _FPL_MAX[target]
@@ -3472,6 +3505,21 @@ def handle_event(event, demo_mode):
                             disp["mode"] = "fpl"
                         else:
                             disp["kbd_error"] = f"PLAN FULL ({_FPL_MAX_WAYPOINTS} MAX)"
+                        return True
+                    if target == "fpl_save_name":
+                        # Name the plan being saved.  Empty buf cancels.
+                        if not buf:
+                            disp["kbd_buf"]   = ""
+                            disp["kbd_error"] = ""
+                            disp["mode"] = "fpl"
+                            return True
+                        ok, msg = _fpl_plan_save(buf)
+                        if not ok:
+                            disp["kbd_error"] = msg.upper()
+                            return True
+                        disp["kbd_buf"]   = ""
+                        disp["kbd_error"] = ""
+                        disp["mode"] = "fpl"
                         return True
                     if target == "fpl_latlon_ident":
                         # +LAT/LON ident field: store and return to the
@@ -5464,6 +5512,78 @@ def _user_wpt_lookup(ident):
         if str(w.get("ident", "")).upper() == ident:
             return w
     return None
+
+
+# ── Saved flight plans ────────────────────────────────────────────────────
+# Named snapshots of the waypoint list.  Persistent across flights so the
+# pilot can store frequent routes and recall them with one tap instead of
+# re-entering every leg.  Names are unique case-insensitively — saving over
+# an existing name overwrites it.
+
+# Cap on saved plans.  Like the +USER picker, the LOAD list is single-screen
+# (no scroll), so this is sized to what fits a 480-px-tall panel with margin.
+_FPL_SAVED_MAX = 8
+
+
+def _fpl_plan_save(name):
+    """Snapshot the current waypoint list under `name`.  Overwrites an
+    existing plan with the same (case-insensitive) name.  Returns
+    (True, "") on success or (False, reason) on failure."""
+    name = str(name).strip()
+    if not name:
+        return (False, "empty name")
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    if not wps:
+        return (False, "no waypoints to save")
+    snapshot = [dict(w) for w in wps]
+    plans = disp["fpl_saved"]["plans"]
+    for p in plans:
+        if str(p.get("name", "")).upper() == name.upper():
+            p["name"] = name
+            p["waypoints"] = snapshot
+            _settings.mark_dirty()
+            return (True, "")
+    if len(plans) >= _FPL_SAVED_MAX:
+        return (False, f"saved-plan limit ({_FPL_SAVED_MAX})")
+    plans.append({"name": name, "waypoints": snapshot})
+    _settings.mark_dirty()
+    return (True, "")
+
+
+def _fpl_plan_delete(name):
+    """Remove the saved plan called `name`.  Idempotent."""
+    name = str(name).upper()
+    plans = disp["fpl_saved"]["plans"]
+    disp["fpl_saved"]["plans"] = [
+        p for p in plans if str(p.get("name", "")).upper() != name
+    ]
+    _settings.mark_dirty()
+
+
+def _fpl_plan_load(name):
+    """Replace the active waypoint list with the saved plan `name`.
+    Deactivates any current leg so navigation restarts cleanly.  Returns
+    True if the plan was found and loaded."""
+    name = str(name).upper()
+    for p in disp["fpl_saved"]["plans"]:
+        if str(p.get("name", "")).upper() == name:
+            disp["fpl"]["waypoints"] = [dict(w) for w in p.get("waypoints", [])]
+            # Clear any active leg + mirrored nav, mark dirty, and mirror
+            # the freshly loaded plan to the peer screen.
+            _fpl_deactivate()
+            return True
+    return False
+
+
+def _fpl_open_save_keyboard():
+    """Open the text keyboard to name the plan being saved.  ENTER routes
+    to _fpl_plan_save via the 'fpl_save_name' keyboard target."""
+    disp["kbd_target"] = "fpl_save_name"
+    disp["kbd_prev"]   = "fpl"
+    disp["kbd_buf"]    = ""
+    disp["kbd_error"]  = ""
+    disp["kbd_shift"]  = False
+    disp["mode"]       = "keyboard"
 
 
 def _fpl_render_remaining():
@@ -9783,10 +9903,12 @@ _FPL_ICON_GAP   = 6
 _fpl_scroll = 0
 
 
-# Two action rows: row 1 has three "+" buttons (ICAO / LAT-LON / USER),
-# row 2 has DEACTIVATE.  Stacking lets each + button stay finger-sized
-# on the 480-px-wide screen instead of being squashed into thirds.
+# Three action rows: row 1 has three "+" buttons (ICAO / LAT-LON / USER),
+# row 2 has SAVE / LOAD (store + recall named plans), row 3 has DEACTIVATE.
+# Stacking lets each button stay finger-sized on the 480-px-wide screen
+# instead of being squashed thinner.
 _FPL_ACTIONS_GAP = 6
+_FPL_SAVELOAD_H  = 44
 _FPL_DEACT_H     = 36
 
 
@@ -9807,14 +9929,27 @@ def _fpl_add_buttons():
     return [(ax + i * (bw + gap), ay, bw, ah) for i in range(n)]
 
 
-def _fpl_deact_btn_rect():
+def _fpl_saveload_btns():
+    """Return (save_rect, load_rect) for the SAVE / LOAD row beneath the
+    + buttons — two equal halves spanning the action width."""
     ax, ay, aw, _ = _fpl_actions_rect()
     by = ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+    gap = _FPL_ACTIONS_GAP
+    bw = (aw - gap) // 2
+    return ((ax, by, bw, _FPL_SAVELOAD_H),
+            (ax + bw + gap, by, aw - bw - gap, _FPL_SAVELOAD_H))
+
+
+def _fpl_deact_btn_rect():
+    ax, ay, aw, _ = _fpl_actions_rect()
+    by = (ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+          + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP)
     return (ax, by, aw, _FPL_DEACT_H)
 
 
 def _fpl_list_y0():
     return (_FPL_HEADER_H + 6 + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+            + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP
             + _FPL_DEACT_H + 8)
 
 
@@ -9889,7 +10024,29 @@ def draw_fpl(surf):
     for (ax, ay, aw, ah), lbl, st in zip(add_rects, labels, styles):
         _action_btn(surf, ax, ay, aw, ah, lbl, st, r=6)
 
-    # ── Action row 2: DEACTIVATE ──────────────────────────────────────
+    # ── Action row 2: SAVE / LOAD named plans ─────────────────────────
+    save_r, load_r = _fpl_saveload_btns()
+    n_saved = len(disp.get("fpl_saved", {}).get("plans", []))
+    # SAVE is live only when there's something to store.
+    if wps:
+        _action_btn(surf, *save_r, "SAVE", "ok", r=6)
+    else:
+        sx, sy, sw, sh = save_r
+        pygame.draw.rect(surf, (10, 14, 22), save_r, border_radius=6)
+        pygame.draw.rect(surf, (40, 48, 62), save_r, width=1, border_radius=6)
+        _text(surf, "SAVE", 15, (80, 90, 110), bold=True,
+              cx=sx + sw // 2, cy=sy + sh // 2)
+    # LOAD is live only when at least one plan is saved; shows the count.
+    if n_saved:
+        _action_btn(surf, *load_r, f"LOAD ({n_saved})", "normal", r=6)
+    else:
+        lx, ly, lw, lh = load_r
+        pygame.draw.rect(surf, (10, 14, 22), load_r, border_radius=6)
+        pygame.draw.rect(surf, (40, 48, 62), load_r, width=1, border_radius=6)
+        _text(surf, "LOAD", 15, (80, 90, 110), bold=True,
+              cx=lx + lw // 2, cy=ly + lh // 2)
+
+    # ── Action row 3: DEACTIVATE ──────────────────────────────────────
     dx, dy, dw, dh = _fpl_deact_btn_rect()
     if is_active:
         _action_btn(surf, dx, dy, dw, dh, "DEACTIVATE", "warn", r=6)
@@ -10004,6 +10161,8 @@ def fpl_hit(x, y):
         ("add_icao",  None)
         ("add_ll",    None)
         ("add_lib",   None)
+        ("save",      None)
+        ("load",      None)
         ("deact",     None)
         ("activate",  idx)
         ("up",        idx)
@@ -10015,6 +10174,11 @@ def fpl_hit(x, y):
         return ("back", None)
     for rect, kind in zip(_fpl_add_buttons(),
                            ("add_icao", "add_ll", "add_lib")):
+        ax, ay, aw, ah = rect
+        if ax <= x <= ax + aw and ay <= y <= ay + ah:
+            return (kind, None)
+    save_r, load_r = _fpl_saveload_btns()
+    for rect, kind in ((save_r, "save"), (load_r, "load")):
         ax, ay, aw, ah = rect
         if ax <= x <= ax + aw and ay <= y <= ay + ah:
             return (kind, None)
@@ -10293,6 +10457,68 @@ def user_wpt_picker_hit(x, y):
     return (None, None)
 
 
+# ── Saved-plan picker (LOAD) ──────────────────────────────────────────────
+# Reached from LOAD on the FPL page.  Lists every saved plan; each row has
+# a LOAD button (replaces the active waypoint list) and a DEL button.
+# Reuses the user-waypoint picker row geometry for a consistent look.
+
+def draw_fpl_plan_picker(surf):
+    _screen_header(surf, "LOAD PLAN")
+    plans = disp.get("fpl_saved", {}).get("plans", [])
+    if not plans:
+        _text(surf, "No saved plans yet.", 14, (160, 180, 210),
+              cx=DISPLAY_W // 2, cy=120)
+        _text(surf, "Build a plan, then tap SAVE on the flight-plan",
+              11, (130, 150, 180), cx=DISPLAY_W // 2, cy=160)
+        _text(surf, "page to store it here for re-use.",
+              11, (130, 150, 180), cx=DISPLAY_W // 2, cy=180)
+        return
+
+    sorted_plans = sorted(plans, key=lambda p: str(p.get("name", "")).upper())
+    for i, p in enumerate(sorted_plans):
+        bx, by, bw, bh = _uwp_row_rect(i)
+        if by + bh > DISPLAY_H - 6:
+            break
+        pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=5)
+        pygame.draw.rect(surf, (60, 80, 110), (bx, by, bw, bh),
+                         width=1, border_radius=5)
+        # Plan name (left)
+        _text(surf, str(p.get("name", "")), 22, WHITE, bold=True,
+              x=bx + 14, y=by + 6)
+        # Subtitle — leg count + first→last ident
+        wps = p.get("waypoints", [])
+        n = len(wps)
+        if n:
+            first = str(wps[0].get("ident", "?"))
+            last  = str(wps[-1].get("ident", "?"))
+            sub = f"{n} wpt{'s' if n != 1 else ''}  ·  {first} → {last}"
+        else:
+            sub = "empty"
+        _text(surf, sub, 12, (160, 180, 210), x=bx + 14, y=by + bh - 18)
+        # LOAD / DEL action buttons (same geometry as the +USER picker)
+        load_r, del_r = _uwp_row_btn_rects((bx, by, bw, bh))
+        _action_btn(surf, *load_r, "LOAD", "ok", r=4)
+        _action_btn(surf, *del_r, "DEL", "danger", r=4)
+
+
+def fpl_plan_picker_hit(x, y):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return ("back", None)
+    plans = disp.get("fpl_saved", {}).get("plans", [])
+    sorted_plans = sorted(plans, key=lambda p: str(p.get("name", "")).upper())
+    for i, p in enumerate(sorted_plans):
+        bx, by, bw, bh = _uwp_row_rect(i)
+        if not (bx <= x <= bx + bw and by <= y <= by + bh):
+            continue
+        load_r, del_r = _uwp_row_btn_rects((bx, by, bw, bh))
+        lx, ly, lw, lh = load_r
+        if lx <= x <= lx + lw and ly <= y <= ly + lh:
+            return ("load", p)
+        dx, dy, dw, dh = del_r
+        if dx <= x <= dx + dw and dy <= y <= dy + dh:
+            return ("delete", p)
+    return (None, None)
+
 
 def _fpl_open_latlon_entry():
     """+ LAT/LON: open the multi-field entry screen with the current
@@ -10537,6 +10763,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_fpl_latlon_entry(surf); return
     if mode == "user_wpt_picker":
         draw_user_wpt_picker(surf); return
+    if mode == "fpl_plan_picker":
+        draw_fpl_plan_picker(surf); return
     if mode == "system_setup":
         draw_system_setup(surf); return
     if mode == "ahrs_firmware":
@@ -10846,6 +11074,8 @@ def render(surf, demo_mode, connected, data_stale=False):
             title = "WAYPOINT"
         elif target == "fpl_ident":
             cur, title = "", "ICAO IDENT"
+        elif target == "fpl_save_name":
+            cur, title = "", "PLAN NAME"
         elif target == "fpl_latlon_ident":
             cur, title = disp["fpl_new"].get("ident", ""), "WAYPOINT NAME"
         elif target == "fpl_latlon_lat":
