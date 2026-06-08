@@ -1449,11 +1449,9 @@ def _update_traffic(demo_mode):
     own_alt = float(disp.get("alt", 0.0))
 
     online = False
-    if demo_mode:
-        raw = _adsb.demo_targets(own_lat, own_lon, own_alt, time.monotonic())
-        online = True
-    elif _adsb_client is not None:
-        raw = _adsb_client.snapshot()
+    live = []
+    if _adsb_client is not None:
+        live = _adsb_client.snapshot()
         online = _adsb_client.connected
         cs = disp["cs"]
         cs["adsb_online"]   = online
@@ -1461,6 +1459,14 @@ def _update_traffic(demo_mode):
         cs["adsb_err"]      = _adsb_client.err_count
         cs["adsb_last_err"] = _adsb_client.last_err
         cs["adsb_uplink"]   = _adsb_client.uplink_count
+    # Real traffic (live receiver, the GDL90 bridge, or the internet feed)
+    # always wins; the synthetic demo targets only fill in when nothing real
+    # is arriving, so pointing a feed at the demo location shows live traffic.
+    if live:
+        raw = live
+    elif demo_mode:
+        raw = _adsb.demo_targets(own_lat, own_lon, own_alt, time.monotonic())
+        online = True
     else:
         raw = []
 

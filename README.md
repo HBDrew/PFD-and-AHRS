@@ -136,6 +136,8 @@ NESDR dongles → dump1090 / dump978 → tools/adsb_gdl90_bridge.py → GDL90/UD
 
 The display layer is hardware-free (`shared/gdl90.py` decoder + `shared/adsb.py` UDP listener), so traffic also works against a Stratux on the network or in `--demo` (synthetic targets). Toggle the symbols via **Setup → Display → MAP LAYERS → TFC**. See `Docs/ADSB_IN.md` for the full design + setup.
 
+**No receiver? Use the internet.** `tools/adsb_internet_feed.py` pulls live aircraft from a public ADS-B aggregator (airplanes.live / OpenSky, no key) and emits the same GDL90/UDP — so you can **test with real traffic** with no hardware, or use it **in flight over Starlink / cabin Wi-Fi** as a traffic source (it can follow your GPS with `--follow-ahrs`). Internet traffic is advisory only — see the doc. Quick test: `python3 pi4/pfd.py --demo --sim` in one terminal, `python3 tools/adsb_internet_feed.py --lat 33.94 --lon -118.40 --radius 80` in another.
+
 ---
 
 ## Quick Start — Pi Zero 2W

@@ -29,19 +29,21 @@ the lingua franca of portable ADS-B receivers (Stratux, Sentry, GDL90
 bridges). Nothing in the PFD knows about SDR dongles.
 
 ```
-                         ┌─────────────── on the Pi (or a companion box) ───────────────┐
  1090ES  ── NESDR ──►  dump1090-fa ──┐
-                                     ├─► SBS-1 :30003 ─► adsb_gdl90_bridge.py ─► GDL90/UDP :4000 ─┐
- 978 UAT ── NESDR ──►  dump978-fa  ──┘                                                            │
-                                                                                                  ▼
-                                                            shared/adsb.py  (ADSBClient: UDP listener,
-                                                            target table, staleness aging, snapshot)
-                                                                          │
-                                                            shared/gdl90.py (deframe + CRC + decode)
-                                                                          │
-                                              pfd.py _update_traffic()  → disp["traffic"]
-                                                                          │
-                                              moving_map.render(traffic=…) → diamonds
+                                     ├─ SBS-1 :30003 ─► adsb_gdl90_bridge.py ──┐
+ 978 UAT ── NESDR ──►  dump978-fa  ──┘                                         │
+                                                                              GDL90/UDP :4000
+ Internet aggregator  ──►  adsb_internet_feed.py  ───────────────────────────►│  (any/all
+ (airplanes.live / opensky, via Wi-Fi / Starlink)                             │   sources fan in)
+                                                                              ▼
+                                            shared/adsb.py  (ADSBClient: UDP listener,
+                                            target table, staleness aging, snapshot)
+                                                          │
+                                            shared/gdl90.py (deframe + CRC + decode)
+                                                          │
+                              pfd.py _update_traffic()  → disp["traffic"]
+                                                          │
+                              moving_map.render(traffic=…) → diamonds
 ```
 
 ### Modules
@@ -51,7 +53,12 @@ bridges). Nothing in the PFD knows about SDR dongles.
 | `shared/gdl90.py` | GDL90 framing (0x7E / byte-stuffing / CRC-16) + message decoders (Traffic 0x14, Ownship 0x0A/0x0B, Heartbeat 0x00, FIS-B uplink 0x07). Also an encoder for tests/bridges. | `shared/test_gdl90.py` |
 | `shared/adsb.py` | `ADSBClient` threaded UDP listener (SSEClient-style counters), target table with aging, `relative()` range/bearing/rel-alt, `threat_level()`, `demo_targets()`. | `shared/test_adsb.py` |
 | `tools/adsb_gdl90_bridge.py` | dump1090 SBS-1 (TCP 30003) → GDL90/UDP bridge using the encoder above. | `--selftest` |
+| `tools/adsb_internet_feed.py` | Internet ADS-B aggregator → GDL90/UDP feed (test source + Starlink in-flight source). | `--selftest` |
 | `tools/install_adsb.sh` | Installs rtl-sdr + dump1090/dump978 + the bridge systemd unit. | — |
+
+Because every source emits the same GDL90/UDP, they are interchangeable and
+can even run side by side — a local SDR receiver, the dump1090 bridge, and
+the internet feed all just fan into the one listener on :4000.
 
 ### Display wiring
 
@@ -102,6 +109,50 @@ python3 shared/test_adsb.py      # listener + geometry + UDP loopback
 python3 pi4/pfd.py --demo --sim  # synthetic traffic orbits the demo aircraft
 ```
 
+### Testing with real internet data
+
+`tools/adsb_internet_feed.py` pulls live aircraft from a public ADS-B
+aggregator and emits them as GDL90/UDP — so you can see *real* traffic on
+the map with no SDR and no Pico. Run the display and the feed together:
+
+```bash
+# terminal 1 — the PFD (demo flies the Sedona pattern; live traffic wins
+# over the synthetic targets, so point the feed at the demo location)
+python3 pi4/pfd.py --demo --sim
+
+# terminal 2 — feed real traffic within 80 NM of the demo position
+python3 tools/adsb_internet_feed.py --lat 34.8697 --lon -111.7610 --radius 80
+```
+
+Point it somewhere busy (`--lat 33.94 --lon -118.40` for KLAX) to stress the
+renderer with dozens of targets. Sources: `airplanes_live` (default),
+`adsb_lol`, `adsb_fi`, `opensky` — none need an API key.
+
+The "live wins over demo" rule (`_update_traffic`) means any real source —
+internet feed, dump1090 bridge, or hardware receiver — overrides the
+synthetic demo targets the moment frames start arriving.
+
+## In-flight over Starlink / cabin Wi-Fi
+
+With internet in the aircraft, the same feed becomes a real traffic source —
+no receiver required. Run it on the display Pi and have it re-centre on your
+own GPS so the query box follows the flight:
+
+```bash
+python3 tools/adsb_internet_feed.py --follow-ahrs http://192.168.4.1/events --radius 60
+```
+
+(Or install it as a systemd service alongside `adsb-gdl90.service`.)
+
+**Advisory only.** Internet traffic depends on ground-station coverage and
+connectivity — it lags a few seconds, has coverage gaps, and won't reliably
+include UAT-only / non-transponder aircraft. It is **not** a substitute for
+see-and-avoid or a certified traffic system. A local SDR receiver (the
+Nooelec) gives better own-ship-relative traffic because it's direct
+line-of-sight and works without internet; treat the internet feed as a
+convenient backup / test source. Keep the poll interval ≥ 1 s out of
+courtesy to the free aggregators.
+
 ## Implemented vs. planned
 
 **Implemented (V5.4):**
@@ -111,10 +162,22 @@ python3 pi4/pfd.py --demo --sim  # synthetic traffic orbits the demo aircraft
 - dump1090 → GDL90 bridge + receiver installer
 - Demo traffic generator
 
+- Internet traffic feed (`tools/adsb_internet_feed.py`) — no-hardware test
+  source and Starlink/cabin-Wi-Fi in-flight source; live traffic overrides
+  the demo targets automatically.
+
 **Planned:**
-- FIS-B graphical weather (NEXRAD raster, METAR/TAF/winds text) — the
-  uplink frames (0x07) are already captured and counted; decoding the
-  FIS-B APDU + NEXRAD blocks is the next milestone.
+- **Weather.** Two complementary paths:
+  - *Internet (Starlink):* pull METARs/TAFs/winds and NEXRAD from
+    aviationweather.gov (free, no key) — cleaner and higher-resolution than
+    FIS-B when connected. First step: colour-coded METAR station dots
+    (VFR/MVFR/IFR/LIFR) on the map + a nearest-station text readout; then a
+    NEXRAD raster overlay.
+  - *FIS-B (978 UAT):* the uplink frames (0x07) are already captured and
+    counted; decoding the FIS-B APDU + NEXRAD blocks gives weather without
+    internet. Heavier lift; the internet path lands first.
+  Both would feed a shared `disp["weather"]` so the map layer is
+  source-agnostic, mirroring the traffic design.
 - On-screen TFC status / count + audible/visual traffic alert ("TRAFFIC")
   driven by `disp["traffic"]["alert"]`.
 - Connectivity-screen ADS-B LINK row (diagnostics are already plumbed in
