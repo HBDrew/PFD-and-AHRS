@@ -1628,14 +1628,19 @@ def _update_traffic(demo_mode):
 
 
 def _wx_view():
-    """(center_lat, center_lon, radius_nm) for the weather query.  The Pi 4
-    inset is aircraft-centred; radius scales with the inset zoom so wider
-    ranges pull more weather."""
-    clat = float(disp.get("lat", DEMO_LAT))
-    clon = float(disp.get("lon", DEMO_LON))
-    rng = int(disp["ds"].get("map_zoom_nm", 5)) or 5
+    """(center_lat, center_lon, radius_nm) for the weather query.  Follows
+    the full-screen MFD's pan + (resolved) zoom so METAR/NEXRAD load for
+    wherever you're looking over CONUS — not just a fixed ring at the
+    aircraft.  Falls back to the inset's aircraft-centred view otherwise."""
+    if disp.get("display_mode") == "mfd":
+        clat, clon = _mfd_effective_center()          # pan-aware
+        rng = _mfd_last_range or 10                    # AUTO-resolved range
+    else:
+        clat = float(disp.get("lat", DEMO_LAT))
+        clon = float(disp.get("lon", DEMO_LON))
+        rng = int(disp["ds"].get("map_zoom_nm", 5)) or 5
     radius = max(WX_MIN_RADIUS_NM, min(WX_MAX_RADIUS_NM, rng * WX_RADIUS_ZOOM_K))
-    return clat, clon, float(radius)
+    return float(clat), float(clon), float(radius)
 
 
 def _update_weather():
@@ -4627,10 +4632,7 @@ def handle_event(event, demo_mode):
 
             def _in(rc):
                 return rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]
-            if _in(r["pfd"]):
-                disp["display_mode"] = "pfd"
-                _settings.mark_dirty()
-            elif _in(r["ovly"]):
+            if _in(r["ovly"]):
                 _map_overlay_cycle(disp["ds"])
                 _settings.mark_dirty()
             elif _in(r["orient"]):
@@ -10994,7 +10996,9 @@ _mfd_apt_font = None
 def _mfd_get_apt_font():
     global _mfd_apt_font
     if _mfd_apt_font is None:
-        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", 18, bold=True)
+        # Big enough to read at arm's length on the full-screen MFD (the
+        # inset uses its own small font).
+        _mfd_apt_font = pygame.font.SysFont("DejaVu Sans", 36, bold=True)
     return _mfd_apt_font
 
 
@@ -11063,11 +11067,13 @@ def _draw_wx_popup(surf):
             yy += 28
     raw = m.get("raw", "")
     if raw:
-        f = pygame.font.SysFont("DejaVu Sans", 18)
-        yy = max(yy + 6, py + ph - 70)
-        for ln in _wrap_text(raw, f, pw - 36)[:2]:
-            _text(surf, ln, 18, (150, 200, 240), x=px + 18, y=yy)
-            yy += 22
+        # Measure with the SAME font _text renders with (_get_font is scaled
+        # on the wide display) so the wrap actually fits the panel.
+        f = _get_font(16)
+        yy = max(yy + 6, py + ph - 96)
+        for ln in _wrap_text(raw, f, pw - 36)[:3]:
+            _text(surf, ln, 16, (150, 200, 240), x=px + 18, y=yy)
+            yy += 20
     _text(surf, "tap to close", 16, (140, 150, 160),
           cx=DISPLAY_W // 2, cy=py + ph - 14)
 
@@ -11104,12 +11110,12 @@ def _p4_mfd_rects():
     z = _P4_MFD_ZOOM
     _, sy, _, _ = _mfd_strip_rect()        # zoom buttons sit above the strip
     zy = sy - 6 - z
+    # No PFD button — the 3-finger hold swaps back to the PFD (like piZ).
     return {
         "d2":       (p, p, bw, bh),                       # top-left
         "fpl":      (W - bw - p, p, bw, bh),              # top-right
-        "pfd":      (W - bw - p, p + bh + p, bw, bh),     # under FPL (back)
         "ovly":     (p, p + bh + p, bw, bh),              # under D2
-        "orient":   (p, p + 2 * (bh + p), bw, bh),        # under OVLY
+        "orient":   (W - bw - p, p + bh + p, bw, bh),     # under FPL
         "center":   (W - bw - p, p + 2 * (bh + p), bw, bh),  # CTR (when panned)
         "zoom_out": (p, zy, z, z),                        # above strip, left
         "zoom_in":  (W - z - p, zy, z, z),                # above strip, right
@@ -11162,7 +11168,9 @@ def draw_mfd(surf, connected=True, data_stale=False):
     else:
         eff_range = zoom_pref
         eff_label = None
-    eff_orient = "nrth" if eff_range > 40 else ds.get("map_orient", "trk")
+    # Respect the TRK↑ / N↑ choice at every range (matches the piZ MFD —
+    # no silent force to north-up at wide zoom).
+    eff_orient = ds.get("map_orient", "trk")
     global _mfd_last_range, _mfd_last_orient, _mfd_last_track
     _mfd_last_range, _mfd_last_orient, _mfd_last_track = (
         eff_range, eff_orient, map_track)
@@ -11184,6 +11192,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
         metars=disp.get("weather", {}).get("metars"),
         nexrad=_nexrad_render_arg(),
         own_lat=ac_lat, own_lon=ac_lon,
+        symbol_scale=2.0,            # bigger airport dots on the big MFD
         draw_corner_labels=False)
 
     # ── Bottom data strip ──────────────────────────────────────────────────
@@ -11202,12 +11211,12 @@ def draw_mfd(surf, connected=True, data_stale=False):
         _text(surf, val, 26, col, bold=True, cx=cx, cy=sy + 36)
 
     # ── Chrome ─────────────────────────────────────────────────────────────
+    # No PFD button — 3-finger hold swaps back to the PFD (like piZ).
     r = _p4_mfd_rects()
     d2_style = "warn" if d2.get("ident") else "normal"
     d2_label = f"D→ {d2['ident']}" if d2.get("ident") else "D→"
     _action_btn(surf, *r["d2"], d2_label, d2_style, r=6)
     _action_btn(surf, *r["fpl"], "FPL", "normal", r=6)
-    _action_btn(surf, *r["pfd"], "PFD", "normal", r=6)
     ov_state = _map_overlay_state(ds)
     _action_btn(surf, *r["ovly"], _map_overlay_label(ds),
                 "ok" if ov_state != "tfc" else "normal", r=6)
@@ -11219,9 +11228,11 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _action_btn(surf, *r["zoom_out"], "−", "normal", r=8)
     _action_btn(surf, *r["zoom_in"], "+", "normal", r=8)
 
+    # Range / scale readout — lower-left corner, just above the zoom-out button.
+    zx, zy, _zw, _zh = r["zoom_out"]
     rng_lbl = (f"{eff_range:g} NM" if eff_label is None
                else f"AUTO · {eff_range:g} NM")
-    _text(surf, rng_lbl, 20, CYAN, bold=True, cx=DISPLAY_W // 2, cy=22)
+    _text(surf, rng_lbl, 20, CYAN, bold=True, x=zx, y=zy - 28)
     if not connected or data_stale:
         _text(surf, "NO LINK" if not connected else "DATA STALE",
               18, (240, 90, 90), bold=True, cx=DISPLAY_W // 2, cy=sy - 12)

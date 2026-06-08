@@ -9702,13 +9702,12 @@ _MFD_LABEL_H    = 40   # tap-target height; text rendered centred
 
 
 def _mfd_rng_label_rect():
-    """RNG readout: under the D2 button (top-left).  Passive label, but
-    its rect claims the chrome strip so a tap there doesn't pan the map."""
+    """RNG / scale readout: lower-left corner, just above the zoom-out (−)
+    button.  Passive label, but its rect claims the strip so a tap there
+    doesn't pan the map."""
     pad = 6
-    return (pad,
-            pad + _MFD_D2_BTN_H + _MFD_LABEL_DROP,
-            _MFD_D2_BTN_W,
-            _MFD_LABEL_H)
+    _zx, zy, _zw, _zh = _mfd_zoom_out_rect()
+    return (pad, zy - _MFD_LABEL_H, _MFD_D2_BTN_W, _MFD_LABEL_H)
 
 
 def _mfd_orient_label_rect():
@@ -9757,10 +9756,11 @@ _map_overlay_cycle = _ovl.cycle
 
 
 def _mfd_overlay_btn_rect():
-    """OVLY cycle button — under the RNG label on the top-left, always
-    visible.  Cycles the WX / Airspace overlays (traffic stays on)."""
+    """OVLY cycle button — directly under the D2 button on the top-left
+    (the RNG label moved to the lower-left corner).  Cycles the WX /
+    Airspace overlays (traffic stays on)."""
     pad = 6
-    ry = pad + _MFD_D2_BTN_H + _MFD_LABEL_DROP + _MFD_LABEL_H + 8
+    ry = pad + _MFD_D2_BTN_H + _MFD_LABEL_DROP
     return (pad, ry, _MFD_D2_BTN_W, _MFD_FPL_BTN_H)
 
 
@@ -10056,11 +10056,12 @@ def _draw_wx_popup(surf):
 
     raw = m.get("raw", "")
     if raw:
-        f = pygame.font.SysFont("DejaVu Sans", 18)
-        yy = max(yy + 6, py + ph - 70)
-        for ln in _wrap_text(raw, f, pw - 36)[:2]:
-            _text(surf, ln, 18, (150, 200, 240), x=px + 18, y=yy)
-            yy += 22
+        # Measure with the SAME font _text renders with so the wrap fits.
+        f = _get_font(16)
+        yy = max(yy + 6, py + ph - 96)
+        for ln in _wrap_text(raw, f, pw - 36)[:3]:
+            _text(surf, ln, 16, (150, 200, 240), x=px + 18, y=yy)
+            yy += 20
     _text(surf, "tap to close", 16, (140, 150, 160),
           cx=DISPLAY_W // 2, cy=py + ph - 14)
 

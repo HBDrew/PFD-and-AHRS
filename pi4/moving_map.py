@@ -658,7 +658,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_label=None, state_lines=None, country_lines=None,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
            traffic=None, metars=None, nexrad=None,
-           draw_corner_labels=True, own_lat=None, own_lon=None):
+           draw_corner_labels=True, own_lat=None, own_lon=None,
+           symbol_scale=1.0):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -915,18 +916,21 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     continue
                 ax2, ay2 = _project(float(lats[i]), float(lons[i]))
                 ix, iy = int(ax2), int(ay2)
+
+                def _r(v):    # scale dot radius for the big full-screen MFD
+                    return max(1, int(round(v * symbol_scale)))
                 if atype == "H":
-                    pygame.draw.circle(surf, _APT_HELI, (ix, iy), 3)
+                    pygame.draw.circle(surf, _APT_HELI, (ix, iy), _r(3))
                 elif atype == "W":
-                    pygame.draw.circle(surf, _APT_WATER, (ix, iy), 3, 1)
+                    pygame.draw.circle(surf, _APT_WATER, (ix, iy), _r(3), 1)
                 elif atype == "B":
-                    pygame.draw.circle(surf, _APT_OTHER, (ix, iy), 2)
+                    pygame.draw.circle(surf, _APT_OTHER, (ix, iy), _r(2))
                 else:
                     pygame.draw.circle(surf, _APT_PUB, (ix, iy),
-                                       4 if atype in ("M", "L") else 3)
+                                       _r(4) if atype in ("M", "L") else _r(3))
                 if font is not None and range_nm <= 10:
                     lbl = font.render(str(ids[i]), True, _APT_PUB)
-                    surf.blit(lbl, (ix + 5, iy - 7))
+                    surf.blit(lbl, (ix + _r(5) + 2, iy - 7))
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:
