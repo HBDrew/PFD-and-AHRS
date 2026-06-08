@@ -55,7 +55,10 @@ _PERSIST_SCALARS = [
 # Keys within subtrees that we deliberately do NOT persist (volatile or secret)
 _SKIP_KEYS = {
     "cs": {"wifi_pass", "ahrs_ok", "test_msg", "apply_msg", "inet_msg",
-           "wifi_ok"},
+           "wifi_ok",
+           # ADS-B link diagnostics are runtime-only (set by the listener).
+           "adsb_online", "adsb_rx", "adsb_err", "adsb_last_err",
+           "adsb_uplink"},
     "ad": {"downloading", "dl_status", "dl_cancel", "parsing",
            "records", "used_mb", "dl_date", "age_days", "expired"},
     "ss": {"mag_cal"},   # calibration state is runtime-only

@@ -36,6 +36,7 @@ import pygame.gfxdraw
 
 from config import *   # noqa: F403
 from sse_client import SSEClient
+import adsb as _adsb
 from terrain import (
     get_elevation_ft, get_elevation_ft_combined,
     coarse_tile_list, coarse_tile_url, coarse_tile_path, coarse_disk_stats,
@@ -179,6 +180,7 @@ disp["ds"] = {                      # display settings
     "map_show_water":    True,
     "map_show_airports": True,
     "map_show_obstacles": True,
+    "map_show_traffic":  True,   # ADS-B traffic diamonds (when a receiver feeds us)
     "map_show_state_lines": True,
     "map_show_country_lines": True,
     # Airspace layer — master toggle + per-class.  Off by default for
@@ -247,6 +249,15 @@ disp["cs"] = {                      # connectivity settings
     "sync_publish_ahrs": False, "sync_consume_ahrs": False,
     "sync_publish_gps":  False, "sync_consume_gps":  False,
     "sync_publish_fpl":  False, "sync_consume_fpl":  False,
+    # ADS-B IN — listen for GDL90 traffic on UDP.  Diagnostics mirror the
+    # AHRS link fields so the Connectivity screen can show an ADS-B row.
+    "adsb_enabled":   True,     # start the GDL90/UDP listener at boot
+    "adsb_port":      ADSB_UDP_PORT,
+    "adsb_online":    False,    # receiver feeding us GDL90 right now
+    "adsb_rx":        0,        # GDL90 messages decoded OK
+    "adsb_err":       0,        # socket / decode errors
+    "adsb_last_err":  "",
+    "adsb_uplink":    0,        # FIS-B uplink frames seen (weather)
 }
 disp["nav"] = {                     # direct-to navigation
     "ident":   "",      # ICAO/local ID of active waypoint, "" = none
@@ -287,6 +298,17 @@ disp["user_wpts"] = {
 disp["fpl_saved"] = {
     "plans": [],   # [{name, waypoints:[{ident,lat,lon,elev_ft,user,name,region}]}]
 }
+# Live ADS-B traffic — refreshed each frame from the GDL90/UDP listener
+# (or the demo generator).  "targets" are relativised (range/bearing/
+# rel-alt + threat class) and sorted nearest-first.  Not persisted.
+disp["traffic"] = {
+    "targets": [],     # [{icao, callsign, lat, lon, alt_ft, rel_alt_ft,
+                       #   range_nm, bearing_deg, track_deg, vvel_fpm,
+                       #   threat, ...}]
+    "online":  False,  # True when a receiver is feeding us GDL90
+    "n":       0,       # live target count
+    "alert":   False,   # any target in the alert (resolution) envelope
+}
 # In-progress user-waypoint entry — populated by the +LAT/LON entry
 # screen (which pre-fills the lat/lon fields with the current aircraft
 # position so the same path also handles "mark a point HERE").
@@ -313,6 +335,7 @@ SMOOTH_K = 0.25   # IIR coefficient (higher = faster response)
 
 # ── Module-level SSE handle (set in main, restarted by handle_event) ─────────
 _sse_client  = None
+_adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
@@ -4381,6 +4404,7 @@ _DSP_MAP_LAYERS = [
     ("map_show_water",         "WTR"),
     ("map_show_airports",      "APT"),
     ("map_show_obstacles",     "OBS"),
+    ("map_show_traffic",       "TFC"),
     ("map_show_state_lines",   "STA"),
     ("map_show_country_lines", "CTRY"),
     ("map_show_airspaces",     "ASP"),
@@ -5584,6 +5608,55 @@ def _fpl_open_save_keyboard():
     disp["kbd_error"]  = ""
     disp["kbd_shift"]  = False
     disp["mode"]       = "keyboard"
+
+
+# ── ADS-B traffic refresh ──────────────────────────────────────────────────
+def _update_traffic(demo_mode):
+    """Refresh disp["traffic"] once per frame from the live GDL90 listener
+    (or the synthetic generator in demo mode).  Each target is relativised
+    against the current ownship fix and classified by threat level, then
+    sorted nearest-first for the renderer + any traffic annunciation."""
+    own_lat = float(disp.get("lat", DEMO_LAT))
+    own_lon = float(disp.get("lon", DEMO_LON))
+    own_alt = float(disp.get("alt", 0.0))
+
+    online = False
+    if demo_mode:
+        raw = _adsb.demo_targets(own_lat, own_lon, own_alt, time.monotonic())
+        online = True
+    elif _adsb_client is not None:
+        raw = _adsb_client.snapshot()
+        online = _adsb_client.connected
+        cs = disp["cs"]
+        cs["adsb_online"]   = online
+        cs["adsb_rx"]       = _adsb_client.rx_count
+        cs["adsb_err"]      = _adsb_client.err_count
+        cs["adsb_last_err"] = _adsb_client.last_err
+        cs["adsb_uplink"]   = _adsb_client.uplink_count
+    else:
+        raw = []
+
+    rel = []
+    any_alert = False
+    for t in raw:
+        r = _adsb.relative(t, own_lat, own_lon, own_alt)
+        thr = _adsb.threat_level(r, proximate_nm=ADSB_PROX_NM,
+                                 proximate_ft=ADSB_PROX_FT,
+                                 alert_nm=ADSB_ALERT_NM,
+                                 alert_ft=ADSB_ALERT_FT)
+        r["threat"] = thr
+        if thr == "alert":
+            any_alert = True
+        rel.append(r)
+    # Nearest-first; positionless targets sort to the end.
+    rel.sort(key=lambda d: (d.get("range_nm") is None,
+                            d.get("range_nm") or 1e9))
+
+    tr = disp["traffic"]
+    tr["targets"] = rel
+    tr["online"]  = online
+    tr["n"]       = len(rel)
+    tr["alert"]   = any_alert
 
 
 def _fpl_render_remaining():
@@ -9679,6 +9752,9 @@ def draw_mfd(surf, connected=True, data_stale=False):
         # in the background at startup; per-class display gates live
         # in disp["ds"]["map_show_airspace_*"].
         airspaces=_airspaces,
+        # ADS-B traffic — relativised + threat-classified each frame in
+        # _update_traffic; gated by ds["map_show_traffic"] (TFC pill).
+        traffic=disp.get("traffic", {}).get("targets"),
     )
     lat, lon = ac_lat, ac_lon
 
@@ -11591,6 +11667,17 @@ def main():
         disp["alt_bug"] = DEMO_ALT
         print("[PFD] Demo mode — Sedona AZ")
 
+    # ADS-B IN: start the GDL90/UDP listener whenever it's enabled (cheap
+    # idle bind; in demo we synthesise targets instead, but a real receiver
+    # on the bench still feeds the listener).
+    if disp["cs"].get("adsb_enabled", True):
+        global _adsb_client
+        _adsb_client = _adsb.ADSBClient(
+            port=int(disp["cs"].get("adsb_port", ADSB_UDP_PORT)),
+            stale_s=ADSB_STALE_S)
+        _adsb_client.start()
+        print(f"[PFD] ADS-B listening for GDL90 on UDP {_adsb_client.port}")
+
     _show_boot_splash(surf, _flip)
 
     running = True
@@ -11605,6 +11692,9 @@ def main():
 
         # Smooth sensor values into display values
         smooth_state()
+
+        # Refresh ADS-B traffic against the freshly smoothed ownship fix.
+        _update_traffic(demo_mode)
 
         # Push AHRS / GPS to peer screens (rate-limited inside the helpers).
         _ssync_publish_ahrs()
@@ -11706,6 +11796,8 @@ def main():
 
     if _sse_client:
         _sse_client.stop()
+    if _adsb_client:
+        _adsb_client.stop()
     _settings.flush()
     pygame.quit()
 
