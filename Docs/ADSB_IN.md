@@ -165,19 +165,27 @@ courtesy to the free aggregators.
 - Internet traffic feed (`tools/adsb_internet_feed.py`) — no-hardware test
   source and Starlink/cabin-Wi-Fi in-flight source; live traffic overrides
   the demo targets automatically.
+- Traffic declutter — altitude-band (±2k/5k/10k) and range (5/10/20/40 nm)
+  filters on Setup → Display; alert-class threats always survive.
+- **Weather — METARs.** `shared/wx.py` polls aviationweather.gov around the
+  GPS fix; flight-category station dots (green VFR / blue MVFR / red IFR /
+  magenta LIFR) render on both maps. Source-agnostic `disp["weather"]`
+  mirrors the traffic design.
+- **Overlay quick-cycle.** Traffic stays on always (safety); a single
+  on-map control cycles the heavy overlays one-at-a-time to keep the map
+  readable: **off → WX → Airspace → off**. On the Pi Zero MFD it's the
+  **OVLY** button under the RNG label; on the Pi 4 inset it's the
+  **bottom-left corner** (label shows the current state). Both drive the
+  same `ds["map_show_metar"]` / `ds["map_show_airspaces"]` booleans the
+  Setup → Display pills (MET / ASP) use, so they stay consistent.
 
 **Planned:**
-- **Weather.** Two complementary paths:
-  - *Internet (Starlink):* pull METARs/TAFs/winds and NEXRAD from
-    aviationweather.gov (free, no key) — cleaner and higher-resolution than
-    FIS-B when connected. First step: colour-coded METAR station dots
-    (VFR/MVFR/IFR/LIFR) on the map + a nearest-station text readout; then a
-    NEXRAD raster overlay.
-  - *FIS-B (978 UAT):* the uplink frames (0x07) are already captured and
-    counted; decoding the FIS-B APDU + NEXRAD blocks gives weather without
-    internet. Heavier lift; the internet path lands first.
-  Both would feed a shared `disp["weather"]` so the map layer is
-  source-agnostic, mirroring the traffic design.
+- **NEXRAD raster** weather overlay (internet first — aviationweather.gov /
+  IEM tiles — then FIS-B). Needs image fetch + georeferencing.
+- **FIS-B (978 UAT) weather** without internet: the uplink frames (0x07)
+  are already captured/counted; decoding the APDU + NEXRAD blocks feeds the
+  same `disp["weather"]`.
+- METAR detail readout (tap a station → raw METAR / wind / ceiling / vis).
 - On-screen TFC status / count + audible/visual traffic alert ("TRAFFIC")
   driven by `disp["traffic"]["alert"]`.
 - Connectivity-screen ADS-B LINK row (diagnostics are already plumbed in

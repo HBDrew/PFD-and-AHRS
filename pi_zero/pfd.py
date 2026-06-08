@@ -3731,6 +3731,11 @@ def handle_event(event, demo_mode):
                 disp["ds"]["map_orient"] = "nrth" if cur == "trk" else "trk"
                 _settings.mark_dirty()
                 return True
+            if _mfd_overlay_btn_hit(x, y):
+                nxt = _map_overlay_cycle(disp["ds"])
+                print(f"[MFD] overlay → {nxt}")
+                _settings.mark_dirty()
+                return True
             if _mfd_strip_hit(x, y):
                 disp["mode"] = "mfd_strip_setup"
                 disp["mss_sel"] = 0   # currently-selected slot index
@@ -9678,6 +9683,54 @@ def _mfd_orient_label_hit(x, y):
     return bx <= x <= bx + bw and by <= y <= by + bh
 
 
+# ── Map overlay quick-cycle (Weather / Airspace) ──────────────────────────────
+# Traffic stays on always (safety); this single control cycles the *other*
+# heavy overlays one-at-a-time to keep the map readable.  It drives the same
+# ds booleans the Display-setup pills do, so the two stay consistent.
+_MAP_OVERLAY_ORDER = ["off", "wx", "asp"]
+
+
+def _map_overlay_state(ds):
+    wx  = bool(ds.get("map_show_metar"))
+    asp = bool(ds.get("map_show_airspaces"))
+    if wx and asp:
+        return "both"            # only reachable via the Setup pills
+    if asp:
+        return "asp"
+    if wx:
+        return "wx"
+    return "off"
+
+
+def _map_overlay_label(ds):
+    return {"off": "OVLY", "wx": "WX", "asp": "ASP",
+            "both": "WX+AS"}[_map_overlay_state(ds)]
+
+
+def _map_overlay_cycle(ds):
+    """Advance off → WX → ASP → off and apply the matching ds booleans."""
+    cur = _map_overlay_state(ds)
+    i = (_MAP_OVERLAY_ORDER.index(cur) if cur in _MAP_OVERLAY_ORDER
+         else len(_MAP_OVERLAY_ORDER) - 1)         # "both" → next is off
+    nxt = _MAP_OVERLAY_ORDER[(i + 1) % len(_MAP_OVERLAY_ORDER)]
+    ds["map_show_metar"]     = (nxt == "wx")
+    ds["map_show_airspaces"] = (nxt == "asp")
+    return nxt
+
+
+def _mfd_overlay_btn_rect():
+    """OVLY cycle button — under the RNG label on the top-left, always
+    visible.  Cycles the WX / Airspace overlays (traffic stays on)."""
+    pad = 6
+    ry = pad + _MFD_D2_BTN_H + _MFD_LABEL_DROP + _MFD_LABEL_H + 8
+    return (pad, ry, _MFD_D2_BTN_W, _MFD_FPL_BTN_H)
+
+
+def _mfd_overlay_btn_hit(x, y):
+    bx, by, bw, bh = _mfd_overlay_btn_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
 def _mfd_get_range_label():
     """Default-range label is the numeric NM value; AUTO mode reserved
     for the future flight-plan-aware fit-to-route."""
@@ -9836,6 +9889,12 @@ def draw_mfd(surf, connected=True, data_stale=False):
     if _mfd_is_panned():
         cx_, cy_, cw_, ch_ = _mfd_center_btn_rect()
         _action_btn(surf, cx_, cy_, cw_, ch_, "CTR", "ok", r=5)
+
+    # OVLY quick-cycle button (WX / Airspace; traffic always on).
+    ovx, ovy, ovw, ovh = _mfd_overlay_btn_rect()
+    ov_state = _map_overlay_state(disp["ds"])
+    _action_btn(surf, ovx, ovy, ovw, ovh, _map_overlay_label(disp["ds"]),
+                "ok" if ov_state != "off" else "normal", r=5)
 
     # ── Bottom data strip ─────────────────────────────────────────────
     # Full-width 8-slot strip.  Spans display-edge to display-edge so
@@ -10739,6 +10798,7 @@ def _mfd_chrome_hit(x, y):
     if _mfd_zoom_out_hit(x, y):     return True
     if _mfd_center_btn_hit(x, y):   return True
     if _mfd_orient_label_hit(x, y): return True
+    if _mfd_overlay_btn_hit(x, y):  return True
     # RNG label (under D2) is a passive readout but still claims its rect
     # so a hot finger doesn't accidentally pan the map.
     rx, ry, rw, rh = _mfd_rng_label_rect()

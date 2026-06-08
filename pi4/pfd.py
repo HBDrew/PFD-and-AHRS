@@ -4282,6 +4282,41 @@ _multitouch_t0  = None   # time when 2nd finger touched down
 _last_map_rect = None
 
 
+# ── Map overlay quick-cycle (Weather / Airspace) ──────────────────────────────
+# Traffic stays on always (safety); this cycles the *other* heavy overlays
+# one-at-a-time to keep the inset readable.  Drives the same ds booleans the
+# Display-setup pills do.
+_MAP_OVERLAY_ORDER = ["off", "wx", "asp"]
+
+
+def _map_overlay_state(ds):
+    wx  = bool(ds.get("map_show_metar"))
+    asp = bool(ds.get("map_show_airspaces"))
+    if wx and asp:
+        return "both"
+    if asp:
+        return "asp"
+    if wx:
+        return "wx"
+    return "off"
+
+
+def _map_overlay_label(ds):
+    return {"off": "OVLY", "wx": "WX", "asp": "ASP",
+            "both": "WX+AS"}[_map_overlay_state(ds)]
+
+
+def _map_overlay_cycle(ds):
+    """Advance off → WX → ASP → off and apply the matching ds booleans."""
+    cur = _map_overlay_state(ds)
+    i = (_MAP_OVERLAY_ORDER.index(cur) if cur in _MAP_OVERLAY_ORDER
+         else len(_MAP_OVERLAY_ORDER) - 1)
+    nxt = _MAP_OVERLAY_ORDER[(i + 1) % len(_MAP_OVERLAY_ORDER)]
+    ds["map_show_metar"]     = (nxt == "wx")
+    ds["map_show_airspaces"] = (nxt == "asp")
+    return nxt
+
+
 def _current_str_for_kbd(target, prev_mode):
     """String form of current keyboard-editable value for pre-population."""
     if prev_mode == "connectivity_setup":
@@ -5134,6 +5169,15 @@ def handle_event(event, demo_mode):
                         y <= mry + corner_h):
                     cur_or = disp["ds"].get("map_orient", "trk")
                     disp["ds"]["map_orient"] = "nrth" if cur_or == "trk" else "trk"
+                    _settings.mark_dirty()
+                    return True
+                # Bottom-left corner: cycle the WX / Airspace overlay (traffic
+                # stays on).  Checked before the zoom halves so it doesn't also
+                # change range.  Bottom-left is free (RNG label is top-left,
+                # ETE is bottom-right).
+                if (x <= mrx + corner_w and y >= mry + mrh - corner_h):
+                    nxt = _map_overlay_cycle(disp["ds"])
+                    print(f"[inset] overlay → {nxt}")
                     _settings.mark_dirty()
                     return True
                 cur = int(disp["ds"].get("map_zoom_nm", 5))
@@ -10906,6 +10950,14 @@ def render(surf, demo_mode, connected, data_stale=False):
             # METAR station dots — gated by ds["map_show_metar"] (MET / OVLY).
             metars=disp.get("weather", {}).get("metars"),
         )
+        # OVLY label — bottom-left of the inset; tap there to cycle the
+        # WX / Airspace overlay (traffic stays on).  Colour hints the state.
+        _ov_state = _map_overlay_state(disp["ds"])
+        _ov_col = {"off": (150, 160, 170), "wx": (0, 200, 0),
+                   "asp": (40, 120, 255), "both": (0, 200, 255)}[_ov_state]
+        _mx, _my, _mw, _mh = rect
+        _text(surf, _map_overlay_label(disp["ds"]), 11, _ov_col, bold=True,
+              x=_mx + 4, y=_my + _mh - 15)
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
