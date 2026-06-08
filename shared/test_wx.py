@@ -87,25 +87,54 @@ def test_parse_metars():
 
 
 def test_wxclient_injected_fetch():
-    calls = {"n": 0}
+    calls = {"n": 0, "last": None}
 
     def fake_fetch(lat, lon, radius):
         calls["n"] += 1
+        calls["last"] = (lat, lon, radius)
         return [{"icao": "KTST", "lat": lat, "lon": lon, "fltcat": "VFR"}]
 
-    c = wx.WxClient(pos_fn=lambda: (34.0, -111.0), fetch_fn=fake_fetch)
-    c._poll_once()
+    c = wx.WxClient(view_fn=lambda: (34.0, -111.0, 100.0), fetch_fn=fake_fetch)
+    c._fetch(34.0, -111.0, 100.0)
     check(c.count() == 1, "snapshot populated")
     check(c.rx_count == 1 and c.connected, "rx counted, online")
-    snap = c.snapshot()
-    check(snap[0]["icao"] == "KTST", "snapshot content")
+    check(calls["last"] == (34.0, -111.0, 100.0), "fetch got the view")
+    check(c.snapshot()[0]["icao"] == "KTST", "snapshot content")
 
+    # stale snapshot retained if a later fetch fails (run loop catches it).
     def boom(lat, lon, radius):
         raise OSError("no net")
     c.fetch_fn = boom
-    c._poll_once()
-    check(c.err_count == 1 and not c.connected, "error path counts + offline")
+    raised = False
+    try:
+        c._fetch(34.0, -111.0, 100.0)
+    except OSError:
+        raised = True
+    check(raised, "_fetch surfaces errors to the run loop")
     check(c.count() == 1, "stale snapshot retained on error")
+
+
+def test_wxclient_view_following():
+    """The poller re-fetches when the view pans far enough, zooms a lot, or
+    the periodic refresh is due — but not while parked on the same view."""
+    c = wx.WxClient(view_fn=lambda: (34.0, -111.0, 100.0),
+                    fetch_fn=lambda *a: [], move_refetch_frac=0.45)
+    now = 1000.0
+    check(c._should_fetch(34.0, -111.0, 100.0, now), "first fetch always")
+    c._fetch(34.0, -111.0, 100.0)
+    c._fetched_at = now
+    check(not c._should_fetch(34.0, -111.0, 100.0, now + 1),
+          "no refetch parked on same view")
+    # 2° lat ≈ 120 NM pan > 0.45×100 → refetch.
+    check(c._should_fetch(36.0, -111.0, 100.0, now + 1),
+          "refetch after panning away")
+    # small nudge stays put.
+    check(not c._should_fetch(34.1, -111.0, 100.0, now + 1),
+          "small pan does not refetch")
+    check(c._should_fetch(34.0, -111.0, 220.0, now + 1),
+          "refetch after zooming out")
+    check(c._should_fetch(34.0, -111.0, 100.0, now + 999),
+          "periodic refresh when due")
 
 
 def main():

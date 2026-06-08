@@ -167,10 +167,15 @@ courtesy to the free aggregators.
   the demo targets automatically.
 - Traffic declutter — altitude-band (±2k/5k/10k) and range (5/10/20/40 nm)
   filters on Setup → Display; alert-class threats always survive.
-- **Weather — METARs.** `shared/wx.py` polls aviationweather.gov around the
-  GPS fix; flight-category station dots (green VFR / blue MVFR / red IFR /
-  magenta LIFR) render on both maps. Source-agnostic `disp["weather"]`
-  mirrors the traffic design.
+- **Weather — METARs.** `shared/wx.py` polls aviationweather.gov for the
+  current **map view** (not just the aircraft) — `WxClient` takes a
+  `view_fn -> (lat, lon, radius)` and re-fetches when you pan far enough,
+  zoom, or the periodic refresh is due (debounced so a drag doesn't spam the
+  API). Query radius scales with zoom (`WX_RADIUS_ZOOM_K`, clamped
+  `WX_MIN/MAX_RADIUS_NM`), so panning/zooming over CONUS loads weather for
+  wherever you're looking. Flight-category station dots (green VFR / blue
+  MVFR / red IFR / magenta LIFR) render on both maps. Tap a dot on the MFD
+  for the decoded readout. Source-agnostic `disp["weather"]`.
 - **Overlay quick-cycle.** Traffic stays on always (safety); a single
   on-map control cycles the heavy overlays one-at-a-time to keep the map
   readable: **off → WX → Airspace → off**. On the Pi Zero MFD it's the
@@ -181,7 +186,10 @@ courtesy to the free aggregators.
 
 **Planned:**
 - **NEXRAD raster** weather overlay (internet first — aviationweather.gov /
-  IEM tiles — then FIS-B). Needs image fetch + georeferencing.
+  IEM tiles — then FIS-B). Its own `map_show_nexrad` layer + OVLY cycle
+  slot. Will reuse the same view-following fetch (`view_fn`) as METARs so it
+  loads for whatever map area is panned/zoomed into. Needs image fetch +
+  georeferencing + alpha blit under the symbols.
 - **FIS-B (978 UAT) weather** without internet: the uplink frames (0x07)
   are already captured/counted; decoding the APDU + NEXRAD blocks feeds the
   same `disp["weather"]`.

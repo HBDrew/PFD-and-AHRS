@@ -5716,6 +5716,16 @@ def _update_traffic(demo_mode):
     tr["alert"]   = any_alert
 
 
+def _wx_view():
+    """(center_lat, center_lon, radius_nm) for the weather query — follows
+    the MFD pan/zoom so panning over CONUS loads weather for the viewed area,
+    not just near the aircraft."""
+    clat, clon = _mfd_effective_center()
+    rng = int(disp["ds"].get("map_zoom_nm", 10)) or 10
+    radius = max(WX_MIN_RADIUS_NM, min(WX_MAX_RADIUS_NM, rng * WX_RADIUS_ZOOM_K))
+    return float(clat), float(clon), float(radius)
+
+
 def _update_weather():
     """Pull the latest METAR snapshot from the background poller into
     disp["weather"] and mirror link diagnostics into cs."""
@@ -11926,12 +11936,9 @@ def main():
     # internet; it just retries quietly when offline.
     if disp["cs"].get("wx_enabled", True):
         global _wx_client
-        _wx_client = _wx.WxClient(
-            pos_fn=lambda: (float(disp.get("lat", DEMO_LAT)),
-                            float(disp.get("lon", DEMO_LON))),
-            radius_nm=WX_RADIUS_NM, interval_s=WX_INTERVAL_S)
+        _wx_client = _wx.WxClient(view_fn=_wx_view, interval_s=WX_INTERVAL_S)
         _wx_client.start()
-        print(f"[PFD] Weather poller started (METAR r={WX_RADIUS_NM}nm)")
+        print("[PFD] Weather poller started (METAR, follows map view)")
 
     _show_boot_splash(surf, _flip)
 

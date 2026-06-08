@@ -1518,6 +1518,17 @@ def _update_traffic(demo_mode):
     tr["alert"]   = any_alert
 
 
+def _wx_view():
+    """(center_lat, center_lon, radius_nm) for the weather query.  The Pi 4
+    inset is aircraft-centred; radius scales with the inset zoom so wider
+    ranges pull more weather."""
+    clat = float(disp.get("lat", DEMO_LAT))
+    clon = float(disp.get("lon", DEMO_LON))
+    rng = int(disp["ds"].get("map_zoom_nm", 5)) or 5
+    radius = max(WX_MIN_RADIUS_NM, min(WX_MAX_RADIUS_NM, rng * WX_RADIUS_ZOOM_K))
+    return clat, clon, float(radius)
+
+
 def _update_weather():
     """Pull the latest METAR snapshot from the background poller into
     disp["weather"] and mirror link diagnostics into cs."""
@@ -11970,12 +11981,9 @@ def main():
     # Internet weather poller (METARs), centred on the live GPS fix.
     if disp["cs"].get("wx_enabled", True):
         global _wx_client
-        _wx_client = _wx.WxClient(
-            pos_fn=lambda: (float(disp.get("lat", DEMO_LAT)),
-                            float(disp.get("lon", DEMO_LON))),
-            radius_nm=WX_RADIUS_NM, interval_s=WX_INTERVAL_S)
+        _wx_client = _wx.WxClient(view_fn=_wx_view, interval_s=WX_INTERVAL_S)
         _wx_client.start()
-        print(f"[PFD] Weather poller started (METAR r={WX_RADIUS_NM}nm)")
+        print("[PFD] Weather poller started (METAR, follows inset zoom)")
 
     running = True
     while running:

@@ -145,57 +145,96 @@ def fetch_metars(lat, lon, radius_nm, timeout=12):
 
 
 # ── Background poller ─────────────────────────────────────────────────────────
+def _nm_between(a_lat, a_lon, b_lat, b_lon):
+    """Approximate great-circle distance in NM (equirectangular — plenty
+    accurate for deciding when the map view has moved enough to re-fetch)."""
+    dlat = (b_lat - a_lat) * _NM_PER_DEG
+    dlon = ((b_lon - a_lon) * _NM_PER_DEG
+            * math.cos(math.radians((a_lat + b_lat) / 2)))
+    return math.hypot(dlat, dlon)
+
+
 class WxClient(threading.Thread):
-    """Polls weather around a moving position and exposes a snapshot.
+    """Polls weather for the current *map view* and exposes a snapshot.
 
-    `pos_fn` is a callable -> (lat, lon) (the aircraft fix).  `fetch_fn` is
-    injectable for tests; it defaults to the AWC HTTP fetch.  Diagnostics
-    (rx_count / err_count / last_err / online) mirror ADSBClient."""
+    ``view_fn`` is a callable -> (center_lat, center_lon, radius_nm) describing
+    what the map is showing right now; the poller follows it so panning /
+    zooming over CONUS loads weather for the viewed area, not just near the
+    aircraft.  It re-fetches when the view has settled and either moved a good
+    fraction of the radius, changed zoom, or the periodic refresh is due.
 
-    def __init__(self, pos_fn, radius_nm=100.0, interval_s=120.0,
-                 fetch_fn=None):
+    ``fetch_fn`` is injectable for tests; it defaults to the AWC HTTP fetch.
+    Diagnostics (rx_count / err_count / last_err / online) mirror ADSBClient."""
+
+    def __init__(self, view_fn, interval_s=120.0, fetch_fn=None,
+                 move_refetch_frac=0.45, poll_slice_s=0.7):
         super().__init__(daemon=True, name="WxClient")
-        self.pos_fn     = pos_fn
-        self.radius_nm  = radius_nm
-        self.interval_s = max(30.0, interval_s)     # METARs update ~hourly
+        self.view_fn    = view_fn
+        self.interval_s = max(30.0, interval_s)
         self.fetch_fn   = fetch_fn or fetch_metars
+        self.move_frac  = move_refetch_frac
+        self.slice_s    = poll_slice_s
         self.connected  = False
         self.paused     = False
         self.rx_count   = 0
         self.err_count  = 0
         self.last_err   = ""
         self.updated_s  = 0.0
-        self._metars    = []
-        self._lock      = threading.Lock()
-        self._stop      = threading.Event()
+        self._metars      = []
+        self._fetched_at  = 0.0          # monotonic of last successful fetch
+        self._fetch_ctr   = None         # (lat, lon, radius) of last fetch
+        self._lock        = threading.Lock()
+        self._stop        = threading.Event()
 
     def stop(self):
         self._stop.set()
 
+    def _should_fetch(self, lat, lon, radius, now):
+        if self._fetch_ctr is None:
+            return True
+        if now - self._fetched_at >= self.interval_s:
+            return True                                  # periodic refresh
+        flat, flon, frad = self._fetch_ctr
+        if _nm_between(flat, flon, lat, lon) > self.move_frac * frad:
+            return True                                  # panned far enough
+        if radius > 1.5 * frad or radius < 0.6 * frad:
+            return True                                  # zoom changed a lot
+        return False
+
     def run(self):
+        prev_view = None
         while not self._stop.is_set():
             if not self.paused:
-                self._poll_once()
-            # Sleep in slices so stop() is responsive.
+                try:
+                    lat, lon, radius = self.view_fn()
+                    # Debounce: only act once the view has settled (two
+                    # consecutive slices agree) so a long pan doesn't fire a
+                    # burst of fetches mid-drag.
+                    cur = (round(lat, 2), round(lon, 2), round(radius))
+                    settled = (cur == prev_view)
+                    prev_view = cur
+                    now = time.monotonic()
+                    if settled and self._should_fetch(lat, lon, radius, now):
+                        self._fetch(lat, lon, radius)
+                except Exception as e:                       # noqa: BLE001
+                    self.err_count += 1
+                    self.last_err = f"{type(e).__name__}: {e}"
+                    self.connected = False
+                    print(f"[WX] {self.last_err}")
             slept = 0.0
-            while slept < self.interval_s and not self._stop.is_set():
-                time.sleep(min(1.0, self.interval_s - slept))
-                slept += 1.0
+            while slept < self.slice_s and not self._stop.is_set():
+                time.sleep(min(0.2, self.slice_s - slept))
+                slept += 0.2
 
-    def _poll_once(self):
-        try:
-            lat, lon = self.pos_fn()
-            metars = self.fetch_fn(lat, lon, self.radius_nm)
-            with self._lock:
-                self._metars = metars
-                self.updated_s = time.monotonic()
-            self.rx_count += 1
-            self.connected = True
-        except Exception as e:                              # noqa: BLE001
-            self.err_count += 1
-            self.last_err = f"{type(e).__name__}: {e}"
-            self.connected = False
-            print(f"[WX] {self.last_err}")
+    def _fetch(self, lat, lon, radius):
+        metars = self.fetch_fn(lat, lon, radius)
+        with self._lock:
+            self._metars = metars
+        self._fetched_at = time.monotonic()
+        self._fetch_ctr  = (lat, lon, radius)
+        self.updated_s   = self._fetched_at
+        self.rx_count   += 1
+        self.connected   = True
 
     def snapshot(self):
         with self._lock:

@@ -76,10 +76,15 @@ ADSB_ALERT_NM  = 3.0      # alert (resolution) range envelope (red)
 ADSB_ALERT_FT  = 600      # alert altitude envelope
 
 # ── Weather (internet METARs; NEXRAD + FIS-B later) ───────────────────────────
-# Pulled from aviationweather.gov (free, no key) around the aircraft's GPS
-# fix.  Needs internet (AHRS on USB, or everything on a shared Starlink LAN).
-WX_RADIUS_NM   = 150      # METAR query radius around ownship
-WX_INTERVAL_S  = 120      # poll cadence (METARs update ~hourly; be polite)
+# Pulled from aviationweather.gov (free, no key) around the *map view* (so
+# panning/zooming over CONUS loads weather for wherever you're looking, not
+# just near the aircraft).  Needs internet (AHRS on USB, or everything on a
+# shared Starlink LAN).
+WX_RADIUS_NM     = 150    # fallback query radius
+WX_MIN_RADIUS_NM = 60     # floor — always pull at least this much context
+WX_MAX_RADIUS_NM = 250    # cap — biggest single query (AWC-friendly)
+WX_RADIUS_ZOOM_K = 1.8    # query radius = map range × this (clamped min/max)
+WX_INTERVAL_S    = 120    # periodic refresh cadence (METARs update ~hourly)
 
 # ── Proximity alert lookahead ─────────────────────────────────────────────────
 ALERT_TIME_S         = 60     # lookahead window in seconds
