@@ -618,7 +618,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            airport_types_visible=None, gs_kt=0.0, vso_kt=None,
            range_label=None, state_lines=None, country_lines=None,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
-           traffic=None, metars=None, nexrad=None):
+           traffic=None, metars=None, nexrad=None,
+           draw_corner_labels=True):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1036,7 +1037,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # ── Frame + corner labels ────────────────────────────────────────────────
     pygame.draw.rect(surf, _FRAME, rect, width=1)
 
-    if font is not None:
+    if font is not None and draw_corner_labels:
         if range_label:
             # Caller supplied a custom prefix — used by AUTO mode to show
             # "AUTO 20 NM" instead of a bare distance.

@@ -12066,9 +12066,16 @@ def main():
                 _multitouch_t0 = None
                 _multitouch_max_fingers = 0
 
-        # Render
+        # Render.  A draw bug must never crash-loop the service (which the
+        # pilot sees as the display "rebooting") — log it and keep the last
+        # good frame so gestures still recover.
         _t0 = time.monotonic()
-        render(surf, demo_mode, connected, data_stale=data_stale)
+        try:
+            render(surf, demo_mode, connected, data_stale=data_stale)
+        except Exception:
+            import traceback
+            print("[PFD] render crashed:", file=sys.stderr)
+            traceback.print_exc()
         _t1 = time.monotonic()
         _flip()
         _t2 = time.monotonic()

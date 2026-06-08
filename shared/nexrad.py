@@ -90,7 +90,7 @@ class NexradClient(threading.Thread):
     re-decode (and only then)."""
 
     def __init__(self, view_fn, interval_s=300.0, fetch_fn=None,
-                 max_px=480, move_refetch_frac=0.4, poll_slice_s=0.7):
+                 max_px=480, move_refetch_frac=0.2, poll_slice_s=0.7):
         super().__init__(daemon=True, name="NexradClient")
         self.view_fn    = view_fn
         self.interval_s = max(60.0, interval_s)
