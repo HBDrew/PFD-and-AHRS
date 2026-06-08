@@ -330,6 +330,9 @@ disp["weather"] = {
     "online": False,   # last poll succeeded
     "n":      0,
 }
+# When set (by tapping a METAR dot on the MFD), holds the station dict for
+# the decoded-METAR readout panel.  None = no panel.
+disp["wx_popup"] = None
 # In-progress user-waypoint entry — populated by the +LAT/LON entry
 # screen (which pre-fills the lat/lon fields with the current aircraft
 # position so the same path also handles "mark a point HERE").
@@ -2887,10 +2890,12 @@ def handle_event(event, demo_mode):
         d = _mfd_drag
         _mfd_drag = None
         if not d["is_drag"]:
-            # Tap: try airport hit-test.  If nothing nearby, the tap is a
-            # no-op (no fall-through to chrome — chrome was already filtered
-            # out at DOWN time).
-            _mfd_airport_tap(*d["pos"])
+            # Tap: when the WX overlay is up, a tap near a METAR station
+            # opens its decoded readout; otherwise fall through to the
+            # airport hit-test (direct-to).  Nothing nearby → no-op.
+            if not (disp["ds"].get("map_show_metar")
+                    and _mfd_metar_tap(*d["pos"])):
+                _mfd_airport_tap(*d["pos"])
         return True
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
@@ -3696,6 +3701,10 @@ def handle_event(event, demo_mode):
 
         # ── MFD taps (display_mode == "mfd" while mode == "pfd") ──────────
         if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+            # A METAR readout is up → any tap dismisses it.
+            if disp.get("wx_popup"):
+                disp["wx_popup"] = None
+                return True
             if _mfd_fpl_btn_hit(x, y):
                 # Open the flight-plan editor (placeholder until multi-
                 # waypoint plans + user waypoints land).  PFD ↔ MFD
@@ -9943,6 +9952,87 @@ def draw_mfd(surf, connected=True, data_stale=False):
               16, (240, 90, 90), bold=True,
               cx=DISPLAY_W // 2, cy=DISPLAY_H - 18)
 
+    # METAR readout panel (drawn last so it sits over the map + chrome).
+    _draw_wx_popup(surf)
+
+
+def _wrap_text(text, font, max_w):
+    """Word-wrap `text` to lines no wider than max_w px under `font`."""
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        trial = w if not cur else cur + " " + w
+        if font.size(trial)[0] <= max_w:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _draw_wx_popup(surf):
+    """Decoded-METAR readout for the station tapped on the MFD."""
+    m = disp.get("wx_popup")
+    if not m:
+        return
+    pw = min(600, DISPLAY_W - 20)
+    ph = 300
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+
+    cat = m.get("fltcat", "")
+    _text(surf, m.get("icao", "----"), 30, (235, 235, 235), bold=True,
+          x=px + 18, y=py + 12)
+    _text(surf, cat or "—", 26, _wx.cat_color(cat), bold=True,
+          x=px + pw - 120, y=py + 15)
+
+    wd, ws, wg = m.get("wdir"), m.get("wspd"), m.get("wgst")
+    if ws is None:
+        wind = "Wind —"
+    elif ws == 0:
+        wind = "Wind calm"
+    else:
+        d = "VRB" if wd in (None, "VRB") else f"{int(wd):03d}°"
+        wind = f"Wind {d} {int(ws)} kt" + (f" G{int(wg)}" if wg else "")
+    vis = m.get("visib_mi")
+    ceil = m.get("ceiling_ft")
+    alt = m.get("altim_hpa")
+    t, dp = m.get("temp_c"), m.get("dewp_c")
+    age = m.get("age_min")
+    rows = [
+        wind,
+        f"Vis {vis:g} sm" if vis is not None else "Vis —",
+        f"Ceiling {int(ceil)} ft" if ceil is not None else "No ceiling",
+        (f"Alt {alt * 0.0295300:.2f} inHg / {int(round(alt))} hPa"
+         if alt else "Alt —"),
+        (f"Temp {t:.0f}° / Dew {dp:.0f}°C"
+         if t is not None and dp is not None else ""),
+        f"Observed {int(age)} min ago" if age is not None else "",
+    ]
+    yy = py + 60
+    for r in rows:
+        if r:
+            _text(surf, r, 22, (210, 220, 230), x=px + 18, y=yy)
+            yy += 28
+
+    raw = m.get("raw", "")
+    if raw:
+        f = pygame.font.SysFont("DejaVu Sans", 18)
+        yy = max(yy + 6, py + ph - 70)
+        for ln in _wrap_text(raw, f, pw - 36)[:2]:
+            _text(surf, ln, 18, (150, 200, 240), x=px + 18, y=yy)
+            yy += 22
+    _text(surf, "tap to close", 16, (140, 150, 160),
+          cx=DISPLAY_W // 2, cy=py + ph - 14)
+
 
 def _mfd_fpl_btn_hit(x, y):
     """Top-right FPL button on the MFD — opens the flight-plan editor."""
@@ -10807,6 +10897,39 @@ def _mfd_chrome_hit(x, y):
     if _mfd_strip_hit(x, y):
         return True
     return False
+
+
+def _mfd_metar_tap(tap_x, tap_y, tap_px=26):
+    """Hit-test METAR station dots against a screen tap.  On a hit, store the
+    station in disp["wx_popup"] (drawn as a readout panel) and return True."""
+    metars = disp.get("weather", {}).get("metars") or []
+    if not metars:
+        return False
+    range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+    if range_nm <= 0:
+        range_nm = 10
+    rect = (0, 0, DISPLAY_W, DISPLAY_H)
+    cen_lat, cen_lon = _mfd_effective_center()
+    hdg = disp.get("yaw", 0.0)
+    track = disp.get("track", hdg)
+    orient = disp["ds"].get("map_orient", "trk")
+    project, _ = _mfd_map.make_projector(
+        rect, cen_lat, cen_lon, orient, range_nm, hdg, track)
+    best_d2 = (tap_px + 1) ** 2
+    best = None
+    for m in metars:
+        la, lo = m.get("lat"), m.get("lon")
+        if la is None or lo is None:
+            continue
+        sx, sy = project(la, lo)
+        d2 = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+        if d2 < best_d2:
+            best_d2 = d2
+            best = m
+    if best is None:
+        return False
+    disp["wx_popup"] = dict(best)
+    return True
 
 
 def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
