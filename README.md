@@ -120,6 +120,22 @@ The combination produces the full pitot-static set — IAS, TAS, density altitud
 | 64 GB microSD (Class 10 / A1) | Raspberry Pi OS Lite 64-bit |
 | USB-C power (5V 3A) | |
 
+### ADS-B IN receiver (optional)
+Adds live traffic to the moving map. The display consumes **GDL90 over UDP** (port 4000) — the same wire format Stratux and portable receivers emit — so any GDL90 source works; the build below runs the receiver on the same Pi.
+
+| Part | Notes |
+|------|-------|
+| Nooelec NESDR Nano 2 — Dual-Band ADS-B bundle | Two RTL-SDR (RTL2832U) dongles + high-gain 978/1090 antennas. One dongle per band: **1090ES** (airliner/transponder traffic) and **978 UAT** (GA traffic + FIS-B weather, US only). Marketed for Stratux/FlightAware/ForeFlight. |
+| (host) Raspberry Pi | Runs `dump1090` (1090) + `dump978` (978) and the GDL90 bridge. Can be the display Pi, a dedicated Pi (e.g. a Pi 5), or an existing Stratux box on the network. |
+
+Install the receiver stack with `sudo bash tools/install_adsb.sh`. Pipeline:
+
+```
+NESDR dongles → dump1090 / dump978 → tools/adsb_gdl90_bridge.py → GDL90/UDP :4000 → PFD
+```
+
+The display layer is hardware-free (`shared/gdl90.py` decoder + `shared/adsb.py` UDP listener), so traffic also works against a Stratux on the network or in `--demo` (synthetic targets). Toggle the symbols via **Setup → Display → MAP LAYERS → TFC**. See `Docs/ADSB_IN.md` for the full design + setup.
+
 ---
 
 ## Quick Start — Pi Zero 2W
@@ -484,6 +500,8 @@ Shared work (firmware, `shared/` modules, docs touched by both) is generally app
 | ✅ V5.0 | Compass calibration wizard — 8-point walk-through, 36-slot deviation table stored on the AHRS in flash so every display reads the same calibrated heading |
 | ✅ V5.1 | AHRS PCB rev A — single-board Pico W + WT901 + NEO-6M + BME280 + SDP33-1500Pa; full pitot-static air-data set (IAS / TAS / density alt / wind triangle) on the SSE / USB stream |
 | ✅ V5.2 | EGPWS-style voice callouts (TERRAIN / OBSTACLE / SINK RATE / PULL UP / BANK ANGLE), unusual-attitude recovery cues, look-ahead TAWS, ±25° forward-wedge obstacle filter |
+| ✅ V5.3 | Flight-plan SAVE / LOAD — named, persistent plans recallable on the MFD FPL page |
+| 🚧 V5.4 | ADS-B IN traffic — GDL90/UDP decoder + UDP listener, TCAS-style diamonds on both moving maps, Nooelec NESDR Nano 2 dual-band receiver via dump1090/dump978 + GDL90 bridge. Next: FIS-B graphical weather (NEXRAD), on-screen TFC status/alert |
 | V6 | TruTrak Vizion RS-232 autopilot interface |
 | V7 | Moving map / MFD (separate dedicated hardware unit) |
 | V8 | Flight path vector, highway-in-the-sky waypoint tunnel |
