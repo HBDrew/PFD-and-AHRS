@@ -564,14 +564,19 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
 
 # ── NEXRAD reflectivity raster ──────────────────────────────────────────────
 _NEXRAD_ALPHA = 150          # overlay opacity (0-255) — see through to terrain
-# Cache of the scaled+dimmed surface so the per-frame cost is a single blit;
-# rebuilt only when the image (seq) or destination size (zoom) changes.
+# Cache of the scaled+dimmed (north-up) surface so the per-frame cost is a
+# single blit; rebuilt only when the image (seq) or destination size (zoom)
+# changes.  A second cache holds the rotated surface for track-up, keyed by
+# rounded heading so steady flight reuses it (only turns regenerate).
 _nexrad_scaled = {"seq": None, "w": 0, "h": 0, "surf": None}
+_nexrad_rot    = {"key": None, "surf": None}
 
 
-def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat):
-    """Blit the NEXRAD image north-up, georeferenced to its lat/lon bbox.
-    No rotation even in track-up (lowest CPU; aligns in north-up).
+def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat, rot_deg):
+    """Blit the NEXRAD image georeferenced to its lat/lon bbox.  North-up is
+    one scale+blit; track-up rotates the scaled surface about the map centre
+    (cached by rounded heading).  The terrain tint is suppressed while radar
+    is up, so the rotation cost has headroom.
     ``nexrad`` is (pygame_surface, (w,s,e,n) bbox, seq)."""
     surface, bbox, seq = nexrad
     if surface is None or bbox is None:
@@ -593,7 +598,21 @@ def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat):
         scaled.fill((255, 255, 255, _NEXRAD_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
         c.update(seq=seq, w=dest_w, h=dest_h, surf=scaled)
-    surf.blit(c["surf"], (int(round(x_w)), int(round(y_n))))
+    base = c["surf"]
+    # The bbox is symmetric about the map centre, so the north-up image is
+    # centred on (cx, cy); rotate about that same point to stay aligned with
+    # the rotated symbols/projection (terrain uses the same rot_deg).
+    if rot_deg:
+        rk = (seq, dest_w, dest_h, round(rot_deg))
+        rc = _nexrad_rot
+        if rc["key"] != rk:
+            rc["key"] = rk
+            rc["surf"] = pygame.transform.rotate(base, rot_deg)
+        img = rc["surf"]
+    else:
+        img = base
+    rect = img.get_rect(center=(int(round(cx)), int(round(cy))))
+    surf.blit(img, rect.topleft)
 
 
 # ── Weather (METAR) layer ───────────────────────────────────────────────────
@@ -875,7 +894,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
     if nexrad is not None and settings.get("map_show_nexrad", False):
-        _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat)
+        _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat,
+                     rot_deg)
 
     # ── State / province lines + country lines ─────────────────────────────
     # Only useful once the inset is showing whole-region context; at close

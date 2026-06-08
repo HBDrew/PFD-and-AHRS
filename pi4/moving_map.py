@@ -498,11 +498,13 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
 # ── NEXRAD reflectivity raster ──────────────────────────────────────────────
 _NEXRAD_ALPHA = 150
 _nexrad_scaled = {"seq": None, "w": 0, "h": 0, "surf": None}
+_nexrad_rot    = {"key": None, "surf": None}
 
 
-def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat):
-    """Blit the NEXRAD image north-up, georeferenced to its lat/lon bbox
-    (no rotation even in track-up; lowest CPU).  Mirrors the piZ version."""
+def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat, rot_deg):
+    """Blit NEXRAD georeferenced to its lat/lon bbox.  North-up = one
+    scale+blit; track-up rotates about the map centre (cached by rounded
+    heading).  Mirrors the piZ version."""
     surface, bbox, seq = nexrad
     if surface is None or bbox is None:
         return
@@ -521,7 +523,18 @@ def _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat):
         scaled.fill((255, 255, 255, _NEXRAD_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
         c.update(seq=seq, w=dest_w, h=dest_h, surf=scaled)
-    surf.blit(c["surf"], (int(round(x_w)), int(round(y_n))))
+    base = c["surf"]
+    if rot_deg:
+        rk = (seq, dest_w, dest_h, round(rot_deg))
+        rc = _nexrad_rot
+        if rc["key"] != rk:
+            rc["key"] = rk
+            rc["surf"] = pygame.transform.rotate(base, rot_deg)
+        img = rc["surf"]
+    else:
+        img = base
+    rect = img.get_rect(center=(int(round(cx)), int(round(cy))))
+    surf.blit(img, rect.topleft)
 
 
 # ── Weather (METAR) layer ───────────────────────────────────────────────────
@@ -726,7 +739,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
     if nexrad is not None and settings.get("map_show_nexrad", False):
-        _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat)
+        _draw_nexrad(surf, nexrad, lat, lon, cx, cy, px_per_nm, cos_lat,
+                     rot_deg)
 
     # ── State / province lines + country lines ─────────────────────────────
     # Only useful once the inset is showing whole-region context; at close
