@@ -497,9 +497,13 @@ def _ssync_kinds_from_cs(direction):
     cs = disp.get("cs", {})
     for k in (_ssync_mod.KIND_BUGS, _ssync_mod.KIND_BARO,
               _ssync_mod.KIND_NAV,  _ssync_mod.KIND_AHRS,
-              _ssync_mod.KIND_GPS,  _ssync_mod.KIND_FPL):
+              _ssync_mod.KIND_GPS):
         if cs.get(f"sync_{direction}_{k}", False):
             out.add(k)
+    # Flight plans are ALWAYS bidirectional — no master/slave.  Active plan
+    # (KIND_FPL) + saved-plan/user-wpt library (KIND_FPLLIB) sync both ways.
+    out.add(_ssync_mod.KIND_FPL)
+    out.add(_ssync_mod.KIND_FPLLIB)
     return out
 
 
@@ -976,6 +980,57 @@ def _ssync_apply_fpl(data):
             disp["nav"]["elev_ft"] = 0.0
     finally:
         _ssync_suppress_publish -= 1
+
+
+_ssync_fpllib_last = 0.0
+
+
+def _ssync_publish_fpl_lib(force=False):
+    """Broadcast this screen's saved-plan + user-waypoint LIBRARY so any peer
+    can load a plan stored here.  Rate-limited."""
+    global _ssync_fpllib_last
+    if _screen_sync is None:
+        return
+    now = time.monotonic()
+    if not force and now - _ssync_fpllib_last < 5.0:
+        return
+    _ssync_fpllib_last = now
+    _screen_sync.publish(_ssync_mod.KIND_FPLLIB, {
+        "plans":     list(disp.get("fpl_saved", {}).get("plans", [])),
+        "user_wpts": list(disp.get("user_wpts", {}).get("list", [])),
+    })
+
+
+def _ssync_apply_fpl_lib(data):
+    """Merge a peer's library into ours (union) so any plan / user waypoint
+    stored on any screen is loadable everywhere."""
+    changed = False
+    plans = disp.setdefault("fpl_saved", {}).setdefault("plans", [])
+    have = {str(p.get("name", "")).upper() for p in plans}
+    for p in data.get("plans", []):
+        if not isinstance(p, dict):
+            continue
+        nm = str(p.get("name", "")).strip()
+        if nm and nm.upper() not in have and len(plans) < _FPL_SAVED_MAX:
+            plans.append({"name": nm,
+                          "waypoints": [dict(w) for w in p.get("waypoints", [])
+                                        if isinstance(w, dict)]})
+            have.add(nm.upper())
+            changed = True
+    lib = disp.setdefault("user_wpts", {}).setdefault("list", [])
+    have_w = {str(w.get("ident", "")).upper() for w in lib}
+    for w in data.get("user_wpts", []):
+        if not isinstance(w, dict):
+            continue
+        ident = str(w.get("ident", "")).strip().upper()
+        if ident and ident not in have_w and len(lib) < _USER_WPT_MAX:
+            lib.append({"ident": ident, "lat": float(w.get("lat", 0.0)),
+                        "lon": float(w.get("lon", 0.0)),
+                        "elev_ft": float(w.get("elev_ft", 0.0))})
+            have_w.add(ident)
+            changed = True
+    if changed:
+        _settings.mark_dirty()
 
 
 def _ssync_apply_gps(data):
@@ -13048,6 +13103,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
     _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
     _screen_sync.on(_ssync_mod.KIND_FPL,  _ssync_apply_fpl)
+    _screen_sync.on(_ssync_mod.KIND_FPLLIB, _ssync_apply_fpl_lib)
     _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
     _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
     _screen_sync.start()
@@ -13622,6 +13678,7 @@ def main():
         # Push AHRS / GPS to peer screens (rate-limited inside the helpers).
         _ssync_publish_ahrs()
         _ssync_publish_gps()
+        _ssync_publish_fpl_lib()   # shared saved-plan / user-wpt library
 
         # Events
         for event in pygame.event.get():
