@@ -85,7 +85,7 @@ _RING        = (110, 140, 180)
 _OWNSHIP     = (255, 220, 50)
 _RWY_COL     = (220, 220, 230)
 _OBS_COL     = (220, 80, 80)
-_APT_PUB     = (60, 220, 80)
+_APT_PUB     = (235, 235, 235)   # neutral white: METAR dots own the green/blue/red
 _APT_HELI    = (200, 80, 200)
 _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
@@ -1058,6 +1058,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             allowed_types = {"S", "M", "L"}
         else:
             allowed_types = None    # all visible types
+        # When a field is the active Direct-To, its magenta D2 label is drawn
+        # below — skip the white airport-loop label for it so the two don't
+        # stack into doubled text on the same dot.
+        _d2_ident = (str(direct_to.get("ident", "")).strip().upper()
+                     if direct_to and direct_to.get("ident") else "")
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
@@ -1086,12 +1091,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 else:
                     pygame.draw.circle(surf, _APT_PUB, (ix, iy),
                                        4 if atype in ("M", "L") else 3)
-                if font is not None and range_nm <= 10:
+                ident_str = str(ids[i])
+                if (font is not None and range_nm <= 10
+                        and ident_str.strip().upper() != _d2_ident):
                     # Cache rendered idents — at 33 pt, font.render on
                     # Pi Zero costs ~250 µs/call, and the same idents
                     # repeat every frame as long as the aircraft sits
                     # over the same area.
-                    ident_str = str(ids[i])
                     cache_key = (ident_str, id(font))
                     lbl = _apt_label_cache.get(cache_key)
                     if lbl is None:

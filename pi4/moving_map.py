@@ -82,7 +82,7 @@ _RING        = (110, 140, 180)
 _OWNSHIP     = (255, 220, 50)
 _RWY_COL     = (220, 220, 230)
 _OBS_COL     = (220, 80, 80)
-_APT_PUB     = (60, 220, 80)
+_APT_PUB     = (235, 235, 235)   # neutral white: METAR dots own the green/blue/red
 _APT_HELI    = (200, 80, 200)
 _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
@@ -913,6 +913,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # the pilot actually cares about at whole-leg scale.
     if (not fast and settings.get("map_show_airports", True)
             and airports_arr is not None and range_nm <= 40):
+        # When a field is the active Direct-To, its magenta D2 label is drawn
+        # below — skip the white airport-loop label for it so the two don't
+        # stack into doubled text on the same dot.
+        _d2_ident = (str(direct_to.get("ident", "")).strip().upper()
+                     if direct_to and direct_to.get("ident") else "")
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
@@ -942,8 +947,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 # Dots show to 40 nm (the big MFD has the room).  Labels: all
                 # types within 10 nm; only M/L out to 20 nm so the wider view
                 # stays readable without hiding the dots themselves.
-                if font is not None and (range_nm <= 10
-                        or (range_nm <= 20 and atype in ("M", "L"))):
+                if (font is not None
+                        and str(ids[i]).strip().upper() != _d2_ident
+                        and (range_nm <= 10
+                             or (range_nm <= 20 and atype in ("M", "L")))):
                     lbl = font.render(str(ids[i]), True, _APT_PUB)
                     surf.blit(lbl, (ix + _r(5) + 2, iy - 7))
 
@@ -1053,7 +1060,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 from_la, from_lo = next_la, next_lo
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
-    if metars and settings.get("map_show_metar", True) and not fast:
+    # The big MFD draws the flight-category dots on *every* page (we already
+    # poll METARs continuously for the airport-tap picker, and there's screen
+    # + horsepower to spare).  The MET overlay toggle still drives the heavier
+    # weather-focus mode (terrain declutter + NEXRAD) via `wx_active` above; it
+    # no longer gates the dots themselves.  (piZ stays gated to the overlay.)
+    if metars and not fast:
         _draw_metars(surf, metars, _project, rect)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
