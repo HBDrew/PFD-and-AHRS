@@ -3877,6 +3877,9 @@ def handle_event(event, demo_mode):
                 # Open the existing keyboard for waypoint entry.
                 _mfd_open_d2_keyboard()
                 return True
+            if _mfd_winds_btn_hit(x, y):
+                print(f"[MFD] winds alt → {_mfd_cycle_winds_alt()}")
+                return True
             if _mfd_zoom_in_hit(x, y):
                 cur = int(disp["ds"].get("map_zoom_nm", 10))
                 disp["ds"]["map_zoom_nm"] = _mfd_map.zoom_in(cur)
@@ -3912,9 +3915,6 @@ def handle_event(event, demo_mode):
                 return True
             if _mfd_wx_status_hit(x, y):
                 print(f"[MFD] WX source → {_mfd_cycle_wx_source()}")
-                return True
-            if _mfd_winds_status_hit(x, y):
-                print(f"[MFD] winds alt → {_mfd_cycle_winds_alt()}")
                 return True
             if _mfd_strip_hit(x, y):
                 disp["mode"] = "mfd_strip_setup"
@@ -9734,6 +9734,11 @@ def _mfd_d2_rect():
     return (pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H)
 
 
+def _mfd_winds_btn_rect():
+    pad = 6
+    return (pad + _MFD_D2_BTN_W + pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H)
+
+
 def _mfd_strip_rect():
     """Bottom data strip — flush with the bottom and side edges of the
     display so the dark backplate reads as a real status bar rather
@@ -10131,8 +10136,8 @@ def _mfd_draw_source_status(surf):
         if not live:
             txt += " …"
         _text(surf, txt, 13, col, bold=True, x=x, y=y)
-        _mfd_adsb_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, 20)
-        y += 20
+        _mfd_adsb_status_rect = (x - 6, y - 6, f.size(txt)[0] + 14, 28)
+        y += 32
     _mfd_wx_status_rect = None
     # WX source line shows on every page (like ADS-B) so the FIS-B/INET counts
     # and the RADIO/AUTO/INET toggle are always reachable — not just on MET.
@@ -10155,16 +10160,8 @@ def _mfd_draw_source_status(surf):
         if not live:
             txt += " …"
         _text(surf, txt, 13, col, bold=True, x=x, y=y)
-        _mfd_wx_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, 20)
-        y += 20
-    if ds.get("map_show_winds"):
-        alt = int(ds.get("winds_alt_ft", 9000))
-        n = len(_winds_barbs())
-        txt = f"WND {alt:,} ft  ({n})"
-        col = (180, 220, 245) if n else (220, 160, 60)
-        _text(surf, txt, 13, col, bold=True, x=x, y=y)
-        _mfd_winds_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, 20)
-        y += 20
+        _mfd_wx_status_rect = (x - 6, y - 6, f.size(txt)[0] + 14, 28)
+        y += 32
     if ds.get("map_show_nexrad") and _nexrad_client is not None:
         if _nexrad_client.connected:
             txt = f"NEX{age(_nexrad_client)}"
@@ -10378,6 +10375,11 @@ def draw_mfd(surf, connected=True, data_stale=False):
     d2_label = f"D→ {d2['ident']}" if d2 else "D→"
     _action_btn(surf, pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H,
                 d2_label, d2_style, r=5)
+    # Winds-altitude selector — only on the WND page, right of D2.
+    if _map_overlay_state(disp["ds"]) == "wnd":
+        wbx, wby, wbw, wbh = _mfd_winds_btn_rect()
+        alt_k = int(disp["ds"].get("winds_alt_ft", 9000)) // 1000
+        _action_btn(surf, wbx, wby, wbw, wbh, f"{alt_k}k ft", "ok", r=5)
     # Zoom buttons (bottom corners)
     zo_x, zo_y, zo_w, zo_h = _mfd_zoom_out_rect()
     zi_x, zi_y, zi_w, zi_h = _mfd_zoom_in_rect()
@@ -11000,6 +11002,13 @@ def _mfd_fpl_btn_hit(x, y):
 
 def _mfd_d2_btn_hit(x, y):
     bx, by, bw, bh = _mfd_d2_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_winds_btn_hit(x, y):
+    if _map_overlay_state(disp["ds"]) != "wnd":
+        return False
+    bx, by, bw, bh = _mfd_winds_btn_rect()
     return bx <= x <= bx + bw and by <= y <= by + bh
 
 

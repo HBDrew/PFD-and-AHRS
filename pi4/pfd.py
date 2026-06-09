@@ -4981,7 +4981,7 @@ def handle_event(event, demo_mode):
                 _mfd_cycle_traffic_source()
             elif _mfd_wx_status_hit(x, y):
                 _mfd_cycle_wx_source()
-            elif _mfd_winds_status_hit(x, y):
+            elif _map_overlay_state(disp["ds"]) == "wnd" and _in(r["winds"]):
                 _mfd_cycle_winds_alt()
             elif _mfd_strip_hit(x, y):
                 disp["mode"] = "mfd_strip_setup"
@@ -12318,6 +12318,7 @@ def _p4_mfd_rects():
     # No PFD button — the 3-finger hold swaps back to the PFD (like piZ).
     return {
         "d2":       (p, p, bw, bh),                       # top-left
+        "winds":    (p + bw + p, p, bw, bh),              # top row, right of D2
         "fpl":      (W - bw - p, p, bw, bh),              # top-right
         "ovly":     (p, p + bh + p, bw, bh),              # under D2
         "orient":   (W - bw - p, p + bh + p, bw, bh),     # under FPL
@@ -12401,14 +12402,6 @@ def _mfd_draw_source_status(surf):
             txt += " …"
         _text(surf, txt, pt, col, bold=True, x=x, y=y)
         _mfd_wx_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
-        y += pt + 8
-    if ds.get("map_show_winds"):
-        alt = int(ds.get("winds_alt_ft", 9000))
-        n = len(_winds_barbs())
-        txt = f"WND {alt:,} ft  ({n})"
-        col = (180, 220, 245) if n else (220, 160, 60)
-        _text(surf, txt, pt, col, bold=True, x=x, y=y)
-        _mfd_winds_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
         y += pt + 8
     if ds.get("map_show_nexrad") and _nexrad_client is not None:
         if _nexrad_client.connected:
@@ -12565,6 +12558,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _action_btn(surf, *r["d2"], d2_label, d2_style, r=6)
     _action_btn(surf, *r["fpl"], "FPL", "normal", r=6)
     ov_state = _map_overlay_state(ds)
+    # Winds altitude selector — only on the WND page, next to D2.
+    if ov_state == "wnd":
+        alt_k = int(ds.get("winds_alt_ft", 9000)) // 1000
+        _action_btn(surf, *r["winds"], f"{alt_k}k ft", "ok", r=6)
     _action_btn(surf, *r["ovly"], _map_overlay_label(ds),
                 "ok" if ov_state != "tfc" else "normal", r=6)
     # Orientation: a tappable CYAN label (like piZ), not a button.
