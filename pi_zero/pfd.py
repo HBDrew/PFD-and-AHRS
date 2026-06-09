@@ -10590,7 +10590,8 @@ def _advisory_list(kind):
 
 
 def _nearest_taf(lat, lon):
-    """(icao, raw, dist_nm) of the nearest station with a TAF, or None."""
+    """(icao, raw, dist_nm, bearing_deg) of the nearest station with a TAF, or
+    None."""
     store = _fisb_store()
     if store is None or lat is None or lon is None:
         return None
@@ -10599,9 +10600,9 @@ def _nearest_taf(lat, lon):
         r = _nav_lookup_ident(icao)
         if not r:
             continue
-        d, _b = _nav_geo_dist_brg(lat, lon, r[1], r[2])
+        d, b = _nav_geo_dist_brg(lat, lon, r[1], r[2])
         if best is None or d < best[2]:
-            best = (icao, store.taf_for(icao), d)
+            best = (icao, store.taf_for(icao), d, b)
     return best
 
 
@@ -10614,7 +10615,8 @@ def _wx_menu_items():
     else:
         nt = _nearest_taf(menu.get("lat"), menu.get("lon"))
         if nt:
-            taf_lbl, taf_on = f"TAF  {nt[0]} · {nt[2]:.0f} nm", True
+            taf_lbl = f"TAF  {nt[0]} · {nt[2]:.0f} nm {_compass8(nt[3])}".rstrip()
+            taf_on = True
         else:
             taf_lbl, taf_on = "TAF", False
     items = [("METAR", f"METAR  {icao}".rstrip(), menu.get("metar") is not None),
@@ -10682,11 +10684,12 @@ def _wx_menu_hit(x, y):
             disp["wx_popup"] = dict(menu["metar"])
         elif kind == "TAF" and store:
             if store.taf_for(icao):
-                disp["wx_taf"] = {"icao": icao, "dist": None}
+                disp["wx_taf"] = {"icao": icao, "dist": None, "brg": None}
             else:
                 nt = _nearest_taf(menu.get("lat"), menu.get("lon"))
                 if nt:
-                    disp["wx_taf"] = {"icao": nt[0], "dist": nt[2]}
+                    disp["wx_taf"] = {"icao": nt[0], "dist": nt[2],
+                                      "brg": nt[3]}
         elif store:
             disp["wx_text"] = {"title": f"{kind} — nearest first",
                                "bulletins": _advisory_list(kind)}
@@ -10744,12 +10747,14 @@ def _draw_wx_taf(surf):
         return
     icao = wt.get("icao", "")
     near = wt.get("dist")
+    brg = wt.get("brg")
     store = _fisb_store()
     raw = store.taf_for(icao) if store else None
     p = _fisb.parse_taf(raw) if raw else None
     pw = min(620, DISPLAY_W - 20)
-    title = (f"TAF  {icao}"
-             + (f" · nearest {near:.0f} nm" if near else "")
+    near_txt = (f" · nearest {near:.0f} nm {_compass8(brg)}".rstrip()
+                if near else "")
+    title = (f"TAF  {icao}" + near_txt
              + (f"   valid {_fisb._hhz(p['valid_from'])}–"
                 f"{_fisb._hhz(p['valid_to'])}" if p else ""))
     items = []
