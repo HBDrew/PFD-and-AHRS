@@ -520,6 +520,45 @@ def test_graphics():
           "stale pruned")
 
 
+def test_nexrad():
+    case("block geometry maps to the expected lat/lon")
+    # bn chosen so the block sits over Arizona (~34N, ~112W).
+    bn = 510 * 450 + 310
+    lat_n, lon_w, lat_span, lon_span = fisb._nx_block_geo(bn, 0, False)
+    check(abs(lat_n - 34.0667) < 0.01, f"north edge ~34.07: {lat_n}")
+    check(abs(lon_w - (-112.0)) < 0.01, f"west edge ~-112: {lon_w}")
+    check(abs(lon_span - 0.8) < 0.001 and abs(lat_span - 0.0667) < 0.001,
+          "block spans 0.8° × 0.0667°")
+
+    case("RLE block round-trips encode → decode")
+    intens = [0] * 128
+    for k in range(8, 16):          # a strip of intensity 5 in the top row
+        intens[k] = 5
+    intens[40] = 3                  # one cell of intensity 3 in row 1
+    block = fisb.encode_nexrad_block(bn, intens, sf=0)
+    dec = fisb.decode_nexrad_block(block)
+    check(dec["block_num"] == bn and not dec["empty"], "block num + RLE flag")
+    strip = [c for c in dec["cells"] if c["i"] == 5]
+    check(len(strip) == 1 and abs(strip[0]["dlon"] - 0.8 / 32 * 8) < 1e-6,
+          f"8-bin run merged into one rect: {strip}")
+    one = [c for c in dec["cells"] if c["i"] == 3]
+    check(len(one) == 1, "single intensity-3 cell")
+    check(all(c["i"] in (3, 5) for c in dec["cells"]), "intensity 0 skipped")
+
+    case("store accumulates blocks; flattened cells; expiry")
+    store = fisb.FisbWeather()
+    payload = fisb.encode_nexrad_uplink(bn, intens, station=(33.43, -112.01, 1))
+    store.ingest_uplink(payload)
+    cells = store.nexrad_cells()
+    check(len(cells) >= 2 and store.nexrad_count == 1, "block stored + flattened")
+    mono = time.monotonic()
+    store2 = fisb.FisbWeather()
+    store2.ingest_uplink(payload, now_mono=mono)
+    check(store2.nexrad_cells(now_mono=mono), "fresh kept")
+    check(store2.nexrad_cells(now_mono=mono + store2.nexrad_expire_s + 1) == [],
+          "stale pruned")
+
+
 def test_winds_aloft():
     case("FD code decode: dir/speed/temp, >100kt, light&var")
     lo = fisb.decode_fd_code("2420+10", 6000)
@@ -630,6 +669,7 @@ def main():
     test_taf_decode()
     test_advisories()
     test_graphics()
+    test_nexrad()
     test_winds_aloft()
     test_ranking()
     test_encoders()

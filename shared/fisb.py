@@ -669,6 +669,98 @@ def decode_graphic_records(data):
     return out
 
 
+# ── FIS-B NEXRAD (run-length block raster → intensity cells) ────────────────────
+# DO-358 / cyoung-stratux extract_nexrad.c.  North America is a grid of blocks;
+# each block is 32 (lon) × 4 (lat) bins, filled west→east then north→south, run-
+# length coded (intensity = byte & 7, run = (byte>>3)+1).  Block header (3 bytes):
+# bit7 RLE-vs-empty, bit6 N/S, bits5-4 scale factor, bits3-0|byte1|byte2 = block#.
+NEXRAD_PRODUCTS = {63, 64}              # 63 regional, 64 CONUS
+_NX_BLOCK_WIDTH = 48.0 / 60.0          # 0.8° lon (< 60°N)
+_NX_WIDE_WIDTH = 96.0 / 60.0           # 1.6° lon (>= 60°N)
+_NX_BLOCK_HEIGHT = 4.0 / 60.0          # 0.0667° lat
+_NX_BLOCKS_PER_RING = 450
+_NX_THRESHOLD = 405000
+_NX_BINS_LON = 32
+_NX_BINS_LAT = 4
+
+
+def _nx_block_geo(bn, sf, ns):
+    """North-edge lat, west-edge lon, lat span, lon span (deg) for block bn."""
+    scale = {1: 5.0, 2: 9.0}.get(sf, 1.0)
+    b = (bn & ~1) if bn >= _NX_THRESHOLD else bn
+    raw_lat = _NX_BLOCK_HEIGHT * (b // _NX_BLOCKS_PER_RING)
+    raw_lon = (b % _NX_BLOCKS_PER_RING) * _NX_BLOCK_WIDTH
+    lon_span = (_NX_WIDE_WIDTH if b >= _NX_THRESHOLD else _NX_BLOCK_WIDTH) * scale
+    lat_span = _NX_BLOCK_HEIGHT * scale
+    lon_w = raw_lon - 360.0 if raw_lon > 180.0 else raw_lon
+    lat_n = (-raw_lat) if ns else (raw_lat + _NX_BLOCK_HEIGHT)
+    return lat_n, lon_w, lat_span, lon_span
+
+
+def decode_nexrad_block(data):
+    """Decode one NEXRAD block record → ``{block_num, cells, empty}`` where each
+    cell is ``{lat, lon, dlat, dlon, i}`` (NW corner + size, intensity 1-7;
+    intensity 0 / empty blocks contribute no cells).  Same-intensity bins in a
+    row are merged into one rectangle."""
+    if len(data) < 3:
+        return None
+    rle = (data[0] & 0x80) != 0
+    ns = (data[0] & 0x40) != 0
+    sf = (data[0] & 0x30) >> 4
+    bn = ((data[0] & 0x0f) << 16) | (data[1] << 8) | data[2]
+    lat_n, lon_w, lat_span, lon_span = _nx_block_geo(bn, sf, ns)
+    bin_lat = lat_span / _NX_BINS_LAT
+    bin_lon = lon_span / _NX_BINS_LON
+    cells = []
+    if rle:
+        bins = []
+        for byte in data[3:]:
+            bins.extend([byte & 7] * ((byte >> 3) + 1))
+            if len(bins) >= 128:
+                break
+        bins = bins[:128]
+        idx, n = 0, len(bins)
+        while idx < n:
+            inten = bins[idx]
+            row, col = divmod(idx, _NX_BINS_LON)
+            j = idx + 1
+            while j < n and j // _NX_BINS_LON == row and bins[j] == inten:
+                j += 1
+            if inten > 0:
+                cells.append({"lat": lat_n - row * bin_lat,
+                              "lon": lon_w + col * bin_lon,
+                              "dlat": bin_lat, "dlon": bin_lon * (j - idx),
+                              "i": inten})
+            idx = j
+    return {"block_num": bn, "cells": cells, "empty": not rle}
+
+
+def encode_nexrad_block(block_num, intensities, sf=0, ns=False):
+    """Build a NEXRAD block record from 128 bin intensities (0-7).  Inverse of
+    decode_nexrad_block (RLE)."""
+    h0 = (0x80 | (0x40 if ns else 0) | ((sf & 0x3) << 4)
+          | ((block_num >> 16) & 0x0f))
+    out = bytearray([h0, (block_num >> 8) & 0xff, block_num & 0xff])
+    i, n = 0, len(intensities)
+    while i < n:
+        val = intensities[i] & 7
+        run = 1
+        while i + run < n and (intensities[i + run] & 7) == val and run < 32:
+            run += 1
+        out.append(((run - 1) << 3) | val)
+        i += run
+    return bytes(out)
+
+
+def encode_nexrad_uplink(block_num, intensities, sf=0, station=None,
+                         product_id=63, total=432):
+    """One NEXRAD block as a UAT uplink payload (for the simulator / tests)."""
+    block = encode_nexrad_block(block_num, intensities, sf)
+    apdu = bytes([(product_id >> 6) & 0x1f,
+                  (product_id & 0x3f) << 2]) + block
+    return _pack_uplink(product_id, apdu, station, total)
+
+
 def _obs_age_min(parsed, now):
     """Minutes since the METAR's DDHHMMZ stamp, using ``now`` (epoch seconds,
     UTC) to resolve the day-of-month.  Handles the month wrap when the report
@@ -836,19 +928,22 @@ class FisbWeather:
 
     def __init__(self, expire_s=4500.0, station_expire_s=120.0,
                  taf_expire_s=10800.0, advisory_expire_s=14400.0,
-                 graphics_expire_s=14400.0, winds_expire_s=21600.0):
+                 graphics_expire_s=14400.0, winds_expire_s=21600.0,
+                 nexrad_expire_s=900.0):
         self.expire_s = expire_s             # 75 min: METARs refresh hourly
         self.station_expire_s = station_expire_s   # towers rebroadcast often
         self.taf_expire_s = taf_expire_s     # 3 h: TAFs reissue ~6 h, valid ~24-30 h
         self.advisory_expire_s = advisory_expire_s  # 4 h: AIRMET/SIGMET/NOTAM text
         self.graphics_expire_s = graphics_expire_s  # 4 h: graphical hazard areas
         self.winds_expire_s = winds_expire_s        # 6 h: winds aloft forecast
+        self.nexrad_expire_s = nexrad_expire_s      # 15 min: NEXRAD blocks
         self.uplink_count = 0                # uplink frames ingested
         self.metar_count = 0                 # METAR records parsed OK (cumulative)
         self.taf_count = 0                   # TAF records stored (cumulative)
         self.advisory_count = 0              # AIRMET/SIGMET/NOTAM records stored
         self.graphic_count = 0               # graphical hazard records stored
         self.winds_count = 0                 # winds-aloft records stored
+        self.nexrad_count = 0                # NEXRAD blocks stored
         self._lock = threading.Lock()
         self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
         self._tafs = {}                      # icao -> (raw_text, recv_monotonic)
@@ -856,6 +951,7 @@ class FisbWeather:
         self._advisories = {k: {} for k in self.ADVISORY_KINDS}  # kind -> {text: recv}
         self._graphics = {}                  # key -> (graphic_dict, recv_monotonic)
         self._winds = {}                     # station -> (winds_dict, recv_monotonic)
+        self._nexrad = {}                    # block_num -> (cells, recv_monotonic)
 
     def ingest_gdl90_msg(self, msg, now_mono=None):
         """Decode one ``kind=="uplink"`` GDL90 message and fold its weather +
@@ -881,8 +977,14 @@ class FisbWeather:
         advisories = {k: set() for k in self.ADVISORY_KINDS}
         graphics = []
         winds = {}
+        nexrad = {}
         for apdu in decode_uplink(uplink_payload):
             if not apdu.get("data"):
+                continue
+            if apdu.get("product_id") in NEXRAD_PRODUCTS:
+                blk = decode_nexrad_block(apdu["data"])
+                if blk is not None:
+                    nexrad[blk["block_num"]] = blk["cells"]
                 continue
             if apdu.get("product_id") in GRAPHICS_PRODUCTS:
                 graphics.extend(decode_graphic_records(apdu["data"]))
@@ -933,6 +1035,9 @@ class FisbWeather:
             for station, w in winds.items():
                 self._winds[station] = (w, now_mono)
                 self.winds_count += 1
+            for bnum, cells in nexrad.items():
+                self._nexrad[bnum] = (cells, now_mono)
+                self.nexrad_count += 1
 
     def graphics(self, now_mono=None):
         """Active graphical hazard areas (``{hazard, geom, vertices}``), pruned
@@ -944,6 +1049,20 @@ class FisbWeather:
             for k in stale:
                 del self._graphics[k]
             return [g for (g, _r) in self._graphics.values()]
+
+    def nexrad_cells(self, now_mono=None):
+        """All NEXRAD intensity cells from fresh blocks (flattened), pruned past
+        ``nexrad_expire_s``.  Each cell: ``{lat, lon, dlat, dlon, i}``."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            stale = [k for k, (_c, recv) in self._nexrad.items()
+                     if now_mono - recv > self.nexrad_expire_s]
+            for k in stale:
+                del self._nexrad[k]
+            out = []
+            for cells, _r in self._nexrad.values():
+                out.extend(cells)
+        return out
 
     def advisories(self, kind=None, now_mono=None):
         """Active advisory bulletin texts (AIRMET/SIGMET/NOTAM).  ``kind`` filters

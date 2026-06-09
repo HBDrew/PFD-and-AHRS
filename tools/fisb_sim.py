@@ -157,7 +157,34 @@ def build_cycle(now):
     # Graphical hazard areas — one uplink each (keeps each frame small).
     for g in GRAPHICS:
         payloads.append(fisb.encode_graphics_uplink([g], station=TOWER_PHX))
+    # NEXRAD — a synthetic storm cell near Flagstaff, one uplink per block.
+    for bn, intens in _nexrad_storm(35.0, -111.6):
+        payloads.append(fisb.encode_nexrad_uplink(bn, intens, station=TOWER_PHX))
     return payloads
+
+
+def _nexrad_storm(clat, clon):
+    """Synthetic NEXRAD blocks: a radial intensity cell centred on (clat, clon).
+    Returns [(block_num, intensities[128]), …] for non-empty blocks."""
+    blocks = []
+    base_ring = int(clat / (4.0 / 60.0))
+    base_col = int(((clon + 360.0) % 360.0) / (48.0 / 60.0))
+    for dring in range(-8, 9):
+        for dcol in range(-1, 2):
+            bn = (base_ring + dring) * 450 + (base_col + dcol)
+            lat_n, lon_w, lat_span, lon_span = fisb._nx_block_geo(bn, 0, False)
+            bin_lat, bin_lon = lat_span / 4.0, lon_span / 32.0
+            intens = [0] * 128
+            for b in range(128):
+                bcol, brow = b % 32, b // 32
+                blat = lat_n - (brow + 0.5) * bin_lat
+                blon = lon_w + (bcol + 0.5) * bin_lon
+                d = fisb.nm_between(clat, clon, blat, blon)
+                if d <= 32.0:
+                    intens[b] = max(0, min(7, int(round(7 - d / 5.0))))
+            if any(intens):
+                blocks.append((bn, intens))
+    return blocks
 
 
 def run(out_host, out_port, period_s):
@@ -228,10 +255,15 @@ def selftest():
     winds = store.winds_stations()
     assert len(winds) == len(WINDS), f"winds: {len(winds)} vs {len(WINDS)}"
 
+    cells = store.nexrad_cells()
+    assert cells and store.nexrad_count > 0, "NEXRAD cells decoded"
+    assert all(1 <= c["i"] <= 7 for c in cells), "valid intensities"
+
     print(f"FISB-SIM SELFTEST PASSED ({len(got)} METARs, all categories, "
           f"{len(gss)} stations, {len(tafs)} TAFs, "
           f"{len(air)}+{len(sig)}+{len(nts)} AIRMET/SIGMET/NOTAM, "
-          f"{len(gfx)} graphics, {len(winds)} winds)")
+          f"{len(gfx)} graphics, {len(winds)} winds, "
+          f"{len(cells)} NEXRAD cells)")
 
 
 def main():
