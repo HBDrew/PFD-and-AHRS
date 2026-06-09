@@ -3003,22 +3003,24 @@ def handle_event(event, demo_mode):
             # diamond is drawn even past the airport-dot range); otherwise
             # hit-test the drawn airport dots.
             apt = _mfd_find_d2_dest(tx, ty) or _mfd_find_airport(tx, ty)
-            met = (None if apt or not disp["ds"].get("map_show_metar")
-                   else _mfd_find_metar(tx, ty))
             if apt:
                 ident, alat, alon = apt
                 # Store the field + position; the picker resolves WX live so a
                 # post-pan fetch fills it in and far stale WX is never shown.
                 disp["mfd_pick"] = {"airport": ident, "lat": alat, "lon": alon}
-            elif met:
-                # Bare METAR dot → the weather product picker on that station.
-                disp["wx_menu"] = {
-                    "airport": met.get("icao", ""), "icao": met.get("icao", ""),
-                    "lat": met.get("lat"), "lon": met.get("lon"),
-                    "metar": dict(met)}
-            else:
-                g = _mfd_find_graphic(tx, ty)   # tap a shaded hazard area
-                if g is not None:
+            elif disp["ds"].get("map_show_metar"):
+                # Inside a shaded hazard area, tighten the METAR-dot magnet so
+                # the dense dots don't steal every tap and the area stays
+                # reachable.
+                g = _mfd_find_graphic(tx, ty)
+                met = _mfd_find_metar(tx, ty, tap_px=12 if g else 28)
+                if met:
+                    disp["wx_menu"] = {
+                        "airport": met.get("icao", ""),
+                        "icao": met.get("icao", ""),
+                        "lat": met.get("lat"), "lon": met.get("lon"),
+                        "metar": dict(met)}
+                elif g is not None:
                     _wx_open_graphic_text(g)
         return True
 
