@@ -3009,19 +3009,17 @@ def handle_event(event, demo_mode):
                 # post-pan fetch fills it in and far stale WX is never shown.
                 disp["mfd_pick"] = {"airport": ident, "lat": alat, "lon": alon}
             elif disp["ds"].get("map_show_metar"):
-                # Inside a shaded hazard area, tighten the METAR-dot magnet so
-                # the dense dots don't steal every tap and the area stays
-                # reachable.
-                g = _mfd_find_graphic(tx, ty)
-                met = _mfd_find_metar(tx, ty, tap_px=12 if g else 28)
+                met = _mfd_find_metar(tx, ty)
                 if met:
                     disp["wx_menu"] = {
                         "airport": met.get("icao", ""),
                         "icao": met.get("icao", ""),
                         "lat": met.get("lat"), "lon": met.get("lon"),
                         "metar": dict(met)}
-                elif g is not None:
-                    _wx_open_graphic_text(g)
+                else:
+                    g = _mfd_find_graphic(tx, ty)
+                    if g is not None:
+                        _wx_open_graphic_text(g)
         return True
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
@@ -10487,16 +10485,21 @@ def _poly_area(pts):
 def _mfd_find_graphic(tap_x, tap_y):
     """Graphical hazard area under the tap, or None (MET overlay).  Smallest
     containing polygon wins so a nested hazard (e.g. a convective cell inside a
-    turbulence region) is reachable."""
+    turbulence region) is reachable.  Builds the projector exactly like
+    _mfd_find_metar so the hit-test matches the drawn shapes."""
     if not disp["ds"].get("map_show_metar"):
         return None
     gfx = disp.get("weather", {}).get("graphics") or []
     if not gfx:
         return None
+    range_nm = int(disp["ds"].get("map_zoom_nm", 10)) or 10
     cen_lat, cen_lon = _mfd_effective_center()
-    project, _ = _map_mod.make_projector(
-        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
-        _mfd_last_range, disp.get("yaw", 0.0), _mfd_last_track)
+    hdg = disp.get("yaw", 0.0)
+    track = disp.get("track", hdg)
+    orient = disp["ds"].get("map_orient", "trk")
+    project, _ = _mfd_map.make_projector(
+        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, orient, range_nm,
+        hdg, track)
     best, best_area = None, None
     for g in gfx:
         verts = g.get("vertices") or []

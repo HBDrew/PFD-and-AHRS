@@ -4838,11 +4838,7 @@ def handle_event(event, demo_mode):
                 # post-pan fetch fills it in and far stale WX is never shown.
                 disp["mfd_pick"] = {"airport": ident, "lat": alat, "lon": alon}
             else:
-                # Inside a shaded hazard area, tighten the METAR-dot magnet so a
-                # dot only wins on a near-direct hit — otherwise the dense dots
-                # would steal every tap and the area would be unreachable.
-                g = _mfd_find_graphic(tx, ty)
-                met = _mfd_find_metar(tx, ty, tap_px=12 if g else 30)
+                met = _mfd_find_metar(tx, ty)
                 if met:
                     # Bare METAR dot → the weather product picker on that
                     # station (works on any page/zoom the dots are drawn).
@@ -4851,8 +4847,12 @@ def handle_event(event, demo_mode):
                         "icao": met.get("icao", ""),
                         "lat": met.get("lat"), "lon": met.get("lon"),
                         "metar": dict(met)}
-                elif g is not None:
-                    _wx_open_graphic_text(g)
+                else:
+                    # No point target — a tap inside a shaded hazard area opens
+                    # that hazard's advisory text.
+                    g = _mfd_find_graphic(tx, ty)
+                    if g is not None:
+                        _wx_open_graphic_text(g)
         return True
 
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
