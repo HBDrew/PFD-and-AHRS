@@ -127,11 +127,22 @@ def run(raw_host, raw_port, out_host, out_port):
             print(f"[978-bridge] connecting to dump978 raw "
                   f"{raw_host}:{raw_port}")
             s = socket.create_connection((raw_host, raw_port), timeout=10)
+            # create_connection leaves the 10 s connect timeout on the socket;
+            # reset to a long idle timeout so a quiet feed (FIS-B is bursty and
+            # sparse on the ground) doesn't make recv() time out and tear the
+            # connection down — we'd miss frames in the reconnect gaps.  A real
+            # disconnect still surfaces as an empty recv below.
+            s.settimeout(120.0)
+            print(f"[978-bridge] connected; forwarding uplink frames to "
+                  f"{out_host}:{out_port} (quiet until a station is in range)")
             buf = b""
             n_up = 0
             last_log = time.monotonic()
             while True:
-                chunk = s.recv(4096)
+                try:
+                    chunk = s.recv(4096)
+                except socket.timeout:
+                    continue              # idle feed — stay connected
                 if not chunk:
                     raise ConnectionError("dump978 raw feed closed")
                 buf += chunk
@@ -142,7 +153,7 @@ def run(raw_host, raw_port, out_host, out_port):
                         forward_uplink(payload, out, dest)
                         n_up += 1
                 now = time.monotonic()
-                if now - last_log >= 10.0:
+                if now - last_log >= 30.0 and n_up:
                     print(f"[978-bridge] {n_up} uplink frames forwarded")
                     last_log = now
         except (OSError, ConnectionError) as e:
