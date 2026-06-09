@@ -358,6 +358,9 @@ disp["weather"] = {
 # When set (tapping a METAR dot on the MFD), holds the station for the
 # decoded-METAR readout panel.  None = no panel.
 disp["wx_popup"] = None
+# When set, holds a coincident airport+METAR tap so the pilot picks which
+# one they meant (Weather readout vs Direct-To).  None = no chooser.
+disp["mfd_pick"] = None
 # MFD pan offset.  lat/lon None = follow the aircraft; set = panned map.
 disp["mfd_pan"] = {"lat": None, "lon": None}
 # Mirror of the peer's flight plan (received over screen sync).  The
@@ -4743,11 +4746,20 @@ def handle_event(event, demo_mode):
         d = _mfd_drag
         _mfd_drag = None
         if not d["is_drag"]:
-            # A tap (not a pan): METAR readout when the WX overlay is up,
-            # otherwise an airport hit-test → D2 confirm (like piZ).
-            if not (disp["ds"].get("map_show_metar")
-                    and _mfd_metar_tap(*d["pos"])):
-                _mfd_airport_tap(*d["pos"])
+            # A tap (not a pan): find the nearest airport and (when the WX
+            # overlay is up) the nearest METAR.  If BOTH are under the finger
+            # — common, since a station sits right on its airport — let the
+            # pilot choose; otherwise act on whichever was hit.
+            tx, ty = d["pos"]
+            apt = _mfd_find_airport(tx, ty)
+            met = (_mfd_find_metar(tx, ty)
+                   if disp["ds"].get("map_show_metar") else None)
+            if apt and met:
+                disp["mfd_pick"] = {"airport": apt, "metar": dict(met)}
+            elif met:
+                disp["wx_popup"] = dict(met)
+            elif apt:
+                _nav_open_confirm(apt, "pfd")
         return True
 
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
@@ -4794,6 +4806,10 @@ def handle_event(event, demo_mode):
 
         # ── Full-screen MFD ───────────────────────────────────────────────
         if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+            # The airport/METAR chooser is up → its buttons take the tap.
+            if disp.get("mfd_pick"):
+                _mfd_pick_hit(x, y)
+                return True
             # A METAR readout is up → any tap dismisses it.
             if disp.get("wx_popup"):
                 disp["wx_popup"] = None
@@ -11325,10 +11341,11 @@ def _draw_wx_popup(surf):
           cx=DISPLAY_W // 2, cy=py + ph - 14)
 
 
-def _mfd_metar_tap(tap_x, tap_y, tap_px=28):
+def _mfd_find_metar(tap_x, tap_y, tap_px=30):
+    """Nearest METAR station within tap_px of the tap, or None."""
     metars = disp.get("weather", {}).get("metars") or []
     if not metars:
-        return False
+        return None
     cen_lat, cen_lon = _mfd_effective_center()
     project, _ = _map_mod.make_projector(
         (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
@@ -11344,21 +11361,19 @@ def _mfd_metar_tap(tap_x, tap_y, tap_px=28):
         if dd < best_d2:
             best_d2 = dd
             best = m
-    if best is None:
-        return False
-    disp["wx_popup"] = dict(best)
-    return True
+    return best
 
 
-def _mfd_airport_tap(tap_x, tap_y, tap_px=26):
-    """Hit-test airports against an MFD map tap; on a hit open the D2
-    confirm modal (like piZ).  Uses the same projection + visible-type /
-    zoom-band gates as the renderer so only on-screen airports are pickable."""
+def _mfd_find_airport(tap_x, tap_y, tap_px=40):
+    """Nearest pickable airport ident within tap_px of the tap, or None.
+    Bigger target than the dot itself — airports are fiddly to hit on a
+    touch panel.  Uses the same projection + visible-type / zoom-band gates
+    as the renderer so only on-screen airports are pickable."""
     if _airports is None:
-        return False
+        return None
     range_nm = _mfd_last_range or 10
     if range_nm > 40 or range_nm <= 0:
-        return False
+        return None
     if range_nm > 20:
         allowed_band = {"L"}
     elif range_nm > 10:
@@ -11382,7 +11397,7 @@ def _mfd_airport_tap(tap_x, tap_y, tap_px=26):
     nearby = apt_mod.query_nearby(_airports, cen_lat, cen_lon,
                                   radius_nm=range_nm * 1.4)
     if nearby is None or len(nearby) == 0:
-        return False
+        return None
     best_d2 = (tap_px + 1) ** 2
     best = None
     if hasattr(nearby, "dtype"):
@@ -11417,10 +11432,62 @@ def _mfd_airport_tap(tap_x, tap_y, tap_px=26):
                 best_d2 = dd
                 best = r.ident
             considered += 1
-    if best is None:
-        return False
-    _nav_open_confirm(best, "pfd")
-    return True
+    return best
+
+
+def _mfd_pick_rects():
+    """Panel + two button rects for the coincident airport/METAR chooser."""
+    pw, ph = 380, 214
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    bw, bh = pw - 40, 56
+    wx_r = (px + 20, py + 60, bw, bh)
+    d2_r = (px + 20, py + 60 + bh + 14, bw, bh)
+    return (px, py, pw, ph), wx_r, d2_r
+
+
+def _draw_mfd_pick(surf):
+    """Chooser shown when a tap lands on an overlapping airport + METAR:
+    the pilot picks the Weather readout or Direct-To."""
+    pick = disp.get("mfd_pick")
+    if not pick:
+        return
+    (px, py, pw, ph), wx_r, d2_r = _mfd_pick_rects()
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, "What here?", 22, (210, 220, 230), bold=True,
+          cx=DISPLAY_W // 2, cy=py + 28)
+    icao = (pick.get("metar") or {}).get("icao", "WX")
+    ident = pick.get("airport", "")
+    _action_btn(surf, *wx_r, f"Weather  {icao}", "ok", r=8)
+    _action_btn(surf, *d2_r, f"Direct →  {ident}", "warn", r=8)
+    _text(surf, "tap outside to cancel", 15, (140, 150, 160),
+          cx=DISPLAY_W // 2, cy=py + ph - 16)
+
+
+def _mfd_pick_hit(x, y):
+    """Handle a tap while the airport/METAR chooser is up."""
+    pick = disp.get("mfd_pick")
+    if not pick:
+        return
+    _, wx_r, d2_r = _mfd_pick_rects()
+
+    def _in(rc):
+        return rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]
+    if _in(wx_r):
+        disp["wx_popup"] = dict(pick.get("metar") or {})
+        disp["mfd_pick"] = None
+    elif _in(d2_r):
+        ident = pick.get("airport", "")
+        disp["mfd_pick"] = None
+        if ident:
+            _nav_open_confirm(ident, "pfd")
+    else:
+        disp["mfd_pick"] = None      # tap outside cancels
 
 
 def _p4_mfd_rects():
@@ -11652,6 +11719,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
 
     _mfd_draw_source_status(surf)
     _draw_wx_popup(surf)
+    _draw_mfd_pick(surf)
 
 
 # ── MFD strip-slot chooser (tap the data strip) ───────────────────────────────

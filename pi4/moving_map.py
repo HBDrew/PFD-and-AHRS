@@ -210,6 +210,7 @@ _TRK_MIN_KT = 3.0
 _tint_async_lock = threading.Lock()
 _tint_pending: set = set()       # keys currently being built on a worker
 _tint_ready:   dict = {}         # key -> (rgb uint8, elevs float32)
+_TINT_READY_MAX = 6              # cap so stale finished builds don't pile up
 
 
 def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
@@ -320,6 +321,14 @@ def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
                                         c_lat, c_lon, range_nm, oversize)
         with _tint_async_lock:
             _tint_ready[key] = (rgb, elevs)
+            # Cap _tint_ready: when the aircraft moves faster than builds
+            # finish (e.g. sim cruising across the country), completed results
+            # for stale keys pile up and are never picked up by the main
+            # thread.  Prune oldest above the cap so memory stays bounded.
+            # (pi_zero already does this; the pi4 port had dropped it, which
+            # leaked ~28 KB per stale tile over a long flight.)
+            while len(_tint_ready) > _TINT_READY_MAX:
+                _tint_ready.pop(next(iter(_tint_ready)))
     except Exception as e:
         print(f"[moving_map] async tint build failed: {e}")
     finally:
