@@ -485,6 +485,10 @@ _sse_client  = None
 _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
 _traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traffic_source
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
+_taf_client  = None   # AwcPoller (internet TAF backfill) when weather enabled
+_airsig_client = None # AwcPoller (internet AIRMET/SIGMET backfill)
+_taf_fed_at  = 0.0    # updated_s of last TAF snapshot folded into the store
+_airsig_fed_at = 0.0  # updated_s of last AIRMET/SIGMET snapshot folded in
 _nexrad_client = None # NexradClient (internet radar poller) when enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 # Decoded NEXRAD image cache (pygame surface); re-decoded only on new image.
@@ -1862,6 +1866,19 @@ def _update_weather():
     # FIS-B ground stations we're hearing (radio reception cue + diagnostic),
     # and graphical hazard areas (G-AIRMET/SIGMET polygons for the MET overlay).
     _store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
+    # Internet TAF + AIRMET/SIGMET backfill: fold each poller's snapshot into the
+    # same FIS-B store the readouts already read, but only when it actually
+    # refreshed (updated_s changed) and we're not radio-only.  Radio wins per
+    # item inside the store, so this purely backfills.  AIRMET/SIGMET carry
+    # geometry, so this also populates the MET-page graphical overlay.
+    if _store is not None and not radio_only:
+        global _taf_fed_at, _airsig_fed_at
+        if _taf_client is not None and _taf_client.updated_s != _taf_fed_at:
+            _taf_fed_at = _taf_client.updated_s
+            _store.add_tafs(_taf_client.snapshot())
+        if _airsig_client is not None and _airsig_client.updated_s != _airsig_fed_at:
+            _airsig_fed_at = _airsig_client.updated_s
+            _store.add_airsigmets(_airsig_client.snapshot())
     w["stations"] = _store.ground_stations() if _store is not None else []
     w["graphics"] = _store.graphics() if _store is not None else []
     cs = disp["cs"]
@@ -11922,11 +11939,13 @@ def _draw_wx_taf(surf):
     brg = wt.get("brg")
     store = _fisb_store()
     raw = store.taf_for(icao) if store else None
+    src = store.taf_source(icao) if store else None
     p = _fisb.parse_taf(raw) if raw else None
     pw = min(640, DISPLAY_W - 40)
     near_txt = (f" · nearest {near:.0f} nm {_compass8(brg)}".rstrip()
                 if near else "")
-    title = (f"TAF  {icao}" + near_txt
+    src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
+    title = (f"TAF  {icao}" + src_txt + near_txt
              + (f"   valid {_fisb._hhz(p['valid_from'])}–"
                 f"{_fisb._hhz(p['valid_to'])}" if p else ""))
     items = []
@@ -14784,6 +14803,16 @@ def main():
         _wx_client = _wx.WxClient(view_fn=_wx_view, interval_s=WX_INTERVAL_S)
         _wx_client.start()
         print("[PFD] Weather poller started (METAR, follows inset zoom)")
+        global _taf_client, _airsig_client
+        _taf_client = _wx.AwcPoller(view_fn=_wx_view, fetch_fn=_wx.fetch_tafs,
+                                    interval_s=TAF_INTERVAL_S, name="TafPoller")
+        _taf_client.start()
+        _airsig_client = _wx.AwcPoller(view_fn=_wx_view,
+                                       fetch_fn=_wx.fetch_airsigmets,
+                                       interval_s=AIRSIG_INTERVAL_S,
+                                       name="AirSigPoller")
+        _airsig_client.start()
+        print("[PFD] TAF + AIRMET/SIGMET pollers started (internet backfill)")
         global _nexrad_client
         _nexrad_client = _nexrad.NexradClient(view_fn=_wx_view,
                                               interval_s=NEXRAD_INTERVAL_S)
@@ -14950,6 +14979,10 @@ def main():
         _traffic_feed.stop()
     if _wx_client:
         _wx_client.stop()
+    if _taf_client:
+        _taf_client.stop()
+    if _airsig_client:
+        _airsig_client.stop()
     if _nexrad_client:
         _nexrad_client.stop()
     # Flush any pending settings changes to disk before exiting

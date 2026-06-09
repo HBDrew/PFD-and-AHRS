@@ -946,7 +946,7 @@ class FisbWeather:
         self.nexrad_count = 0                # NEXRAD blocks stored
         self._lock = threading.Lock()
         self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
-        self._tafs = {}                      # icao -> (raw_text, recv_monotonic)
+        self._tafs = {}                      # icao -> (raw_text, recv_monotonic, source)
         self._stations = {}                  # (lat,lon) -> {.., last_mono, count}
         self._advisories = {k: {} for k in self.ADVISORY_KINDS}  # kind -> {text: recv}
         self._graphics = {}                  # key -> (graphic_dict, recv_monotonic)
@@ -1022,7 +1022,7 @@ class FisbWeather:
                 self._metars[icao] = (parsed, now_mono)
                 self.metar_count += 1
             for icao, raw in tafs.items():
-                self._tafs[icao] = (raw, now_mono)
+                self._tafs[icao] = (raw, now_mono, "RDR")
                 self.taf_count += 1
             for kind, texts in advisories.items():
                 for text in texts:
@@ -1038,6 +1038,76 @@ class FisbWeather:
             for bnum, cells in nexrad.items():
                 self._nexrad[bnum] = (cells, now_mono)
                 self.nexrad_count += 1
+
+    # ── Internet backfill ──────────────────────────────────────────────────────
+    # The AWC pollers feed parsed products in through these.  Radio-primary /
+    # internet-bonus mirrors the METAR merge: a radio TAF is never overwritten by
+    # an internet one (radio is local and at least as fresh); advisories and
+    # graphics dedupe by content, so internet simply backfills areas the radio
+    # hasn't delivered.  All keep the same store shapes the readers already use,
+    # so taf_for / advisories / graphics surface internet data with no read-path
+    # change.
+    def add_taf(self, icao, raw, source="INET", now_mono=None):
+        """Store one internet/other-source TAF.  A fresh radio ("RDR") TAF wins —
+        an INET update won't clobber it — but INET refreshes its own entries and
+        backfills stations radio hasn't sent."""
+        if not icao or not raw:
+            return
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            cur = self._tafs.get(icao)
+            if (cur is not None and cur[2] == "RDR" and source != "RDR"
+                    and now_mono - cur[1] <= self.taf_expire_s):
+                return
+            self._tafs[icao] = (raw.strip(), now_mono, source)
+            self.taf_count += 1
+
+    def add_tafs(self, tafs, source="INET", now_mono=None):
+        """Bulk add_taf from a list of ``{icao, raw}`` dicts."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        for t in tafs or []:
+            self.add_taf(t.get("icao"), t.get("raw"), source, now_mono)
+
+    def add_advisory(self, kind, text, now_mono=None):
+        """Store one advisory bulletin (AIRMET/SIGMET/NOTAM).  Dedupes by text,
+        so a radio and internet copy of the same bulletin collapse to one."""
+        if kind not in self.ADVISORY_KINDS or not text:
+            return
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            self._advisories[kind][text.strip()] = now_mono
+            self.advisory_count += 1
+
+    def add_graphic(self, g, now_mono=None):
+        """Store one graphical hazard area (``{hazard, geom, vertices, text}``).
+        Keyed by hazard+geometry+text so identical areas dedupe across sources."""
+        if not g or not g.get("vertices"):
+            return
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        verts = tuple((round(la, 4), round(lo, 4)) for la, lo in g["vertices"])
+        key = (g.get("hazard"), g.get("geom", "polygon"), verts,
+               (g.get("text") or "").strip())
+        gg = {"hazard": g.get("hazard"), "geom": g.get("geom", "polygon"),
+              "vertices": list(g["vertices"]), "text": g.get("text")}
+        with self._lock:
+            self._graphics[key] = (gg, now_mono)
+            self.graphic_count += 1
+
+    def add_airsigmets(self, items, now_mono=None):
+        """Fold an AWC airsigmet snapshot (``{kind, hazard, raw, vertices,
+        valid_from, valid_to}``) into both the text advisories and, when it
+        carries an area, the graphics overlay — the one feed populates the
+        picker bulletins and the MET-page shapes together."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        for it in items or []:
+            kind, raw = it.get("kind"), it.get("raw")
+            if raw:
+                self.add_advisory(kind, raw, now_mono)
+            verts = it.get("vertices") or []
+            if len(verts) >= 3:
+                self.add_graphic({"hazard": it.get("hazard", "Advisory"),
+                                  "geom": "polygon", "vertices": verts,
+                                  "text": raw}, now_mono)
 
     def graphics(self, now_mono=None):
         """Active graphical hazard areas (``{hazard, geom, vertices}``), pruned
@@ -1085,7 +1155,7 @@ class FisbWeather:
         """ICAOs that currently have a fresh TAF (prunes stale ones)."""
         now_mono = now_mono if now_mono is not None else time.monotonic()
         with self._lock:
-            stale = [i for i, (_r, recv) in self._tafs.items()
+            stale = [i for i, (_r, recv, _s) in self._tafs.items()
                      if now_mono - recv > self.taf_expire_s]
             for i in stale:
                 del self._tafs[i]
@@ -1126,11 +1196,25 @@ class FisbWeather:
             v = self._tafs.get(icao)
             if not v:
                 return None
-            raw, recv = v
+            raw, recv, _src = v
             if now_mono - recv > self.taf_expire_s:
                 del self._tafs[icao]
                 return None
             return raw
+
+    def taf_source(self, icao, now_mono=None):
+        """Source tag ("RDR"/"INET") of the stored TAF for ``icao``, or None."""
+        if not icao:
+            return None
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            v = self._tafs.get(icao)
+            if not v:
+                return None
+            _raw, recv, src = v
+            if now_mono - recv > self.taf_expire_s:
+                return None
+            return src
 
     def metar_stations(self, locate, now=None, now_mono=None):
         """Return wx-shaped station dicts for every stored, still-fresh METAR

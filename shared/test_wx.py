@@ -114,6 +114,59 @@ def test_wxclient_injected_fetch():
     check(c.count() == 1, "stale snapshot retained on error")
 
 
+def test_parse_tafs():
+    data = [
+        {"icaoId": "KSEZ", "lat": 34.85, "lon": -111.79,
+         "rawTAF": "KSEZ 091120Z 0912/1012 28005KT P6SM SKC"},
+        {"stationId": "KFLG", "lat": 35.14, "lon": -111.67,
+         "raw_text": "KFLG 091120Z 0912/1012 24010KT 6SM"},
+        {"icaoId": "", "rawTAF": "no id"},                  # dropped
+        {"icaoId": "KNOPE"},                                  # no raw -> dropped
+    ]
+    ts = wx.parse_tafs(data)
+    check(len(ts) == 2, f"two TAFs parsed, got {len(ts)}")
+    by = {t["icao"]: t for t in ts}
+    check(by["KSEZ"]["raw"].startswith("KSEZ"), "rawTAF taken")
+    check(by["KFLG"]["raw"].startswith("KFLG"), "raw_text fallback taken")
+    check(by["KSEZ"]["src"] == "INET", "tagged INET")
+
+
+def test_parse_airsigmets():
+    data = [
+        {"airSigmetType": "AIRMET", "hazard": "TURB",
+         "rawAirSigmet": "AIRMET TANGO ...",
+         "validTimeFrom": 1_700_000_000, "validTimeTo": 1_700_021_600,
+         "coords": [{"lat": 34.0, "lon": -112.0}, {"lat": 35.0, "lon": -112.0},
+                    {"lat": 35.0, "lon": -111.0}]},
+        {"airSigmetType": "SIGMET", "hazard": "CONVECTIVE",
+         "rawAirSigmet": "SIGMET ...",
+         "lat": [33.0, 34.0, 34.0], "lon": [-113.0, -113.0, -112.0]},
+        {"airSigmetType": "AIRMET", "hazard": "IFR",
+         "rawAirSigmet": "AIRMET SIERRA ..."},                # text-only
+    ]
+    a = wx.parse_airsigmets(data)
+    check(len(a) == 3, f"three advisories, got {len(a)}")
+    check(a[0]["kind"] == "AIRMET" and a[0]["hazard"] == "Turbulence",
+          "AIRMET/TURB mapped")
+    check(len(a[0]["vertices"]) == 3, "coords ring parsed")
+    check(a[1]["kind"] == "SIGMET" and a[1]["hazard"] == "Convective",
+          "convective -> SIGMET")
+    check(len(a[1]["vertices"]) == 3, "lat/lon array ring parsed")
+    check(a[2]["vertices"] == [], "text-only has empty ring")
+
+
+def test_awcpoller_injected_fetch():
+    calls = {"n": 0}
+
+    def fake(lat, lon, radius):
+        calls["n"] += 1
+        return [{"icao": "KSEZ", "raw": "x"}]
+
+    c = wx.AwcPoller(view_fn=lambda: (34.0, -111.0, 100.0), fetch_fn=fake)
+    check(c._should_fetch(34.0, -111.0, 100.0, 1000.0), "first fetch always")
+    check(c.count() == 0, "empty before fetch")
+
+
 def test_wxclient_view_following():
     """The poller re-fetches when the view pans far enough, zooms a lot, or
     the periodic refresh is due — but not while parked on the same view."""

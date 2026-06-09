@@ -656,6 +656,46 @@ def test_merge():
     check(len(fisb.merge_metar_sources([], inet)) == 2, "inet only")
 
 
+def test_internet_backfill():
+    case("internet TAF backfills, radio TAF wins")
+    store = fisb.FisbWeather()
+    store.add_tafs([{"icao": "KSEZ", "raw": "KSEZ inet taf"},
+                    {"icao": "KFLG", "raw": "KFLG inet taf"}])
+    check(set(store.taf_stations()) == {"KSEZ", "KFLG"}, "two internet TAFs")
+    check(store.taf_source("KSEZ") == "INET", "tagged INET")
+    # A radio TAF for KSEZ must win and not be clobbered by a later internet one.
+    store.add_taf("KSEZ", "KSEZ radio taf", source="RDR")
+    check(store.taf_for("KSEZ") == "KSEZ radio taf", "radio TAF taken")
+    check(store.taf_source("KSEZ") == "RDR", "source now RDR")
+    store.add_taf("KSEZ", "KSEZ inet taf 2", source="INET")
+    check(store.taf_for("KSEZ") == "KSEZ radio taf", "internet does not clobber radio")
+    check(store.taf_for("KFLG") == "KFLG inet taf", "internet KFLG still there")
+
+    case("internet airsigmet feeds both advisories and graphics")
+    store2 = fisb.FisbWeather()
+    items = [
+        {"kind": "AIRMET", "hazard": "Turbulence", "raw": "AIRMET TANGO turb",
+         "vertices": [(34.0, -112.0), (35.0, -112.0), (35.0, -111.0)]},
+        {"kind": "SIGMET", "hazard": "Convective", "raw": "SIGMET conv",
+         "vertices": [(33.0, -113.0), (34.0, -113.0), (34.0, -112.0)]},
+        {"kind": "AIRMET", "hazard": "IFR", "raw": "AIRMET SIERRA ifr",
+         "vertices": []},                       # text-only — advisory, no shape
+    ]
+    store2.add_airsigmets(items)
+    air = store2.advisories("AIRMET")
+    sig = store2.advisories("SIGMET")
+    check("AIRMET TANGO turb" in air and "AIRMET SIERRA ifr" in air,
+          "AIRMET texts stored")
+    check("SIGMET conv" in sig, "SIGMET text stored")
+    gfx = store2.graphics()
+    check(len(gfx) == 2, "only the two with rings become graphics")
+    haz = {g["hazard"] for g in gfx}
+    check(haz == {"Turbulence", "Convective"}, "graphic hazards mapped")
+    # Re-feeding the identical snapshot dedupes (same text + same ring).
+    store2.add_airsigmets(items)
+    check(len(store2.graphics()) == 2, "re-feed dedupes graphics")
+
+
 def main():
     test_dlac()
     test_framing()
@@ -674,6 +714,7 @@ def main():
     test_ranking()
     test_encoders()
     test_merge()
+    test_internet_backfill()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))
 
 

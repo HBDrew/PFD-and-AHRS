@@ -12,6 +12,32 @@ AIRMET/SIGMET hazard areas on MET (tap-for-bulletin), winds aloft (table +
 graphical barbs on the WND overlay with an altitude selector), and a TFC-page
 aircraft detail card.  All driven/tested by `tools/fisb_sim.py`.
 
+### Internet backfill for the non-METAR products (done)
+
+METARs already merged radio + internet; now **TAF and AIRMET/SIGMET do too**.
+Two view-driven AWC pollers (`wx.AwcPoller`, free, no key) feed parsed products
+into the *same* `FisbWeather` store the readouts read, so internet data surfaces
+through the existing TAF/advisory/graphics paths with no read-path change:
+- `wx.fetch_tafs` → AWC `/api/data/taf` (bbox) → `store.add_tafs` (radio wins per
+  station; the TAF readout title now tags `[FIS-B]` vs `[INET]`).
+- `wx.fetch_airsigmets` → AWC `/api/data/airsigmet` (CONUS) →
+  `store.add_airsigmets`, which folds each bulletin into both the text
+  advisories *and*, when it carries a ring, the MET-page graphical overlay
+  (hazard codes normalised to our legend). Dedupes by content across sources.
+Folding is throttled to each poller's `updated_s` and skipped in RADIO-only
+mode. Caveat: AWC field names (`rawTAF`, `airSigmetType`, `hazard`, `coords`)
+are coded from the documented schema — want a quick check against a live pull.
+
+**WINDS + NOTAM (internet) — researched, not built yet (need decisions):**
+- **WINDS aloft:** AWC retired the old text winds endpoint; the gridded forecast
+  now lives behind the **WIFS / NOMADS GRIB** feeds (GFS winds-aloft grids).
+  That's a real parse (GRIB2 decode + interpolate to station/level), a heavier
+  dependency than the JSON pollers. Radio FIS-B winds already work; internet
+  winds is a meaningful chunk of work for a forecast we get over the air.
+- **NOTAM:** the FAA NOTAM API requires **OAuth client credentials** (free, but a
+  registered key + token refresh). Doable, but it needs a secret stored on the
+  Pi and a token-refresh path — different shape from the keyless AWC pollers.
+
 Still open:
 - **NEXRAD radar (the big one):** decode the FIS-B regional/CONUS run-length
   block raster into the existing NEXRAD render path; drive with synthetic
