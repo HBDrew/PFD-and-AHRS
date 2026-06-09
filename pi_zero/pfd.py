@@ -39,6 +39,7 @@ from sse_client import SSEClient
 import adsb as _adsb
 import adsb_feed as _afeed
 import wx as _wx
+import fisb as _fisb
 import nexrad as _nexrad
 import mapoverlay as _ovl
 from terrain import (
@@ -332,9 +333,11 @@ disp["traffic"] = {
 # Live weather — METAR stations near the aircraft, fed by the internet
 # poller (shared/wx.WxClient).  Not persisted.
 disp["weather"] = {
-    "metars": [],      # station dicts from wx.parse_metars
+    "metars": [],      # station dicts from wx.parse_metars (+ merged FIS-B)
     "online": False,   # last poll succeeded
     "n":      0,
+    "n_rdr":  0,       # split: FIS-B radio vs internet METARs
+    "n_inet": 0,
 }
 # When set (by tapping a METAR dot on the MFD), holds the station dict for
 # the decoded-METAR readout panel.  None = no panel.
@@ -5873,20 +5876,61 @@ def _wx_view():
     return float(clat), float(clon), float(radius)
 
 
+def _fisb_locate(icao):
+    """ident -> (lat, lon) for the FIS-B store's deferred geolocation.  FIS-B
+    text weather carries no position, so resolve it against the airport DB."""
+    r = _nav_lookup_ident(icao)
+    return (r[1], r[2]) if r else None
+
+
+_fisb_rdr_cache = []
+_fisb_rdr_at    = 0.0
+_FISB_MERGE_INTERVAL_S = 3.0     # METARs change slowly; geolocate at most this often
+
+
+def _fisb_rdr_snapshot():
+    """Geolocated FIS-B (radio) METAR stations, rebuilt at most every few
+    seconds.  Returns [] cheaply when no radio weather has arrived — the normal
+    case until dump978 feeds the 978 uplink — so the internet path is unchanged
+    then.  (Throttled hard: geolocation per station is the costly bit on the
+    Zero, and METARs barely move minute-to-minute.)"""
+    global _fisb_rdr_cache, _fisb_rdr_at
+    store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
+    if store is None or store.count() == 0:
+        _fisb_rdr_cache = []
+        return _fisb_rdr_cache
+    now = time.monotonic()
+    if now - _fisb_rdr_at >= _FISB_MERGE_INTERVAL_S or not _fisb_rdr_cache:
+        _fisb_rdr_at = now
+        _fisb_rdr_cache = store.metar_stations(_fisb_locate)
+    return _fisb_rdr_cache
+
+
 def _update_weather():
     """Pull the latest METAR snapshot from the background poller into
     disp["weather"] and mirror link diagnostics into cs.  METARs are cheap
     (text, ~120 s refresh) and feed the airport-tap weather picker on *every*
     map page, so the poller runs continuously — not just when the METAR
     overlay is up.  (NEXRAD, the heavy radar raster, stays gated to its own
-    overlay in _update_nexrad.)"""
+    overlay in _update_nexrad.)
+
+    Radio-primary / internet-bonus: FIS-B (978 UAT) METARs win per station, the
+    internet poll backfills the rest — mirroring the traffic source model."""
     if _wx_client is None:
         return
     _wx_client.paused = False
     w = disp["weather"]
-    w["metars"] = _wx_client.snapshot()
-    w["online"] = _wx_client.connected
+    inet = _wx_client.snapshot()
+    rdr  = _fisb_rdr_snapshot()
+    if rdr:
+        w["metars"] = _fisb.merge_metar_sources(rdr, inet)
+        w["n_rdr"]  = sum(1 for m in w["metars"] if m.get("src") == "RDR")
+    else:
+        w["metars"] = inet
+        w["n_rdr"]  = 0
+    w["online"] = _wx_client.connected or bool(rdr)
     w["n"]      = len(w["metars"])
+    w["n_inet"] = w["n"] - w["n_rdr"]
     cs = disp["cs"]
     cs["wx_online"]   = _wx_client.connected
     cs["wx_rx"]       = _wx_client.rx_count
@@ -10006,8 +10050,17 @@ def _mfd_draw_source_status(surf):
         _mfd_adsb_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, 20)
         y += 20
     if ds.get("map_show_metar") and _wx_client is not None:
-        if _wx_client.connected:
-            txt = f"WX {disp.get('weather', {}).get('n', 0)}{age(_wx_client)}"
+        w = disp.get("weather", {})
+        n_rdr, n_inet = w.get("n_rdr", 0), w.get("n_inet", 0)
+        if w.get("n", 0) or _wx_client.connected:
+            # Split radio (FIS-B) from internet, same convention as the ADS-B
+            # line.  Drop the R term until any radio WX arrives so the normal
+            # internet-only picture stays uncluttered.
+            parts = ["WX"]
+            if n_rdr:
+                parts.append(f"R{n_rdr}")
+            parts.append(f"I{n_inet}" if n_rdr else f"{w.get('n', 0)}")
+            txt = " ".join(parts) + age(_wx_client)
             col = (60, 220, 90)
         else:
             txt = f"WX …{age(_wx_client)}"
