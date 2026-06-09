@@ -637,6 +637,45 @@ def _draw_metars(surf, metars, project, rect):
 _GND_STATION = (90, 210, 230)    # FIS-B ground station: teal, distinct from
                                  # category dots / white airports / traffic
 
+_HAZARD_COL = {
+    "Turbulence":      (235, 175, 60),
+    "Icing":           (120, 200, 235),
+    "IFR":             (200, 180, 120),
+    "Convective":      (235, 80, 80),
+    "Mtn Obscuration": (185, 150, 110),
+    "Ash":             (205, 120, 205),
+    "Advisory":        (180, 180, 185),
+}
+
+
+def _draw_wx_graphics(surf, graphics, project, rect, font):
+    """Shade FIS-B graphical hazard areas (polygons): translucent fill +
+    coloured outline + a hazard label, under the station dots."""
+    x, y, w, h = rect
+    overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+    labels = []
+    for g in graphics:
+        verts = g.get("vertices") or []
+        if len(verts) < 2:
+            continue
+        col = _HAZARD_COL.get(g.get("hazard"), _HAZARD_COL["Advisory"])
+        pts = [project(la, lo) for (la, lo) in verts]
+        local = [(int(px - x), int(py - y)) for (px, py) in pts]
+        if g.get("geom") == "polygon" and len(local) >= 3:
+            pygame.draw.polygon(overlay, (col[0], col[1], col[2], 55), local)
+            pygame.draw.polygon(overlay, (col[0], col[1], col[2], 220), local, 2)
+        else:
+            pygame.draw.lines(overlay, (col[0], col[1], col[2], 220), False,
+                              local, 2)
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        labels.append((g.get("hazard", ""), col, int(cx), int(cy)))
+    surf.blit(overlay, (x, y))
+    if font is not None:
+        for name, col, cx, cy in labels:
+            img = font.render(name, True, col)
+            surf.blit(img, (cx - img.get_width() // 2, cy - 7))
+
 
 def _draw_ground_stations(surf, stations, project, font, rect):
     """Draw the FIS-B ground station(s) being heard as an upward transmitter
@@ -786,7 +825,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            own_lat=None, own_lon=None, draw_corner_labels=True,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
            traffic=None, metars=None, nexrad=None, fast=False,
-           ground_stations=None):
+           ground_stations=None, wx_graphics=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1264,7 +1303,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # ── Weather (METAR station dots) ───────────────────────────────────────
     # Ground stations first so the flight-category dots always sit on top of
     # the towers; METARs are drawn after the magenta D2/FPL above, so a dot on
-    # a waypoint also stays visible over the diamond.
+    # a waypoint also stays visible over the diamond.  Graphical hazard areas
+    # shade under everything, on the MET overlay.
+    if wx_graphics and settings.get("map_show_metar", True) and not fast:
+        _draw_wx_graphics(surf, wx_graphics, _project, rect, font)
     if ground_stations and settings.get("map_show_metar", True) and not fast:
         _draw_ground_stations(surf, ground_stations, _project, font, rect)
     if metars and settings.get("map_show_metar", True) and not fast:

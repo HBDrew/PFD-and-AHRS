@@ -472,6 +472,43 @@ def test_advisories():
         "stale pruned")
 
 
+def test_graphics():
+    case("graphic geometry round-trips (encode → decode)")
+    gfx = [
+        {"hazard": "Turbulence", "vertices": [(36.5, -113.0), (36.8, -110.0),
+                                              (35.0, -109.5), (34.5, -112.5)]},
+        {"hazard": "Convective", "vertices": [(35.4, -111.9), (35.5, -111.2),
+                                              (34.9, -111.0)]},
+    ]
+    payload = fisb.encode_graphics_uplink(gfx, station=(33.43, -112.01, 1))
+    apdus = fisb.decode_uplink(payload)
+    check(apdus and apdus[0]["product_id"] == 14, "graphical product id 14")
+    recs = fisb.decode_graphic_records(apdus[0]["data"])
+    check(len(recs) == 2, f"two hazard areas, got {len(recs)}")
+    check(recs[0]["hazard"] == "Turbulence" and len(recs[0]["vertices"]) == 4,
+          "turbulence polygon w/ 4 vertices")
+    la, lo = recs[0]["vertices"][0]
+    check(abs(la - 36.5) < 0.001 and abs(lo - (-113.0)) < 0.001,
+          f"vertex round-trips: {(la, lo)}")
+    check(recs[1]["hazard"] == "Convective", "second area hazard")
+
+    case("store files graphics; ground station still decodes alongside")
+    store = fisb.FisbWeather()
+    store.ingest_uplink(payload)
+    gs = store.graphics()
+    check(len(gs) == 2, f"two graphics stored, got {len(gs)}")
+    check({g["hazard"] for g in gs} == {"Turbulence", "Convective"}, "hazards")
+    check(len(store.ground_stations()) == 1, "station header still read")
+
+    case("graphics age out")
+    mono = time.monotonic()
+    store2 = fisb.FisbWeather()
+    store2.ingest_uplink(payload, now_mono=mono)
+    check(len(store2.graphics(now_mono=mono)) == 2, "fresh kept")
+    check(store2.graphics(now_mono=mono + store2.graphics_expire_s + 1) == [],
+          "stale pruned")
+
+
 def test_encoders():
     case("encode_text_uplink round-trips through the decoder")
     reports = ["KSEZ 091753Z 24008KT 10SM FEW120 28/06 A3001",
@@ -529,6 +566,7 @@ def main():
     test_classify_and_taf()
     test_taf_decode()
     test_advisories()
+    test_graphics()
     test_encoders()
     test_merge()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))

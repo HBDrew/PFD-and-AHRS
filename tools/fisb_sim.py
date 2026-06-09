@@ -106,9 +106,21 @@ ADVISORIES = [
 ]
 
 
+# Graphical hazard areas (polygons) — drawn shaded on the MET page.
+GRAPHICS = [
+    {"hazard": "Turbulence",     # high country, NE Arizona
+     "vertices": [(36.6, -113.2), (36.9, -109.8), (34.9, -109.3), (34.6, -112.8)]},
+    {"hazard": "Convective",     # cell near Flagstaff / Sedona
+     "vertices": [(35.5, -112.0), (35.6, -111.1), (34.9, -111.0), (34.8, -112.0)]},
+    {"hazard": "Icing",          # north rim / Page
+     "vertices": [(37.0, -112.4), (37.1, -111.0), (36.2, -110.9), (36.1, -112.3)]},
+]
+
+
 def build_cycle(now):
     """Return a list of UAT uplink payloads for this instant (one per station;
-    TAF stations carry their METAR + TAF together; plus area advisories)."""
+    TAF stations carry their METAR + TAF together; plus area advisories and the
+    graphical hazard areas)."""
     payloads = []
     for icao, cat, tower in SCENARIO:
         reports = [metar_for(icao, cat, now)]
@@ -118,6 +130,8 @@ def build_cycle(now):
     # Area advisories — one uplink each, from the Phoenix tower.
     for adv in ADVISORIES:
         payloads.append(fisb.encode_text_uplink([adv], station=TOWER_PHX))
+    # Graphical hazard areas — one uplink, from the Phoenix tower.
+    payloads.append(fisb.encode_graphics_uplink(GRAPHICS, station=TOWER_PHX))
     return payloads
 
 
@@ -183,9 +197,13 @@ def selftest():
     assert len(air) == 2 and len(sig) == 1 and len(nts) == 2, \
         f"advisories: AIRMET={len(air)} SIGMET={len(sig)} NOTAM={len(nts)}"
 
+    gfx = store.graphics()
+    assert len(gfx) == len(GRAPHICS), f"graphics: {len(gfx)} vs {len(GRAPHICS)}"
+
     print(f"FISB-SIM SELFTEST PASSED ({len(got)} METARs, all categories, "
           f"{len(gss)} stations, {len(tafs)} TAFs, "
-          f"{len(air)}+{len(sig)}+{len(nts)} AIRMET/SIGMET/NOTAM)")
+          f"{len(air)}+{len(sig)}+{len(nts)} AIRMET/SIGMET/NOTAM, "
+          f"{len(gfx)} graphics)")
 
 
 def main():

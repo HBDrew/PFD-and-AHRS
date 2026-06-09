@@ -523,6 +523,55 @@ def taf_lines(raw):
     return lines
 
 
+# ── FIS-B graphics (G-AIRMET / SIGMET hazard areas → polygons) ──────────────────
+# Graphical products carry the hazard *geometry* (a separate product from the
+# text bulletins).  We decode the geometric overlay's vertex list so the MET
+# overlay can shade the area.  NOTE: this follows the DO-358 geometric-overlay
+# vertex encoding (24-bit lat/lon, LSB 180/2^23) but is a simplified record
+# layout — it wants validation against real 978 graphical frames; the store /
+# render / tap pipeline is exercised by the simulator's matching encoder.
+GRAPHICS_PRODUCTS = {14, 15}          # G-AIRMET, CWA (graphical hazard areas)
+_GFX_LSB = 180.0 / (1 << 23)
+_GFX_HAZARD = {0: "Turbulence", 1: "Icing", 2: "IFR", 3: "Convective",
+               4: "Mtn Obscuration", 5: "Ash", 15: "Advisory"}
+_GFX_HAZARD_REV = {v: k for k, v in _GFX_HAZARD.items()}
+
+
+def _gfx_dec_coord(b0, b1, b2):
+    v = (b0 << 16) | (b1 << 8) | b2
+    if v & 0x800000:
+        v -= 0x1000000
+    return round(v * _GFX_LSB, 5)
+
+
+def _gfx_enc_coord(deg):
+    v = int(round(deg / _GFX_LSB)) & 0xFFFFFF
+    return bytes([(v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF])
+
+
+def decode_graphic_records(data):
+    """Decode hazard-area geometry records from a graphical product's APDU data.
+
+    Record: hazard(1) geom(1) nverts(1) then nverts × (lat[3], lon[3]) as 24-bit
+    signed (LSB 180/2^23).  Returns ``[{hazard, geom, vertices:[(lat,lon)]}]``."""
+    out = []
+    i, n = 0, len(data)
+    while i + 3 <= n:
+        hazard, geom, nv = data[i], data[i + 1], data[i + 2]
+        i += 3
+        if nv == 0 or i + nv * 6 > n:
+            break
+        verts = []
+        for _k in range(nv):
+            verts.append((_gfx_dec_coord(data[i], data[i + 1], data[i + 2]),
+                          _gfx_dec_coord(data[i + 3], data[i + 4], data[i + 5])))
+            i += 6
+        out.append({"hazard": _GFX_HAZARD.get(hazard, "Advisory"),
+                    "geom": "polygon" if geom == 0 else "point",
+                    "vertices": verts})
+    return out
+
+
 def _obs_age_min(parsed, now):
     """Minutes since the METAR's DDHHMMZ stamp, using ``now`` (epoch seconds,
     UTC) to resolve the day-of-month.  Handles the month wrap when the report
@@ -689,20 +738,24 @@ class FisbWeather:
     ADVISORY_KINDS = ("AIRMET", "SIGMET", "NOTAM")
 
     def __init__(self, expire_s=4500.0, station_expire_s=120.0,
-                 taf_expire_s=10800.0, advisory_expire_s=14400.0):
+                 taf_expire_s=10800.0, advisory_expire_s=14400.0,
+                 graphics_expire_s=14400.0):
         self.expire_s = expire_s             # 75 min: METARs refresh hourly
         self.station_expire_s = station_expire_s   # towers rebroadcast often
         self.taf_expire_s = taf_expire_s     # 3 h: TAFs reissue ~6 h, valid ~24-30 h
         self.advisory_expire_s = advisory_expire_s  # 4 h: AIRMET/SIGMET/NOTAM text
+        self.graphics_expire_s = graphics_expire_s  # 4 h: graphical hazard areas
         self.uplink_count = 0                # uplink frames ingested
         self.metar_count = 0                 # METAR records parsed OK (cumulative)
         self.taf_count = 0                   # TAF records stored (cumulative)
         self.advisory_count = 0              # AIRMET/SIGMET/NOTAM records stored
+        self.graphic_count = 0               # graphical hazard records stored
         self._lock = threading.Lock()
         self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
         self._tafs = {}                      # icao -> (raw_text, recv_monotonic)
         self._stations = {}                  # (lat,lon) -> {.., last_mono, count}
         self._advisories = {k: {} for k in self.ADVISORY_KINDS}  # kind -> {text: recv}
+        self._graphics = {}                  # key -> (graphic_dict, recv_monotonic)
 
     def ingest_gdl90_msg(self, msg, now_mono=None):
         """Decode one ``kind=="uplink"`` GDL90 message and fold its weather +
@@ -726,8 +779,12 @@ class FisbWeather:
         metars = {}
         tafs = {}
         advisories = {k: set() for k in self.ADVISORY_KINDS}
+        graphics = []
         for apdu in decode_uplink(uplink_payload):
             if not apdu.get("data"):
+                continue
+            if apdu.get("product_id") in GRAPHICS_PRODUCTS:
+                graphics.extend(decode_graphic_records(apdu["data"]))
                 continue
             for rec in text_records(apdu["data"]):
                 kind = classify_text(rec)
@@ -764,6 +821,21 @@ class FisbWeather:
                 for text in texts:
                     self._advisories[kind][text] = now_mono
                     self.advisory_count += 1
+            for g in graphics:
+                key = (g["hazard"], g["geom"], tuple(g["vertices"]))
+                self._graphics[key] = (g, now_mono)
+                self.graphic_count += 1
+
+    def graphics(self, now_mono=None):
+        """Active graphical hazard areas (``{hazard, geom, vertices}``), pruned
+        past ``graphics_expire_s``."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            stale = [k for k, (_g, recv) in self._graphics.items()
+                     if now_mono - recv > self.graphics_expire_s]
+            for k in stale:
+                del self._graphics[k]
+            return [g for (g, _r) in self._graphics.values()]
 
     def advisories(self, kind=None, now_mono=None):
         """Active advisory bulletin texts (AIRMET/SIGMET/NOTAM).  ``kind`` filters
@@ -912,9 +984,15 @@ def encode_text_uplink(reports, station=None, product_id=413, total=432):
     dlac = encode_dlac(text)
     apdu = bytes([(product_id >> 6) & 0x1f,
                   (product_id & 0x3f) << 2]) + dlac     # T-opt 0 header + data
-    length = len(apdu)
+    return _pack_uplink(product_id, apdu, station, total)
+
+
+def _pack_uplink(product_id, apdu_payload, station, total):
+    """Wrap one APDU payload (product header bytes + data) into a UAT uplink
+    payload with an optional ground-station header.  Shared by the encoders."""
+    length = len(apdu_payload)
     info = bytes([(length >> 1) & 0xFF,
-                  ((length & 1) << 7) | FRAME_TYPE_FISB_APDU]) + apdu
+                  ((length & 1) << 7) | FRAME_TYPE_FISB_APDU]) + apdu_payload
     app_len = total - _UAT_HEADER_LEN
     app = (info + b"\x00\x00").ljust(app_len, b"\x00")[:app_len]
     if station:
@@ -924,3 +1002,19 @@ def encode_text_uplink(reports, station=None, product_id=413, total=432):
     else:
         header = b"\x00" * _UAT_HEADER_LEN
     return header + app
+
+
+def encode_graphics_uplink(graphics, station=None, product_id=14, total=432):
+    """Build a UAT uplink payload carrying ``graphics`` (list of
+    ``{hazard, vertices:[(lat,lon)]}``) as one graphical-product APDU — inverse
+    of decode_graphic_records.  For the simulator / tests."""
+    body = bytearray()
+    for g in graphics:
+        hz = _GFX_HAZARD_REV.get(g.get("hazard"), 15)
+        verts = g.get("vertices", [])
+        body += bytes([hz, 0, len(verts) & 0xFF])
+        for la, lo in verts:
+            body += _gfx_enc_coord(la) + _gfx_enc_coord(lo)
+    apdu = bytes([(product_id >> 6) & 0x1f,
+                  (product_id & 0x3f) << 2]) + bytes(body)
+    return _pack_uplink(product_id, apdu, station, total)
