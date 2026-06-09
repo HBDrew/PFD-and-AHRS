@@ -366,17 +366,24 @@ def test_taf_decode():
     check(kinds == ["INITIAL", "FM", "TEMPO", "PROB"], f"period kinds {kinds}")
 
     init = p["periods"][0]
-    check("280° 15kt G25" in init["summary"], f"initial wind: {init['summary']}")
-    check("1 1/2 sm" in init["summary"], "initial vis fraction")
-    check("OVC 700" in init["summary"], "initial ceiling decoded")
+    check(init["wind"] == "280° 15 kt G25", f"initial wind: {init['wind']}")
+    check(init["vis"] == "1 1/2 sm", f"initial vis: {init['vis']}")
+    check(init["sky"] == "OVC 700", f"initial sky: {init['sky']}")
+    check(init["ceiling_ft"] == 700, "initial ceiling ft")
+    check(init["wx"] == "mist", f"initial wx decoded: {init['wx']}")
 
     fm = p["periods"][1]
     check(fm["label"] == "From 22:00Z", f"FM label {fm['label']}")
-    check("6+ sm" in fm["summary"] and "SCT 10,000" in fm["summary"],
-          f"FM summary {fm['summary']}")
+    check(fm["wind"] == "250° 8 kt" and fm["vis"] == "6+ sm", "FM wind/vis")
+    check(fm["sky"] == "SCT 10,000" and fm["ceiling_ft"] is None,
+          "FM sky (SCT is not a ceiling)")
+
+    tempo = p["periods"][2]
+    check(tempo["wx"] == "light rain showers", f"TEMPO wx: {tempo['wx']}")
 
     pr = p["periods"][3]
     check(pr["label"].startswith("30% "), f"PROB label {pr['label']}")
+    check(pr["wx"] == "thunderstorm w/ rain", f"PROB wx: {pr['wx']}")
 
     case("taf_lines: header + one line per period")
     lines = fisb.taf_lines(raw)

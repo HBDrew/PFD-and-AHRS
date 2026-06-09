@@ -347,8 +347,8 @@ _RE_ISSUED   = re.compile(r"^\d{6}Z$")
 _RE_GROUP    = re.compile(r"^(FM\d{6}|BECMG|TEMPO|PROB\d{2})$")
 # Present-weather tokens (optional intensity/proximity + 1-3 two-letter codes).
 _RE_WXTOK    = re.compile(
-    r"\b([-+]|VC)?((?:MI|PR|BC|DR|BL|SH|TS|FZ|DZ|RA|SN|SG|IC|PL|GR|GS|UP|BR|"
-    r"FG|FU|VA|DU|SA|HZ|PY|PO|SQ|FC|SS|DS){1,3})\b")
+    r"(?<![A-Z0-9])([-+]|VC)?((?:MI|PR|BC|DR|BL|SH|TS|FZ|DZ|RA|SN|SG|IC|PL|GR|"
+    r"GS|UP|BR|FG|FU|VA|DU|SA|HZ|PY|PO|SQ|FC|SS|DS){1,3})\b")
 
 
 def _hhz(ddhh):
@@ -363,7 +363,7 @@ def _taf_wind(text):
     if d != "VRB" and s == 0:
         return "calm"
     dd = "VRB" if d == "VRB" else f"{int(d):03d}°"
-    return dd + f" {s}kt" + (f" G{int(g)}" if g else "")
+    return dd + f" {s} kt" + (f" G{int(g)}" if g else "")
 
 
 def _taf_vis(text):
@@ -389,21 +389,52 @@ def _taf_sky(text):
     return " / ".join(layers) if layers else None
 
 
+def _taf_ceiling(text):
+    """Lowest BKN/OVC/VV base in ft, or None."""
+    bases = [int(b) * 100 for c, b in _RE_CLOUD.findall(text)
+             if c in ("BKN", "OVC", "VV")]
+    return min(bases) if bases else None
+
+
+# Common present-weather tokens → plain words; uncommon ones fall back to the
+# raw code (lowercased) so nothing is silently dropped.
+_WX_WORDS = {
+    "BR": "mist", "FG": "fog", "HZ": "haze", "FU": "smoke", "DU": "dust",
+    "SA": "sand", "VA": "volcanic ash", "SQ": "squalls", "FC": "funnel cloud",
+    "RA": "rain", "-RA": "light rain", "+RA": "heavy rain",
+    "SHRA": "rain showers", "-SHRA": "light rain showers",
+    "+SHRA": "heavy rain showers",
+    "TSRA": "thunderstorm w/ rain", "-TSRA": "thunderstorm w/ rain",
+    "TS": "thunderstorm", "VCTS": "thunderstorms in vicinity",
+    "VCSH": "showers in vicinity",
+    "SN": "snow", "-SN": "light snow", "+SN": "heavy snow",
+    "SHSN": "snow showers", "-SHSN": "light snow showers",
+    "DZ": "drizzle", "-DZ": "light drizzle", "FZRA": "freezing rain",
+    "FZDZ": "freezing drizzle", "FZFG": "freezing fog",
+    "GR": "hail", "GS": "small hail", "PL": "ice pellets", "IC": "ice crystals",
+    "BLSN": "blowing snow", "BLDU": "blowing dust", "BLSA": "blowing sand",
+}
+
+
+def decode_wx(token):
+    """Decode one present-weather token to words (e.g. '-SHRA' -> 'light rain
+    showers'); unknown tokens return the raw code lowercased."""
+    if token in _WX_WORDS:
+        return _WX_WORDS[token]
+    bare = token.lstrip("+-")
+    return _WX_WORDS.get(bare, token.lower())
+
+
+def _taf_wx(text):
+    toks = ["".join(t) for t in _RE_WXTOK.findall(text)]
+    words = [decode_wx(t) for t in toks if t]
+    return ", ".join(words) if words else None
+
+
 def _taf_summary(text):
-    """Compact human summary of one TAF group's elements."""
-    parts = []
-    w = _taf_wind(text)
-    if w:
-        parts.append(w)
-    v = _taf_vis(text)
-    if v:
-        parts.append(v)
-    wx = " ".join("".join(t) for t in _RE_WXTOK.findall(text))
-    if wx.strip():
-        parts.append(wx.strip().lower())
-    sky = _taf_sky(text)
-    if sky:
-        parts.append(sky)
+    """Compact one-line summary of a TAF group (wind, vis, wx, sky)."""
+    parts = [p for p in (_taf_wind(text), _taf_vis(text), _taf_wx(text),
+                         _taf_sky(text)) if p]
     return ", ".join(parts) if parts else "—"
 
 
@@ -471,8 +502,11 @@ def parse_taf(raw):
             label = f"Temp {_hhz(g['from'])}–{_hhz(g['to'])}"
         else:  # PROB
             label = f"{g['prob']}% {_hhz(g['from'])}–{_hhz(g['to'])}"
-        out.append({"kind": g["kind"], "label": label,
-                    "summary": _taf_summary(text), "raw": text})
+        out.append({"kind": g["kind"], "label": label, "raw": text,
+                    "wind": _taf_wind(text), "vis": _taf_vis(text),
+                    "wx": _taf_wx(text), "sky": _taf_sky(text),
+                    "ceiling_ft": _taf_ceiling(text),
+                    "summary": _taf_summary(text)})
     return {"icao": icao, "issued": issued,
             "valid_from": vfrom, "valid_to": vto, "periods": out}
 

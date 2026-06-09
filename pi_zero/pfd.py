@@ -3802,6 +3802,16 @@ def handle_event(event, demo_mode):
 
         # ── MFD taps (display_mode == "mfd" while mode == "pfd") ──────────
         if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+            # WX readouts / menus stack on top — they take the tap first.
+            if disp.get("wx_text"):
+                disp["wx_text"] = None
+                return True
+            if disp.get("wx_taf"):
+                disp["wx_taf"] = None
+                return True
+            if disp.get("wx_menu"):
+                _wx_menu_hit(x, y)
+                return True
             # The airport/METAR chooser is up → its buttons take the tap.
             if disp.get("mfd_pick"):
                 _mfd_pick_hit(x, y)
@@ -10305,6 +10315,9 @@ def draw_mfd(surf, connected=True, data_stale=False):
     # METAR readout panel (drawn last so it sits over the map + chrome).
     _draw_wx_popup(surf)
     _draw_mfd_pick(surf)
+    _draw_wx_menu(surf)
+    _draw_wx_taf(surf)
+    _draw_wx_text(surf)
 
 
 def _wrap_text(text, font, max_w):
@@ -10337,7 +10350,6 @@ def _draw_wx_popup(surf):
     pw = min(600, DISPLAY_W - 20)
     icao = m.get("icao", "----")
     cat = m.get("fltcat", "")
-    taf = _fisb_taf_for(icao)
 
     wd, ws, wg = m.get("wdir"), m.get("wspd"), m.get("wgst")
     if ws is None:
@@ -10366,18 +10378,10 @@ def _draw_wx_popup(surf):
     f16 = _get_font(16)
     raw = m.get("raw", "")
     raw_lines = _wrap_text(raw, f16, pw - 36)[:3] if raw else []
-    # Decode the TAF into readable per-period lines (wrap each to the panel).
-    taf_lines = []
-    if taf:
-        for ln in _fisb.taf_lines(taf):
-            taf_lines.extend(_wrap_text(ln, f16, pw - 36))
-        taf_lines = taf_lines[:8]
 
     ph = 60 + len(rows) * 28
     if raw_lines:
         ph += 26 + len(raw_lines) * 20
-    if taf_lines:
-        ph += 26 + len(taf_lines) * 20
     ph += 30
     ph = min(ph, DISPLAY_H - 16)
     px = (DISPLAY_W - pw) // 2
@@ -10410,15 +10414,178 @@ def _draw_wx_popup(surf):
         for ln in raw_lines:
             _text(surf, ln, 16, (150, 200, 240), x=px + 18, y=yy)
             yy += 20
-    if taf_lines:
-        yy += 6
-        _text(surf, "TAF", 15, (110, 150, 185), bold=True, x=px + 18, y=yy)
-        yy += 20
-        for ln in taf_lines:
-            _text(surf, ln, 16, (160, 210, 180), x=px + 18, y=yy)
-            yy += 20
     _text(surf, "tap to close", 16, (140, 150, 160),
           cx=DISPLAY_W // 2, cy=py + ph - 14)
+
+
+# ── Weather product menu + TAF / advisory readouts ──────────────────────────────
+def _fisb_store():
+    return getattr(_adsb_client, "fisb", None) if _adsb_client else None
+
+
+def _wx_menu_items():
+    menu = disp.get("wx_menu") or {}
+    icao = menu.get("icao") or menu.get("airport") or ""
+    store = _fisb_store()
+    items = [("METAR", f"METAR  {icao}".rstrip(), menu.get("metar") is not None),
+             ("TAF", f"TAF  {icao}".rstrip(),
+              bool(store and store.taf_for(icao)))]
+    for kind in ("AIRMET", "SIGMET", "NOTAM"):
+        n = len(store.advisories(kind)) if store else 0
+        items.append((kind, f"{kind}" + (f"  ({n})" if n else ""), n > 0))
+    return items
+
+
+def _wx_menu_rects():
+    items = _wx_menu_items()
+    pw = min(380, DISPLAY_W - 20)
+    bh, gap = 44, 9
+    ph = 50 + len(items) * (bh + gap) + 20
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    rects = []
+    by = py + 46
+    for it in items:
+        rects.append((it, (px + 14, by, pw - 28, bh)))
+        by += bh + gap
+    return (px, py, pw, ph), rects
+
+
+def _draw_wx_menu(surf):
+    if not disp.get("wx_menu"):
+        return
+    (px, py, pw, ph), rects = _wx_menu_rects()
+    icao = (disp["wx_menu"].get("icao")
+            or disp["wx_menu"].get("airport") or "")
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, f"Weather — {icao}".rstrip(), 22, (210, 220, 230), bold=True,
+          cx=DISPLAY_W // 2, cy=py + 24)
+    for (kind, label, enabled), (bx, by, bw, bh) in rects:
+        if enabled:
+            _action_btn(surf, bx, by, bw, bh, label, "ok", r=8)
+        else:
+            pygame.draw.rect(surf, (28, 34, 46), (bx, by, bw, bh),
+                             border_radius=8)
+            _text(surf, label, 20, (90, 100, 115), x=bx + 14,
+                  y=by + bh // 2 - 12)
+    _text(surf, "tap outside to cancel", 15, (140, 150, 160),
+          cx=DISPLAY_W // 2, cy=py + ph - 14)
+
+
+def _wx_menu_hit(x, y):
+    menu = disp.get("wx_menu")
+    if not menu:
+        return
+    _, rects = _wx_menu_rects()
+    store = _fisb_store()
+    icao = menu.get("icao") or menu.get("airport") or ""
+    for (kind, _label, enabled), (bx, by, bw, bh) in rects:
+        if not (enabled and bx <= x <= bx + bw and by <= y <= by + bh):
+            continue
+        disp["wx_menu"] = None
+        if kind == "METAR" and menu.get("metar"):
+            disp["wx_popup"] = dict(menu["metar"])
+        elif kind == "TAF" and store:
+            disp["wx_taf"] = icao
+        elif store:
+            disp["wx_text"] = {"title": f"{kind} — area",
+                               "bulletins": store.advisories(kind)}
+        return
+    disp["wx_menu"] = None
+
+
+def _draw_wx_taf(surf):
+    """Full TAF readout: each forecast period broken out with labeled fields."""
+    icao = disp.get("wx_taf")
+    if not icao:
+        return
+    store = _fisb_store()
+    raw = store.taf_for(icao) if store else None
+    p = _fisb.parse_taf(raw) if raw else None
+    pw = min(620, DISPLAY_W - 20)
+
+    blocks = []
+    if p:
+        for g in p["periods"]:
+            rows = []
+            if g["wind"]:
+                rows.append(("Wind", g["wind"]))
+            if g["vis"]:
+                rows.append(("Vis", g["vis"]))
+            if g["wx"]:
+                rows.append(("Wx", g["wx"]))
+            if g["sky"]:
+                rows.append(("Sky", g["sky"]))
+            blocks.append((g["label"], rows or [("", "—")]))
+
+    nrows = sum(1 + len(rows) for _h, rows in blocks)
+    ph = min(56 + nrows * 24 + 30, DISPLAY_H - 16)
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    hdr = f"TAF  {icao}" + (f"   valid {_fisb._hhz(p['valid_from'])}–"
+                            f"{_fisb._hhz(p['valid_to'])}" if p else "")
+    _text(surf, hdr, 24, (235, 235, 235), bold=True, x=px + 18, y=py + 12)
+    yy = py + 50
+    for header, rows in blocks:
+        _text(surf, header, 18, (120, 200, 230), bold=True, x=px + 18, y=yy)
+        yy += 24
+        for lbl, val in rows:
+            if lbl:
+                _text(surf, lbl, 16, (140, 160, 180), x=px + 36, y=yy)
+            _text(surf, val, 16, (210, 220, 230), x=px + 110, y=yy)
+            yy += 24
+        if yy > py + ph - 40:
+            break
+    _text(surf, "tap to close", 16, (140, 150, 160),
+          cx=DISPLAY_W // 2, cy=py + ph - 14)
+
+
+def _draw_wx_text(surf):
+    """Text readout for area advisories (AIRMET/SIGMET/NOTAM)."""
+    wt = disp.get("wx_text")
+    if not wt:
+        return
+    pw = min(640, DISPLAY_W - 16)
+    f16 = _get_font(16)
+    lines = []
+    bulletins = wt.get("bulletins") or []
+    for b in bulletins:
+        lines.extend(_wrap_text(b, f16, pw - 36))
+        lines.append("")
+    if not bulletins:
+        lines = ["None active in range."]
+    maxrows = max(4, (DISPLAY_H - 110) // 20)
+    clipped = len(lines) > maxrows
+    lines = lines[:maxrows]
+    ph = min(52 + len(lines) * 20 + 30, DISPLAY_H - 16)
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, wt.get("title", "WX"), 24, (235, 235, 235), bold=True,
+          x=px + 18, y=py + 12)
+    yy = py + 48
+    for ln in lines:
+        if ln:
+            _text(surf, ln, 16, (200, 215, 230), x=px + 18, y=yy)
+        yy += 20
+    foot = "more… (tap to close)" if clipped else "tap to close"
+    _text(surf, foot, 16, (140, 150, 160), cx=DISPLAY_W // 2, cy=py + ph - 14)
 
 
 def _mfd_fpl_btn_hit(x, y):
@@ -11524,11 +11691,15 @@ def _mfd_pick_hit(x, y):
     def _in(rc):
         return rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]
     if _in(wx_r):
+        # Weather → the product menu (METAR / TAF / AIRMET / SIGMET / NOTAM).
         wx, _, _ = _wx_for_airport(pick.get("airport", ""),
                                    pick.get("lat"), pick.get("lon"))
-        if wx:                       # ignore the tap until WX has loaded
-            disp["wx_popup"] = dict(wx)
-            disp["mfd_pick"] = None
+        disp["mfd_pick"] = None
+        disp["wx_menu"] = {
+            "airport": pick.get("airport", ""),
+            "icao": (wx or {}).get("icao") or pick.get("airport", ""),
+            "metar": dict(wx) if wx else None,
+        }
     elif _in(d2_r):
         ident = pick.get("airport", "")
         disp["mfd_pick"] = None
