@@ -32,6 +32,7 @@ This module is transport-agnostic and side-effect free.
 """
 
 import calendar
+import math
 import re
 import threading
 import time
@@ -950,6 +951,99 @@ def merge_metar_sources(rdr, inet):
         by[d.get("icao")] = d
     by.pop(None, None)
     return list(by.values())
+
+
+# ── Geometry + advisory ranking (nearest-first, on-route flag) ──────────────────
+# Pure helpers in equirectangular nm — accurate enough for ranking hazard areas
+# by distance and flagging the ones near the active route.  No hiding: callers
+# sort/label with these, they never drop an advisory.
+def nm_between(a_lat, a_lon, b_lat, b_lon):
+    dlat = (b_lat - a_lat) * 60.0
+    dlon = (b_lon - a_lon) * 60.0 * math.cos(math.radians((a_lat + b_lat) / 2.0))
+    return math.hypot(dlat, dlon)
+
+
+def point_in_polygon(lat, lon, verts):
+    inside = False
+    n = len(verts)
+    j = n - 1
+    for i in range(n):
+        yi, xi = verts[i]
+        yj, xj = verts[j]
+        if (yi > lat) != (yj > lat) and \
+                lon < (xj - xi) * (lat - yi) / ((yj - yi) or 1e-12) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _seg_distance_nm(plat, plon, alat, alon, blat, blon):
+    """Distance (nm) from point P to segment A–B, in a local nm frame at P."""
+    cl = math.cos(math.radians(plat))
+    ax, ay = (alon - plon) * 60.0 * cl, (alat - plat) * 60.0
+    bx, by = (blon - plon) * 60.0 * cl, (blat - plat) * 60.0
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 <= 1e-12:
+        return math.hypot(ax, ay)
+    t = max(0.0, min(1.0, -(ax * dx + ay * dy) / seg2))
+    return math.hypot(ax + t * dx, ay + t * dy)
+
+
+def poly_distance_nm(lat, lon, verts):
+    """0 if the point is inside the polygon, else the nearest-edge distance."""
+    if len(verts) >= 3 and point_in_polygon(lat, lon, verts):
+        return 0.0
+    best = float("inf")
+    n = len(verts)
+    for i in range(n):
+        a = verts[i]
+        b = verts[(i + 1) % n]
+        best = min(best, _seg_distance_nm(lat, lon, a[0], a[1], b[0], b[1]))
+    return best
+
+
+def route_distance_nm(lat, lon, route_pts):
+    """Min distance (nm) from a point to a route polyline, or None if no route."""
+    if not route_pts or len(route_pts) < 2:
+        return None
+    best = float("inf")
+    for i in range(len(route_pts) - 1):
+        a, b = route_pts[i], route_pts[i + 1]
+        best = min(best, _seg_distance_nm(lat, lon, a[0], a[1], b[0], b[1]))
+    return best
+
+
+def rank_advisories(items, ac_lat, ac_lon, route_pts=None, buffer_nm=30.0):
+    """Annotate + sort advisory ``items`` nearest-first with an on-route flag.
+
+    Each item: ``{text, verts?, point?}`` — ``verts`` for a polygon hazard,
+    ``point=(lat,lon)`` for a located bulletin (e.g. a NOTAM's airport), neither
+    for an un-locatable one.  Returns ``[{text, dist, on_route}]`` sorted
+    on-route first, then by distance (un-locatable last).  Nothing is dropped."""
+    out = []
+    for it in items:
+        verts = it.get("verts")
+        point = it.get("point")
+        dist = None
+        loc = None
+        if verts:
+            loc = (sum(v[0] for v in verts) / len(verts),
+                   sum(v[1] for v in verts) / len(verts))
+            if ac_lat is not None and ac_lon is not None:
+                dist = poly_distance_nm(ac_lat, ac_lon, verts)
+        elif point:
+            loc = point
+            if ac_lat is not None and ac_lon is not None:
+                dist = nm_between(ac_lat, ac_lon, point[0], point[1])
+        on_route = False
+        if loc and route_pts:
+            rd = route_distance_nm(loc[0], loc[1], route_pts)
+            on_route = rd is not None and rd <= buffer_nm
+        out.append({"text": it["text"], "dist": dist, "on_route": on_route})
+    out.sort(key=lambda e: (not e["on_route"],
+                            e["dist"] if e["dist"] is not None else 1e9))
+    return out
 
 
 # ── Encoders (test feeds / simulators; mirror the decoders) ─────────────────────

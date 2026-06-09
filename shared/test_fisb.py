@@ -513,6 +513,32 @@ def test_graphics():
           "stale pruned")
 
 
+def test_ranking():
+    case("polygon distance: inside is 0, outside is nearest edge")
+    sq = [(34.0, -112.0), (35.0, -112.0), (35.0, -111.0), (34.0, -111.0)]
+    check(fisb.poly_distance_nm(34.5, -111.5, sq) == 0.0, "inside -> 0")
+    d = fisb.poly_distance_nm(34.5, -110.0, sq)   # ~1 deg lon east of edge
+    check(40 < d < 60, f"~50 nm east of the edge, got {d:.0f}")
+
+    case("route distance + rank: on-route first, then nearest, un-located last")
+    route = [(34.0, -112.0), (36.0, -112.0)]      # a N-S line at lon -112
+    items = [
+        {"text": "FAR AIRMET", "verts": [(38.0, -108.0), (38.2, -107.8),
+                                         (37.8, -107.6)]},          # far NE
+        {"text": "ON ROUTE SIGMET", "verts": [(35.0, -112.2), (35.2, -112.0),
+                                              (34.8, -111.9)]},     # on the line
+        {"text": "TEXT ONLY", },                                    # un-located
+    ]
+    ranked = fisb.rank_advisories(items, 34.0, -112.0, route_pts=route,
+                                  buffer_nm=30.0)
+    check(ranked[0]["text"] == "ON ROUTE SIGMET" and ranked[0]["on_route"],
+          f"on-route first: {ranked[0]}")
+    check(ranked[-1]["text"] == "TEXT ONLY" and ranked[-1]["dist"] is None,
+          "un-locatable sorts last")
+    check(ranked[1]["text"] == "FAR AIRMET" and not ranked[1]["on_route"],
+          "far one not flagged on-route")
+
+
 def test_encoders():
     case("encode_text_uplink round-trips through the decoder")
     reports = ["KSEZ 091753Z 24008KT 10SM FEW120 28/06 A3001",
@@ -571,6 +597,7 @@ def main():
     test_taf_decode()
     test_advisories()
     test_graphics()
+    test_ranking()
     test_encoders()
     test_merge()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))

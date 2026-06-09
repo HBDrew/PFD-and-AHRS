@@ -10523,6 +10523,69 @@ def _wx_open_graphic_text(g):
                        "bulletins": store.advisories(kind) if store else []}
 
 
+def _notam_locate(text):
+    """Best-effort (lat, lon) for a NOTAM from an airport id in its text."""
+    for raw in text.replace("!", " ").split():
+        tok = raw.strip(".,:;/").upper()
+        if tok.isalpha() and 3 <= len(tok) <= 4:
+            for cand in ((tok, "K" + tok) if len(tok) == 3 else (tok,)):
+                r = _nav_lookup_ident(cand)
+                if r:
+                    return (r[1], r[2])
+    return None
+
+
+def _active_route_pts():
+    """Active route polyline (FPL remaining, else the D2 leg), or None."""
+    fpl = _fpl_render_remaining() or []
+    if len(fpl) >= 2:
+        return [(la, lo) for (la, lo, _i) in fpl]
+    nav = disp.get("nav") or {}
+    if nav.get("ident") and nav.get("lat") is not None:
+        wpt = (float(nav["lat"]), float(nav["lon"]))
+        al, ao = nav.get("act_lat"), nav.get("act_lon")
+        if al and ao:
+            return [(float(al), float(ao)), wpt]
+        if disp.get("lat") is not None:
+            return [(float(disp["lat"]), float(disp["lon"])), wpt]
+    return None
+
+
+def _advisory_list(kind):
+    """Advisory bulletins for ``kind``, ranked nearest-first with an on-route
+    tag (graphical-paired located by polygon; NOTAMs by airport id; text-only
+    last).  Nothing is hidden."""
+    store = _fisb_store()
+    if store is None:
+        return []
+    items, seen = [], set()
+    for g in store.graphics():
+        if _HAZARD_KIND.get(g.get("hazard"), "AIRMET") != kind or not g.get("text"):
+            continue
+        seen.add(g["text"].strip())
+        items.append({"text": g["text"], "verts": g.get("vertices")})
+    for t in store.advisories(kind):
+        if t.strip() in seen:
+            continue
+        item = {"text": t}
+        if kind == "NOTAM":
+            loc = _notam_locate(t)
+            if loc:
+                item["point"] = loc
+        items.append(item)
+    ranked = _fisb.rank_advisories(items, disp.get("lat"), disp.get("lon"),
+                                   route_pts=_active_route_pts())
+    out = []
+    for e in ranked:
+        parts = []
+        if e["on_route"]:
+            parts.append("ON ROUTE")
+        if e["dist"] is not None:
+            parts.append(f"{e['dist']:.0f} nm")
+        out.append(f"[{' · '.join(parts) or 'area n/a'}]  {e['text']}")
+    return out
+
+
 def _nearest_taf(lat, lon):
     """(icao, raw, dist_nm) of the nearest station with a TAF, or None."""
     store = _fisb_store()
@@ -10622,8 +10685,8 @@ def _wx_menu_hit(x, y):
                 if nt:
                     disp["wx_taf"] = {"icao": nt[0], "dist": nt[2]}
         elif store:
-            disp["wx_text"] = {"title": f"{kind} — area",
-                               "bulletins": store.advisories(kind)}
+            disp["wx_text"] = {"title": f"{kind} — nearest first",
+                               "bulletins": _advisory_list(kind)}
         return
     disp["wx_menu"] = None
 
