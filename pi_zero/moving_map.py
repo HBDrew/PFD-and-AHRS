@@ -589,6 +589,48 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
         pygame.draw.lines(surf, color, False, pts, 1)
 
 
+# ── Cached border rasterisation ─────────────────────────────────────────────
+# Rasterising the 10m admin_0/admin_1 polylines is CPU-bound and the dominant
+# MET-page cost at wide zoom (~57 ms on the Pi Zero 2W).  Cache the rendered
+# lines into a surface keyed by a fine (~3 px) centre quantum + range +
+# rotation, so a parked map blits one surface; during a pan we shift the last
+# raster instead of rebuilding so borders stay on screen and track the map.
+_border_cache = {"key": None, "surf": None, "blat": 0.0, "blon": 0.0}
+
+
+def _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
+                         range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
+                         sin_r, cos_r, rot_deg, fast):
+    x, y, w, h = rect
+    show_state = state_lines is not None and \
+        settings.get("map_show_state_lines", True)
+    show_ctry = country_lines is not None and \
+        settings.get("map_show_country_lines", True)
+    if not show_state and not show_ctry:
+        return
+    qdeg = max(1e-6, 3.0 / max(0.01, px_per_nm) / _NM_PER_DEG_LAT)
+    qlat = round(lat / qdeg)
+    qlon = round(lon / (qdeg / cos_lat))
+    key = (qlat, qlon, round(range_nm, 1), round(rot_deg / 2.0),
+           show_state, show_ctry, w, h)
+    c = _border_cache
+    if c["surf"] is None or (not fast and c["key"] != key):
+        bs = pygame.Surface((w, h), pygame.SRCALPHA)
+        lcx, lcy = cx - x, cy - y
+        if show_state:
+            _draw_polylines(bs, state_lines, range_nm, lat, lon, cos_lat,
+                            lcx, lcy, px_per_nm, sin_r, cos_r, _STATE_LINE)
+        if show_ctry:
+            _draw_polylines(bs, country_lines, range_nm, lat, lon, cos_lat,
+                            lcx, lcy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+        c.update(key=key, surf=bs, blat=lat, blon=lon)
+    e_nm = (c["blon"] - lon) * _NM_PER_DEG_LAT * cos_lat
+    n_nm = (c["blat"] - lat) * _NM_PER_DEG_LAT
+    dx = (e_nm * cos_r - n_nm * sin_r) * px_per_nm
+    dy = -(e_nm * sin_r + n_nm * cos_r) * px_per_nm
+    surf.blit(c["surf"], (x + dx, y + dy))
+
+
 # ── NEXRAD reflectivity raster ──────────────────────────────────────────────
 _NEXRAD_ALPHA = 150          # overlay opacity (0-255) — see through to terrain
 # Cache of the scaled+dimmed (north-up) surface so the per-frame cost is a
@@ -1149,16 +1191,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # microseconds at any range.  Country lines paint after state lines so
     # international borders stack visibly on top of admin_1 polygons that
     # happen to share the perimeter (e.g. US/Canada).
-    if (state_lines is not None
-            and settings.get("map_show_state_lines", True)
-            and range_nm >= 20):
-        _draw_polylines(surf, state_lines, range_nm, lat, lon, cos_lat,
-                        cx, cy, px_per_nm, sin_r, cos_r, _STATE_LINE)
-    if (country_lines is not None
-            and settings.get("map_show_country_lines", True)
-            and range_nm >= 20):
-        _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
-                        cx, cy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+    if range_nm >= 20:
+        _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
+                             range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
+                             sin_r, cos_r, rot_deg, fast)
     if _PERF_SECT:
         _pt = _ps("borders", _pt)
 
