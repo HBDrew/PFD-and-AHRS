@@ -2978,10 +2978,11 @@ def handle_event(event, demo_mode):
             apt = _mfd_find_airport(tx, ty)
             if apt:
                 ident, alat, alon = apt
-                wx, wx_d = _wx_for_airport(ident, alat, alon)
+                wx, wx_d, wx_b = _wx_for_airport(ident, alat, alon)
                 if wx:
                     disp["mfd_pick"] = {"airport": ident, "metar": dict(wx),
-                                        "wx_dist_nm": wx_d}
+                                        "wx_dist_nm": wx_d,
+                                        "wx_dir": _compass8(wx_b)}
                 else:
                     _nav_open_confirm(ident, "pfd")
             elif disp["ds"].get("map_show_metar"):
@@ -11194,19 +11195,30 @@ def _mfd_find_metar(tap_x, tap_y, tap_px=28):
     return best
 
 
+_COMPASS8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def _compass8(deg):
+    """Degrees → 8-point compass (general direction, not an exact radial)."""
+    if deg is None:
+        return ""
+    return _COMPASS8[int((deg + 22.5) % 360 // 45)]
+
+
 def _wx_for_airport(ident, alat, alon):
     """Best METAR to show for a tapped airport: the station whose ICAO matches
-    the field, else the nearest station to it.  Returns (metar_dict, dist_nm)
-    — dist 0 for an on-field match — or (None, None) if no METARs are loaded.
-    Lets the picker offer weather on any page, even for fields with no AWOS,
-    by falling back to the closest reporting station."""
+    the field, else the nearest station to it.  Returns (metar_dict, dist_nm,
+    bearing_deg) — dist 0 / bearing None for an on-field match — or
+    (None, None, None) if no METARs are loaded.  Lets the picker offer weather
+    on any page, even for fields with no AWOS, by falling back to the closest
+    reporting station (with its distance + general direction)."""
     metars = disp.get("weather", {}).get("metars") or []
     if not metars:
-        return None, None
+        return None, None, None
     ident_u = (ident or "").upper()
     for m in metars:
         if str(m.get("icao", "")).upper() == ident_u:
-            return m, 0.0
+            return m, 0.0, None
     best, best_d = None, 1e9
     for m in metars:
         la, lo = m.get("lat"), m.get("lon")
@@ -11217,7 +11229,14 @@ def _wx_for_airport(ident, alat, alon):
         d = math.hypot(dlat, dlon)
         if d < best_d:
             best_d, best = d, m
-    return best, (None if best is None else best_d)
+    if best is None:
+        return None, None, None
+    # Bearing from the field out to the station (where the weather actually is).
+    bla, blo = best["lat"], best["lon"]
+    ndlat = bla - alat
+    ndlon = (blo - alon) * math.cos(math.radians((bla + alat) / 2.0))
+    brg = math.degrees(math.atan2(ndlon, ndlat)) % 360.0
+    return best, best_d, brg
 
 
 def _mfd_find_airport(tap_x, tap_y, tap_px=38):
@@ -11335,7 +11354,7 @@ def _draw_mfd_pick(surf):
     icao = (pick.get("metar") or {}).get("icao", "WX")
     ident = pick.get("airport", "")
     dist = pick.get("wx_dist_nm")
-    wx_label = (f"WX  {icao} · {dist:.0f}nm"
+    wx_label = (f"WX  {icao} · {dist:.0f}nm {pick.get('wx_dir', '')}".rstrip()
                 if dist and dist >= 2.0 else f"Weather  {icao}")
     _action_btn(surf, *wx_r, wx_label, "ok", r=8)
     _action_btn(surf, *d2_r, f"Direct →  {ident}", "warn", r=8)
