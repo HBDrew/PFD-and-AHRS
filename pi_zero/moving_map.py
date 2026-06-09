@@ -641,24 +641,71 @@ def _draw_nexrad_cells(surf, cells, project, rect):
 
 
 # ── Weather (METAR) layer ───────────────────────────────────────────────────
-def _draw_metars(surf, metars, project, rect):
+_METAR_MAX_DRAW = 160      # cap dots per frame; at wide zoom the rest are clutter
+
+
+def _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
+                 sin_r, cos_r, max_draw=_METAR_MAX_DRAW):
     """Draw METAR stations as flight-category-coloured dots (green/blue/red/
     magenta).  Most stations sit on airports, so this effectively colours the
-    field by current conditions.  ``metars`` are station dicts from
-    shared/wx.parse_metars."""
+    field by current conditions.
+
+    Vectorised: at wide zoom the WX poller pulls a ~250 nm radius (hundreds of
+    stations); project them all in one numpy pass, cull to the visible window,
+    and cap the drawn count to the nearest-to-centre rather than calling a
+    per-station projection closure in a Python loop."""
     x, y, w, h = rect
-    for m in metars:
-        la, lo = m.get("lat"), m.get("lon")
-        if la is None or lo is None:
-            continue
-        sx, sy = project(la, lo)
-        if not (x - 6 <= sx <= x + w + 6 and y - 6 <= sy <= y + h + 6):
-            continue
-        col = _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN)
-        ix, iy = int(sx), int(sy)
-        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 10)     # dark halo
-        pygame.draw.circle(surf, col, (ix, iy), 8)
-        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 8, 1)   # crisp edge
+    if not metars:
+        return
+    if not HAS_NUMPY:
+        for m in metars:
+            la, lo = m.get("lat"), m.get("lon")
+            if la is None or lo is None:
+                continue
+            e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+            n_nm = (la - lat) * _NM_PER_DEG_LAT
+            sx = cx + (e_nm * cos_r - n_nm * sin_r) * px_per_nm
+            sy = cy - (e_nm * sin_r + n_nm * cos_r) * px_per_nm
+            if not (x - 6 <= sx <= x + w + 6 and y - 6 <= sy <= y + h + 6):
+                continue
+            _metar_dot(surf, int(sx), int(sy),
+                       _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN))
+        return
+
+    rows = [m for m in metars
+            if m.get("lat") is not None and m.get("lon") is not None]
+    if not rows:
+        return
+    las = np.array([m["lat"] for m in rows], dtype=np.float64)
+    los = np.array([m["lon"] for m in rows], dtype=np.float64)
+    e_nm = (los - lon) * (_NM_PER_DEG_LAT * cos_lat)
+    n_nm = (las - lat) * _NM_PER_DEG_LAT
+    if sin_r != 0.0 or cos_r != 1.0:
+        ex = e_nm * cos_r - n_nm * sin_r
+        ny = e_nm * sin_r + n_nm * cos_r
+    else:
+        ex, ny = e_nm, n_nm
+    sx = cx + ex * px_per_nm
+    sy = cy - ny * px_per_nm
+
+    vis = ((sx >= x - 6) & (sx <= x + w + 6)
+           & (sy >= y - 6) & (sy <= y + h + 6))
+    idx = np.flatnonzero(vis)
+    if idx.size > max_draw:
+        d2 = (sx[idx] - cx) ** 2 + (sy[idx] - cy) ** 2
+        idx = idx[np.argpartition(d2, max_draw)[:max_draw]]
+    sxi = sx.astype(np.int32)
+    syi = sy.astype(np.int32)
+    for i in idx:
+        _metar_dot(surf, int(sxi[i]), int(syi[i]),
+                   _WX_CAT_COLORS.get(rows[i].get("fltcat"), _WX_UNKNOWN))
+
+
+def _metar_dot(surf, ix, iy, col):
+    """One flight-category dot: dark halo + coloured fill + crisp edge."""
+    pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 10)
+    pygame.draw.circle(surf, col, (ix, iy), 8)
+    pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 8, 1)
 
 
 _GND_STATION = (90, 210, 230)    # FIS-B ground station: teal, distinct from
@@ -1409,7 +1456,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if ground_stations and settings.get("map_show_metar", True) and not fast:
         _draw_ground_stations(surf, ground_stations, _project, font, rect)
     if metars and settings.get("map_show_metar", True) and not fast:
-        _draw_metars(surf, metars, _project, rect)
+        _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
+                     sin_r, cos_r)
     if winds_barbs and settings.get("map_show_winds", False) and not fast:
         _draw_winds_barbs(surf, winds_barbs, _project, rot_deg, rect, font)
 
