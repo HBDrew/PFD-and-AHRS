@@ -218,10 +218,17 @@ METARs (radio wins per station) and the MFD WX status line shows the split.
 | `shared/fisb.py` | FIS-B decode (DLAC text, info-frame walk, APDU), METAR parse, `FisbWeather` store, `merge_metar_sources`. | `shared/test_fisb.py` |
 | `tools/dump978_gdl90_bridge.py` | dump978 raw `+` uplink → GDL90 0x07 / UDP. `--emit-test-wx` injects synthetic METARs; `--selftest` round-trips. | `--selftest` |
 | `tools/install_dump978.sh` | Installs dump978-fa on serial 978 + the bridge as systemd units, alongside the untouched 1090 stack. | — |
+| `tools/enable_978_traffic.sh` | Adds a `uat_in` net-connector so readsb folds dump978's 978 *traffic* into its existing SBS/GDL90 output (no new decode path). | — |
 
 Enable on a receiver Pi: `sudo bash tools/install_dump978.sh`.  Stage 1 is text
 weather (METAR/SPECI); winds/AIRMET/SIGMET/NOTAM text and the FIS-B NEXRAD
 raster are the next stages.
+
+**978 traffic (bonus):** dump978 also receives UAT *traffic* (the `-` downlink
+frames).  `sudo bash tools/enable_978_traffic.sh` points readsb at dump978's
+raw port (`uat_in`), so those aircraft merge into readsb's SBS output and reach
+the display over the existing `adsb-gdl90` bridge — 978 traffic on the same path
+as 1090, no extra decoder.
 
 **Planned:**
 - Optional track-up rotation for the NEXRAD raster (cached per heading) if
