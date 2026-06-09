@@ -339,6 +339,9 @@ disp["weather"] = {
 # When set (by tapping a METAR dot on the MFD), holds the station dict for
 # the decoded-METAR readout panel.  None = no panel.
 disp["wx_popup"] = None
+# When set, holds a tapped airport + its (own or nearest) METAR so the pilot
+# picks Weather readout vs Direct-To.  None = no chooser.
+disp["mfd_pick"] = None
 # In-progress user-waypoint entry — populated by the +LAT/LON entry
 # screen (which pre-fills the lat/lon fields with the current aircraft
 # position so the same path also handles "mark a point HERE").
@@ -2858,8 +2861,8 @@ def handle_event(event, demo_mode):
         if len(_active_fingers) > _multitouch_max_fingers:
             _multitouch_max_fingers = len(_active_fingers)
             # The first finger may have started an MFD pan / airport-tap
-            # drag.  Cancel it so the eventual finger-up doesn't fire
-            # _mfd_airport_tap or finish a pan from the first finger's
+            # drag.  Cancel it so the eventual finger-up doesn't fire an
+            # airport/METAR tap or finish a pan from the first finger's
             # path.  Lets a two-finger hold cleanly enter setup mode.
             _mfd_drag = None
 
@@ -2964,12 +2967,27 @@ def handle_event(event, demo_mode):
         d = _mfd_drag
         _mfd_drag = None
         if not d["is_drag"]:
-            # Tap: when the WX overlay is up, a tap near a METAR station
-            # opens its decoded readout; otherwise fall through to the
-            # airport hit-test (direct-to).  Nothing nearby → no-op.
-            if not (disp["ds"].get("map_show_metar")
-                    and _mfd_metar_tap(*d["pos"])):
-                _mfd_airport_tap(*d["pos"])
+            # A tap (not a pan).  Tapping an airport — on ANY page — offers a
+            # choice of Weather or Direct-To, since on a cross-country you
+            # almost always want the field's WX too.  We show the field's own
+            # METAR if it has one, else the nearest reporting station (labelled
+            # with distance).  With no METARs loaded it's a straight Direct-To.
+            # A tap on a bare METAR dot (WX overlay up, no airport under the
+            # finger) opens the weather readout directly.
+            tx, ty = d["pos"]
+            apt = _mfd_find_airport(tx, ty)
+            if apt:
+                ident, alat, alon = apt
+                wx, wx_d = _wx_for_airport(ident, alat, alon)
+                if wx:
+                    disp["mfd_pick"] = {"airport": ident, "metar": dict(wx),
+                                        "wx_dist_nm": wx_d}
+                else:
+                    _nav_open_confirm(ident, "pfd")
+            elif disp["ds"].get("map_show_metar"):
+                met = _mfd_find_metar(tx, ty)
+                if met:
+                    disp["wx_popup"] = dict(met)
         return True
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
@@ -3780,6 +3798,10 @@ def handle_event(event, demo_mode):
 
         # ── MFD taps (display_mode == "mfd" while mode == "pfd") ──────────
         if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+            # The airport/METAR chooser is up → its buttons take the tap.
+            if disp.get("mfd_pick"):
+                _mfd_pick_hit(x, y)
+                return True
             # A METAR readout is up → any tap dismisses it.
             if disp.get("wx_popup"):
                 disp["wx_popup"] = None
@@ -5853,16 +5875,14 @@ def _wx_view():
 
 def _update_weather():
     """Pull the latest METAR snapshot from the background poller into
-    disp["weather"] and mirror link diagnostics into cs.  Polling only runs
-    when a weather overlay (METAR or NEXRAD) is actually selected — saves
-    CPU + network the rest of the time."""
+    disp["weather"] and mirror link diagnostics into cs.  METARs are cheap
+    (text, ~120 s refresh) and feed the airport-tap weather picker on *every*
+    map page, so the poller runs continuously — not just when the METAR
+    overlay is up.  (NEXRAD, the heavy radar raster, stays gated to its own
+    overlay in _update_nexrad.)"""
     if _wx_client is None:
         return
-    ds = disp["ds"]
-    show = bool(ds.get("map_show_metar") or ds.get("map_show_nexrad"))
-    _wx_client.paused = not show
-    if not show:
-        return
+    _wx_client.paused = False
     w = disp["weather"]
     w["metars"] = _wx_client.snapshot()
     w["online"] = _wx_client.connected
@@ -10197,6 +10217,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _mfd_draw_source_status(surf)
     # METAR readout panel (drawn last so it sits over the map + chrome).
     _draw_wx_popup(surf)
+    _draw_mfd_pick(surf)
 
 
 def _wrap_text(text, font, max_w):
@@ -11144,12 +11165,11 @@ def _mfd_chrome_hit(x, y):
     return False
 
 
-def _mfd_metar_tap(tap_x, tap_y, tap_px=26):
-    """Hit-test METAR station dots against a screen tap.  On a hit, store the
-    station in disp["wx_popup"] (drawn as a readout panel) and return True."""
+def _mfd_find_metar(tap_x, tap_y, tap_px=28):
+    """Nearest METAR station within tap_px of the tap, or None."""
     metars = disp.get("weather", {}).get("metars") or []
     if not metars:
-        return False
+        return None
     range_nm = int(disp["ds"].get("map_zoom_nm", 10))
     if range_nm <= 0:
         range_nm = 10
@@ -11171,28 +11191,51 @@ def _mfd_metar_tap(tap_x, tap_y, tap_px=26):
         if d2 < best_d2:
             best_d2 = d2
             best = m
-    if best is None:
-        return False
-    disp["wx_popup"] = dict(best)
-    return True
+    return best
 
 
-def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
-    """Hit-test airports against a screen tap.  Uses the same projection
-    moving_map.render() uses, and matches its drawing gates so taps
-    only consider airports that are actually visible on screen:
+def _wx_for_airport(ident, alat, alon):
+    """Best METAR to show for a tapped airport: the station whose ICAO matches
+    the field, else the nearest station to it.  Returns (metar_dict, dist_nm)
+    — dist 0 for an on-field match — or (None, None) if no METARs are loaded.
+    Lets the picker offer weather on any page, even for fields with no AWOS,
+    by falling back to the closest reporting station."""
+    metars = disp.get("weather", {}).get("metars") or []
+    if not metars:
+        return None, None
+    ident_u = (ident or "").upper()
+    for m in metars:
+        if str(m.get("icao", "")).upper() == ident_u:
+            return m, 0.0
+    best, best_d = None, 1e9
+    for m in metars:
+        la, lo = m.get("lat"), m.get("lon")
+        if la is None or lo is None:
+            continue
+        dlat = (la - alat) * 60.0
+        dlon = (lo - alon) * 60.0 * math.cos(math.radians((la + alat) / 2.0))
+        d = math.hypot(dlat, dlon)
+        if d < best_d:
+            best_d, best = d, m
+    return best, (None if best is None else best_d)
+
+
+def _mfd_find_airport(tap_x, tap_y, tap_px=38):
+    """Nearest pickable airport within tap_px of the tap — returns
+    (ident, lat, lon) or None.  Bigger target than the dot (fiddly to hit on
+    a touch panel).  Matches the renderer's projection + visible-type /
+    zoom-band gates so only on-screen airports are pickable:
     no airports drawn past 40 nm (no taps); type-filtered by zoom band
-    above 5 nm (same filter the draw loop uses).  Returns True if an
-    airport was hit (and the nav_confirm modal was opened)."""
+    above 5 nm (same filter the draw loop uses)."""
     if _airports is None:
-        return False
+        return None
     range_nm = int(disp["ds"].get("map_zoom_nm", 10))
     # Past 40 nm moving_map skips airports entirely — accept no tap
     # there so a finger landing on empty terrain doesn't D2 to an
     # invisible airport (most often hit while reaching for the orient
     # toggle at top-right of the MFD).
     if range_nm > 40 or range_nm <= 0:
-        return False
+        return None
     # Zoom-band type filter mirrors moving_map's drawing logic.
     if range_nm > 20:
         allowed_band = {"L"}
@@ -11220,9 +11263,9 @@ def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
     nearby = apt_mod.query_nearby(_airports, cen_lat, cen_lon,
                                   radius_nm=range_nm * 1.4)
     if nearby is None or len(nearby) == 0:
-        return False
+        return None
     best_d2 = (tap_px + 1) ** 2
-    best = None
+    best = None      # (ident, lat, lon)
     if hasattr(nearby, "dtype"):
         # Same MAX_AIRPORTS_DRAWN cap as the renderer — taps can't pick
         # an airport that was decimated out of the visible list.
@@ -11236,12 +11279,12 @@ def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
                 continue
             if not apt_types.get(atype, False):
                 continue
-            sx, sy = project(float(nearby["lat"][i]),
-                             float(nearby["lon"][i]))
+            la, lo = float(nearby["lat"][i]), float(nearby["lon"][i])
+            sx, sy = project(la, lo)
             d2 = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
             if d2 < best_d2:
                 best_d2 = d2
-                best = str(nearby["ident"][i])
+                best = (str(nearby["ident"][i]), la, lo)
             considered += 1
     else:
         considered = 0
@@ -11253,16 +11296,72 @@ def _mfd_airport_tap(tap_x, tap_y, tap_px=22):
                 continue
             if not apt_types.get(atype, False):
                 continue
-            sx, sy = project(float(r.lat), float(r.lon))
+            la, lo = float(r.lat), float(r.lon)
+            sx, sy = project(la, lo)
             d2 = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
             if d2 < best_d2:
                 best_d2 = d2
-                best = r.ident
+                best = (r.ident, la, lo)
             considered += 1
-    if best is None:
-        return False
-    _nav_open_confirm(best, "pfd")
-    return True
+    return best
+
+
+def _mfd_pick_rects():
+    """Panel + two button rects for the coincident airport/METAR chooser."""
+    pw, ph = min(360, DISPLAY_W - 24), 196
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    bw, bh = pw - 32, 50
+    wx_r = (px + 16, py + 52, bw, bh)
+    d2_r = (px + 16, py + 52 + bh + 12, bw, bh)
+    return (px, py, pw, ph), wx_r, d2_r
+
+
+def _draw_mfd_pick(surf):
+    """Chooser when a tap lands on an airport (+ its own or nearest METAR):
+    the pilot picks the Weather readout or Direct-To."""
+    pick = disp.get("mfd_pick")
+    if not pick:
+        return
+    (px, py, pw, ph), wx_r, d2_r = _mfd_pick_rects()
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, "What here?", 18, (210, 220, 230), bold=True,
+          cx=DISPLAY_W // 2, cy=py + 24)
+    icao = (pick.get("metar") or {}).get("icao", "WX")
+    ident = pick.get("airport", "")
+    dist = pick.get("wx_dist_nm")
+    wx_label = (f"WX  {icao} · {dist:.0f}nm"
+                if dist and dist >= 2.0 else f"Weather  {icao}")
+    _action_btn(surf, *wx_r, wx_label, "ok", r=8)
+    _action_btn(surf, *d2_r, f"Direct →  {ident}", "warn", r=8)
+    _text(surf, "tap outside to cancel", 13, (140, 150, 160),
+          cx=DISPLAY_W // 2, cy=py + ph - 14)
+
+
+def _mfd_pick_hit(x, y):
+    """Handle a tap while the airport/METAR chooser is up."""
+    pick = disp.get("mfd_pick")
+    if not pick:
+        return
+    _, wx_r, d2_r = _mfd_pick_rects()
+
+    def _in(rc):
+        return rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]
+    if _in(wx_r):
+        disp["wx_popup"] = dict(pick.get("metar") or {})
+        disp["mfd_pick"] = None
+    elif _in(d2_r):
+        ident = pick.get("airport", "")
+        disp["mfd_pick"] = None
+        if ident:
+            _nav_open_confirm(ident, "pfd")
+    else:
+        disp["mfd_pick"] = None      # tap outside cancels
 
 
 def _mfd_apply_drag(d, dx_px, dy_px):
