@@ -55,6 +55,7 @@ import wx as _wx
 import fisb as _fisb
 import nexrad as _nexrad
 import mapoverlay as _ovl
+import perf as _perf_mod
 from terrain import get_elevation_ft
 from svt_renderer import render_svt as render_svt_pygame
 
@@ -484,6 +485,7 @@ def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
 _sse_client  = None
 _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
 _traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traffic_source
+_perf = _perf_mod.PerfGrab()   # frame-timing sampler (no-op unless PFD_PERF set)
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
 _taf_client  = None   # AwcPoller (internet TAF backfill) when weather enabled
 _airsig_client = None # AwcPoller (internet AIRMET/SIGMET backfill)
@@ -14936,6 +14938,17 @@ def main():
         _flip()
         _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
+
+        # Field perf grab (PFD_PERF=1) — render vs flip percentiles per window,
+        # tagged with the view so a slow page/zoom is obvious in the summary.
+        if _perf.enabled:
+            _ptag = disp.get("display_mode", "pfd")
+            if _ptag == "mfd":
+                _ptag = (f"mfd {_map_overlay_state(disp['ds'])} "
+                         f"{int(_mfd_last_range or 0)}nm"
+                         + (" pan" if (_mfd_drag and _mfd_drag.get('is_drag'))
+                            else ""))
+            _perf.add((_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0, tag=_ptag)
 
         # Print frame timing every 60 frames so we can diagnose bottlenecks
         if not hasattr(main, '_frame_n'):

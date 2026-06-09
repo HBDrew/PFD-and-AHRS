@@ -42,6 +42,8 @@ import wx as _wx
 import fisb as _fisb
 import nexrad as _nexrad
 import mapoverlay as _ovl
+import perf as _perf_mod
+_perf = _perf_mod.PerfGrab()   # frame-timing sampler (no-op unless PFD_PERF set)
 from terrain import (
     get_elevation_ft, get_elevation_ft_combined,
     coarse_tile_list, coarse_tile_url, coarse_tile_path, coarse_disk_stats,
@@ -13311,6 +13313,17 @@ def main():
         _flip()
         _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
+
+        # Field perf grab (PFD_PERF=1) — render vs flip percentiles per window,
+        # tagged with the view so a slow page/zoom stands out in the summary.
+        if _perf.enabled:
+            _ptag = disp.get("display_mode", "pfd")
+            if _ptag == "mfd":
+                _ptag = (f"mfd {_ovl.state(disp['ds'])} "
+                         f"{int(disp['ds'].get('map_zoom_nm', 0))}nm"
+                         + (" pan" if (_mfd_drag and _mfd_drag.get('is_drag'))
+                            else ""))
+            _perf.add((_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0, tag=_ptag)
 
         # Print frame timing every 60 frames so we can diagnose bottlenecks
         if not hasattr(main, '_frame_n'):
