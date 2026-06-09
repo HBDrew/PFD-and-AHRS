@@ -173,6 +173,21 @@ _tint_cache: dict = {}
 _TINT_CACHE_MAX = 6
 _TINT_N = 64       # elevation samples per side; smoothscaled up to fit
 
+# Cached darkening veil keyed by (w, h).  On the big full-screen MFD this is a
+# multi-MB SRCALPHA surface; re-allocating + filling it every frame (the veil
+# is NOT skipped during a fast pan) was a major source of SDL surface churn —
+# the main reason wide-zoom panning on the MET page felt heavier than piZ.
+# One entry in practice (the map rect size is fixed at runtime).
+_veil_cache: dict = {}
+
+# Cached airport ident labels keyed by (ident, font id).  Each font.render is a
+# real cost on the big MFD; caching lets repeated frames reuse rendered labels.
+# Capped (LRU) so a long flight doesn't grow it unbounded as the visible set
+# shifts.  (Airports only draw <=40 nm, but this keeps close-range pan smooth.)
+import collections as _collections_mm
+_APT_LABEL_CACHE_MAX = 256
+_apt_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
+
 
 def _quantise_centre(lat, lon, range_nm):
     """Snap the centre to ~10% of the visible range so light pan motion
@@ -954,9 +969,14 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
                     surf.blit(overlay_r, o_rect)
 
-    # Slightly darker veil under vector layers so labels read cleanly
-    veil = pygame.Surface((w, h), pygame.SRCALPHA)
-    veil.fill((0, 0, 0, 60))
+    # Slightly darker veil under vector layers so labels read cleanly.  Cached
+    # by (w, h) so panning doesn't re-allocate + fill a full-screen SRCALPHA
+    # surface every frame (the dominant per-frame churn at wide zoom).
+    veil = _veil_cache.get((w, h))
+    if veil is None:
+        veil = pygame.Surface((w, h), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 60))
+        _veil_cache[(w, h)] = veil
     surf.blit(veil, (x, y))
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
@@ -1090,6 +1110,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # weather picture — drop the airport dots/labels so the flight-category
     # METAR dots aren't fighting the white airport symbols for the same pixels.
     # (Off the overlay, both draw: white airports + always-on METAR dots.)
+    MAX_AIRPORTS_DRAWN = 60
     if (not fast and settings.get("map_show_airports", True)
             and not wx_active
             and airports_arr is not None and range_nm <= 40):
@@ -1108,7 +1129,14 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
             def _r(v):    # scale dot radius for the big full-screen MFD
                 return max(1, int(round(v * symbol_scale)))
+            # query_nearby returns nearest-first, so the cap drops the farthest
+            # fields — bounds the worst case in dense metros without thinning the
+            # richer set the big screen is meant to show.  More generous than
+            # piZ's 40 (more pixels to fill).
+            drawn = 0
             for i in range(len(nearby)):
+                if drawn >= MAX_AIRPORTS_DRAWN:
+                    break
                 atype = str(types[i])
                 if (airport_types_visible is not None
                         and atype not in airport_types_visible):
@@ -1126,13 +1154,25 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                                        _r(4) if atype in ("M", "L") else _r(3))
                 # Dots show to 40 nm (the big MFD has the room).  Labels: all
                 # types within 10 nm; only M/L out to 20 nm so the wider view
-                # stays readable without hiding the dots themselves.
+                # stays readable without hiding the dots themselves.  Rendered
+                # idents are cached (font.render is a real cost repeated every
+                # frame for the same fields while parked over an area).
+                ident_str = str(ids[i])
                 if (font is not None
-                        and str(ids[i]).strip().upper() != _d2_ident
+                        and ident_str.strip().upper() != _d2_ident
                         and (range_nm <= 10
                              or (range_nm <= 20 and atype in ("M", "L")))):
-                    lbl = font.render(str(ids[i]), True, _APT_PUB)
+                    cache_key = (ident_str, id(font))
+                    lbl = _apt_label_cache.get(cache_key)
+                    if lbl is None:
+                        lbl = font.render(ident_str, True, _APT_PUB)
+                        _apt_label_cache[cache_key] = lbl
+                        if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                            _apt_label_cache.popitem(last=False)
+                    else:
+                        _apt_label_cache.move_to_end(cache_key)
                     surf.blit(lbl, (ix + _r(5) + 2, iy - 7))
+                drawn += 1
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:
