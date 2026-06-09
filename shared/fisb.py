@@ -163,7 +163,7 @@ def decode_apdu(frame):
         if len(frame) < 4:
             return None
         hours = ((frame[1] & 0x03) << 3) | (frame[2] >> 5)
-        minutes = frame[2] & 0x1f          # 5-bit minutes (coarse)
+        minutes = ((frame[2] & 0x1f) << 1) | (frame[3] >> 7)   # 6-bit minutes
         offset = 4
     elif t_opt == 2:
         if len(frame) < 5:
@@ -752,12 +752,35 @@ def encode_nexrad_block(block_num, intensities, sf=0, ns=False):
     return bytes(out)
 
 
+def _encode_apdu_header(product_id, valid_hm=None):
+    """APDU header bytes — the inverse of ``decode_apdu``'s header read.
+
+    With no time, a 2-byte ``t_opt=0`` header.  With ``valid_hm=(hours,
+    minutes)``, a 4-byte ``t_opt=1`` header carrying the product valid time in
+    the same hours(5)+minutes(5) layout ``decode_apdu`` reads (minutes coarse to
+    5 bits — matching the simplified decode flagged for real-frame validation)."""
+    if valid_hm is None:
+        return bytes([(product_id >> 6) & 0x1f,
+                      (product_id & 0x3f) << 2])
+    hours, minutes = valid_hm
+    hours &= 0x1f
+    minutes &= 0x3f
+    return bytes([
+        (1 << 5) | ((product_id >> 6) & 0x1f),               # S=0, t_opt=1
+        ((product_id & 0x3f) << 2) | ((hours >> 3) & 0x03),
+        ((hours & 0x07) << 5) | ((minutes >> 1) & 0x1f),
+        (minutes & 0x01) << 7,                               # 6th minute bit (offset=4)
+    ])
+
+
 def encode_nexrad_uplink(block_num, intensities, sf=0, station=None,
-                         product_id=63, total=432):
-    """One NEXRAD block as a UAT uplink payload (for the simulator / tests)."""
+                         product_id=63, total=432, valid_hm=None):
+    """One NEXRAD block as a UAT uplink payload (for the simulator / tests).
+
+    ``valid_hm=(hours, minutes)`` stamps the APDU with a product valid time so
+    the receipt-vs-valid age path can be exercised end to end."""
     block = encode_nexrad_block(block_num, intensities, sf)
-    apdu = bytes([(product_id >> 6) & 0x1f,
-                  (product_id & 0x3f) << 2]) + block
+    apdu = _encode_apdu_header(product_id, valid_hm) + block
     return _pack_uplink(product_id, apdu, station, total)
 
 
@@ -782,6 +805,22 @@ def _obs_age_min(parsed, now):
         return max(0.0, (now - obs_epoch) / 60.0)
     except (ValueError, OverflowError):
         return None
+
+
+def valid_age_min(valid_min, now=None):
+    """Age in minutes of a product whose valid time is ``valid_min`` (UTC
+    minute-of-day, 0-1439), given wall-clock ``now`` (epoch s).  Handles the
+    midnight wrap (a 23:5x product seen just after 00:00 is minutes old, not
+    nearly a day).  Returns None if ``valid_min`` is None."""
+    if valid_min is None:
+        return None
+    now = now if now is not None else time.time()
+    tm = time.gmtime(now)
+    now_min = tm.tm_hour * 60 + tm.tm_min + tm.tm_sec / 60.0
+    age = now_min - valid_min
+    if age < -1.0:                  # product time "ahead" -> it's from before midnight
+        age += 1440.0
+    return max(0.0, age)
 
 
 def _station_from_parsed(parsed, lat, lon, now):
@@ -951,7 +990,7 @@ class FisbWeather:
         self._advisories = {k: {} for k in self.ADVISORY_KINDS}  # kind -> {text: recv}
         self._graphics = {}                  # key -> (graphic_dict, recv_monotonic)
         self._winds = {}                     # station -> (winds_dict, recv_monotonic)
-        self._nexrad = {}                    # block_num -> (cells, recv_monotonic)
+        self._nexrad = {}                    # block_num -> (cells, recv_monotonic, valid_min)
 
     def ingest_gdl90_msg(self, msg, now_mono=None):
         """Decode one ``kind=="uplink"`` GDL90 message and fold its weather +
@@ -984,7 +1023,14 @@ class FisbWeather:
             if apdu.get("product_id") in NEXRAD_PRODUCTS:
                 blk = decode_nexrad_block(apdu["data"])
                 if blk is not None:
-                    nexrad[blk["block_num"]] = blk["cells"]
+                    # Capture the product *valid* time from the APDU header (when
+                    # present) — for NEXRAD this is the mosaic generation time,
+                    # which can lag receipt by minutes.  Surfacing it is what
+                    # keeps stale radar from looking current.
+                    vmin = None
+                    if apdu.get("hours") is not None and apdu.get("minutes") is not None:
+                        vmin = apdu["hours"] * 60 + apdu["minutes"]
+                    nexrad[blk["block_num"]] = (blk["cells"], vmin)
                 continue
             if apdu.get("product_id") in GRAPHICS_PRODUCTS:
                 graphics.extend(decode_graphic_records(apdu["data"]))
@@ -1035,8 +1081,8 @@ class FisbWeather:
             for station, w in winds.items():
                 self._winds[station] = (w, now_mono)
                 self.winds_count += 1
-            for bnum, cells in nexrad.items():
-                self._nexrad[bnum] = (cells, now_mono)
+            for bnum, (cells, vmin) in nexrad.items():
+                self._nexrad[bnum] = (cells, now_mono, vmin)
                 self.nexrad_count += 1
 
     # ── Internet backfill ──────────────────────────────────────────────────────
@@ -1125,14 +1171,41 @@ class FisbWeather:
         ``nexrad_expire_s``.  Each cell: ``{lat, lon, dlat, dlon, i}``."""
         now_mono = now_mono if now_mono is not None else time.monotonic()
         with self._lock:
-            stale = [k for k, (_c, recv) in self._nexrad.items()
+            stale = [k for k, (_c, recv, _v) in self._nexrad.items()
                      if now_mono - recv > self.nexrad_expire_s]
             for k in stale:
                 del self._nexrad[k]
             out = []
-            for cells, _r in self._nexrad.values():
+            for cells, _r, _v in self._nexrad.values():
                 out.extend(cells)
         return out
+
+    def nexrad_status(self, now=None, now_mono=None):
+        """Provenance of the current FIS-B radar picture, or ``None`` when no
+        fresh blocks: ``{n_blocks, recv_age_s, valid_age_min}``.
+
+        ``valid_age_min`` is the *oldest* (worst-case) product valid time across
+        the contributing blocks — the conservative number to badge, since a
+        FIS-B NEXRAD mosaic's valid time can lag its broadcast/receipt by
+        minutes.  ``None`` when no block carried a timestamp.  Caveat: the APDU
+        time decode is the approximate layout flagged for real-frame validation,
+        so treat the figure as indicative until pinned to live frames."""
+        now = now if now is not None else time.time()
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            stale = [k for k, (_c, recv, _v) in self._nexrad.items()
+                     if now_mono - recv > self.nexrad_expire_s]
+            for k in stale:
+                del self._nexrad[k]
+            if not self._nexrad:
+                return None
+            items = list(self._nexrad.values())
+        newest_recv = max(recv for _c, recv, _v in items)
+        recv_age_s = max(0.0, now_mono - newest_recv)
+        ages = [valid_age_min(v, now) for _c, _r, v in items if v is not None]
+        valid_age = max(ages) if ages else None
+        return {"n_blocks": len(items), "recv_age_s": recv_age_s,
+                "valid_age_min": valid_age}
 
     def advisories(self, kind=None, now_mono=None):
         """Active advisory bulletin texts (AIRMET/SIGMET/NOTAM).  ``kind`` filters

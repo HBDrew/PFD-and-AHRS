@@ -10178,14 +10178,29 @@ def _mfd_draw_source_status(surf):
         _text(surf, txt, 13, col, bold=True, x=x, y=y)
         _mfd_wx_status_rect = (x - 6, y - 6, f.size(txt)[0] + 14, 28)
         y += 32
-    if ds.get("map_show_nexrad") and _nexrad_client is not None:
-        if _nexrad_client.connected:
-            txt = f"NEX{age(_nexrad_client)}"
-            col = (60, 220, 90)
-        else:
-            txt = f"NEX …{age(_nexrad_client)}"
-            col = (220, 160, 60)
-        _text(surf, txt, 13, col, bold=True, x=x, y=y)
+    if ds.get("map_show_nexrad"):
+        if _nexrad_client is not None:
+            if _nexrad_client.connected:
+                txt = f"NEX{age(_nexrad_client)}"
+                col = (60, 220, 90)
+            else:
+                txt = f"NEX …{age(_nexrad_client)}"
+                col = (220, 160, 60)
+            _text(surf, txt, 13, col, bold=True, x=x, y=y)
+            y += 32
+        # FIS-B radar's own valid time can lag receipt — badge that age
+        # (green<10 / amber<20 / red) so stale radar never reads as current.
+        _store = _fisb_store()
+        nst = _store.nexrad_status() if _store is not None else None
+        if nst is not None:
+            va = nst.get("valid_age_min")
+            if va is None:
+                vtxt, vcol = "NEX RDR valid —", (160, 180, 200)
+            else:
+                vtxt = f"NEX RDR valid {va:.0f}m"
+                vcol = ((60, 220, 90) if va < 10 else
+                        (220, 160, 60) if va < 20 else (235, 70, 70))
+            _text(surf, vtxt, 13, vcol, bold=True, x=x, y=y)
 
 
 def _mfd_source_status_hit(x, y):

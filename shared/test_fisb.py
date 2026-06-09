@@ -558,6 +558,32 @@ def test_nexrad():
     check(store2.nexrad_cells(now_mono=mono + store2.nexrad_expire_s + 1) == [],
           "stale pruned")
 
+    case("product valid time surfaces the receipt-vs-valid age (anti-stale)")
+    import calendar
+    now = calendar.timegm((2026, 6, 9, 18, 30, 0, 0, 0, 0))    # 18:30Z
+    s = fisb.FisbWeather()
+    # mosaic stamped 18:18Z -> 12 min old at 18:30Z; minutes >31 prove 6-bit.
+    s.ingest_uplink(fisb.encode_nexrad_uplink(bn, intens, valid_hm=(18, 18),
+                                              station=(33.43, -112.01, 1)))
+    st = s.nexrad_status(now=now)
+    check(st is not None and st["n_blocks"] == 1, "status reports the block")
+    check(abs(st["valid_age_min"] - 12.0) < 0.1, f"valid age ~12: {st}")
+    s.ingest_uplink(fisb.encode_nexrad_uplink(bn + 1, intens, valid_hm=(18, 47),
+                                              station=(33.43, -112.01, 1)))
+    # oldest (worst-case) valid time wins: 18:18 (12 min) vs 18:47 (future->wrap)
+    st2 = s.nexrad_status(now=now)
+    check(st2["valid_age_min"] > 12.0, "oldest contributing block drives the age")
+    # midnight wrap: a 23:55Z mosaic seen at 00:07Z is 12 min old, not ~1 day.
+    check(abs(fisb.valid_age_min(23 * 60 + 55,
+              calendar.timegm((2026, 6, 9, 0, 7, 0, 0, 0, 0))) - 12.0) < 0.1,
+          "valid_age_min handles the midnight wrap")
+    # a block with no timestamp -> no valid age (falls back to receipt age).
+    s3 = fisb.FisbWeather()
+    s3.ingest_uplink(fisb.encode_nexrad_uplink(bn, intens,
+                                               station=(33.43, -112.01, 1)))
+    check(s3.nexrad_status(now=now)["valid_age_min"] is None,
+          "untimestamped block -> valid_age_min None")
+
 
 def test_winds_aloft():
     case("FD code decode: dir/speed/temp, >100kt, light&var")
