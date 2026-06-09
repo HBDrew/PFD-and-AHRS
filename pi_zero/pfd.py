@@ -5948,6 +5948,12 @@ def _fisb_locate(icao):
     return (r[1], r[2]) if r else None
 
 
+def _fisb_nexrad_cells():
+    """FIS-B (radio) NEXRAD intensity cells for the map, or []."""
+    store = _fisb_store()
+    return store.nexrad_cells() if store is not None else []
+
+
 _fisb_rdr_cache = []
 _fisb_rdr_at    = 0.0
 _FISB_MERGE_INTERVAL_S = 3.0     # METARs change slowly; geolocate at most this often
@@ -10305,6 +10311,8 @@ def draw_mfd(surf, connected=True, data_stale=False):
                      if disp["ds"].get("map_show_winds") else None),
         # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"] (NEX).
         nexrad=_nexrad_render_arg(),
+        nexrad_cells=(_fisb_nexrad_cells()
+                      if disp["ds"].get("map_show_nexrad") else None),
         # While dragging a pan, skip the heavy layers so the map tracks the
         # finger; they repaint on release.
         fast=bool(_mfd_drag is not None and _mfd_drag.get("is_drag")),

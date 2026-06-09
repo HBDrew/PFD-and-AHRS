@@ -613,6 +613,33 @@ def _draw_nexrad(surf, nexrad, project, px_per_nm, cos_lat, rot_deg):
     surf.blit(img, rect.topleft)
 
 
+# ── FIS-B NEXRAD cells (intensity raster from the radio) ─────────────────────
+_NEXRAD_CELL_COL = {
+    1: (2, 200, 2), 2: (1, 140, 1), 3: (245, 240, 0), 4: (245, 165, 0),
+    5: (230, 0, 0), 6: (175, 0, 0), 7: (255, 0, 255),
+}
+_NEXRAD_CELL_ALPHA = 135
+
+
+def _draw_nexrad_cells(surf, cells, project, rect):
+    """Shade FIS-B NEXRAD intensity cells as projected quads (rotation-safe)."""
+    x, y, w, h = rect
+    overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+    for c in cells:
+        la, lo, dla, dlo = c["lat"], c["lon"], c["dlat"], c["dlon"]
+        pts = [project(la, lo), project(la, lo + dlo),
+               project(la - dla, lo + dlo), project(la - dla, lo)]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        if max(xs) < x or min(xs) > x + w or max(ys) < y or min(ys) > y + h:
+            continue
+        col = _NEXRAD_CELL_COL.get(c["i"], (255, 255, 255))
+        pygame.draw.polygon(
+            overlay, (col[0], col[1], col[2], _NEXRAD_CELL_ALPHA),
+            [(int(p[0] - x), int(p[1] - y)) for p in pts])
+    surf.blit(overlay, (x, y))
+
+
 # ── Weather (METAR) layer ───────────────────────────────────────────────────
 def _draw_metars(surf, metars, project, rect):
     """Draw METAR stations as flight-category-coloured dots (green/blue/red/
@@ -893,7 +920,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            own_lat=None, own_lon=None, draw_corner_labels=True,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
            traffic=None, metars=None, nexrad=None, fast=False,
-           ground_stations=None, wx_graphics=None, winds_barbs=None):
+           ground_stations=None, wx_graphics=None, winds_barbs=None,
+           nexrad_cells=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1031,6 +1059,9 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if (nexrad is not None and settings.get("map_show_nexrad", False)
             and not fast):
         _draw_nexrad(surf, nexrad, _project, px_per_nm, cos_lat, rot_deg)
+    if (nexrad_cells and settings.get("map_show_nexrad", False)
+            and not fast):
+        _draw_nexrad_cells(surf, nexrad_cells, _project, rect)
 
     # ── State / province lines + country lines ─────────────────────────────
     # Only useful once the inset is showing whole-region context; at close

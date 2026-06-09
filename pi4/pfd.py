@@ -1800,6 +1800,12 @@ def _fisb_locate(icao):
     return (r[1], r[2]) if r else None
 
 
+def _fisb_nexrad_cells():
+    """FIS-B (radio) NEXRAD intensity cells for the map, or []."""
+    store = _fisb_store()
+    return store.nexrad_cells() if store is not None else []
+
+
 _fisb_rdr_cache = []
 _fisb_rdr_at    = 0.0
 _FISB_MERGE_INTERVAL_S = 3.0     # METARs change slowly; geolocate at most this often
@@ -12519,6 +12525,8 @@ def draw_mfd(surf, connected=True, data_stale=False):
         wx_graphics=disp.get("weather", {}).get("graphics"),
         winds_barbs=_winds_barbs() if ds.get("map_show_winds") else None,
         nexrad=_nexrad_render_arg(),
+        nexrad_cells=(_fisb_nexrad_cells()
+                      if ds.get("map_show_nexrad") else None),
         own_lat=ac_lat, own_lon=ac_lon,
         symbol_scale=2.0,            # bigger airport dots on the big MFD
         # While actively dragging a pan, skip the heavy layers (terrain
@@ -13828,6 +13836,8 @@ def render(surf, demo_mode, connected, data_stale=False):
                          if disp["ds"].get("map_show_winds") else None),
             # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"].
             nexrad=_nexrad_render_arg(),
+            nexrad_cells=(_fisb_nexrad_cells()
+                          if disp["ds"].get("map_show_nexrad") else None),
         )
         # OVLY label — bottom-left of the inset; tap there to cycle the
         # WX / Airspace overlay (traffic stays on).  Colour hints the state.
