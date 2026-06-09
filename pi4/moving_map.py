@@ -911,7 +911,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # Above 40 nm the airport dots smear into noise — the destination is
     # still marked by the D2 waypoint diamond drawn below, which is what
     # the pilot actually cares about at whole-leg scale.
+    # When the MET (or NEXRAD) overlay is active the page becomes a dedicated
+    # weather picture — drop the airport dots/labels so the flight-category
+    # METAR dots aren't fighting the white airport symbols for the same pixels.
+    # (Off the overlay, both draw: white airports + always-on METAR dots.)
     if (not fast and settings.get("map_show_airports", True)
+            and not wx_active
             and airports_arr is not None and range_nm <= 40):
         # When a field is the active Direct-To, its magenta D2 label is drawn
         # below — skip the white airport-loop label for it so the two don't
