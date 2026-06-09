@@ -3003,15 +3003,23 @@ def handle_event(event, demo_mode):
             # diamond is drawn even past the airport-dot range); otherwise
             # hit-test the drawn airport dots.
             apt = _mfd_find_d2_dest(tx, ty) or _mfd_find_airport(tx, ty)
+            met = (None if apt or not disp["ds"].get("map_show_metar")
+                   else _mfd_find_metar(tx, ty))
             if apt:
                 ident, alat, alon = apt
                 # Store the field + position; the picker resolves WX live so a
                 # post-pan fetch fills it in and far stale WX is never shown.
                 disp["mfd_pick"] = {"airport": ident, "lat": alat, "lon": alon}
-            elif disp["ds"].get("map_show_metar"):
-                met = _mfd_find_metar(tx, ty)
-                if met:
-                    disp["wx_popup"] = dict(met)
+            elif met:
+                # Bare METAR dot → the weather product picker on that station.
+                disp["wx_menu"] = {
+                    "airport": met.get("icao", ""), "icao": met.get("icao", ""),
+                    "lat": met.get("lat"), "lon": met.get("lon"),
+                    "metar": dict(met)}
+            else:
+                g = _mfd_find_graphic(tx, ty)   # tap a shaded hazard area
+                if g is not None:
+                    _wx_open_graphic_text(g)
         return True
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
@@ -10443,8 +10451,55 @@ def _draw_wx_popup(surf):
 
 
 # ── Weather product menu + TAF / advisory readouts ──────────────────────────────
+_HAZARD_KIND = {"Convective": "SIGMET", "Ash": "SIGMET"}   # else AIRMET
+
+
 def _fisb_store():
     return getattr(_adsb_client, "fisb", None) if _adsb_client else None
+
+
+def _point_in_poly(x, y, pts):
+    inside = False
+    n = len(pts)
+    j = n - 1
+    for i in range(n):
+        xi, yi = pts[i]
+        xj, yj = pts[j]
+        if (yi > y) != (yj > y) and \
+                x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-9) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _mfd_find_graphic(tap_x, tap_y):
+    """Graphical hazard area (polygon) under the tap, or None (MET overlay)."""
+    if not disp["ds"].get("map_show_metar"):
+        return None
+    gfx = disp.get("weather", {}).get("graphics") or []
+    if not gfx:
+        return None
+    cen_lat, cen_lon = _mfd_effective_center()
+    project, _ = _map_mod.make_projector(
+        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
+        _mfd_last_range, disp.get("yaw", 0.0), _mfd_last_track)
+    for g in gfx:
+        verts = g.get("vertices") or []
+        if len(verts) < 3:
+            continue
+        if _point_in_poly(tap_x, tap_y, [project(la, lo) for la, lo in verts]):
+            return g
+    return None
+
+
+def _wx_open_graphic_text(g):
+    store = _fisb_store()
+    if store is None:
+        return
+    kind = _HAZARD_KIND.get(g.get("hazard"), "AIRMET")
+    disp["wx_scroll"] = 0
+    disp["wx_text"] = {"title": f"{g.get('hazard', '')} {kind}".strip(),
+                       "bulletins": store.advisories(kind)}
 
 
 def _nearest_taf(lat, lon):
