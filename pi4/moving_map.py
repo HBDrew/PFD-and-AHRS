@@ -525,12 +525,27 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
     sx_max = sx + sw
     sy_max = sy + sh
 
+    # Decimate dense rings at wide zoom.  The 10m Natural Earth data carries
+    # far more vertices than there are pixels once a vertex spans <1 px, and
+    # both the tolist() materialisation and the line rasterisation scale with
+    # vertex count — this was the dominant MET-page cost on the Pi 4 (~27 ms).
+    # Striding the index space thins coastlines/borders with no visible change.
+    if range_nm >= 120:
+        stride = 6
+    elif range_nm >= 60:
+        stride = 3
+    elif range_nm >= 30:
+        stride = 2
+    else:
+        stride = 1
     for idx in visible_idx:
         s = int(seg_starts[idx])
         e = int(seg_starts[idx + 1])
         if e - s < 2:
             continue
-        ring = points[s:e]
+        ring = points[s:e:stride] if stride > 1 else points[s:e]
+        if len(ring) < 2:
+            continue
         # Vectorised projection: lat/lon (N×2 float32) → screen x,y in a
         # single numpy pass.  Same math as the closure `_project()` used
         # by every other vector layer, just whole-array.
@@ -1087,12 +1102,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # happen to share the perimeter (e.g. US/Canada).
     if (state_lines is not None
             and settings.get("map_show_state_lines", True)
-            and range_nm >= 20):
+            and range_nm >= 20 and not fast):
         _draw_polylines(surf, state_lines, range_nm, lat, lon, cos_lat,
                         cx, cy, px_per_nm, sin_r, cos_r, _STATE_LINE)
     if (country_lines is not None
             and settings.get("map_show_country_lines", True)
-            and range_nm >= 20):
+            and range_nm >= 20 and not fast):
         _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
                         cx, cy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
     if _PERF_SECT:
