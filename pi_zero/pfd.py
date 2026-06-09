@@ -3928,7 +3928,7 @@ def handle_event(event, demo_mode):
                 track = disp.get("track", hdg)
                 orient = disp["ds"].get("map_orient", "trk")
                 range_nm = int(disp["ds"].get("map_zoom_nm", 10))
-                rot_deg = _mfd_map._rot_deg_for(orient, hdg, track)
+                rot_deg = _mfd_map._rot_deg_for(orient, hdg, track, disp.get('speed', 0.0))
                 px_per_nm = min(DISPLAY_W, DISPLAY_H) / 2.0 / max(0.5, range_nm)
                 _mfd_drag = {
                     "down_x":   x,
@@ -10548,7 +10548,7 @@ def _mfd_find_graphic(tap_x, tap_y):
     orient = disp["ds"].get("map_orient", "trk")
     project, _ = _mfd_map.make_projector(
         (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, orient, range_nm,
-        hdg, track)
+        hdg, track, disp.get('speed', 0.0))
     best, best_area = None, None
     for g in gfx:
         verts = g.get("vertices") or []
@@ -10729,7 +10729,7 @@ def _mfd_find_winds(tap_x, tap_y, tap_px=32):
     orient = disp["ds"].get("map_orient", "trk")
     project, _ = _mfd_map.make_projector(
         (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, orient, range_nm,
-        hdg, track)
+        hdg, track, disp.get('speed', 0.0))
     best_d2, best = (tap_px + 1) ** 2, None
     for b in barbs:
         sx, sy = project(b["lat"], b["lon"])
@@ -11869,7 +11869,7 @@ def _mfd_find_metar(tap_x, tap_y, tap_px=28):
     track = disp.get("track", hdg)
     orient = disp["ds"].get("map_orient", "trk")
     project, _ = _mfd_map.make_projector(
-        rect, cen_lat, cen_lon, orient, range_nm, hdg, track)
+        rect, cen_lat, cen_lon, orient, range_nm, hdg, track, disp.get('speed', 0.0))
     best_d2 = (tap_px + 1) ** 2
     best = None
     for m in metars:
@@ -11897,7 +11897,7 @@ def _mfd_find_traffic(tap_x, tap_y, tap_px=30):
     orient = disp["ds"].get("map_orient", "trk")
     project, _ = _mfd_map.make_projector(
         (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, orient, range_nm,
-        hdg, track)
+        hdg, track, disp.get('speed', 0.0))
     best_d2 = (tap_px + 1) ** 2
     best = None
     for t in targets:
@@ -12046,7 +12046,7 @@ def _mfd_find_airport(tap_x, tap_y, tap_px=38):
     track = disp.get("track", hdg)
     orient = disp["ds"].get("map_orient", "trk")
     project, _ = _mfd_map.make_projector(
-        rect, cen_lat, cen_lon, orient, range_nm, hdg, track)
+        rect, cen_lat, cen_lon, orient, range_nm, hdg, track, disp.get('speed', 0.0))
     apt_types = {
         "S": disp["ad"].get("show_public", True),
         "M": disp["ad"].get("show_public", True),
@@ -12117,7 +12117,7 @@ def _mfd_find_d2_dest(tap_x, tap_y, tap_px=42):
     orient = disp["ds"].get("map_orient", "trk")
     project, _ = _mfd_map.make_projector(
         (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, orient,
-        range_nm, hdg, track)
+        range_nm, hdg, track, disp.get('speed', 0.0))
     sx, sy = project(float(nav["lat"]), float(nav["lon"]))
     if (sx - tap_x) ** 2 + (sy - tap_y) ** 2 <= (tap_px + 1) ** 2:
         return (ident, float(nav["lat"]), float(nav["lon"]))

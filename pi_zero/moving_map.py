@@ -858,17 +858,23 @@ def _draw_traffic(surf, traffic, project, rot_deg, px_per_nm, font,
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def _rot_deg_for(orient, hdg_deg, track_deg):
+def _rot_deg_for(orient, hdg_deg, track_deg, gs_kt=None):
     """Resolve map rotation in degrees CCW (in the math frame where +n is up).
-    Track-up uses track when valid, falls back to heading; north-up is 0."""
+    Track-up uses track when valid, falls back to heading; north-up is 0.
+
+    ``gs_kt`` (optional) applies the same below-``_TRK_MIN_KT`` gate render uses,
+    so hit-testing / panning rotate identically to what's drawn (a stale GPS
+    track at a standstill won't make a tap land in the wrong place)."""
     if orient != "trk":
         return 0.0
-    if track_deg is None or track_deg == 0.0:
+    if (track_deg is None or track_deg == 0.0
+            or (gs_kt is not None and gs_kt < _TRK_MIN_KT)):
         return float(hdg_deg or 0.0)
     return float(track_deg)
 
 
-def make_projector(rect, lat, lon, orient, range_nm, hdg_deg, track_deg):
+def make_projector(rect, lat, lon, orient, range_nm, hdg_deg, track_deg,
+                   gs_kt=None):
     """Return (project, unproject) closures bound to the given map params.
 
     project(la, lo) → (sx, sy) screen coordinates inside ``rect``.
@@ -878,7 +884,7 @@ def make_projector(rect, lat, lon, orient, range_nm, hdg_deg, track_deg):
     or apply pan-by-drag deltas in world coordinates.  Shares the same
     rotation + small-angle equirectangular math as ``render()``."""
     x, y, w, h = rect
-    rot_deg = _rot_deg_for(orient, hdg_deg, track_deg)
+    rot_deg = _rot_deg_for(orient, hdg_deg, track_deg, gs_kt)
     half_min = min(w, h) / 2
     px_per_nm = half_min / max(0.5, range_nm)
     cx, cy = x + w / 2.0, y + h / 2.0
@@ -937,20 +943,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
     pygame.draw.rect(surf, _BG, rect)
 
-    # Map rotation: track-up rotates so current track points up.
-    # Fall back to magnetic heading whenever GPS groundspeed is below
-    # the track-valid threshold (~3 kt) — at low GS, GPS track is
-    # noisy / stale / arbitrary and would make the map jitter or jump.
-    # Using hdg in that case keeps the inset rotating with the nose so
-    # the toggle is still visibly different from north-up before takeoff.
-    if orient == "trk":
-        if (track_deg is None or track_deg == 0.0
-                or (gs_kt or 0.0) < _TRK_MIN_KT):
-            rot_deg = float(hdg_deg or 0.0)
-        else:
-            rot_deg = float(track_deg)
-    else:
-        rot_deg = 0.0
+    # Map rotation: track-up rotates so current track points up, falling back
+    # to heading below ~3 kt GS (stale GPS track).  Shared with make_projector
+    # so hit-testing / panning rotate exactly like what's drawn.
+    rot_deg = _rot_deg_for(orient, hdg_deg, track_deg, gs_kt)
 
     half_min = min(w, h) / 2
     px_per_nm = half_min / max(0.5, range_nm)
