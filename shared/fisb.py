@@ -340,6 +340,155 @@ def taf_ident(rec):
     return m.group(1) if m else None
 
 
+# ── TAF decoding (raw forecast → readable per-period lines) ─────────────────────
+_RE_VALIDITY = re.compile(r"^\d{4}/\d{4}$")
+_RE_FM       = re.compile(r"^FM(\d{2})(\d{2})(\d{2})$")     # FMDDHHMM
+_RE_ISSUED   = re.compile(r"^\d{6}Z$")
+_RE_GROUP    = re.compile(r"^(FM\d{6}|BECMG|TEMPO|PROB\d{2})$")
+# Present-weather tokens (optional intensity/proximity + 1-3 two-letter codes).
+_RE_WXTOK    = re.compile(
+    r"\b([-+]|VC)?((?:MI|PR|BC|DR|BL|SH|TS|FZ|DZ|RA|SN|SG|IC|PL|GR|GS|UP|BR|"
+    r"FG|FU|VA|DU|SA|HZ|PY|PO|SQ|FC|SS|DS){1,3})\b")
+
+
+def _hhz(ddhh):
+    return f"{ddhh[2:4]}Z" if ddhh and len(ddhh) >= 4 else "?"
+
+
+def _taf_wind(text):
+    m = _RE_WIND.search(text)
+    if not m:
+        return None
+    d, s, g = m.group(1), int(m.group(2)), m.group(3)
+    if d != "VRB" and s == 0:
+        return "calm"
+    dd = "VRB" if d == "VRB" else f"{int(d):03d}°"
+    return dd + f" {s}kt" + (f" G{int(g)}" if g else "")
+
+
+def _taf_vis(text):
+    if re.search(r"\bP6SM\b", text):
+        return "6+ sm"
+    m = _RE_VIS_SM.search(text)
+    if not m:
+        return None
+    if m.group(5) is not None:                 # bare fraction "1/2SM"
+        return f"{m.group(5)}/{m.group(6)} sm"
+    whole = m.group(2)
+    if m.group(3) is not None:                  # "1 1/2SM"
+        return f"{whole} {m.group(3)}/{m.group(4)} sm"
+    return f"{'<' if m.group(1) else ''}{whole} sm"
+
+
+def _taf_sky(text):
+    layers = []
+    if re.search(r"\b(SKC|CLR|NSC|NCD)\b", text):
+        layers.append("clear")
+    for cover, base in _RE_CLOUD.findall(text):
+        layers.append(f"{cover} {int(base) * 100:,}")
+    return " / ".join(layers) if layers else None
+
+
+def _taf_summary(text):
+    """Compact human summary of one TAF group's elements."""
+    parts = []
+    w = _taf_wind(text)
+    if w:
+        parts.append(w)
+    v = _taf_vis(text)
+    if v:
+        parts.append(v)
+    wx = " ".join("".join(t) for t in _RE_WXTOK.findall(text))
+    if wx.strip():
+        parts.append(wx.strip().lower())
+    sky = _taf_sky(text)
+    if sky:
+        parts.append(sky)
+    return ", ".join(parts) if parts else "—"
+
+
+def parse_taf(raw):
+    """Parse a raw TAF into ``{icao, issued, valid_from, valid_to, periods}``,
+    where each period is ``{kind, label, summary, raw}`` (kind = INITIAL / FM /
+    BECMG / TEMPO / PROB).  Returns None if it doesn't look like a TAF."""
+    if not raw:
+        return None
+    s = re.sub(r"^\s*TAF\s+(AMD\s+|COR\s+)?", "", raw.strip().upper())
+    toks = s.split()
+    if len(toks) < 3 or not re.match(r"^[A-Z][A-Z0-9]{3}$", toks[0]):
+        return None
+    icao = toks[0]
+    issued = next((t for t in toks[1:4] if _RE_ISSUED.match(t)), None)
+    vi = next((i for i, t in enumerate(toks[1:5], 1) if _RE_VALIDITY.match(t)),
+              None)
+    if vi is None:
+        return None
+    vfrom, vto = toks[vi].split("/")
+    body = toks[vi + 1:]
+
+    periods = []
+    cur = {"kind": "INITIAL", "from": vfrom, "to": vto, "prob": None, "toks": []}
+    i = 0
+    while i < len(body):
+        t = body[i]
+        if _RE_FM.match(t):
+            periods.append(cur)
+            cur = {"kind": "FM", "from": t[2:8], "to": None, "prob": None,
+                   "toks": []}
+            i += 1
+            continue
+        if t in ("BECMG", "TEMPO") or re.match(r"^PROB\d{2}$", t):
+            periods.append(cur)
+            kind = t if t in ("BECMG", "TEMPO") else "PROB"
+            prob = t[4:] if t.startswith("PROB") else None
+            j = i + 1
+            # PROB may be followed by TEMPO, then the DDHH/DDHH window.
+            if kind == "PROB" and j < len(body) and body[j] == "TEMPO":
+                j += 1
+            frm = to = None
+            if j < len(body) and _RE_VALIDITY.match(body[j]):
+                frm, to = body[j].split("/")
+                j += 1
+            cur = {"kind": kind, "from": frm, "to": to, "prob": prob,
+                   "toks": []}
+            i = j
+            continue
+        cur["toks"].append(t)
+        i += 1
+    periods.append(cur)
+
+    out = []
+    for g in periods:
+        text = " ".join(g["toks"])
+        if g["kind"] == "INITIAL":
+            label = f"{_hhz(g['from'])}–{_hhz(g['to'])}"
+        elif g["kind"] == "FM":
+            f = g["from"]
+            label = f"From {f[2:4]}:{f[4:6]}Z"
+        elif g["kind"] == "BECMG":
+            label = f"Becoming by {_hhz(g['to'])}"
+        elif g["kind"] == "TEMPO":
+            label = f"Temp {_hhz(g['from'])}–{_hhz(g['to'])}"
+        else:  # PROB
+            label = f"{g['prob']}% {_hhz(g['from'])}–{_hhz(g['to'])}"
+        out.append({"kind": g["kind"], "label": label,
+                    "summary": _taf_summary(text), "raw": text})
+    return {"icao": icao, "issued": issued,
+            "valid_from": vfrom, "valid_to": vto, "periods": out}
+
+
+def taf_lines(raw):
+    """Readable lines for a TAF: a validity header + one line per period.
+    Returns [] if the text doesn't parse as a TAF."""
+    p = parse_taf(raw)
+    if not p:
+        return []
+    lines = [f"{p['icao']} valid {_hhz(p['valid_from'])}–{_hhz(p['valid_to'])}"]
+    for g in p["periods"]:
+        lines.append(f"{g['label']}:  {g['summary']}")
+    return lines
+
+
 def _obs_age_min(parsed, now):
     """Minutes since the METAR's DDHHMMZ stamp, using ``now`` (epoch seconds,
     UTC) to resolve the day-of-month.  Handles the month wrap when the report

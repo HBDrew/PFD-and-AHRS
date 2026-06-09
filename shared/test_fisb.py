@@ -353,6 +353,38 @@ def test_ground_station():
     check(gss == [], "station pruned past station_expire_s")
 
 
+def test_taf_decode():
+    case("parse_taf splits periods and decodes elements")
+    raw = ("TAF KPHX 091720Z 0918/1024 28015G25KT 1 1/2SM BR OVC007 "
+           "FM092200 25008KT P6SM SCT100 "
+           "TEMPO 0922/1002 2SM -SHRA BKN030 "
+           "PROB30 1002/1006 VRB06KT 1/2SM TSRA OVC015")
+    p = fisb.parse_taf(raw)
+    check(p is not None and p["icao"] == "KPHX", "station")
+    check((p["valid_from"], p["valid_to"]) == ("0918", "1024"), "validity")
+    kinds = [g["kind"] for g in p["periods"]]
+    check(kinds == ["INITIAL", "FM", "TEMPO", "PROB"], f"period kinds {kinds}")
+
+    init = p["periods"][0]
+    check("280° 15kt G25" in init["summary"], f"initial wind: {init['summary']}")
+    check("1 1/2 sm" in init["summary"], "initial vis fraction")
+    check("OVC 700" in init["summary"], "initial ceiling decoded")
+
+    fm = p["periods"][1]
+    check(fm["label"] == "From 22:00Z", f"FM label {fm['label']}")
+    check("6+ sm" in fm["summary"] and "SCT 10,000" in fm["summary"],
+          f"FM summary {fm['summary']}")
+
+    pr = p["periods"][3]
+    check(pr["label"].startswith("30% "), f"PROB label {pr['label']}")
+
+    case("taf_lines: header + one line per period")
+    lines = fisb.taf_lines(raw)
+    check(len(lines) == 5, f"1 header + 4 periods, got {len(lines)}")
+    check(lines[0].startswith("KPHX valid 18Z–24Z"), f"header {lines[0]}")
+    check(fisb.taf_lines("not a taf") == [], "non-TAF -> []")
+
+
 def test_classify_and_taf():
     case("classify_text routes each product type")
     check(fisb.classify_text("KSEZ 091753Z 24008KT 10SM 28/06 A3001") == "METAR",
@@ -451,6 +483,7 @@ def main():
     test_store()
     test_ground_station()
     test_classify_and_taf()
+    test_taf_decode()
     test_encoders()
     test_merge()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))

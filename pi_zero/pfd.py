@@ -10366,7 +10366,12 @@ def _draw_wx_popup(surf):
     f16 = _get_font(16)
     raw = m.get("raw", "")
     raw_lines = _wrap_text(raw, f16, pw - 36)[:3] if raw else []
-    taf_lines = _wrap_text(taf, f16, pw - 36)[:6] if taf else []
+    # Decode the TAF into readable per-period lines (wrap each to the panel).
+    taf_lines = []
+    if taf:
+        for ln in _fisb.taf_lines(taf):
+            taf_lines.extend(_wrap_text(ln, f16, pw - 36))
+        taf_lines = taf_lines[:8]
 
     ph = 60 + len(rows) * 28
     if raw_lines:
