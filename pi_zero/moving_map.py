@@ -634,6 +634,34 @@ def _draw_metars(surf, metars, project, rect):
         pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 8, 1)   # crisp edge
 
 
+_GND_STATION = (90, 210, 230)    # FIS-B ground station: teal, distinct from
+                                 # category dots / white airports / traffic
+
+
+def _draw_ground_stations(surf, stations, project, font, rect):
+    """Draw the FIS-B ground station(s) being heard as an upward transmitter
+    triangle + 'FISB <age>s' label — the "where's my weather from" cue and the
+    live reception indicator in one."""
+    x, y, w, h = rect
+    r = 4
+    for s in stations:
+        la, lo = s.get("lat"), s.get("lon")
+        if la is None or lo is None:
+            continue
+        sx, sy = project(la, lo)
+        if not (x - 8 <= sx <= x + w + 8 and y - 8 <= sy <= y + h + 8):
+            continue
+        ix, iy = int(sx), int(sy)
+        pts = [(ix, iy - r), (ix - r, iy + r), (ix + r, iy + r)]
+        pygame.draw.polygon(surf, (5, 5, 5), pts)
+        pygame.draw.polygon(surf, _GND_STATION, pts, 2)
+        pygame.draw.line(surf, _GND_STATION, (ix, iy - r), (ix, iy - r - r), 1)
+        if font is not None:
+            age = s.get("age_s")
+            lbl = "FISB" if age is None else f"FISB {int(age)}s"
+            surf.blit(font.render(lbl, True, _GND_STATION), (ix + r + 3, iy - 7))
+
+
 # ── ADS-B traffic layer ─────────────────────────────────────────────────────
 _TFC_COLORS = {"alert": _TFC_ALERT, "proximate": _TFC_PROXIMATE,
                "other": _TFC_OTHER}
@@ -757,7 +785,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            range_label=None, state_lines=None, country_lines=None,
            own_lat=None, own_lon=None, draw_corner_labels=True,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
-           traffic=None, metars=None, nexrad=None, fast=False):
+           traffic=None, metars=None, nexrad=None, fast=False,
+           ground_stations=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1235,6 +1264,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # ── Weather (METAR station dots) ───────────────────────────────────────
     if metars and settings.get("map_show_metar", True) and not fast:
         _draw_metars(surf, metars, _project, rect)
+    if ground_stations and settings.get("map_show_metar", True) and not fast:
+        _draw_ground_stations(surf, ground_stations, _project, font, rect)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Drawn above map features (incl. weather) but below the range ring +

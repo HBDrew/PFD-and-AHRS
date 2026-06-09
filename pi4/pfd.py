@@ -1851,6 +1851,9 @@ def _update_weather():
     w["online"] = (_wx_client.connected and not radio_only) or bool(rdr)
     w["n"]      = len(w["metars"])
     w["n_inet"] = w["n"] - w["n_rdr"]
+    # FIS-B ground stations we're hearing (radio reception cue + diagnostic).
+    _store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
+    w["stations"] = _store.ground_stations() if _store is not None else []
     cs = disp["cs"]
     cs["wx_online"]   = _wx_client.connected
     cs["wx_rx"]       = _wx_client.rx_count
@@ -11806,6 +11809,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
         airspaces=_airspaces,
         traffic=_traffic_to_draw(),
         metars=disp.get("weather", {}).get("metars"),
+        ground_stations=disp.get("weather", {}).get("stations"),
         nexrad=_nexrad_render_arg(),
         own_lat=ac_lat, own_lon=ac_lon,
         symbol_scale=2.0,            # bigger airport dots on the big MFD
@@ -13105,6 +13109,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             traffic=_traffic_to_draw(),
             # METAR station dots — gated by ds["map_show_metar"] (MET / OVLY).
             metars=disp.get("weather", {}).get("metars"),
+            ground_stations=disp.get("weather", {}).get("stations"),
             # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"].
             nexrad=_nexrad_render_arg(),
         )

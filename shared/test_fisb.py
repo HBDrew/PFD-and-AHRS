@@ -81,8 +81,25 @@ def build_app_data(frames, total=424):
     return block.ljust(total, b"\x00")[:total]
 
 
-def build_uplink_payload(app_data):
-    return (b"\x00" * fisb._UAT_HEADER_LEN) + app_data
+def build_uplink_header(lat, lon, position_valid=True, site_id=0):
+    """Encode the 8-byte UAT uplink header — inverse of decode_ground_station."""
+    raw_lat = int(round((lat % 360.0) / 360.0 * 16777216.0)) & 0x7FFFFF  # 23 bits
+    raw_lon = int(round((lon % 360.0) / 360.0 * 16777216.0)) & 0xFFFFFF  # 24 bits
+    h = bytearray(8)
+    h[0] = (raw_lat >> 15) & 0xFF
+    h[1] = (raw_lat >> 7) & 0xFF
+    h[2] = ((raw_lat << 1) & 0xFE) | ((raw_lon >> 23) & 0x01)
+    h[3] = (raw_lon >> 15) & 0xFF
+    h[4] = (raw_lon >> 7) & 0xFF
+    h[5] = ((raw_lon << 1) & 0xFE) | (0x01 if position_valid else 0x00)
+    h[6] = 0
+    h[7] = (site_id & 0x0F) << 4
+    return bytes(h)
+
+
+def build_uplink_payload(app_data, header=None):
+    head = header if header is not None else (b"\x00" * fisb._UAT_HEADER_LEN)
+    return head + app_data
 
 
 # A tiny airport DB for geolocation.
@@ -288,6 +305,54 @@ def test_store():
     check(store2.metar_stations(_locate) == [], "no coords -> not drawn")
 
 
+def test_ground_station():
+    case("uplink header position round-trips")
+    # Phoenix-ish tower.
+    hdr = build_uplink_header(33.43, -112.01, position_valid=True, site_id=5)
+    gs = fisb.decode_ground_station(hdr + b"\x00" * 100)
+    check(gs is not None and gs["position_valid"], "position valid")
+    check(abs(gs["lat"] - 33.43) < 0.01, f"lat {gs['lat']}")
+    check(abs(gs["lon"] - (-112.01)) < 0.01, f"lon {gs['lon']}")
+    check(gs["site_id"] == 5, "site id")
+
+    case("position-invalid header flagged, short payload -> None")
+    hdr0 = build_uplink_header(0, 0, position_valid=False)
+    check(fisb.decode_ground_station(hdr0 + b"\x00" * 100)["position_valid"]
+          is False, "invalid flag honoured")
+    check(fisb.decode_ground_station(b"\x00\x00") is None, "short -> None")
+
+    case("store tracks the heard station with recency + count")
+    store = fisb.FisbWeather()
+    app = build_app_data([build_info_frame(
+        fisb.FRAME_TYPE_FISB_APDU,
+        build_apdu_notime(413, dlac_encode(
+            "KPHX 091751Z 28015G25KT 10SM 22/19 A2992\x03")))])
+    payload = build_uplink_payload(
+        app, header=build_uplink_header(33.43, -112.01, site_id=5))
+    mono = time.monotonic()
+    store.ingest_uplink(payload, now_mono=mono)
+    gss = store.ground_stations(now_mono=mono)
+    check(len(gss) == 1, "one station heard")
+    check(abs(gss[0]["lat"] - 33.43) < 0.01 and gss[0]["count"] == 1,
+          "station position + count")
+    check(gss[0]["age_s"] < 0.01, "fresh (age ~0)")
+    # Same tower again → count climbs, still one station.
+    store.ingest_uplink(payload, now_mono=mono + 1.0)
+    gss = store.ground_stations(now_mono=mono + 1.0)
+    check(len(gss) == 1 and gss[0]["count"] == 2, "re-heard increments count")
+
+    case("position-invalid uplink records no station")
+    store2 = fisb.FisbWeather()
+    payload0 = build_uplink_payload(
+        app, header=build_uplink_header(0, 0, position_valid=False))
+    store2.ingest_uplink(payload0)
+    check(store2.ground_stations() == [], "no station without a valid position")
+
+    case("stations age out")
+    gss = store.ground_stations(now_mono=mono + 1.0 + store.station_expire_s + 1)
+    check(gss == [], "station pruned past station_expire_s")
+
+
 def test_merge():
     case("RDR overrides INET per station; INET backfills")
     inet = [
@@ -322,6 +387,7 @@ def main():
     test_metar_station()
     test_pipeline()
     test_store()
+    test_ground_station()
     test_merge()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))
 

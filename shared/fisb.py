@@ -392,6 +392,34 @@ def decode_gdl90_uplink(msg):
     return decode_uplink(raw[4:])           # skip id(1) + Time-of-Reception(3)
 
 
+def decode_ground_station(uplink_payload):
+    """Decode the transmitting ground station's position from the 8-byte UAT
+    uplink header (bit layout per DO-282B / dump978's uat_decode.c).
+
+    Returns ``{lat, lon, position_valid, site_id}`` or ``None`` if the payload
+    is too short.  ``lat``/``lon`` are only meaningful when ``position_valid``.
+    This is the tower you're actually hearing — both the "where's my FIS-B
+    coming from" answer and the reception indicator, straight out of the frame
+    (no station database needed).
+    """
+    f = uplink_payload
+    if not f or len(f) < 8:
+        return None
+    raw_lat = (f[0] << 15) | (f[1] << 7) | (f[2] >> 1)
+    raw_lon = ((f[2] & 0x01) << 23) | (f[3] << 15) | (f[4] << 7) | (f[5] >> 1)
+    lat = raw_lat * 360.0 / 16777216.0
+    if lat > 90:
+        lat -= 180
+    lon = raw_lon * 360.0 / 16777216.0
+    if lon > 180:
+        lon -= 360
+    return {
+        "lat": lat, "lon": lon,
+        "position_valid": bool(f[5] & 0x01),
+        "site_id": f[7] >> 4,
+    }
+
+
 def metars_from_apdus(apdus, locate, now=None):
     """Collect every METAR station dict from a list of decoded APDUs.
 
@@ -427,40 +455,56 @@ class FisbWeather:
     stamp) is recomputed on every read so the picker shows true observation age.
     """
 
-    def __init__(self, expire_s=4500.0):    # 75 min: METARs refresh hourly
-        self.expire_s = expire_s
-        self.uplink_count = 0                # GDL90 uplink frames ingested
+    def __init__(self, expire_s=4500.0, station_expire_s=120.0):
+        self.expire_s = expire_s             # 75 min: METARs refresh hourly
+        self.station_expire_s = station_expire_s   # towers rebroadcast often
+        self.uplink_count = 0                # uplink frames ingested
         self.metar_count = 0                 # METAR records parsed OK (cumulative)
         self._lock = threading.Lock()
         self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
+        self._stations = {}                  # (lat,lon) -> {.., last_mono, count}
 
     def ingest_gdl90_msg(self, msg, now_mono=None):
-        """Decode one ``kind=="uplink"`` GDL90 message and fold any METARs into
-        the store.  Cheap to call from the UDP ingest path."""
-        self._ingest_apdus(decode_gdl90_uplink(msg), now_mono)
+        """Decode one ``kind=="uplink"`` GDL90 message and fold its weather +
+        ground-station info into the store.  Cheap to call from the UDP path."""
+        if not msg or msg.get("kind") != "uplink":
+            return
+        raw = msg.get("raw")
+        if not raw or len(raw) < 4:
+            return
+        self.ingest_uplink(raw[4:], now_mono)   # drop id + Time-of-Reception
 
     def ingest_uplink(self, uplink_payload, now_mono=None):
-        """Same, from a bare 432-byte UAT uplink payload (e.g. a raw dump978
-        path that isn't wrapped in a GDL90 0x07 frame)."""
-        self._ingest_apdus(decode_uplink(uplink_payload), now_mono)
-
-    def _ingest_apdus(self, apdus, now_mono):
-        if not apdus:
+        """Ingest a bare UAT uplink payload: record the transmitting ground
+        station (from the header) and fold in any METARs (from the APDUs)."""
+        if not uplink_payload:
             return
-        self.uplink_count += 1
         now_mono = now_mono if now_mono is not None else time.monotonic()
-        new = {}
-        for apdu in apdus:
+        self.uplink_count += 1
+
+        gs = decode_ground_station(uplink_payload)
+        metars = {}
+        for apdu in decode_uplink(uplink_payload):
             if not apdu.get("data"):
                 continue
             for rec in text_records(apdu["data"]):
                 parsed = parse_metar_text(rec)
                 if parsed is not None:
-                    new[parsed["icao"]] = parsed
-        if not new:
-            return
+                    metars[parsed["icao"]] = parsed
+
         with self._lock:
-            for icao, parsed in new.items():
+            # Tower we're hearing — keyed by rounded position so one physical
+            # station de-dupes while distinct towers stay separate.
+            if gs and gs["position_valid"]:
+                key = (round(gs["lat"], 3), round(gs["lon"], 3))
+                prev = self._stations.get(key)
+                self._stations[key] = {
+                    "lat": gs["lat"], "lon": gs["lon"],
+                    "site_id": gs["site_id"],
+                    "last_mono": now_mono,
+                    "count": (prev["count"] + 1) if prev else 1,
+                }
+            for icao, parsed in metars.items():
                 self._metars[icao] = (parsed, now_mono)
                 self.metar_count += 1
 
@@ -481,6 +525,22 @@ class FisbWeather:
             if not pos or pos[0] is None or pos[1] is None:
                 continue
             out.append(_station_from_parsed(parsed, pos[0], pos[1], now))
+        return out
+
+    def ground_stations(self, now_mono=None):
+        """FIS-B ground stations heard within ``station_expire_s``, each as
+        ``{lat, lon, site_id, age_s, count}``.  Drawing these is both the
+        "where's my weather coming from" map cue and the live reception
+        indicator (a dot here == FIS-B is being received right now)."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            stale = [k for k, v in self._stations.items()
+                     if now_mono - v["last_mono"] > self.station_expire_s]
+            for k in stale:
+                del self._stations[k]
+            out = [{"lat": v["lat"], "lon": v["lon"], "site_id": v["site_id"],
+                    "age_s": now_mono - v["last_mono"], "count": v["count"]}
+                   for v in self._stations.values()]
         return out
 
     def count(self):

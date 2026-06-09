@@ -565,6 +565,37 @@ def _draw_metars(surf, metars, project, rect):
         pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 6, 1)
 
 
+_GND_STATION = (90, 210, 230)    # FIS-B ground station: teal, distinct from
+                                 # category dots / white airports / traffic
+
+
+def _draw_ground_stations(surf, stations, project, font, rect, scale=1.0):
+    """Draw the FIS-B ground station(s) currently being heard as an upward
+    transmitter triangle + 'FISB <age>s' label.  This is both the "where's my
+    weather coming from" cue and the live reception indicator (a symbol here
+    means FIS-B is arriving over the radio)."""
+    x, y, w, h = rect
+    r = max(3, int(round(4 * scale)))
+    for s in stations:
+        la, lo = s.get("lat"), s.get("lon")
+        if la is None or lo is None:
+            continue
+        sx, sy = project(la, lo)
+        if not (x - 8 <= sx <= x + w + 8 and y - 8 <= sy <= y + h + 8):
+            continue
+        ix, iy = int(sx), int(sy)
+        pts = [(ix, iy - r), (ix - r, iy + r), (ix + r, iy + r)]
+        pygame.draw.polygon(surf, (5, 5, 5), pts)        # dark backing
+        pygame.draw.polygon(surf, _GND_STATION, pts, 2)  # tower outline
+        pygame.draw.line(surf, _GND_STATION, (ix, iy - r),
+                         (ix, iy - r - r), 1)             # antenna mast
+        if font is not None:
+            age = s.get("age_s")
+            lbl = "FISB" if age is None else f"FISB {int(age)}s"
+            surf.blit(font.render(lbl, True, _GND_STATION),
+                      (ix + r + 3, iy - 7))
+
+
 # ── ADS-B traffic layer ─────────────────────────────────────────────────────
 _TFC_COLORS = {"alert": _TFC_ALERT, "proximate": _TFC_PROXIMATE,
                "other": _TFC_OTHER}
@@ -668,7 +699,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
            traffic=None, metars=None, nexrad=None,
            draw_corner_labels=True, own_lat=None, own_lon=None,
-           symbol_scale=1.0, fast=False):
+           symbol_scale=1.0, fast=False, ground_stations=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1072,6 +1103,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # no longer gates the dots themselves.  (piZ stays gated to the overlay.)
     if metars and not fast:
         _draw_metars(surf, metars, _project, rect)
+    # FIS-B ground station(s) we're hearing — with the weather picture (MET).
+    if ground_stations and settings.get("map_show_metar", False) and not fast:
+        _draw_ground_stations(surf, ground_stations, _project, font, rect,
+                              symbol_scale)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Above map features (incl. weather) but below the range ring + own-ship

@@ -224,6 +224,15 @@ Enable on a receiver Pi: `sudo bash tools/install_dump978.sh`.  Stage 1 is text
 weather (METAR/SPECI); winds/AIRMET/SIGMET/NOTAM text and the FIS-B NEXRAD
 raster are the next stages.
 
+**Receiving-station cue:** each FIS-B uplink frame carries the transmitting
+ground station's own position (the 8-byte UAT header), so the MET overlay draws
+a teal transmitter triangle ("FISB <age>s") at the tower(s) currently being
+heard.  No station database needed — it's decoded straight from the frame, and
+it doubles as the live reception indicator (a symbol here = FIS-B arriving now).
+True RSSI stays at the receiver (it's dump978 metadata, not in the broadcast,
+and the display may be a different Pi) — recency/count is the cross-network
+strength proxy.
+
 **978 traffic (bonus):** dump978 also receives UAT *traffic* (the `-` downlink
 frames).  `sudo bash tools/enable_978_traffic.sh` points readsb at dump978's
 raw port (`uat_in`), so those aircraft merge into readsb's SBS output and reach
