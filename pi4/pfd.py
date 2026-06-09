@@ -4831,28 +4831,36 @@ def handle_event(event, demo_mode):
             # A loaded Direct-To destination is tappable at ANY zoom (its
             # diamond is drawn even past the airport-dot range); otherwise
             # hit-test the drawn airport dots.
-            apt = _mfd_find_d2_dest(tx, ty) or _mfd_find_airport(tx, ty)
-            if apt:
-                ident, alat, alon = apt
-                # Store the field + position; the picker resolves WX live so a
-                # post-pan fetch fills it in and far stale WX is never shown.
-                disp["mfd_pick"] = {"airport": ident, "lat": alat, "lon": alon}
+            if _map_overlay_state(disp["ds"]) == "tfc":
+                # On the traffic page the map is about aircraft — tap one for
+                # its detail card; airports/METARs/hazards aren't hit-tested
+                # here so the traffic tap is unambiguous.
+                t = _mfd_find_traffic(tx, ty)
+                if t is not None:
+                    disp["tfc_popup"] = dict(t)
             else:
-                met = _mfd_find_metar(tx, ty)
-                if met:
-                    # Bare METAR dot → the weather product picker on that
-                    # station (works on any page/zoom the dots are drawn).
-                    disp["wx_menu"] = {
-                        "airport": met.get("icao", ""),
-                        "icao": met.get("icao", ""),
-                        "lat": met.get("lat"), "lon": met.get("lon"),
-                        "metar": dict(met)}
+                apt = _mfd_find_d2_dest(tx, ty) or _mfd_find_airport(tx, ty)
+                if apt:
+                    ident, alat, alon = apt
+                    # Store the field + position; the picker resolves WX live so
+                    # a post-pan fetch fills it in and far stale WX is dropped.
+                    disp["mfd_pick"] = {"airport": ident,
+                                        "lat": alat, "lon": alon}
                 else:
-                    # No point target — a tap inside a shaded hazard area opens
-                    # that hazard's advisory text.
-                    g = _mfd_find_graphic(tx, ty)
-                    if g is not None:
-                        _wx_open_graphic_text(g)
+                    met = _mfd_find_metar(tx, ty)
+                    if met:
+                        # Bare METAR dot → the weather product picker on that
+                        # station (any page/zoom the dots are drawn).
+                        disp["wx_menu"] = {
+                            "airport": met.get("icao", ""),
+                            "icao": met.get("icao", ""),
+                            "lat": met.get("lat"), "lon": met.get("lon"),
+                            "metar": dict(met)}
+                    else:
+                        # A tap inside a shaded hazard area opens its advisory.
+                        g = _mfd_find_graphic(tx, ty)
+                        if g is not None:
+                            _wx_open_graphic_text(g)
         return True
 
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _ss_drag is not None:
@@ -4916,6 +4924,10 @@ def handle_event(event, demo_mode):
             # A METAR readout is up → any tap dismisses it.
             if disp.get("wx_popup"):
                 disp["wx_popup"] = None
+                return True
+            # A traffic detail card is up → any tap dismisses it.
+            if disp.get("tfc_popup"):
+                disp["tfc_popup"] = None
                 return True
             r = _p4_mfd_rects()
 
@@ -11850,6 +11862,88 @@ def _mfd_find_metar(tap_x, tap_y, tap_px=30):
     return best
 
 
+def _mfd_find_traffic(tap_x, tap_y, tap_px=32):
+    """Nearest drawn ADS-B target within tap_px of the tap, or None."""
+    targets = _traffic_to_draw()
+    if not targets:
+        return None
+    cen_lat, cen_lon = _mfd_effective_center()
+    project, _ = _map_mod.make_projector(
+        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
+        _mfd_last_range, disp.get("yaw", 0.0), _mfd_last_track)
+    best_d2 = (tap_px + 1) ** 2
+    best = None
+    for t in targets:
+        la, lo = t.get("lat"), t.get("lon")
+        if la is None or lo is None:
+            continue
+        sx, sy = project(la, lo)
+        dd = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+        if dd < best_d2:
+            best_d2 = dd
+            best = t
+    return best
+
+
+def _draw_tfc_popup(surf):
+    """ADS-B target detail card (callsign, altitude, vector, range/bearing,
+    source) for the aircraft tapped on the TFC page."""
+    t = disp.get("tfc_popup")
+    if not t:
+        return
+    pw = min(560, DISPLAY_W - 40)
+    cs = (t.get("callsign") or "").strip() or str(t.get("icao", "----"))
+    threat = t.get("threat", "other")
+    hcol = {"alert": (235, 80, 80),
+            "proximate": (235, 175, 60)}.get(threat, (235, 235, 235))
+    alt, ra = t.get("alt_ft"), t.get("rel_alt_ft")
+    gs, trk, vv = t.get("gs_kt"), t.get("track_deg"), t.get("vvel_fpm")
+    rng, brg = t.get("range_nm"), t.get("bearing_deg")
+    if alt is None:
+        alt_row = "Altitude —"
+    else:
+        rel = ("" if ra is None
+               else f"   ({'+' if ra >= 0 else '−'}{abs(int(round(ra))):,} ft)")
+        alt_row = f"Altitude {int(round(alt)):,} ft{rel}"
+    if vv is None:
+        vv_row = ""
+    elif abs(vv) < 100:
+        vv_row = "Level"
+    else:
+        vv_row = f"{'Climbing' if vv > 0 else 'Descending'} {abs(int(round(vv))):,} fpm"
+    rows = [r for r in [
+        alt_row,
+        f"Speed {int(round(gs))} kt" if gs is not None else "Speed —",
+        f"Track {int(round(trk)) % 360:03d}°" if trk is not None else "Track —",
+        vv_row,
+        (f"Range {rng:.1f} nm {_compass8(brg)}".rstrip()
+         if rng is not None else ""),
+    ] if r]
+
+    ph = 60 + len(rows) * 28 + 30
+    ph = min(ph, DISPLAY_H - 24)
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, cs, 30, hcol, bold=True, x=px + 18, y=py + 12)
+    src = (t.get("src") or "").lower()
+    s_lbl = {"radio": "RADIO", "internet": "INET"}.get(src, "")
+    if s_lbl:
+        _text(surf, s_lbl, 18, (150, 180, 220), bold=True,
+              x=px + pw - 90, y=py + 18)
+    yy = py + 60
+    for rr in rows:
+        _text(surf, rr, 22, (210, 220, 230), x=px + 18, y=yy)
+        yy += 28
+    _text(surf, "tap to close", 16, (140, 150, 160),
+          cx=DISPLAY_W // 2, cy=py + ph - 14)
+
+
 def _mfd_find_airport(tap_x, tap_y, tap_px=40):
     """Nearest pickable airport within tap_px of the tap — returns
     (ident, lat, lon) or None.  Bigger target than the dot itself (fiddly to
@@ -12310,6 +12404,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _draw_wx_menu(surf)
     _draw_wx_taf(surf)
     _draw_wx_text(surf)
+    _draw_tfc_popup(surf)
 
 
 # ── MFD strip-slot chooser (tap the data strip) ───────────────────────────────
