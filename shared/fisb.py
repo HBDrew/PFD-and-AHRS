@@ -313,6 +313,8 @@ def classify_text(rec):
         return "TAF"
     if first in ("METAR", "SPECI"):
         return "METAR"
+    if first in ("WINDS", "FD"):
+        return "WINDS"
     if "AIRMET" in s:
         return "AIRMET"
     if "SIGMET" in s:
@@ -522,6 +524,66 @@ def taf_lines(raw):
     for g in p["periods"]:
         lines.append(f"{g['label']}:  {g['summary']}")
     return lines
+
+
+# ── Winds & temps aloft (FD codes → per-altitude dir/speed/temp) ────────────────
+# The FIS-B winds product is delivered as text; we decode the standard FD code
+# (ddss[±]tt) per altitude.  The bulletin envelope here is "WINDS <id> <alt>
+# <code> …" pairs (what the simulator emits); real-world FD bulletin column
+# parsing is a refinement, but the per-code decode is the standard one.
+def decode_fd_code(code, alt_ft):
+    """Decode one FD winds code at ``alt_ft`` → {alt_ft, dir, spd, temp, lv}.
+    'ddss' = dir (tens of deg) + speed kt; dd>36 means dir-=50, speed+=100;
+    '9900' = light & variable; trailing ±tt (or implied-negative tt at high
+    levels) is the temperature in °C."""
+    code = (code or "").strip().upper()
+    if len(code) < 4 or not code[:4].isdigit():
+        return None
+    if code[:4] == "9900":
+        lvl = {"alt_ft": alt_ft, "dir": None, "spd": None, "temp": None,
+               "lv": True}
+    else:
+        dd, ss = int(code[:2]), int(code[2:4])
+        spd = ss
+        if dd > 36:
+            dd -= 50
+            spd += 100
+        direction = dd * 10 or 360
+        lvl = {"alt_ft": alt_ft, "dir": direction, "spd": spd, "temp": None,
+               "lv": False}
+    rest = code[4:].strip()
+    if rest:
+        if rest[0] in "+-":
+            try:
+                lvl["temp"] = int(rest)
+            except ValueError:
+                pass
+        elif rest.lstrip("-").isdigit():
+            lvl["temp"] = -int(rest)        # high levels: sign omitted, negative
+    return lvl
+
+
+def parse_winds_aloft(text):
+    """Parse a winds-aloft record ('WINDS <id> <alt> <code> <alt> <code> …')
+    into ``{station, levels:[{alt_ft, dir, spd, temp, lv}, …]}`` or None."""
+    if not text:
+        return None
+    toks = text.split()
+    if len(toks) < 4 or toks[0].upper() not in ("WINDS", "FD"):
+        return None
+    station = toks[1].upper()
+    levels = []
+    i = 2
+    while i + 1 < len(toks):
+        try:
+            alt = int(toks[i])
+        except ValueError:
+            break
+        lvl = decode_fd_code(toks[i + 1], alt)
+        if lvl:
+            levels.append(lvl)
+        i += 2
+    return {"station": station, "levels": levels} if levels else None
 
 
 # ── FIS-B graphics (G-AIRMET / SIGMET hazard areas → polygons) ──────────────────
@@ -752,23 +814,26 @@ class FisbWeather:
 
     def __init__(self, expire_s=4500.0, station_expire_s=120.0,
                  taf_expire_s=10800.0, advisory_expire_s=14400.0,
-                 graphics_expire_s=14400.0):
+                 graphics_expire_s=14400.0, winds_expire_s=21600.0):
         self.expire_s = expire_s             # 75 min: METARs refresh hourly
         self.station_expire_s = station_expire_s   # towers rebroadcast often
         self.taf_expire_s = taf_expire_s     # 3 h: TAFs reissue ~6 h, valid ~24-30 h
         self.advisory_expire_s = advisory_expire_s  # 4 h: AIRMET/SIGMET/NOTAM text
         self.graphics_expire_s = graphics_expire_s  # 4 h: graphical hazard areas
+        self.winds_expire_s = winds_expire_s        # 6 h: winds aloft forecast
         self.uplink_count = 0                # uplink frames ingested
         self.metar_count = 0                 # METAR records parsed OK (cumulative)
         self.taf_count = 0                   # TAF records stored (cumulative)
         self.advisory_count = 0              # AIRMET/SIGMET/NOTAM records stored
         self.graphic_count = 0               # graphical hazard records stored
+        self.winds_count = 0                 # winds-aloft records stored
         self._lock = threading.Lock()
         self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
         self._tafs = {}                      # icao -> (raw_text, recv_monotonic)
         self._stations = {}                  # (lat,lon) -> {.., last_mono, count}
         self._advisories = {k: {} for k in self.ADVISORY_KINDS}  # kind -> {text: recv}
         self._graphics = {}                  # key -> (graphic_dict, recv_monotonic)
+        self._winds = {}                     # station -> (winds_dict, recv_monotonic)
 
     def ingest_gdl90_msg(self, msg, now_mono=None):
         """Decode one ``kind=="uplink"`` GDL90 message and fold its weather +
@@ -793,6 +858,7 @@ class FisbWeather:
         tafs = {}
         advisories = {k: set() for k in self.ADVISORY_KINDS}
         graphics = []
+        winds = {}
         for apdu in decode_uplink(uplink_payload):
             if not apdu.get("data"):
                 continue
@@ -809,6 +875,10 @@ class FisbWeather:
                     ident = taf_ident(rec)
                     if ident:
                         tafs[ident] = rec.strip()
+                elif kind == "WINDS":
+                    w = parse_winds_aloft(rec)
+                    if w:
+                        winds[w["station"]] = w
                 elif kind in self.ADVISORY_KINDS:
                     advisories[kind].add(rec.strip())
 
@@ -838,6 +908,9 @@ class FisbWeather:
                 key = (g["hazard"], g["geom"], tuple(g["vertices"]))
                 self._graphics[key] = (g, now_mono)
                 self.graphic_count += 1
+            for station, w in winds.items():
+                self._winds[station] = (w, now_mono)
+                self.winds_count += 1
 
     def graphics(self, now_mono=None):
         """Active graphical hazard areas (``{hazard, geom, vertices}``), pruned
@@ -876,6 +949,31 @@ class FisbWeather:
             for i in stale:
                 del self._tafs[i]
             return list(self._tafs.keys())
+
+    def winds_for(self, station, now_mono=None):
+        """Winds-aloft dict {station, levels} for a station id, or None."""
+        if not station:
+            return None
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            v = self._winds.get(station)
+            if not v:
+                return None
+            w, recv = v
+            if now_mono - recv > self.winds_expire_s:
+                del self._winds[station]
+                return None
+            return w
+
+    def winds_stations(self, now_mono=None):
+        """Station ids that currently have fresh winds aloft."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            stale = [s for s, (_w, recv) in self._winds.items()
+                     if now_mono - recv > self.winds_expire_s]
+            for s in stale:
+                del self._winds[s]
+            return list(self._winds.keys())
 
     def taf_for(self, icao, now_mono=None):
         """Raw TAF text for ``icao`` if heard within ``taf_expire_s``, else

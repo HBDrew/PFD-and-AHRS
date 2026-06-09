@@ -125,16 +125,32 @@ GRAPHICS = [
 ]
 
 
+# Winds & temps aloft (FD codes) — high stations omit the low levels.
+WINDS = [
+    ("SEZ", "WINDS SEZ 6000 2416 9000 2522+04 12000 2635-02 18000 2752-15 "
+            "24000 2867-26 30000 730438 34000 731548 39000 732156"),
+    ("PHX", "WINDS PHX 3000 2010 6000 2218 9000 2528+08 12000 2740+02 "
+            "18000 2960-12 24000 2977-25 30000 740540 34000 741750 "
+            "39000 742259"),
+    ("FLG", "WINDS FLG 9000 2615 12000 2730-04 18000 2850-17 24000 2965-28 "
+            "30000 750542 34000 751652 39000 752160"),
+    ("PRC", "WINDS PRC 9000 2518 12000 2632-03 18000 2748-16 24000 2860-27 "
+            "30000 731040 34000 731850 39000 732158"),
+]
+
+
 def build_cycle(now):
     """Return a list of UAT uplink payloads for this instant (one per station;
-    TAF stations carry their METAR + TAF together; plus area advisories and the
-    graphical hazard areas)."""
+    TAF stations carry their METAR + TAF together; plus area advisories, winds
+    aloft, and the graphical hazard areas)."""
     payloads = []
     for icao, cat, tower in SCENARIO:
         reports = [metar_for(icao, cat, now)]
         if icao in TAF_STATIONS:
             reports.append(taf_for(icao, cat, now))
         payloads.append(fisb.encode_text_uplink(reports, station=tower))
+    for _id, rec in WINDS:
+        payloads.append(fisb.encode_text_uplink([rec], station=TOWER_PHX))
     # Area advisories — one uplink each, from the Phoenix tower.
     for adv in ADVISORIES:
         payloads.append(fisb.encode_text_uplink([adv], station=TOWER_PHX))
@@ -209,10 +225,13 @@ def selftest():
     gfx = store.graphics()
     assert len(gfx) == len(GRAPHICS), f"graphics: {len(gfx)} vs {len(GRAPHICS)}"
 
+    winds = store.winds_stations()
+    assert len(winds) == len(WINDS), f"winds: {len(winds)} vs {len(WINDS)}"
+
     print(f"FISB-SIM SELFTEST PASSED ({len(got)} METARs, all categories, "
           f"{len(gss)} stations, {len(tafs)} TAFs, "
           f"{len(air)}+{len(sig)}+{len(nts)} AIRMET/SIGMET/NOTAM, "
-          f"{len(gfx)} graphics)")
+          f"{len(gfx)} graphics, {len(winds)} winds)")
 
 
 def main():

@@ -2969,6 +2969,7 @@ def handle_event(event, demo_mode):
         if not d["is_drag"]:
             disp["wx_taf"] = None
             disp["wx_text"] = None
+            disp["wx_winds"] = None
             disp["wx_scroll"] = 0
         return True
 
@@ -3839,7 +3840,7 @@ def handle_event(event, demo_mode):
             # WX readouts / menus stack on top — they take the tap first.
             # TAF / advisory readouts: start drag-or-tap (drag scrolls, tap
             # closes — handled on MOTION/UP above).
-            if disp.get("wx_taf") or disp.get("wx_text"):
+            if disp.get("wx_taf") or disp.get("wx_text") or disp.get("wx_winds"):
                 _wx_drag = {"down_y": y, "scroll0": disp.get("wx_scroll", 0),
                             "is_drag": False}
                 return True
@@ -10359,6 +10360,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _draw_mfd_pick(surf)
     _draw_wx_menu(surf)
     _draw_wx_taf(surf)
+    _draw_wx_winds(surf)
     _draw_wx_text(surf)
     _draw_tfc_popup(surf)
 
@@ -10617,6 +10619,26 @@ def _nearest_taf(lat, lon):
     return best
 
 
+def _winds_station_for(icao):
+    icao = (icao or "").upper()
+    return icao[1:] if len(icao) == 4 and icao.startswith("K") else icao
+
+
+def _nearest_winds(lat, lon):
+    store = _fisb_store()
+    if store is None or lat is None or lon is None:
+        return None
+    best = None
+    for sid in store.winds_stations():
+        r = _nav_lookup_ident("K" + sid) or _nav_lookup_ident(sid)
+        if not r:
+            continue
+        d, b = _nav_geo_dist_brg(lat, lon, r[1], r[2])
+        if best is None or d < best[1]:
+            best = (sid, d, b)
+    return best
+
+
 def _wx_menu_items():
     menu = disp.get("wx_menu") or {}
     icao = menu.get("icao") or menu.get("airport") or ""
@@ -10630,8 +10652,19 @@ def _wx_menu_items():
             taf_on = True
         else:
             taf_lbl, taf_on = "TAF", False
+    ws = _winds_station_for(icao)
+    if store and store.winds_for(ws):
+        winds_lbl, winds_on = f"WINDS  {ws}".rstrip(), True
+    else:
+        nw = _nearest_winds(menu.get("lat"), menu.get("lon"))
+        if nw:
+            winds_lbl = f"WINDS  {nw[0]} · {nw[1]:.0f} nm {_compass8(nw[2])}".rstrip()
+            winds_on = True
+        else:
+            winds_lbl, winds_on = "WINDS", False
     items = [("METAR", f"METAR  {icao}".rstrip(), menu.get("metar") is not None),
-             ("TAF", taf_lbl, taf_on)]
+             ("TAF", taf_lbl, taf_on),
+             ("WINDS", winds_lbl, winds_on)]
     for kind in ("AIRMET", "SIGMET", "NOTAM"):
         n = len(store.advisories(kind)) if store else 0
         items.append((kind, f"{kind}" + (f"  ({n})" if n else ""), n > 0))
@@ -10701,6 +10734,15 @@ def _wx_menu_hit(x, y):
                 if nt:
                     disp["wx_taf"] = {"icao": nt[0], "dist": nt[2],
                                       "brg": nt[3]}
+        elif kind == "WINDS" and store:
+            ws = _winds_station_for(icao)
+            if store.winds_for(ws):
+                disp["wx_winds"] = {"station": ws, "dist": None, "brg": None}
+            else:
+                nw = _nearest_winds(menu.get("lat"), menu.get("lon"))
+                if nw:
+                    disp["wx_winds"] = {"station": nw[0], "dist": nw[1],
+                                        "brg": nw[2]}
         elif store:
             disp["wx_text"] = {"title": f"{kind} — nearest first",
                                "bulletins": _advisory_list(kind)}
@@ -10786,6 +10828,45 @@ def _draw_wx_taf(surf):
         items.append((24, lambda s, x, y: _text(s, "No TAF.", 18,
                                                  (200, 215, 230), x=x, y=y)))
     _draw_wx_scroll_panel(surf, title, items, pw)
+
+
+def _draw_wx_winds(surf):
+    """Winds & temps aloft table (altitude / wind / temp) for a station."""
+    ww = disp.get("wx_winds")
+    if not ww:
+        return
+    station = ww.get("station", "")
+    near, brg = ww.get("dist"), ww.get("brg")
+    store = _fisb_store()
+    w = store.winds_for(station) if store else None
+    near_txt = (f" · nearest {near:.0f} nm {_compass8(brg)}".rstrip()
+                if near else "")
+    title = f"WINDS  {station}{near_txt}"
+
+    def _hdr(s, x, y):
+        _text(s, "ALT", 15, (140, 160, 180), bold=True, x=x, y=y)
+        _text(s, "WIND", 15, (140, 160, 180), bold=True, x=x + 110, y=y)
+        _text(s, "TEMP", 15, (140, 160, 180), bold=True, x=x + 250, y=y)
+    items = [(24, _hdr)]
+    if w:
+        for lv in w["levels"]:
+            if lv.get("lv"):
+                wind = "LT & VAR"
+            elif lv.get("dir") is None:
+                wind = "—"
+            else:
+                wind = f"{lv['dir']:03d}°  {lv['spd']} kt"
+            temp = "" if lv.get("temp") is None else f"{lv['temp']:+d}°C"
+
+            def _row(s, x, y, a=lv["alt_ft"], wd=wind, tp=temp):
+                _text(s, f"{a:,} ft", 17, (210, 220, 230), x=x, y=y)
+                _text(s, wd, 17, (210, 220, 230), x=x + 110, y=y)
+                _text(s, tp, 17, (190, 205, 225), x=x + 250, y=y)
+            items.append((24, _row))
+    else:
+        items.append((24, lambda s, x, y: _text(s, "No winds aloft.", 18,
+                                                 (200, 215, 230), x=x, y=y)))
+    _draw_wx_scroll_panel(surf, title, items, min(560, DISPLAY_W - 20))
 
 
 def _draw_wx_text(surf):

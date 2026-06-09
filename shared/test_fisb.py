@@ -513,6 +513,32 @@ def test_graphics():
           "stale pruned")
 
 
+def test_winds_aloft():
+    case("FD code decode: dir/speed/temp, >100kt, light&var")
+    lo = fisb.decode_fd_code("2420+10", 6000)
+    check(lo["dir"] == 240 and lo["spd"] == 20 and lo["temp"] == 10, f"low: {lo}")
+    hi = fisb.decode_fd_code("731960", 39000)   # dd 73 -> dir 230, +100kt, -60C
+    check(hi["dir"] == 230 and hi["spd"] == 119 and hi["temp"] == -60,
+          f">100kt + implied-neg temp: {hi}")
+    lv = fisb.decode_fd_code("9900", 3000)
+    check(lv["lv"] and lv["dir"] is None, "light & variable")
+
+    case("parse + store + retrieve winds aloft")
+    rec = ("WINDS SEZ 3000 2416 6000 2420+10 9000 2535+04 12000 2650-08 "
+           "18000 2780-20 24000 2895-31 30000 731445 39000 732159")
+    w = fisb.parse_winds_aloft(rec)
+    check(w["station"] == "SEZ" and len(w["levels"]) == 8, f"levels: {w}")
+    check(w["levels"][3]["alt_ft"] == 12000 and w["levels"][3]["dir"] == 260,
+          "12k level decoded")
+    store = fisb.FisbWeather()
+    store.ingest_gdl90_msg(_uplink_msg(rec + "\x03"))
+    check(store.winds_count == 1 and "SEZ" in store.winds_stations(),
+          "stored + listed")
+    got = store.winds_for("SEZ")
+    check(got and len(got["levels"]) == 8, "retrieved by station")
+    check(fisb.classify_text(rec) == "WINDS", "classified WINDS")
+
+
 def test_ranking():
     case("polygon distance: inside is 0, outside is nearest edge")
     sq = [(34.0, -112.0), (35.0, -112.0), (35.0, -111.0), (34.0, -111.0)]
@@ -597,6 +623,7 @@ def main():
     test_taf_decode()
     test_advisories()
     test_graphics()
+    test_winds_aloft()
     test_ranking()
     test_encoders()
     test_merge()
