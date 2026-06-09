@@ -525,27 +525,12 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
     sx_max = sx + sw
     sy_max = sy + sh
 
-    # Decimate dense rings at wide zoom.  The 10m Natural Earth data carries
-    # far more vertices than there are pixels once a vertex spans <1 px, and
-    # both the tolist() materialisation and the line rasterisation scale with
-    # vertex count — this was the dominant MET-page cost on the Pi 4 (~27 ms).
-    # Striding the index space thins coastlines/borders with no visible change.
-    if range_nm >= 120:
-        stride = 6
-    elif range_nm >= 60:
-        stride = 3
-    elif range_nm >= 30:
-        stride = 2
-    else:
-        stride = 1
     for idx in visible_idx:
         s = int(seg_starts[idx])
         e = int(seg_starts[idx + 1])
         if e - s < 2:
             continue
-        ring = points[s:e:stride] if stride > 1 else points[s:e]
-        if len(ring) < 2:
-            continue
+        ring = points[s:e]
         # Vectorised projection: lat/lon (N×2 float32) → screen x,y in a
         # single numpy pass.  Same math as the closure `_project()` used
         # by every other vector layer, just whole-array.
@@ -563,6 +548,50 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
         # without a per-vertex Python loop.
         pts = np.column_stack([xs, ys]).astype(np.int32).tolist()
         pygame.draw.lines(surf, color, False, pts, 1)
+
+
+# ── Cached border rasterisation ─────────────────────────────────────────────
+# Rasterising the 10m admin_0/admin_1 polylines was the dominant MET-page cost
+# on the Pi 4 (~27 ms): full quality, but redrawn from scratch every frame even
+# while the view is parked.  Cache the rendered lines into an SRCALPHA surface
+# keyed by a *fine* (≈3 px) centre quantum + range + rotation, so a stationary
+# (or slowly-drifting-at-wide-zoom) map blits one surface instead of projecting
+# thousands of vertices each frame.  No decimation → borders stay crisp.  The
+# quantum is fine enough that the small positional offset is sub-pixel-ish and
+# never visibly jumps; rebuilds happen only when the view actually moves a few
+# px, and panning skips borders entirely (handled at the call site).
+_border_cache = {"key": None, "surf": None}
+
+
+def _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
+                         range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
+                         sin_r, cos_r, rot_deg):
+    x, y, w, h = rect
+    show_state = state_lines is not None and \
+        settings.get("map_show_state_lines", True)
+    show_ctry = country_lines is not None and \
+        settings.get("map_show_country_lines", True)
+    if not show_state and not show_ctry:
+        return
+    # Quantise the centre to ~3 px of motion so a parked map reuses the surface.
+    qdeg = max(1e-6, 3.0 / max(0.01, px_per_nm) / _NM_PER_DEG_LAT)
+    qlat = round(lat / qdeg)
+    qlon = round(lon / (qdeg / cos_lat))
+    key = (qlat, qlon, round(range_nm, 1), round(rot_deg / 2.0),
+           show_state, show_ctry, w, h)
+    c = _border_cache
+    if c["key"] != key or c["surf"] is None:
+        bs = pygame.Surface((w, h), pygame.SRCALPHA)
+        # Draw in surface-local coords: centre is (w/2, h/2) inside bs.
+        lcx, lcy = cx - x, cy - y
+        if show_state:
+            _draw_polylines(bs, state_lines, range_nm, lat, lon, cos_lat,
+                            lcx, lcy, px_per_nm, sin_r, cos_r, _STATE_LINE)
+        if show_ctry:
+            _draw_polylines(bs, country_lines, range_nm, lat, lon, cos_lat,
+                            lcx, lcy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+        c["key"], c["surf"] = key, bs
+    surf.blit(c["surf"], (x, y))
 
 
 # ── NEXRAD reflectivity raster ──────────────────────────────────────────────
@@ -1100,16 +1129,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # microseconds at any range.  Country lines paint after state lines so
     # international borders stack visibly on top of admin_1 polygons that
     # happen to share the perimeter (e.g. US/Canada).
-    if (state_lines is not None
-            and settings.get("map_show_state_lines", True)
-            and range_nm >= 20 and not fast):
-        _draw_polylines(surf, state_lines, range_nm, lat, lon, cos_lat,
-                        cx, cy, px_per_nm, sin_r, cos_r, _STATE_LINE)
-    if (country_lines is not None
-            and settings.get("map_show_country_lines", True)
-            and range_nm >= 20 and not fast):
-        _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
-                        cx, cy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+    if range_nm >= 20 and not fast:
+        _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
+                             range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
+                             sin_r, cos_r, rot_deg)
     if _PERF_SECT:
         _pt = _ps("borders", _pt)
 
