@@ -4,6 +4,33 @@ Logged at the end of the radio/ADS-B session (branch
 `claude/nooelec-radio-equipment-0fuq7s`, merged to main). Context for picking
 these up cold.
 
+## Progress (branch `claude/open-items-followup-93awex`)
+
+- **Map cleanup items 1–3: done.** Airport dots are now neutral white on both
+  renderers; the big MFD draws METAR dots on every page (and the MET overlay
+  now *hides* airport dots so it reads as a clean weather-only picture — guard
+  against clutter); the doubled D2 / airport-loop label is de-duplicated.
+- **FIS-B decoder Stage 1: staged in `shared/fisb.py`** (+ `shared/test_fisb.py`,
+  63 checks). DLAC 6-bit text decode, the information-frame walk, the APDU
+  header (product id + T-opt timestamp), raw-METAR parsing → the same station
+  dicts `wx.parse_metars` emits (tagged `src="RDR"`), and a top-level bridge
+  `decode_gdl90_uplink()` / `metars_from_apdus()`. Framing + DLAC are
+  round-trip-tested; **APDU timestamps still need a sanity check against live
+  978 frames.**
+
+### FIS-B — what's left
+1. **Hardware/reception** (the prereq below): install dump978 on `--device
+   978`, get its uplink frames to the app, confirm `uplink_count` climbs.
+2. **Wire `fisb` into the app:** feed the `kind="uplink"` messages the ADS-B
+   client already sees into `fisb.decode_gdl90_uplink`, geolocate idents via the
+   loaded airports array (a `locate(icao)` closure over `airports.query_*`),
+   and merge the resulting stations into the same list the picker + MET overlay
+   draw. Prefer RDR, backfill with INET.
+3. **Source-attribution UI:** show RDR (FIS-B) vs INET counts in the WX status
+   line, same as traffic. AUTO = FIS-B preferred.
+4. **Stages 2–3:** winds aloft / AIRMET-SIGMET / NOTAM text, then FIS-B NEXRAD
+   (the block-based run-length raster).
+
 ## Big item: FIS-B weather over 978 UAT
 
 Goal: weather over the radio (no internet needed) so LTE/Starlink becomes a
