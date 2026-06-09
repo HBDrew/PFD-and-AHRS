@@ -124,6 +124,7 @@ def parse_metars(data, now=None):
             "name": (m.get("name") or "").strip(),
             "raw": (m.get("rawOb") or "").strip(),
             "age_min": age_min,
+            "src": "INET",          # internet (AWC); FIS-B tags its own "RDR"
         })
     return out
 

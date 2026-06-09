@@ -11360,6 +11360,12 @@ def _draw_wx_popup(surf):
           x=px + 18, y=py + 12)
     _text(surf, cat or "—", 26, _wx.cat_color(cat), bold=True,
           x=px + pw - 120, y=py + 15)
+    # Source: FIS-B (radio) vs internet — so the pilot knows where it came from.
+    src = (m.get("src") or "").upper()
+    if src in ("RDR", "INET"):
+        s_lbl = "FIS-B" if src == "RDR" else "INET"
+        s_col = (90, 210, 230) if src == "RDR" else (150, 180, 220)
+        _text(surf, s_lbl, 18, s_col, bold=True, x=px + pw - 120, y=py + 48)
     wd, ws, wg = m.get("wdir"), m.get("wspd"), m.get("wgst")
     if ws is None:
         wind = "Wind —"
