@@ -476,7 +476,8 @@ def test_graphics():
     case("graphic geometry round-trips (encode → decode)")
     gfx = [
         {"hazard": "Turbulence", "vertices": [(36.5, -113.0), (36.8, -110.0),
-                                              (35.0, -109.5), (34.5, -112.5)]},
+                                              (35.0, -109.5), (34.5, -112.5)],
+         "text": "AIRMET TANGO ... MOD TURB BLW FL180"},
         {"hazard": "Convective", "vertices": [(35.4, -111.9), (35.5, -111.2),
                                               (34.9, -111.0)]},
     ]
@@ -490,7 +491,10 @@ def test_graphics():
     la, lo = recs[0]["vertices"][0]
     check(abs(la - 36.5) < 0.001 and abs(lo - (-113.0)) < 0.001,
           f"vertex round-trips: {(la, lo)}")
-    check(recs[1]["hazard"] == "Convective", "second area hazard")
+    check(recs[0]["text"] == "AIRMET TANGO ... MOD TURB BLW FL180",
+          f"paired bulletin text round-trips: {recs[0]['text']}")
+    check(recs[1]["hazard"] == "Convective" and recs[1]["text"] is None,
+          "second area hazard, no text")
 
     case("store files graphics; ground station still decodes alongside")
     store = fisb.FisbWeather()

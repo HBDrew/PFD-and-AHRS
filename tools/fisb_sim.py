@@ -106,14 +106,22 @@ ADVISORIES = [
 ]
 
 
-# Graphical hazard areas (polygons) — drawn shaded on the MET page.
+# Graphical hazard areas (polygons) — drawn shaded on the MET page; each carries
+# its own paired bulletin (tap the shape to read it).
 GRAPHICS = [
     {"hazard": "Turbulence",     # high country, NE Arizona
-     "vertices": [(36.6, -113.2), (36.9, -109.8), (34.9, -109.3), (34.6, -112.8)]},
+     "vertices": [(36.6, -113.2), (36.9, -109.8), (34.9, -109.3), (34.6, -112.8)],
+     "text": ("AIRMET TANGO FOR TURB VALID UNTIL 092100. FROM 40NW PGA TO 30E "
+              "SJN TO 20S SOW TO 50W FLG. MOD TURB BTN FL180 AND FL410. "
+              "CONDS CONTG BYD 21Z THRU 03Z.")},
     {"hazard": "Convective",     # cell near Flagstaff / Sedona
-     "vertices": [(35.5, -112.0), (35.6, -111.1), (34.9, -111.0), (34.8, -112.0)]},
+     "vertices": [(35.5, -112.0), (35.6, -111.1), (34.9, -111.0), (34.8, -112.0)],
+     "text": ("CONVECTIVE SIGMET 12C VALID UNTIL 091655. AZ. FROM 30NW FLG TO "
+              "20E SEZ. ISOL TS MOV LTL. TOPS TO FL410. HAIL TO 1 IN PSBL.")},
     {"hazard": "Icing",          # north rim / Page
-     "vertices": [(37.0, -112.4), (37.1, -111.0), (36.2, -110.9), (36.1, -112.3)]},
+     "vertices": [(37.0, -112.4), (37.1, -111.0), (36.2, -110.9), (36.1, -112.3)],
+     "text": ("AIRMET ZULU FOR ICE VALID UNTIL 092100. FROM PGA TO RQE TO FLG. "
+              "MOD ICE BTN FRZLVL AND FL200. FRZLVL 090-110.")},
 ]
 
 
@@ -130,8 +138,9 @@ def build_cycle(now):
     # Area advisories — one uplink each, from the Phoenix tower.
     for adv in ADVISORIES:
         payloads.append(fisb.encode_text_uplink([adv], station=TOWER_PHX))
-    # Graphical hazard areas — one uplink, from the Phoenix tower.
-    payloads.append(fisb.encode_graphics_uplink(GRAPHICS, station=TOWER_PHX))
+    # Graphical hazard areas — one uplink each (keeps each frame small).
+    for g in GRAPHICS:
+        payloads.append(fisb.encode_graphics_uplink([g], station=TOWER_PHX))
     return payloads
 
 

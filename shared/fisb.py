@@ -552,8 +552,10 @@ def _gfx_enc_coord(deg):
 def decode_graphic_records(data):
     """Decode hazard-area geometry records from a graphical product's APDU data.
 
-    Record: hazard(1) geom(1) nverts(1) then nverts × (lat[3], lon[3]) as 24-bit
-    signed (LSB 180/2^23).  Returns ``[{hazard, geom, vertices:[(lat,lon)]}]``."""
+    Record: hazard(1) geom(1) nverts(1), then nverts × (lat[3], lon[3]) as
+    24-bit signed (LSB 180/2^23), then a 2-byte DLAC text length + that many
+    DLAC bytes (the bulletin paired with this area; 0 = none).  Returns
+    ``[{hazard, geom, vertices:[(lat,lon)], text}]``."""
     out = []
     i, n = 0, len(data)
     while i + 3 <= n:
@@ -566,9 +568,19 @@ def decode_graphic_records(data):
             verts.append((_gfx_dec_coord(data[i], data[i + 1], data[i + 2]),
                           _gfx_dec_coord(data[i + 3], data[i + 4], data[i + 5])))
             i += 6
+        if i + 2 > n:
+            break
+        tlen = (data[i] << 8) | data[i + 1]
+        i += 2
+        text = None
+        if tlen:
+            if i + tlen > n:
+                break
+            text = dlac_decode(data[i:i + tlen]).split("\x03")[0].strip() or None
+            i += tlen
         out.append({"hazard": _GFX_HAZARD.get(hazard, "Advisory"),
                     "geom": "polygon" if geom == 0 else "point",
-                    "vertices": verts})
+                    "vertices": verts, "text": text})
     return out
 
 
@@ -1015,6 +1027,9 @@ def encode_graphics_uplink(graphics, station=None, product_id=14, total=432):
         body += bytes([hz, 0, len(verts) & 0xFF])
         for la, lo in verts:
             body += _gfx_enc_coord(la) + _gfx_enc_coord(lo)
+        txt = g.get("text") or ""
+        dt = encode_dlac(txt + "\x03") if txt else b""
+        body += bytes([(len(dt) >> 8) & 0xFF, len(dt) & 0xFF]) + dt
     apdu = bytes([(product_id >> 6) & 0x1f,
                   (product_id & 0x3f) << 2]) + bytes(body)
     return _pack_uplink(product_id, apdu, station, total)

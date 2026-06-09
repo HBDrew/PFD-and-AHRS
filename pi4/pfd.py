@@ -11534,15 +11534,18 @@ def _mfd_find_graphic(tap_x, tap_y):
 
 
 def _wx_open_graphic_text(g):
-    """Open the advisory text for a tapped hazard polygon (AIRMET vs SIGMET by
-    hazard type)."""
-    store = _fisb_store()
-    if store is None:
-        return
+    """Open the bulletin for a tapped hazard polygon: the area's *own* paired
+    text when the graphic carries it, else fall back to the matching AIRMET/
+    SIGMET list."""
     kind = _HAZARD_KIND.get(g.get("hazard"), "AIRMET")
     disp["wx_scroll"] = 0
-    disp["wx_text"] = {"title": f"{g.get('hazard', '')} {kind}".strip(),
-                       "bulletins": store.advisories(kind)}
+    title = f"{g.get('hazard', '')} {kind}".strip()
+    if g.get("text"):
+        disp["wx_text"] = {"title": title, "bulletins": [g["text"]]}
+        return
+    store = _fisb_store()
+    disp["wx_text"] = {"title": title,
+                       "bulletins": store.advisories(kind) if store else []}
 
 
 def _nearest_taf(lat, lon):
