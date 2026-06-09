@@ -913,19 +913,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # the pilot actually cares about at whole-leg scale.
     if (not fast and settings.get("map_show_airports", True)
             and airports_arr is not None and range_nm <= 40):
-        # Declutter small fields as you zoom out (mirrors pi_zero so the two
-        # MFDs match, and so taps line up with what's drawn): large fields
-        # only at wide zoom, adding mediums then smalls as you zoom in.  The
-        # tap hit-test in pfd.py uses these exact bands + cap.
-        MAX_AIRPORTS_DRAWN = 40
-        if range_nm > 20:
-            allowed_types = {"L"}
-        elif range_nm > 10:
-            allowed_types = {"M", "L"}
-        elif range_nm > 5:
-            allowed_types = {"S", "M", "L"}
-        else:
-            allowed_types = None    # all visible types
         nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
                                        radius_nm=range_nm * 1.4)
         if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
@@ -936,13 +923,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
             def _r(v):    # scale dot radius for the big full-screen MFD
                 return max(1, int(round(v * symbol_scale)))
-            drawn = 0
             for i in range(len(nearby)):
-                if drawn >= MAX_AIRPORTS_DRAWN:
-                    break
                 atype = str(types[i])
-                if allowed_types is not None and atype not in allowed_types:
-                    continue
                 if (airport_types_visible is not None
                         and atype not in airport_types_visible):
                     continue
@@ -957,12 +939,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 else:
                     pygame.draw.circle(surf, _APT_PUB, (ix, iy),
                                        _r(4) if atype in ("M", "L") else _r(3))
-                # Labels out to 20 nm — at that band only M/L fields are
-                # drawn, so it stays readable.
-                if font is not None and range_nm <= 20:
+                # Dots show to 40 nm (the big MFD has the room).  Labels: all
+                # types within 10 nm; only M/L out to 20 nm so the wider view
+                # stays readable without hiding the dots themselves.
+                if font is not None and (range_nm <= 10
+                        or (range_nm <= 20 and atype in ("M", "L"))):
                     lbl = font.render(str(ids[i]), True, _APT_PUB)
                     surf.blit(lbl, (ix + _r(5) + 2, iy - 7))
-                drawn += 1
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:

@@ -4752,7 +4752,10 @@ def handle_event(event, demo_mode):
             # Direct-To.  A tap on a bare METAR dot (WX overlay up, no airport
             # under the finger) opens the weather readout directly.
             tx, ty = d["pos"]
-            apt = _mfd_find_airport(tx, ty)
+            # A loaded Direct-To destination is tappable at ANY zoom (its
+            # diamond is drawn even past the airport-dot range); otherwise
+            # hit-test the drawn airport dots.
+            apt = _mfd_find_d2_dest(tx, ty) or _mfd_find_airport(tx, ty)
             if apt:
                 ident, alat, alon = apt
                 wx, wx_d, wx_b = _wx_for_airport(ident, alat, alon)
@@ -11371,23 +11374,16 @@ def _mfd_find_metar(tap_x, tap_y, tap_px=30):
 
 
 def _mfd_find_airport(tap_x, tap_y, tap_px=40):
-    """Nearest pickable airport ident within tap_px of the tap, or None.
-    Bigger target than the dot itself — airports are fiddly to hit on a
-    touch panel.  Uses the same projection + visible-type / zoom-band gates
-    as the renderer so only on-screen airports are pickable."""
+    """Nearest pickable airport within tap_px of the tap — returns
+    (ident, lat, lon) or None.  Bigger target than the dot itself (fiddly to
+    hit on a touch panel).  Matches what the renderer DRAWS: every visible
+    type out to 40 nm (the pi4 MFD shows all dots, no zoom-band declutter), so
+    anything you can see you can tap."""
     if _airports is None:
         return None
     range_nm = _mfd_last_range or 10
     if range_nm > 40 or range_nm <= 0:
         return None
-    if range_nm > 20:
-        allowed_band = {"L"}
-    elif range_nm > 10:
-        allowed_band = {"M", "L"}
-    elif range_nm > 5:
-        allowed_band = {"S", "M", "L"}
-    else:
-        allowed_band = None
     cen_lat, cen_lon = _mfd_effective_center()
     project, _ = _map_mod.make_projector(
         (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
@@ -11407,13 +11403,8 @@ def _mfd_find_airport(tap_x, tap_y, tap_px=40):
     best_d2 = (tap_px + 1) ** 2
     best = None      # (ident, lat, lon)
     if hasattr(nearby, "dtype"):
-        considered = 0
         for i in range(len(nearby)):
-            if considered >= 40:
-                break
             atype = str(nearby["atype"][i])
-            if allowed_band is not None and atype not in allowed_band:
-                continue
             if not apt_types.get(atype, False):
                 continue
             la, lo = float(nearby["lat"][i]), float(nearby["lon"][i])
@@ -11422,15 +11413,9 @@ def _mfd_find_airport(tap_x, tap_y, tap_px=40):
             if dd < best_d2:
                 best_d2 = dd
                 best = (str(nearby["ident"][i]), la, lo)
-            considered += 1
     else:
-        considered = 0
         for r in nearby:
-            if considered >= 40:
-                break
             atype = getattr(r, "atype", "")
-            if allowed_band is not None and atype not in allowed_band:
-                continue
             if not apt_types.get(atype, False):
                 continue
             la, lo = float(r.lat), float(r.lon)
@@ -11439,8 +11424,26 @@ def _mfd_find_airport(tap_x, tap_y, tap_px=40):
             if dd < best_d2:
                 best_d2 = dd
                 best = (r.ident, la, lo)
-            considered += 1
     return best
+
+
+def _mfd_find_d2_dest(tap_x, tap_y, tap_px=46):
+    """If a Direct-To is loaded, return its (ident, lat, lon) when the tap
+    lands on the destination waypoint — at ANY zoom, since the D2 diamond is
+    drawn even past the 40 nm airport-dot range.  Lets you pull up the
+    destination's WX / re-confirm D2 without zooming in.  Else None."""
+    nav = disp.get("nav") or {}
+    ident = nav.get("ident")
+    if not ident or nav.get("lat") is None or nav.get("lon") is None:
+        return None
+    cen_lat, cen_lon = _mfd_effective_center()
+    project, _ = _map_mod.make_projector(
+        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
+        _mfd_last_range or 10, disp.get("yaw", 0.0), _mfd_last_track)
+    sx, sy = project(float(nav["lat"]), float(nav["lon"]))
+    if (sx - tap_x) ** 2 + (sy - tap_y) ** 2 <= (tap_px + 1) ** 2:
+        return (ident, float(nav["lat"]), float(nav["lon"]))
+    return None
 
 
 _COMPASS8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")

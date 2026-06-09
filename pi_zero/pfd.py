@@ -2975,7 +2975,10 @@ def handle_event(event, demo_mode):
             # A tap on a bare METAR dot (WX overlay up, no airport under the
             # finger) opens the weather readout directly.
             tx, ty = d["pos"]
-            apt = _mfd_find_airport(tx, ty)
+            # A loaded Direct-To destination is tappable at ANY zoom (its
+            # diamond is drawn even past the airport-dot range); otherwise
+            # hit-test the drawn airport dots.
+            apt = _mfd_find_d2_dest(tx, ty) or _mfd_find_airport(tx, ty)
             if apt:
                 ident, alat, alon = apt
                 wx, wx_d, wx_b = _wx_for_airport(ident, alat, alon)
@@ -11323,6 +11326,29 @@ def _mfd_find_airport(tap_x, tap_y, tap_px=38):
                 best = (r.ident, la, lo)
             considered += 1
     return best
+
+
+def _mfd_find_d2_dest(tap_x, tap_y, tap_px=42):
+    """If a Direct-To is loaded, return its (ident, lat, lon) when the tap
+    lands on the destination waypoint — at ANY zoom, since the D2 diamond is
+    drawn even past the airport-dot range.  Lets you pull up the destination's
+    WX / re-confirm D2 without zooming in.  Else None."""
+    nav = disp.get("nav") or {}
+    ident = nav.get("ident")
+    if not ident or nav.get("lat") is None or nav.get("lon") is None:
+        return None
+    range_nm = int(disp["ds"].get("map_zoom_nm", 10)) or 10
+    cen_lat, cen_lon = _mfd_effective_center()
+    hdg = disp.get("yaw", 0.0)
+    track = disp.get("track", hdg)
+    orient = disp["ds"].get("map_orient", "trk")
+    project, _ = _mfd_map.make_projector(
+        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, orient,
+        range_nm, hdg, track)
+    sx, sy = project(float(nav["lat"]), float(nav["lon"]))
+    if (sx - tap_x) ** 2 + (sy - tap_y) ** 2 <= (tap_px + 1) ** 2:
+        return (ident, float(nav["lat"]), float(nav["lon"]))
+    return None
 
 
 def _mfd_pick_rects():
