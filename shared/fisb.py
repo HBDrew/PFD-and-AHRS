@@ -553,6 +553,12 @@ def taf_lines(raw):
 # (ddss[±]tt) per altitude.  The bulletin envelope here is "WINDS <id> <alt>
 # <code> …" pairs (what the simulator emits); real-world FD bulletin column
 # parsing is a refinement, but the per-code decode is the standard one.
+# Standard winds-aloft forecast altitudes (FD levels) the UI offers — one
+# source of truth shared by the radio FD decode, the internet (Open-Meteo)
+# interpolation, and the altitude selector.
+WINDS_ALTS = (3000, 6000, 9000, 12000, 18000, 24000, 30000, 34000, 39000)
+
+
 def decode_fd_code(code, alt_ft):
     """Decode one FD winds code at ``alt_ft`` → {alt_ft, dir, spd, temp, lv}.
     'ddss' = dir (tens of deg) + speed kt; dd>36 means dir-=50, speed+=100;

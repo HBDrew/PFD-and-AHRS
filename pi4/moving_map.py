@@ -932,6 +932,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # storm can OOM/swap a Pi 4 hard enough to lock the PFD up. Drop the
     # tint entirely at the widest zoom — state lines, the D2 line, and
     # the range ring still give whole-leg context.
+    tint_drawn = False
     if (settings.get("map_show_terrain", True) and srtm_dir
             and range_nm <= _TINT_RENDER_MAX_NM and not wx_active
             and not fast):
@@ -954,6 +955,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 tint_r = tint
             tr = tint_r.get_rect(center=(int(cx), int(cy)))
             surf.blit(tint_r, tr)
+            tint_drawn = True
 
             # SVT-style clearance overlay (red / orange / amber).  Inhibit
             # below Vso so taxi and rollout don't paint the inset red —
@@ -969,15 +971,19 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
                     surf.blit(overlay_r, o_rect)
 
-    # Slightly darker veil under vector layers so labels read cleanly.  Cached
-    # by (w, h) so panning doesn't re-allocate + fill a full-screen SRCALPHA
-    # surface every frame (the dominant per-frame churn at wide zoom).
-    veil = _veil_cache.get((w, h))
-    if veil is None:
-        veil = pygame.Surface((w, h), pygame.SRCALPHA)
-        veil.fill((0, 0, 0, 60))
-        _veil_cache[(w, h)] = veil
-    surf.blit(veil, (x, y))
+    # Slightly darker veil under vector layers so labels read cleanly — but
+    # only meaningful when the bright terrain tint is behind it.  Above the
+    # tint range (160 nm), on the MET overlay, and during a fast pan the base
+    # is plain black (_BG), so a 60-alpha black veil is a no-op — skip it and
+    # save a full-screen alpha blit every frame.  Cached by (w, h) so when it
+    # IS drawn it isn't re-allocated.
+    if tint_drawn:
+        veil = _veil_cache.get((w, h))
+        if veil is None:
+            veil = pygame.Surface((w, h), pygame.SRCALPHA)
+            veil.fill((0, 0, 0, 60))
+            _veil_cache[(w, h)] = veil
+        surf.blit(veil, (x, y))
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
     if (nexrad is not None and settings.get("map_show_nexrad", False)
