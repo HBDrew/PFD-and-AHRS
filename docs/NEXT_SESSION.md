@@ -4,6 +4,27 @@ Logged at the end of the radio/ADS-B session (branch
 `claude/nooelec-radio-equipment-0fuq7s`, merged to main). Context for picking
 these up cold.
 
+## FIS-B WX UI — remaining TODO (branch `claude/open-items-followup-93awex`)
+
+Done this session: METAR, TAF (decoded/labeled + nearest + direction),
+AIRMET/SIGMET/NOTAM text (nearest-first + on-route + valid times), graphical
+AIRMET/SIGMET hazard areas on MET (tap-for-bulletin), winds aloft (table +
+graphical barbs on the WND overlay with an altitude selector), and a TFC-page
+aircraft detail card.  All driven/tested by `tools/fisb_sim.py`.
+
+Still open:
+- **NEXRAD radar (the big one):** decode the FIS-B regional/CONUS run-length
+  block raster into the existing NEXRAD render path; drive with synthetic
+  rasters from the sim.  Highest impact, hardest decode, wants real-frame
+  validation.
+- **Winds vertical profile / route cross-section (FMS-type, Option B):** a
+  chart of altitude vs. position along the active route (wind/temp per level).
+  Niche; needs a solid route.  Deferred — do after NEXRAD.
+- **Real-frame validation** of every binary decode written blind: APDU
+  timestamps, the 8-byte uplink/station header, graphical geometry overlays,
+  and the winds bulletin envelope (the per-code FD decode is standard; the
+  `WINDS <id> <alt> <code>…` framing is a sim stand-in).
+
 ## Progress (branch `claude/open-items-followup-93awex`)
 
 - **Map cleanup items 1–3: done.** Airport dots are now neutral white on both
