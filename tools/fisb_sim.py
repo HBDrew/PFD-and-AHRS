@@ -66,6 +66,10 @@ SCENARIO = [
 ]
 
 
+# Stations that also broadcast a TAF (forecast), to exercise the TAF readout.
+TAF_STATIONS = {"KPHX", "KSEZ", "KPRC", "KFLG", "KGCN"}
+
+
 def metar_for(icao, category, now):
     """Build a raw METAR string for ``icao`` at category, stamped to ``now``."""
     wind, vis, sky, temp, dew, altim = _RECIPE[category]
@@ -74,12 +78,30 @@ def metar_for(icao, category, now):
     return f"{icao} {ts}Z {wind} {vis} {sky} {temp}/{dew} {altim}"
 
 
+def taf_for(icao, category, now):
+    """Build a one-line TAF for ``icao`` valid now → +24 h, with a FM group that
+    improves to VFR a few hours out."""
+    wind, vis, sky, _t, _d, _a = _RECIPE[category]
+    t = time.gmtime(now)
+    iss = f"{t.tm_mday:02d}{t.tm_hour:02d}{t.tm_min:02d}"
+    end = time.gmtime(now + 24 * 3600)
+    valid = f"{t.tm_mday:02d}{t.tm_hour:02d}/{end.tm_mday:02d}{end.tm_hour:02d}"
+    fm = time.gmtime(now + 4 * 3600)
+    fmgrp = f"FM{fm.tm_mday:02d}{fm.tm_hour:02d}00"
+    return (f"TAF {icao} {iss}Z {valid} {wind} {vis} {sky} "
+            f"{fmgrp} 25010KT P6SM FEW120")
+
+
 def build_cycle(now):
-    """Return a list of UAT uplink payloads (one METAR each) for this instant."""
-    return [
-        fisb.encode_text_uplink([metar_for(icao, cat, now)], station=tower)
-        for icao, cat, tower in SCENARIO
-    ]
+    """Return a list of UAT uplink payloads for this instant (one per station;
+    TAF stations carry their METAR + TAF together)."""
+    payloads = []
+    for icao, cat, tower in SCENARIO:
+        reports = [metar_for(icao, cat, now)]
+        if icao in TAF_STATIONS:
+            reports.append(taf_for(icao, cat, now))
+        payloads.append(fisb.encode_text_uplink(reports, station=tower))
+    return payloads
 
 
 def run(out_host, out_port, period_s):
@@ -132,8 +154,13 @@ def selftest():
     gss = store.ground_stations()
     assert len(gss) == 2, f"expected 2 towers, got {len(gss)}"
 
+    # TAFs recovered for the TAF stations.
+    tafs = [i for i in TAF_STATIONS if store.taf_for(i)]
+    assert sorted(tafs) == sorted(TAF_STATIONS), \
+        f"missing TAFs: {set(TAF_STATIONS) - set(tafs)}"
+
     print(f"FISB-SIM SELFTEST PASSED ({len(got)} METARs, all categories, "
-          f"{len(gss)} stations)")
+          f"{len(gss)} stations, {len(tafs)} TAFs)")
 
 
 def main():

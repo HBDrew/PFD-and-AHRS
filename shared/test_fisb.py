@@ -353,6 +353,49 @@ def test_ground_station():
     check(gss == [], "station pruned past station_expire_s")
 
 
+def test_classify_and_taf():
+    case("classify_text routes each product type")
+    check(fisb.classify_text("KSEZ 091753Z 24008KT 10SM 28/06 A3001") == "METAR",
+          "bare METAR")
+    check(fisb.classify_text("METAR KPHX 091751Z 28015KT") == "METAR", "METAR kw")
+    check(fisb.classify_text("TAF KSEZ 091720Z 0918/1018 24010KT") == "TAF",
+          "TAF kw")
+    check(fisb.classify_text("KSEZ 091720Z 0918/1018 24010KT P6SM") == "TAF",
+          "bare TAF (validity window, no obs time)")
+    check(fisb.classify_text("SFOT WA 091045 AIRMET TANGO ...") == "AIRMET",
+          "AIRMET")
+    check(fisb.classify_text("CONVECTIVE SIGMET 12C ...") == "SIGMET", "SIGMET")
+    check(fisb.classify_text("!SEZ 06/001 SEZ RWY 03/21 CLSD") == "NOTAM",
+          "NOTAM (leading !)")
+    check(fisb.classify_text("") is None, "blank -> None")
+
+    case("taf_ident pulls the station, skipping TAF/AMD/COR")
+    check(fisb.taf_ident("TAF KSEZ 091720Z 0918/1018 24010KT") == "KSEZ",
+          "TAF KSEZ")
+    check(fisb.taf_ident("TAF AMD KPHX 091930Z 0920/1024 28012KT") == "KPHX",
+          "TAF AMD KPHX")
+
+    case("store keeps TAFs separate from METARs, retrievable by ident")
+    store = fisb.FisbWeather()
+    reports = ("KSEZ 091753Z 24008KT 10SM FEW120 28/06 A3001\x1e"
+               "TAF KSEZ 091720Z 0918/1018 24010KT P6SM FEW120\x03")
+    store.ingest_gdl90_msg(_uplink_msg(reports))
+    check(store.count() == 1, "one METAR stored")
+    check(store.taf_count == 1, "one TAF stored")
+    taf = store.taf_for("KSEZ")
+    check(taf is not None and taf.startswith("TAF KSEZ"), f"TAF retrieved: {taf}")
+    check(store.taf_for("KXXX") is None, "no TAF for unknown station")
+
+    case("TAF ages out past taf_expire_s")
+    mono = time.monotonic()
+    store.ingest_uplink(
+        _uplink_msg("TAF KFLG 091720Z 0918/1018 VRB03KT\x03")["raw"][4:],
+        now_mono=mono - 1.0)
+    check(store.taf_for("KFLG", now_mono=mono) is not None, "fresh TAF kept")
+    check(store.taf_for("KFLG", now_mono=mono + store.taf_expire_s + 1) is None,
+          "stale TAF pruned")
+
+
 def test_encoders():
     case("encode_text_uplink round-trips through the decoder")
     reports = ["KSEZ 091753Z 24008KT 10SM FEW120 28/06 A3001",
@@ -407,6 +450,7 @@ def main():
     test_pipeline()
     test_store()
     test_ground_station()
+    test_classify_and_taf()
     test_encoders()
     test_merge()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))

@@ -10321,33 +10321,21 @@ def _wrap_text(text, font, max_w):
     return lines
 
 
+def _fisb_taf_for(icao):
+    """Raw FIS-B TAF text for a station, if one's been heard recently."""
+    store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
+    return store.taf_for(icao) if (store is not None and icao) else None
+
+
 def _draw_wx_popup(surf):
-    """Decoded-METAR readout for the station tapped on the MFD."""
+    """Decoded-METAR readout (+ TAF forecast) for the station tapped on the MFD."""
     m = disp.get("wx_popup")
     if not m:
         return
     pw = min(600, DISPLAY_W - 20)
-    ph = 300
-    px = (DISPLAY_W - pw) // 2
-    py = (DISPLAY_H - ph) // 2
-    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
-    dim.fill((0, 0, 0, 150))
-    surf.blit(dim, (0, 0))
-    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
-    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
-                     border_radius=10)
-
+    icao = m.get("icao", "----")
     cat = m.get("fltcat", "")
-    _text(surf, m.get("icao", "----"), 30, (235, 235, 235), bold=True,
-          x=px + 18, y=py + 12)
-    _text(surf, cat or "—", 26, _wx.cat_color(cat), bold=True,
-          x=px + pw - 120, y=py + 15)
-    # Source: FIS-B (radio) vs internet — so the pilot knows where it came from.
-    src = (m.get("src") or "").upper()
-    if src in ("RDR", "INET"):
-        s_lbl = "FIS-B" if src == "RDR" else "INET"
-        s_col = (90, 210, 230) if src == "RDR" else (150, 180, 220)
-        _text(surf, s_lbl, 18, s_col, bold=True, x=px + pw - 120, y=py + 48)
+    taf = _fisb_taf_for(icao)
 
     wd, ws, wg = m.get("wdir"), m.get("wspd"), m.get("wgst")
     if ws is None:
@@ -10362,7 +10350,7 @@ def _draw_wx_popup(surf):
     alt = m.get("altim_hpa")
     t, dp = m.get("temp_c"), m.get("dewp_c")
     age = m.get("age_min")
-    rows = [
+    rows = [r for r in [
         wind,
         f"Vis {vis:g} sm" if vis is not None else "Vis —",
         f"Ceiling {int(ceil)} ft" if ceil is not None else "No ceiling",
@@ -10371,20 +10359,56 @@ def _draw_wx_popup(surf):
         (f"Temp {t:.0f}° / Dew {dp:.0f}°C"
          if t is not None and dp is not None else ""),
         f"Observed {int(age)} min ago" if age is not None else "",
-    ]
+    ] if r]
+
+    f16 = _get_font(16)
+    raw = m.get("raw", "")
+    raw_lines = _wrap_text(raw, f16, pw - 36)[:3] if raw else []
+    taf_lines = _wrap_text(taf, f16, pw - 36)[:6] if taf else []
+
+    ph = 60 + len(rows) * 28
+    if raw_lines:
+        ph += 26 + len(raw_lines) * 20
+    if taf_lines:
+        ph += 26 + len(taf_lines) * 20
+    ph += 30
+    ph = min(ph, DISPLAY_H - 16)
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, icao, 30, (235, 235, 235), bold=True, x=px + 18, y=py + 12)
+    _text(surf, cat or "—", 26, _wx.cat_color(cat), bold=True,
+          x=px + pw - 120, y=py + 15)
+    # Source: FIS-B (radio) vs internet — so the pilot knows where it came from.
+    src = (m.get("src") or "").upper()
+    if src in ("RDR", "INET"):
+        s_lbl = "FIS-B" if src == "RDR" else "INET"
+        s_col = (90, 210, 230) if src == "RDR" else (150, 180, 220)
+        _text(surf, s_lbl, 18, s_col, bold=True, x=px + pw - 120, y=py + 48)
+
     yy = py + 60
     for r in rows:
-        if r:
-            _text(surf, r, 22, (210, 220, 230), x=px + 18, y=yy)
-            yy += 28
-
-    raw = m.get("raw", "")
-    if raw:
-        # Measure with the SAME font _text renders with so the wrap fits.
-        f = _get_font(16)
-        yy = max(yy + 6, py + ph - 96)
-        for ln in _wrap_text(raw, f, pw - 36)[:3]:
+        _text(surf, r, 22, (210, 220, 230), x=px + 18, y=yy)
+        yy += 28
+    if raw_lines:
+        yy += 6
+        _text(surf, "METAR", 15, (110, 150, 185), bold=True, x=px + 18, y=yy)
+        yy += 20
+        for ln in raw_lines:
             _text(surf, ln, 16, (150, 200, 240), x=px + 18, y=yy)
+            yy += 20
+    if taf_lines:
+        yy += 6
+        _text(surf, "TAF", 15, (110, 150, 185), bold=True, x=px + 18, y=yy)
+        yy += 20
+        for ln in taf_lines:
+            _text(surf, ln, 16, (160, 210, 180), x=px + 18, y=yy)
             yy += 20
     _text(surf, "tap to close", 16, (140, 150, 160),
           cx=DISPLAY_W // 2, cy=py + ph - 14)

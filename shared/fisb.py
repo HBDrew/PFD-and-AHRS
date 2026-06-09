@@ -292,6 +292,54 @@ def parse_metar_text(raw):
     return out
 
 
+# ── Text-product classification ─────────────────────────────────────────────────
+# FIS-B text products (METAR/TAF/PIREP/AIRMET/SIGMET/NOTAM) all arrive as DLAC
+# records; the product is told apart by the report text itself.  One classifier
+# routes each record so the store and the WX screens can file it by type.
+_RE_TAF_VALID = re.compile(r"\b\d{4}/\d{4}\b")      # TAF validity period DDHH/DDHH
+
+
+def classify_text(rec):
+    """Classify one decoded text record into a FIS-B product type:
+    METAR / TAF / AIRMET / SIGMET / NOTAM / PIREP / OTHER (None if blank)."""
+    if not rec:
+        return None
+    s = rec.strip().upper()
+    if not s:
+        return None
+    first = s.split(None, 1)[0]
+    if first == "TAF" or first.startswith("TAF"):
+        return "TAF"
+    if first in ("METAR", "SPECI"):
+        return "METAR"
+    if "AIRMET" in s:
+        return "AIRMET"
+    if "SIGMET" in s:
+        return "SIGMET"
+    if s.startswith("!") or "NOTAM" in s:
+        return "NOTAM"
+    if first in ("UA", "UUA") or "/OV " in s:
+        return "PIREP"
+    # Bare report (no keyword): a DDHH/DDHH validity window means TAF — check it
+    # first, since TAFs also carry a DDHHMMZ issue time that would otherwise look
+    # like a METAR obs time.  Otherwise an ICAO + DDHHMMZ is a METAR.
+    if _RE_STATION.match(s):
+        if _RE_TAF_VALID.search(s):
+            return "TAF"
+        if _RE_DDHHMM.search(s):
+            return "METAR"
+    return "OTHER"
+
+
+def taf_ident(rec):
+    """Station ICAO a TAF is for, or None.  Skips a leading TAF/AMD/COR."""
+    if not rec:
+        return None
+    s = re.sub(r"^\s*TAF\s+(AMD\s+|COR\s+)?", "", rec.strip().upper())
+    m = _RE_STATION.match(s)
+    return m.group(1) if m else None
+
+
 def _obs_age_min(parsed, now):
     """Minutes since the METAR's DDHHMMZ stamp, using ``now`` (epoch seconds,
     UTC) to resolve the day-of-month.  Handles the month wrap when the report
@@ -455,13 +503,17 @@ class FisbWeather:
     stamp) is recomputed on every read so the picker shows true observation age.
     """
 
-    def __init__(self, expire_s=4500.0, station_expire_s=120.0):
+    def __init__(self, expire_s=4500.0, station_expire_s=120.0,
+                 taf_expire_s=10800.0):
         self.expire_s = expire_s             # 75 min: METARs refresh hourly
         self.station_expire_s = station_expire_s   # towers rebroadcast often
+        self.taf_expire_s = taf_expire_s     # 3 h: TAFs reissue ~6 h, valid ~24-30 h
         self.uplink_count = 0                # uplink frames ingested
         self.metar_count = 0                 # METAR records parsed OK (cumulative)
+        self.taf_count = 0                   # TAF records stored (cumulative)
         self._lock = threading.Lock()
         self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
+        self._tafs = {}                      # icao -> (raw_text, recv_monotonic)
         self._stations = {}                  # (lat,lon) -> {.., last_mono, count}
 
     def ingest_gdl90_msg(self, msg, now_mono=None):
@@ -484,13 +536,20 @@ class FisbWeather:
 
         gs = decode_ground_station(uplink_payload)
         metars = {}
+        tafs = {}
         for apdu in decode_uplink(uplink_payload):
             if not apdu.get("data"):
                 continue
             for rec in text_records(apdu["data"]):
-                parsed = parse_metar_text(rec)
-                if parsed is not None:
-                    metars[parsed["icao"]] = parsed
+                kind = classify_text(rec)
+                if kind == "METAR":
+                    parsed = parse_metar_text(rec)
+                    if parsed is not None:
+                        metars[parsed["icao"]] = parsed
+                elif kind == "TAF":
+                    ident = taf_ident(rec)
+                    if ident:
+                        tafs[ident] = rec.strip()
 
         with self._lock:
             # Tower we're hearing — keyed by rounded position so one physical
@@ -507,6 +566,25 @@ class FisbWeather:
             for icao, parsed in metars.items():
                 self._metars[icao] = (parsed, now_mono)
                 self.metar_count += 1
+            for icao, raw in tafs.items():
+                self._tafs[icao] = (raw, now_mono)
+                self.taf_count += 1
+
+    def taf_for(self, icao, now_mono=None):
+        """Raw TAF text for ``icao`` if heard within ``taf_expire_s``, else
+        None.  Prunes the entry once stale."""
+        if not icao:
+            return None
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            v = self._tafs.get(icao)
+            if not v:
+                return None
+            raw, recv = v
+            if now_mono - recv > self.taf_expire_s:
+                del self._tafs[icao]
+                return None
+            return raw
 
     def metar_stations(self, locate, now=None, now_mono=None):
         """Return wx-shaped station dicts for every stored, still-fresh METAR
