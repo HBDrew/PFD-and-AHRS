@@ -1262,10 +1262,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             surf.blit(d2_lbl, (int(wpx) + d + 3, int(wpy) - d - 2))
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
-    if metars and settings.get("map_show_metar", True) and not fast:
-        _draw_metars(surf, metars, _project, rect)
+    # Ground stations first so the flight-category dots always sit on top of
+    # the towers; METARs are drawn after the magenta D2/FPL above, so a dot on
+    # a waypoint also stays visible over the diamond.
     if ground_stations and settings.get("map_show_metar", True) and not fast:
         _draw_ground_stations(surf, ground_stations, _project, font, rect)
+    if metars and settings.get("map_show_metar", True) and not fast:
+        _draw_metars(surf, metars, _project, rect)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Drawn above map features (incl. weather) but below the range ring +

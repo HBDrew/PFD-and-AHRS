@@ -1101,12 +1101,16 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # + horsepower to spare).  The MET overlay toggle still drives the heavier
     # weather-focus mode (terrain declutter + NEXRAD) via `wx_active` above; it
     # no longer gates the dots themselves.  (piZ stays gated to the overlay.)
-    if metars and not fast:
-        _draw_metars(surf, metars, _project, rect)
-    # FIS-B ground station(s) we're hearing — with the weather picture (MET).
+    #
+    # Draw the FIS-B ground stations FIRST so the flight-category station dots
+    # always land on top of them (the dots carry the weather; the tower is just
+    # context).  METARs are already drawn after the magenta D2/FPL above, so a
+    # dot on a waypoint stays visible over the diamond too.
     if ground_stations and settings.get("map_show_metar", False) and not fast:
         _draw_ground_stations(surf, ground_stations, _project, font, rect,
                               symbol_scale)
+    if metars and not fast:
+        _draw_metars(surf, metars, _project, rect)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Above map features (incl. weather) but below the range ring + own-ship
