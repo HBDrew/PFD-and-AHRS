@@ -332,6 +332,7 @@ disp["cs"] = {                      # connectivity settings
     # AHRS link fields so the Connectivity screen can show an ADS-B row.
     "adsb_enabled":   True,
     "traffic_source": "auto",   # "auto" | "radio" | "internet" (built-in feed)
+    "wx_source":      "auto",   # "auto" | "radio" (FIS-B) | "internet" (AWC)
     "adsb_port":      ADSB_UDP_PORT,
     "adsb_online":    False,
     "adsb_rx":        0,
@@ -1831,17 +1832,23 @@ def _update_weather():
     internet poll backfills the rest — mirroring the traffic source model."""
     if _wx_client is None:
         return
-    _wx_client.paused = False
+    # Source mode mirrors traffic: AUTO merges (radio wins, internet backfills),
+    # RADIO is FIS-B only (and pauses the internet pull — no data needed), INET
+    # ignores the radio store.
+    src = disp["cs"].get("wx_source", "auto")
+    radio_only = (src == "radio")
+    inet_only  = (src == "internet")
+    _wx_client.paused = radio_only
     w = disp["weather"]
-    inet = _wx_client.snapshot()
-    rdr  = _fisb_rdr_snapshot()
+    inet = [] if radio_only else _wx_client.snapshot()
+    rdr  = [] if inet_only  else _fisb_rdr_snapshot()
     if rdr:
         w["metars"] = _fisb.merge_metar_sources(rdr, inet)
         w["n_rdr"]  = sum(1 for m in w["metars"] if m.get("src") == "RDR")
     else:
         w["metars"] = inet
         w["n_rdr"]  = 0
-    w["online"] = _wx_client.connected or bool(rdr)
+    w["online"] = (_wx_client.connected and not radio_only) or bool(rdr)
     w["n"]      = len(w["metars"])
     w["n_inet"] = w["n"] - w["n_rdr"]
     cs = disp["cs"]
@@ -4896,6 +4903,8 @@ def handle_event(event, demo_mode):
                 disp["mode"]       = "keyboard"
             elif _mfd_source_status_hit(x, y):
                 _mfd_cycle_traffic_source()
+            elif _mfd_wx_status_hit(x, y):
+                _mfd_cycle_wx_source()
             elif _mfd_strip_hit(x, y):
                 disp["mode"] = "mfd_strip_setup"
                 disp["mss_sel"] = 0
@@ -11621,6 +11630,7 @@ def _p4_mfd_rects():
 
 
 _mfd_adsb_status_rect = None   # tap zone to cycle traffic_source
+_mfd_wx_status_rect   = None   # tap zone to cycle wx_source
 
 
 def _mfd_draw_source_status(surf):
@@ -11629,7 +11639,7 @@ def _mfd_draw_source_status(surf):
     traffic source mode; tap to cycle), WX when METAR overlay is up, NEX when
     NEXRAD overlay is up.  Green = receiving, amber = enabled but no data;
     data age shown for WX/NEX."""
-    global _mfd_adsb_status_rect
+    global _mfd_adsb_status_rect, _mfd_wx_status_rect
     now = time.monotonic()
     ds = disp["ds"]
     pt = max(11, int(round(15 * globals().get("MFD_FONT_SCALE", 1.0))))
@@ -11668,23 +11678,27 @@ def _mfd_draw_source_status(surf):
         _text(surf, txt, pt, col, bold=True, x=x, y=y)
         _mfd_adsb_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
         y += pt + 8
+    _mfd_wx_status_rect = None
     if ds.get("map_show_metar") and _wx_client is not None:
         w = disp.get("weather", {})
+        wsrc = disp["cs"].get("wx_source", "auto")
+        wmode = {"auto": "AUTO", "radio": "RADIO",
+                 "internet": "INET"}.get(wsrc, "AUTO")
         n_rdr, n_inet = w.get("n_rdr", 0), w.get("n_inet", 0)
-        if w.get("n", 0) or _wx_client.connected:
-            # Split radio (FIS-B) from internet, same convention as the ADS-B
-            # line above.  Drop the R term entirely until any radio WX arrives
-            # so the normal internet-only picture stays uncluttered.
-            parts = ["WX"]
-            if n_rdr:
-                parts.append(f"R{n_rdr}")
-            parts.append(f"I{n_inet}" if n_rdr else f"{w.get('n', 0)}")
-            txt = " ".join(parts) + age(_wx_client)
-            col = (60, 220, 90)
-        else:
-            txt = f"WX …{age(_wx_client)}"
-            col = (220, 160, 60)
+        # Same R/I split + tap-to-cycle as the ADS-B line above.
+        live = (w.get("n", 0) > 0
+                or (_wx_client.connected and wsrc != "radio"))
+        parts = [f"WX {wmode}"]
+        if wsrc != "internet":
+            parts.append(f"R{n_rdr}")
+        if wsrc != "radio":
+            parts.append(f"I{n_inet}")
+        txt = " ".join(parts) + age(_wx_client)
+        col = (60, 220, 90) if live else (220, 160, 60)
+        if not live:
+            txt += " …"
         _text(surf, txt, pt, col, bold=True, x=x, y=y)
+        _mfd_wx_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
         y += pt + 8
     if ds.get("map_show_nexrad") and _nexrad_client is not None:
         if _nexrad_client.connected:
@@ -11701,11 +11715,25 @@ def _mfd_source_status_hit(x, y):
     return r is not None and r[0] <= x <= r[0]+r[2] and r[1] <= y <= r[1]+r[3]
 
 
+def _mfd_wx_status_hit(x, y):
+    r = _mfd_wx_status_rect
+    return r is not None and r[0] <= x <= r[0]+r[2] and r[1] <= y <= r[1]+r[3]
+
+
 def _mfd_cycle_traffic_source():
     order = ["auto", "radio", "internet"]
     cur = disp["cs"].get("traffic_source", "auto")
     nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
     disp["cs"]["traffic_source"] = nxt
+    _settings.mark_dirty()
+    return nxt
+
+
+def _mfd_cycle_wx_source():
+    order = ["auto", "radio", "internet"]
+    cur = disp["cs"].get("wx_source", "auto")
+    nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+    disp["cs"]["wx_source"] = nxt
     _settings.mark_dirty()
     return nxt
 
