@@ -424,6 +424,7 @@ def test_classify_and_taf():
     taf = store.taf_for("KSEZ")
     check(taf is not None and taf.startswith("TAF KSEZ"), f"TAF retrieved: {taf}")
     check(store.taf_for("KXXX") is None, "no TAF for unknown station")
+    check(store.taf_stations() == ["KSEZ"], "taf_stations lists TAF holders")
 
     case("TAF ages out past taf_expire_s")
     mono = time.monotonic()

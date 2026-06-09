@@ -782,6 +782,16 @@ class FisbWeather:
                 out.extend(sorted(d.keys()))
         return out
 
+    def taf_stations(self, now_mono=None):
+        """ICAOs that currently have a fresh TAF (prunes stale ones)."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            stale = [i for i, (_r, recv) in self._tafs.items()
+                     if now_mono - recv > self.taf_expire_s]
+            for i in stale:
+                del self._tafs[i]
+            return list(self._tafs.keys())
+
     def taf_for(self, icao, now_mono=None):
         """Raw TAF text for ``icao`` if heard within ``taf_expire_s``, else
         None.  Prunes the entry once stale."""

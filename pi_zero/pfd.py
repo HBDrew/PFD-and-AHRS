@@ -10444,13 +10444,36 @@ def _fisb_store():
     return getattr(_adsb_client, "fisb", None) if _adsb_client else None
 
 
+def _nearest_taf(lat, lon):
+    """(icao, raw, dist_nm) of the nearest station with a TAF, or None."""
+    store = _fisb_store()
+    if store is None or lat is None or lon is None:
+        return None
+    best = None
+    for icao in store.taf_stations():
+        r = _nav_lookup_ident(icao)
+        if not r:
+            continue
+        d, _b = _nav_geo_dist_brg(lat, lon, r[1], r[2])
+        if best is None or d < best[2]:
+            best = (icao, store.taf_for(icao), d)
+    return best
+
+
 def _wx_menu_items():
     menu = disp.get("wx_menu") or {}
     icao = menu.get("icao") or menu.get("airport") or ""
     store = _fisb_store()
+    if store and store.taf_for(icao):
+        taf_lbl, taf_on = f"TAF  {icao}".rstrip(), True
+    else:
+        nt = _nearest_taf(menu.get("lat"), menu.get("lon"))
+        if nt:
+            taf_lbl, taf_on = f"TAF  {nt[0]} · {nt[2]:.0f} nm", True
+        else:
+            taf_lbl, taf_on = "TAF", False
     items = [("METAR", f"METAR  {icao}".rstrip(), menu.get("metar") is not None),
-             ("TAF", f"TAF  {icao}".rstrip(),
-              bool(store and store.taf_for(icao)))]
+             ("TAF", taf_lbl, taf_on)]
     for kind in ("AIRMET", "SIGMET", "NOTAM"):
         n = len(store.advisories(kind)) if store else 0
         items.append((kind, f"{kind}" + (f"  ({n})" if n else ""), n > 0))
@@ -10513,7 +10536,12 @@ def _wx_menu_hit(x, y):
         if kind == "METAR" and menu.get("metar"):
             disp["wx_popup"] = dict(menu["metar"])
         elif kind == "TAF" and store:
-            disp["wx_taf"] = icao
+            if store.taf_for(icao):
+                disp["wx_taf"] = {"icao": icao, "dist": None}
+            else:
+                nt = _nearest_taf(menu.get("lat"), menu.get("lon"))
+                if nt:
+                    disp["wx_taf"] = {"icao": nt[0], "dist": nt[2]}
         elif store:
             disp["wx_text"] = {"title": f"{kind} — area",
                                "bulletins": store.advisories(kind)}
@@ -10566,15 +10594,19 @@ def _draw_wx_scroll_panel(surf, title, items, pw):
 def _draw_wx_taf(surf):
     """Full TAF readout: each forecast period broken out with labeled fields.
     Scrolls when the forecast is long."""
-    icao = disp.get("wx_taf")
-    if not icao:
+    wt = disp.get("wx_taf")
+    if not wt:
         return
+    icao = wt.get("icao", "")
+    near = wt.get("dist")
     store = _fisb_store()
     raw = store.taf_for(icao) if store else None
     p = _fisb.parse_taf(raw) if raw else None
     pw = min(620, DISPLAY_W - 20)
-    title = f"TAF  {icao}" + (f"   valid {_fisb._hhz(p['valid_from'])}–"
-                              f"{_fisb._hhz(p['valid_to'])}" if p else "")
+    title = (f"TAF  {icao}"
+             + (f" · nearest {near:.0f} nm" if near else "")
+             + (f"   valid {_fisb._hhz(p['valid_from'])}–"
+                f"{_fisb._hhz(p['valid_to'])}" if p else ""))
     items = []
     if p:
         for g in p["periods"]:
@@ -11725,6 +11757,7 @@ def _mfd_pick_hit(x, y):
         disp["wx_menu"] = {
             "airport": pick.get("airport", ""),
             "icao": (wx or {}).get("icao") or pick.get("airport", ""),
+            "lat": pick.get("lat"), "lon": pick.get("lon"),
             "metar": dict(wx) if wx else None,
         }
     elif _in(d2_r):
