@@ -201,6 +201,33 @@ import collections as _collections_mm
 _APT_LABEL_CACHE_MAX = 256
 _apt_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
 
+# ── Section profiler (PFD_PERF=1) — compare per-layer cost against the Pi 4 ──────
+import time as _time
+_PERF_SECT = bool(os.environ.get("PFD_PERF"))
+_perf_acc = {}
+_perf_order = []
+_perf_calls = 0
+
+
+def _ps(name, t0):
+    now = _time.perf_counter()
+    if name not in _perf_acc:
+        _perf_acc[name] = 0.0
+        _perf_order.append(name)
+    _perf_acc[name] += (now - t0) * 1000.0
+    return now
+
+
+def _perf_frame_end():
+    global _perf_calls
+    _perf_calls += 1
+    if _perf_calls >= 120:
+        parts = [f"{n}={_perf_acc[n] / _perf_calls:.1f}" for n in _perf_order]
+        print("[PERF-SECT] ms/frame  " + "  ".join(parts))
+        _perf_acc.clear()
+        _perf_order.clear()
+        _perf_calls = 0
+
 
 def _quantise_centre(lat, lon, range_nm):
     """Snap the centre to ~25% of the visible range so light pan motion
@@ -989,6 +1016,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         return
 
     pygame.draw.rect(surf, _BG, rect)
+    _pt = _time.perf_counter() if _PERF_SECT else 0.0
 
     # Map rotation: track-up rotates so current track points up, falling back
     # to heading below ~3 kt GS (stale GPS track).  Shared with make_projector
@@ -1101,6 +1129,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             veil.fill((0, 0, 0, 60))
             _veil_cache[(w, h)] = veil
         surf.blit(veil, (x, y))
+    if _PERF_SECT:
+        _pt = _ps("terrain", _pt)
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
     if (nexrad is not None and settings.get("map_show_nexrad", False)
@@ -1109,6 +1139,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if (nexrad_cells and settings.get("map_show_nexrad", False)
             and not fast):
         _draw_nexrad_cells(surf, nexrad_cells, _project, rect)
+    if _PERF_SECT:
+        _pt = _ps("nexrad", _pt)
 
     # ── State / province lines + country lines ─────────────────────────────
     # Only useful once the inset is showing whole-region context; at close
@@ -1127,6 +1159,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             and range_nm >= 20):
         _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
                         cx, cy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+    if _PERF_SECT:
+        _pt = _ps("borders", _pt)
 
     # ── Airspaces (Class B/C/D + MOA + Restricted) ──────────────────────────
     # Drawn between context lines and the rest so airspaces sit UNDER
@@ -1323,6 +1357,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                         _apt_label_cache.move_to_end(cache_key)
                     surf.blit(lbl, (ix + 5, iy - 7))
                 drawn += 1
+    if _PERF_SECT:
+        _pt = _ps("apt+obs", _pt)
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:
@@ -1451,6 +1487,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # the towers; METARs are drawn after the magenta D2/FPL above, so a dot on
     # a waypoint also stays visible over the diamond.  Graphical hazard areas
     # shade under everything, on the MET overlay.
+    if _PERF_SECT:
+        _pt = _ps("directto", _pt)
     if wx_graphics and settings.get("map_show_metar", True) and not fast:
         _draw_wx_graphics(surf, wx_graphics, _project, rect, font)
     if ground_stations and settings.get("map_show_metar", True) and not fast:
@@ -1466,6 +1504,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # own-ship chevron so the pilot's own symbol always stays on top.
     if traffic and settings.get("map_show_traffic", True):
         _draw_traffic(surf, traffic, _project, rot_deg, px_per_nm, font, rect)
+    if _PERF_SECT:
+        _pt = _ps("wx+tfc", _pt)
 
     # ── Range ring ───────────────────────────────────────────────────────────
     # Shrink the ring 2 px inside the inset's shorter axis so the frame
@@ -1560,6 +1600,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                       (x + w - ete_w - 7, y + h - ete_h - 4))
             surf.blit(ete_surf,
                       (x + w - ete_w - 4, y + h - ete_h - 3))
+
+    if _PERF_SECT:
+        _ps("chrome", _pt)
+        _perf_frame_end()
 
 
 def hit_test(rect, x, y) -> bool:

@@ -560,12 +560,12 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
 # quantum is fine enough that the small positional offset is sub-pixel-ish and
 # never visibly jumps; rebuilds happen only when the view actually moves a few
 # px, and panning skips borders entirely (handled at the call site).
-_border_cache = {"key": None, "surf": None}
+_border_cache = {"key": None, "surf": None, "blat": 0.0, "blon": 0.0}
 
 
 def _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
                          range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
-                         sin_r, cos_r, rot_deg):
+                         sin_r, cos_r, rot_deg, fast):
     x, y, w, h = rect
     show_state = state_lines is not None and \
         settings.get("map_show_state_lines", True)
@@ -580,18 +580,27 @@ def _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
     key = (qlat, qlon, round(range_nm, 1), round(rot_deg / 2.0),
            show_state, show_ctry, w, h)
     c = _border_cache
-    if c["key"] != key or c["surf"] is None:
+    # Rebuild only when parked (not fast) and the view actually changed — or the
+    # first time.  During a pan we keep the last raster and shift it (below) so
+    # borders stay on screen and track the map without a ~27 ms re-projection
+    # every frame.  They snap to a fresh raster on release.
+    if c["surf"] is None or (not fast and c["key"] != key):
         bs = pygame.Surface((w, h), pygame.SRCALPHA)
-        # Draw in surface-local coords: centre is (w/2, h/2) inside bs.
-        lcx, lcy = cx - x, cy - y
+        lcx, lcy = cx - x, cy - y       # centre is (w/2, h/2) inside bs
         if show_state:
             _draw_polylines(bs, state_lines, range_nm, lat, lon, cos_lat,
                             lcx, lcy, px_per_nm, sin_r, cos_r, _STATE_LINE)
         if show_ctry:
             _draw_polylines(bs, country_lines, range_nm, lat, lon, cos_lat,
                             lcx, lcy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
-        c["key"], c["surf"] = key, bs
-    surf.blit(c["surf"], (x, y))
+        c.update(key=key, surf=bs, blat=lat, blon=lon)
+    # Shift the cached raster by the screen-space centre movement since it was
+    # built (zero when parked → exact; a few px while panning → tracks the map).
+    e_nm = (c["blon"] - lon) * _NM_PER_DEG_LAT * cos_lat
+    n_nm = (c["blat"] - lat) * _NM_PER_DEG_LAT
+    dx = (e_nm * cos_r - n_nm * sin_r) * px_per_nm
+    dy = -(e_nm * sin_r + n_nm * cos_r) * px_per_nm
+    surf.blit(c["surf"], (x + dx, y + dy))
 
 
 # ── NEXRAD reflectivity raster ──────────────────────────────────────────────
@@ -1129,10 +1138,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # microseconds at any range.  Country lines paint after state lines so
     # international borders stack visibly on top of admin_1 polygons that
     # happen to share the perimeter (e.g. US/Canada).
-    if range_nm >= 20 and not fast:
+    if range_nm >= 20:
         _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
                              range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
-                             sin_r, cos_r, rot_deg)
+                             sin_r, cos_r, rot_deg, fast)
     if _PERF_SECT:
         _pt = _ps("borders", _pt)
 
