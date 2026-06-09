@@ -12393,6 +12393,105 @@ def fpl_plan_picker_hit(x, y):
     return (None, None)
 
 
+def _draw_modal_overlays(surf, airspeed_src):
+    """Draw the veiled data-entry / confirmation overlays (sim controls, nav
+    confirm, mag-cal, numpad, keyboard) on top of whatever backdrop the caller
+    already painted.  Shared by the PFD render path and the MFD-backdrop path
+    so opening the D2 keyboard from the full-screen map doesn't drag the PFD's
+    3D terrain render back in behind the veil."""
+    mode = disp.get("mode", "pfd")
+    if mode == "sim_controls":
+        draw_sim_controls(surf)
+
+    elif mode == "nav_confirm":
+        draw_nav_confirm(surf)
+
+    elif mode == "mag_cal":
+        draw_mag_cal(surf)
+
+    elif mode == "numpad":
+        _draw_veil(surf)
+        target  = disp.get("numpad_target", "")
+        buf     = disp.get("numpad_buf", "")
+        baro_unit = disp["ds"].get("baro_unit", "inhg")
+        # Build baro current value in integer entry form
+        if baro_unit == "hpa":
+            baro_cur  = int(round(disp["baro_hpa"]))
+            baro_title = "SET BARO  (hPa)"
+            baro_dec   = 0
+        else:
+            baro_cur  = int(round(disp["baro_hpa"] / 33.8639 * 100))  # e.g. 2992
+            baro_title = "SET BARO  (in Hg)"
+            baro_dec   = 2
+        # Bug entries are shown (and entered) in current display unit.  Storage
+        # stays canonical (kt/ft) — conversion is applied at commit time.
+        spd_unit_lbl = {"kt": "kt", "mph": "mph", "kph": "kph"}.get(
+            disp["ds"].get("spd_unit", "kt"), "kt")
+        alt_unit_lbl = {"ft": "ft", "m": "m"}.get(
+            disp["ds"].get("alt_unit", "ft"), "ft")
+        spd_bug_src  = "IAS" if airspeed_src == "ias" else "GS"
+        spd_bug_title = f"SET {spd_bug_src} BUG  ({spd_unit_lbl})"
+        titles  = {"alt_bug":   f"SET ALTITUDE BUG  (×100 {alt_unit_lbl})",
+                   "hdg_bug":   "SET HEADING BUG",
+                   "trk_bug":   "SET TRACK BUG",
+                   "spd_bug":   spd_bug_title,
+                   "baro_hpa":  baro_title,
+                   "sim_init_alt": f"SET INITIAL ALTITUDE  (×100 {alt_unit_lbl})",
+                   "sim_init_hdg": "SET INITIAL HEADING",
+                   "sim_init_spd": "SET INITIAL SPEED  (kt)"}
+        curvals = {"alt_bug":   int(round(disp.get("alt_bug", 0)
+                                          * _ALT_DISP_FACTOR())) // 100,
+                   "hdg_bug":   int(disp.get("hdg_bug", 0)),
+                   "trk_bug":   int(disp.get("trk_bug", 0)),
+                   "spd_bug":   int(round(disp.get("spd_bug", 0)
+                                          * _SPD_DISP_FACTOR())),
+                   "baro_hpa":  baro_cur,
+                   "sim_init_alt": int(round(disp["sim"]["init_alt"]
+                                             * _ALT_DISP_FACTOR())) // 100,
+                   "sim_init_hdg": int(disp["sim"]["init_hdg"]),
+                   "sim_init_spd": int(disp["sim"]["init_spd"])}
+        for fkey, flabel, *rest in _FP_FIELDS:
+            if fkey not in titles:
+                titles[fkey]  = f"SET {flabel}"
+                _v = disp["fp"].get(fkey, 0)
+                # Only numeric fields are numpad-editable; skip string fields (tail, actype)
+                if rest and len(rest) >= 3 and rest[2] == "kbd":
+                    continue
+                try:
+                    curvals[fkey] = int(_v)
+                except (ValueError, TypeError):
+                    continue
+        dec = baro_dec if target == "baro_hpa" else 0
+        # sim_init_alt also uses ×100 suffix like alt_bug
+        sim_alt_suffix = "00" if target == "sim_init_alt" else ""
+        draw_numpad(surf, titles.get(target, "ENTER VALUE"),
+                    curvals.get(target, 0), buf,
+                    suffix=("00" if target == "alt_bug" else sim_alt_suffix),
+                    transparent=True,
+                    decimal_after=dec)
+
+    elif mode == "keyboard":
+        _draw_veil(surf)
+        target = disp.get("kbd_target", "")
+        buf    = disp.get("kbd_buf", "")
+        prev   = disp.get("kbd_prev", "flight_profile")
+        if target == "nav_ident":
+            # Direct-to ident lives under disp["nav"], not the connectivity
+            # or flight-profile dicts.  Surface it as the placeholder so
+            # the user sees what's active while typing the replacement.
+            cur   = disp.get("nav", {}).get("ident", "")
+            title = "WAYPOINT"
+        elif prev == "connectivity_setup":
+            cur   = disp["cs"].get(target, "")
+            title = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID",
+                     "wifi_pass": "WiFi PASSWORD"}.get(target, "ENTER TEXT")
+        else:
+            cur   = disp["fp"].get(target, "")
+            title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
+        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True,
+                      error=disp.get("kbd_error", ""))
+
+
 def render(surf, demo_mode, connected, data_stale=False):
     mode = disp.get("mode", "pfd")
 
@@ -12454,8 +12553,20 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # ── Full-screen MFD (3-finger swap) ──────────────────────────────────────
     # Pure-2D map; skip the SVT/PFD render entirely (saves the terrain pass).
-    if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
+    # Overlays opened *from* the MFD — the D2 keyboard, the numpad, the
+    # nav-confirm modal — keep the cheap MFD as their backdrop too.  Otherwise
+    # `mode` flips to "keyboard"/etc and we fall through to the full PFD/SVT
+    # render, relighting the 3D terrain pass behind the veil every frame —
+    # that's what made D2 entry crawl on the MFD (very slow on pi4).
+    if (disp.get("display_mode", "pfd") == "mfd"
+            and mode in ("pfd", "keyboard", "numpad", "nav_confirm")):
         draw_mfd(surf, connected=connected, data_stale=data_stale)
+        if mode != "pfd":
+            surf.set_clip(None)     # MFD layers may leave a clip set
+            _user_src = disp["ss"].get("airspeed_src", "gps")
+            _as_src = ("ias" if _user_src == "ias" and disp.get("airdata_ok")
+                       else "gps")
+            _draw_modal_overlays(surf, _as_src)
         return
 
     # ── PFD always renders for pfd / numpad / keyboard modes ─────────────────
@@ -13001,97 +13112,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         _action_btn(surf, _SIM_EXIT_X, _SIM_EXIT_Y, _SIM_EXIT_W, _SIM_EXIT_H,
                     "SIM  ✕", style="danger", r=6)
 
-    # ── Overlay modes: veil + UI drawn on top of live PFD ────────────────────
-    if mode == "sim_controls":
-        draw_sim_controls(surf)
-
-    elif mode == "nav_confirm":
-        draw_nav_confirm(surf)
-
-    elif mode == "mag_cal":
-        draw_mag_cal(surf)
-
-    elif mode == "numpad":
-        _draw_veil(surf)
-        target  = disp.get("numpad_target", "")
-        buf     = disp.get("numpad_buf", "")
-        baro_unit = disp["ds"].get("baro_unit", "inhg")
-        # Build baro current value in integer entry form
-        if baro_unit == "hpa":
-            baro_cur  = int(round(disp["baro_hpa"]))
-            baro_title = "SET BARO  (hPa)"
-            baro_dec   = 0
-        else:
-            baro_cur  = int(round(disp["baro_hpa"] / 33.8639 * 100))  # e.g. 2992
-            baro_title = "SET BARO  (in Hg)"
-            baro_dec   = 2
-        # Bug entries are shown (and entered) in current display unit.  Storage
-        # stays canonical (kt/ft) — conversion is applied at commit time.
-        spd_unit_lbl = {"kt": "kt", "mph": "mph", "kph": "kph"}.get(
-            disp["ds"].get("spd_unit", "kt"), "kt")
-        alt_unit_lbl = {"ft": "ft", "m": "m"}.get(
-            disp["ds"].get("alt_unit", "ft"), "ft")
-        spd_bug_src  = "IAS" if airspeed_src == "ias" else "GS"
-        spd_bug_title = f"SET {spd_bug_src} BUG  ({spd_unit_lbl})"
-        titles  = {"alt_bug":   f"SET ALTITUDE BUG  (\u00d7100 {alt_unit_lbl})",
-                   "hdg_bug":   "SET HEADING BUG",
-                   "trk_bug":   "SET TRACK BUG",
-                   "spd_bug":   spd_bug_title,
-                   "baro_hpa":  baro_title,
-                   "sim_init_alt": f"SET INITIAL ALTITUDE  (\u00d7100 {alt_unit_lbl})",
-                   "sim_init_hdg": "SET INITIAL HEADING",
-                   "sim_init_spd": "SET INITIAL SPEED  (kt)"}
-        curvals = {"alt_bug":   int(round(disp.get("alt_bug", 0)
-                                          * _ALT_DISP_FACTOR())) // 100,
-                   "hdg_bug":   int(disp.get("hdg_bug", 0)),
-                   "trk_bug":   int(disp.get("trk_bug", 0)),
-                   "spd_bug":   int(round(disp.get("spd_bug", 0)
-                                          * _SPD_DISP_FACTOR())),
-                   "baro_hpa":  baro_cur,
-                   "sim_init_alt": int(round(disp["sim"]["init_alt"]
-                                             * _ALT_DISP_FACTOR())) // 100,
-                   "sim_init_hdg": int(disp["sim"]["init_hdg"]),
-                   "sim_init_spd": int(disp["sim"]["init_spd"])}
-        for fkey, flabel, *rest in _FP_FIELDS:
-            if fkey not in titles:
-                titles[fkey]  = f"SET {flabel}"
-                _v = disp["fp"].get(fkey, 0)
-                # Only numeric fields are numpad-editable; skip string fields (tail, actype)
-                if rest and len(rest) >= 3 and rest[2] == "kbd":
-                    continue
-                try:
-                    curvals[fkey] = int(_v)
-                except (ValueError, TypeError):
-                    continue
-        dec = baro_dec if target == "baro_hpa" else 0
-        # sim_init_alt also uses ×100 suffix like alt_bug
-        sim_alt_suffix = "00" if target == "sim_init_alt" else ""
-        draw_numpad(surf, titles.get(target, "ENTER VALUE"),
-                    curvals.get(target, 0), buf,
-                    suffix=("00" if target == "alt_bug" else sim_alt_suffix),
-                    transparent=True,
-                    decimal_after=dec)
-
-    elif mode == "keyboard":
-        _draw_veil(surf)
-        target = disp.get("kbd_target", "")
-        buf    = disp.get("kbd_buf", "")
-        prev   = disp.get("kbd_prev", "flight_profile")
-        if target == "nav_ident":
-            # Direct-to ident lives under disp["nav"], not the connectivity
-            # or flight-profile dicts.  Surface it as the placeholder so
-            # the user sees what's active while typing the replacement.
-            cur   = disp.get("nav", {}).get("ident", "")
-            title = "WAYPOINT"
-        elif prev == "connectivity_setup":
-            cur   = disp["cs"].get(target, "")
-            title = {"ahrs_url": "AHRS URL", "wifi_ssid": "WiFi SSID",
-                     "wifi_pass": "WiFi PASSWORD"}.get(target, "ENTER TEXT")
-        else:
-            cur   = disp["fp"].get(target, "")
-            title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
-        draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True,
-                      error=disp.get("kbd_error", ""))
+    # ── Overlay modes: veil + UI drawn on top of the live PFD backdrop ───────
+    _draw_modal_overlays(surf, airspeed_src)
 
 
 # ── Terrain availability (computed once at import time) ───────────────────────
