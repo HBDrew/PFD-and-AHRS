@@ -92,15 +92,32 @@ def taf_for(icao, category, now):
             f"{fmgrp} 25010KT P6SM FEW120")
 
 
+# Area advisories (AIRMET/SIGMET/NOTAM) — broadcast from the Phoenix tower.
+ADVISORIES = [
+    "WAUS46 KKCI 091445 AIRMET TANGO FOR TURB VALID UNTIL 092100 "
+    "FROM 40NW PGA TO 30E SJN TO 20S TUS TO 50W BXK MOD TURB BLW FL180",
+    "WAUS41 KSLC 091445 AIRMET SIERRA FOR IFR VALID UNTIL 092100 "
+    "AZ MTNS OCNL CIG BLW 010 VIS BLW 3SM BR/FG CONDS ENDG 18-20Z",
+    "WSUS01 KKCI 091455 CONVECTIVE SIGMET 12C VALID UNTIL 091655 "
+    "AZ FROM 30NW FLG TO 20E SEZ ISOL TS MOV LTL DVLPG TOPS TO FL410",
+    "!FDC 1/2345 SEZ AIRSPACE SEDONA AZ TEMPORARY FLIGHT RESTRICTION "
+    "WI AN AREA DEFINED AS 5NM RADIUS OF SEZ SFC-080 WEF 0906011200-0906012359",
+    "!SEZ 06/001 SEZ RWY 03/21 CLSD WEF 0906011200-0906302359",
+]
+
+
 def build_cycle(now):
     """Return a list of UAT uplink payloads for this instant (one per station;
-    TAF stations carry their METAR + TAF together)."""
+    TAF stations carry their METAR + TAF together; plus area advisories)."""
     payloads = []
     for icao, cat, tower in SCENARIO:
         reports = [metar_for(icao, cat, now)]
         if icao in TAF_STATIONS:
             reports.append(taf_for(icao, cat, now))
         payloads.append(fisb.encode_text_uplink(reports, station=tower))
+    # Area advisories — one uplink each, from the Phoenix tower.
+    for adv in ADVISORIES:
+        payloads.append(fisb.encode_text_uplink([adv], station=TOWER_PHX))
     return payloads
 
 
@@ -159,8 +176,16 @@ def selftest():
     assert sorted(tafs) == sorted(TAF_STATIONS), \
         f"missing TAFs: {set(TAF_STATIONS) - set(tafs)}"
 
+    # Advisories recovered.
+    air = store.advisories("AIRMET")
+    sig = store.advisories("SIGMET")
+    nts = store.advisories("NOTAM")
+    assert len(air) == 2 and len(sig) == 1 and len(nts) == 2, \
+        f"advisories: AIRMET={len(air)} SIGMET={len(sig)} NOTAM={len(nts)}"
+
     print(f"FISB-SIM SELFTEST PASSED ({len(got)} METARs, all categories, "
-          f"{len(gss)} stations, {len(tafs)} TAFs)")
+          f"{len(gss)} stations, {len(tafs)} TAFs, "
+          f"{len(air)}+{len(sig)}+{len(nts)} AIRMET/SIGMET/NOTAM)")
 
 
 def main():

@@ -428,6 +428,42 @@ def test_classify_and_taf():
           "stale TAF pruned")
 
 
+def test_advisories():
+    case("store files AIRMET/SIGMET/NOTAM text by kind")
+    store = fisb.FisbWeather()
+    recs = ("\x1e".join([
+        "KSEZ 091753Z 24008KT 10SM 28/06 A3001",
+        "WAUS46 KKCI 091445 AIRMET TANGO FOR TURB VALID UNTIL 092100",
+        "WSUS01 KKCI 091455 CONVECTIVE SIGMET 12C VALID UNTIL 091655",
+        "!SEZ 06/001 SEZ RWY 03/21 CLSD WEF 0906011200",
+    ]) + "\x03")
+    store.ingest_gdl90_msg(_uplink_msg(recs))
+    check(store.count() == 1, "METAR still stored alongside")
+    air = store.advisories("AIRMET")
+    sig = store.advisories("SIGMET")
+    nts = store.advisories("NOTAM")
+    check(len(air) == 1 and "AIRMET TANGO" in air[0], f"AIRMET: {air}")
+    check(len(sig) == 1 and "SIGMET 12C" in sig[0], f"SIGMET: {sig}")
+    check(len(nts) == 1 and nts[0].startswith("!SEZ"), f"NOTAM: {nts}")
+    check(len(store.advisories()) == 3, "all kinds when unfiltered")
+
+    case("re-broadcast de-dupes (keyed by text)")
+    store.ingest_gdl90_msg(_uplink_msg(
+        "WAUS46 KKCI 091445 AIRMET TANGO FOR TURB VALID UNTIL 092100\x03"))
+    check(len(store.advisories("AIRMET")) == 1, "same bulletin not duplicated")
+
+    case("advisories age out")
+    mono = time.monotonic()
+    store2 = fisb.FisbWeather()
+    store2.ingest_uplink(
+        _uplink_msg("WSUS01 KKCI CONVECTIVE SIGMET 9C VALID UNTIL 1655\x03")
+        ["raw"][4:], now_mono=mono)
+    check(len(store2.advisories("SIGMET", now_mono=mono)) == 1, "fresh kept")
+    check(store2.advisories(
+        "SIGMET", now_mono=mono + store2.advisory_expire_s + 1) == [],
+        "stale pruned")
+
+
 def test_encoders():
     case("encode_text_uplink round-trips through the decoder")
     reports = ["KSEZ 091753Z 24008KT 10SM FEW120 28/06 A3001",
@@ -484,6 +520,7 @@ def main():
     test_ground_station()
     test_classify_and_taf()
     test_taf_decode()
+    test_advisories()
     test_encoders()
     test_merge()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))

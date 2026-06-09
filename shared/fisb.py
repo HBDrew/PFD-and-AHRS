@@ -652,18 +652,23 @@ class FisbWeather:
     stamp) is recomputed on every read so the picker shows true observation age.
     """
 
+    ADVISORY_KINDS = ("AIRMET", "SIGMET", "NOTAM")
+
     def __init__(self, expire_s=4500.0, station_expire_s=120.0,
-                 taf_expire_s=10800.0):
+                 taf_expire_s=10800.0, advisory_expire_s=14400.0):
         self.expire_s = expire_s             # 75 min: METARs refresh hourly
         self.station_expire_s = station_expire_s   # towers rebroadcast often
         self.taf_expire_s = taf_expire_s     # 3 h: TAFs reissue ~6 h, valid ~24-30 h
+        self.advisory_expire_s = advisory_expire_s  # 4 h: AIRMET/SIGMET/NOTAM text
         self.uplink_count = 0                # uplink frames ingested
         self.metar_count = 0                 # METAR records parsed OK (cumulative)
         self.taf_count = 0                   # TAF records stored (cumulative)
+        self.advisory_count = 0              # AIRMET/SIGMET/NOTAM records stored
         self._lock = threading.Lock()
         self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
         self._tafs = {}                      # icao -> (raw_text, recv_monotonic)
         self._stations = {}                  # (lat,lon) -> {.., last_mono, count}
+        self._advisories = {k: {} for k in self.ADVISORY_KINDS}  # kind -> {text: recv}
 
     def ingest_gdl90_msg(self, msg, now_mono=None):
         """Decode one ``kind=="uplink"`` GDL90 message and fold its weather +
@@ -686,6 +691,7 @@ class FisbWeather:
         gs = decode_ground_station(uplink_payload)
         metars = {}
         tafs = {}
+        advisories = {k: set() for k in self.ADVISORY_KINDS}
         for apdu in decode_uplink(uplink_payload):
             if not apdu.get("data"):
                 continue
@@ -699,6 +705,8 @@ class FisbWeather:
                     ident = taf_ident(rec)
                     if ident:
                         tafs[ident] = rec.strip()
+                elif kind in self.ADVISORY_KINDS:
+                    advisories[kind].add(rec.strip())
 
         with self._lock:
             # Tower we're hearing — keyed by rounded position so one physical
@@ -718,6 +726,27 @@ class FisbWeather:
             for icao, raw in tafs.items():
                 self._tafs[icao] = (raw, now_mono)
                 self.taf_count += 1
+            for kind, texts in advisories.items():
+                for text in texts:
+                    self._advisories[kind][text] = now_mono
+                    self.advisory_count += 1
+
+    def advisories(self, kind=None, now_mono=None):
+        """Active advisory bulletin texts (AIRMET/SIGMET/NOTAM).  ``kind`` filters
+        to one type; otherwise all.  Prunes entries older than
+        ``advisory_expire_s``."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        kinds = [kind] if kind else list(self.ADVISORY_KINDS)
+        out = []
+        with self._lock:
+            for k in kinds:
+                d = self._advisories.get(k, {})
+                stale = [t for t, recv in d.items()
+                         if now_mono - recv > self.advisory_expire_s]
+                for t in stale:
+                    del d[t]
+                out.extend(sorted(d.keys()))
+        return out
 
     def taf_for(self, icao, now_mono=None):
         """Raw TAF text for ``icao`` if heard within ``taf_expire_s``, else
