@@ -26,6 +26,7 @@ import time
 import math
 
 import gdl90
+import fisb
 
 
 # Reasons a target row is interesting enough to keep / draw.
@@ -49,6 +50,9 @@ class ADSBClient(threading.Thread):
         self.err_count  = 0            # socket / decode errors
         self.last_err   = ""
         self.uplink_count = 0          # FIS-B uplink frames seen (weather)
+        # FIS-B text-weather store fed off the same GDL90 stream.  Geolocation
+        # is deferred — the app passes its airports lookup in at read time.
+        self.fisb         = fisb.FisbWeather()
 
         self._targets    = {}          # icao -> target dict (+ "last_s")
         self._ownship    = None        # last ownship report, if the source sends one
@@ -116,6 +120,9 @@ class ADSBClient(threading.Thread):
                     self._heartbeat = msg
             elif kind == "uplink":
                 self.uplink_count += 1
+                # Fold any FIS-B text weather (METARs) into the store; the
+                # internet poller backfills whatever the radio didn't deliver.
+                self.fisb.ingest_gdl90_msg(msg, now_mono=now)
         self._expire(now)
 
     def _store_traffic(self, msg, now):

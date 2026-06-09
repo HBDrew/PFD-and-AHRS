@@ -140,6 +140,27 @@ def test_ingest_and_expire():
     check(c.count() == 0, "expired target pruned")
 
 
+def test_uplink_feeds_fisb_store():
+    """A GDL90 0x07 uplink datagram carrying a METAR must increment the FIS-B
+    counter *and* land in the client's FIS-B weather store."""
+    import fisb
+    import test_fisb as tf
+    c = adsb.ADSBClient(stale_s=5.0)
+    app = tf.build_app_data([tf.build_info_frame(
+        fisb.FRAME_TYPE_FISB_APDU,
+        tf.build_apdu_notime(413, tf.dlac_encode(
+            "KSEZ 091753Z 24008KT 10SM FEW120 28/06 A3001\x03")))])
+    body = (bytes([gdl90.MSG_UPLINK]) + b"\x00\x00\x00"
+            + tf.build_uplink_payload(app))
+    c._ingest(gdl90.frame_message(body))
+    check(c.uplink_count == 1, "uplink frame counted")
+    check(c.fisb.count() == 1, "METAR folded into the FIS-B store")
+    sts = c.fisb.metar_stations(
+        lambda i: (34.8485, -111.7884) if i == "KSEZ" else None)
+    check(len(sts) == 1 and sts[0]["icao"] == "KSEZ" and sts[0]["src"] == "RDR",
+          "store geolocates the METAR as a RDR station")
+
+
 def test_udp_loopback():
     """End-to-end: bind the listener, send a real UDP datagram to it,
     and confirm the target shows up."""

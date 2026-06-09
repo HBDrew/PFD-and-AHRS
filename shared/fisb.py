@@ -33,6 +33,7 @@ This module is transport-agnostic and side-effect free.
 
 import calendar
 import re
+import threading
 import time
 
 import wx as _wx
@@ -314,6 +315,24 @@ def _obs_age_min(parsed, now):
         return None
 
 
+def _station_from_parsed(parsed, lat, lon, now):
+    """Build the wx-shaped station dict from a parsed METAR + coordinates."""
+    return {
+        "icao": parsed["icao"],
+        "lat": float(lat), "lon": float(lon),
+        "fltcat": parsed["fltcat"],
+        "wdir": parsed["wdir"], "wspd": parsed["wspd"], "wgst": parsed["wgst"],
+        "visib_mi": parsed["visib_mi"], "ceiling_ft": parsed["ceiling_ft"],
+        "altim_hpa": parsed["altim_hpa"],
+        "temp_c": parsed["temp_c"], "dewp_c": parsed["dewp_c"],
+        "wx": "",
+        "name": "",
+        "raw": parsed["raw"],
+        "age_min": _obs_age_min(parsed, now),
+        "src": "RDR",                       # radio (FIS-B), vs "INET" for AWC
+    }
+
+
 def metar_station(raw, locate, now=None):
     """Turn a raw METAR string into a station dict matching
     ``wx.parse_metars`` output, geolocating the ICAO id via ``locate``.
@@ -329,20 +348,7 @@ def metar_station(raw, locate, now=None):
     if not pos or pos[0] is None or pos[1] is None:
         return None
     now = now if now is not None else time.time()
-    return {
-        "icao": parsed["icao"],
-        "lat": float(pos[0]), "lon": float(pos[1]),
-        "fltcat": parsed["fltcat"],
-        "wdir": parsed["wdir"], "wspd": parsed["wspd"], "wgst": parsed["wgst"],
-        "visib_mi": parsed["visib_mi"], "ceiling_ft": parsed["ceiling_ft"],
-        "altim_hpa": parsed["altim_hpa"],
-        "temp_c": parsed["temp_c"], "dewp_c": parsed["dewp_c"],
-        "wx": "",
-        "name": "",
-        "raw": parsed["raw"],
-        "age_min": _obs_age_min(parsed, now),
-        "src": "RDR",                       # radio (FIS-B), vs "INET" for AWC
-    }
+    return _station_from_parsed(parsed, pos[0], pos[1], now)
 
 
 # ── Top-level uplink decode ─────────────────────────────────────────────────────
@@ -402,3 +408,101 @@ def metars_from_apdus(apdus, locate, now=None):
             if st is not None:
                 stations.append(st)
     return stations
+
+
+# ── Live store + source merge ───────────────────────────────────────────────────
+class FisbWeather:
+    """Thread-safe store of the most recent FIS-B text weather, fed raw GDL90
+    uplink messages off the radio.
+
+    Keeps the latest *parsed* METAR per station (re-parsing is wasted work; the
+    same report rebroadcasts every cycle).  Geolocation is deferred to read
+    time via a caller-supplied ``locate`` so this module stays free of any
+    airport-DB dependency — the app owns the airports array and passes a lookup
+    in when it builds the draw list.
+
+    Entries age out by *receipt* time (``expire_s``): if a ground station drops
+    off the air we stop showing its last report after the window, and the
+    internet poller backfills.  The METAR's own ``age_min`` (from its DDHHMMZ
+    stamp) is recomputed on every read so the picker shows true observation age.
+    """
+
+    def __init__(self, expire_s=4500.0):    # 75 min: METARs refresh hourly
+        self.expire_s = expire_s
+        self.uplink_count = 0                # GDL90 uplink frames ingested
+        self.metar_count = 0                 # METAR records parsed OK (cumulative)
+        self._lock = threading.Lock()
+        self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
+
+    def ingest_gdl90_msg(self, msg, now_mono=None):
+        """Decode one ``kind=="uplink"`` GDL90 message and fold any METARs into
+        the store.  Cheap to call from the UDP ingest path."""
+        self._ingest_apdus(decode_gdl90_uplink(msg), now_mono)
+
+    def ingest_uplink(self, uplink_payload, now_mono=None):
+        """Same, from a bare 432-byte UAT uplink payload (e.g. a raw dump978
+        path that isn't wrapped in a GDL90 0x07 frame)."""
+        self._ingest_apdus(decode_uplink(uplink_payload), now_mono)
+
+    def _ingest_apdus(self, apdus, now_mono):
+        if not apdus:
+            return
+        self.uplink_count += 1
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        new = {}
+        for apdu in apdus:
+            if not apdu.get("data"):
+                continue
+            for rec in text_records(apdu["data"]):
+                parsed = parse_metar_text(rec)
+                if parsed is not None:
+                    new[parsed["icao"]] = parsed
+        if not new:
+            return
+        with self._lock:
+            for icao, parsed in new.items():
+                self._metars[icao] = (parsed, now_mono)
+                self.metar_count += 1
+
+    def metar_stations(self, locate, now=None, now_mono=None):
+        """Return wx-shaped station dicts for every stored, still-fresh METAR
+        that ``locate`` can geolocate.  Prunes receipt-expired entries."""
+        now = now if now is not None else time.time()
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            expired = [k for k, (_p, recv) in self._metars.items()
+                       if now_mono - recv > self.expire_s]
+            for k in expired:
+                del self._metars[k]
+            items = list(self._metars.items())
+        out = []
+        for icao, (parsed, _recv) in items:
+            pos = locate(icao) if locate else None
+            if not pos or pos[0] is None or pos[1] is None:
+                continue
+            out.append(_station_from_parsed(parsed, pos[0], pos[1], now))
+        return out
+
+    def count(self):
+        with self._lock:
+            return len(self._metars)
+
+
+def merge_metar_sources(rdr, inet):
+    """Merge radio (FIS-B) and internet (AWC) METAR lists into one draw list.
+
+    Radio wins per station — it's local and, when present, at least as fresh as
+    the internet pull, and keeping one dot per field avoids double-drawing.
+    Internet backfills every station radio didn't deliver.  Each dict is tagged
+    ``src`` ("RDR"/"INET") so the status line can count the two sources."""
+    by = {}
+    for m in inet or []:
+        d = dict(m)
+        d.setdefault("src", "INET")
+        by[d.get("icao")] = d
+    for m in rdr or []:
+        d = dict(m)
+        d.setdefault("src", "RDR")
+        by[d.get("icao")] = d
+    by.pop(None, None)
+    return list(by.values())

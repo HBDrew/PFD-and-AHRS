@@ -245,6 +245,75 @@ def test_pipeline():
     check(all(s["src"] == "RDR" for s in stations), "all tagged RDR")
 
 
+def _uplink_msg(reports_text):
+    """Wrap report text in a GDL90 0x07 uplink message dict (as the deframer
+    would surface it)."""
+    app = build_app_data([
+        build_info_frame(fisb.FRAME_TYPE_FISB_APDU,
+                         build_apdu_notime(413, dlac_encode(reports_text)))])
+    raw = (bytes([gdl90.MSG_UPLINK]) + b"\x00\x00\x00"
+           + build_uplink_payload(app))
+    return {"kind": "uplink", "raw": raw}
+
+
+def test_store():
+    case("store ingests + geolocates + counts")
+    store = fisb.FisbWeather()
+    store.ingest_gdl90_msg(_uplink_msg(
+        "KSEZ 091753Z 24008KT 10SM FEW120 28/06 A3001\x1e"
+        "KPHX 091751Z 28015G25KT 1 1/2SM BR OVC007 22/19 A2992\x03"))
+    check(store.uplink_count == 1, "one uplink ingested")
+    check(store.count() == 2, "two METARs stored")
+    sts = store.metar_stations(_locate)
+    check(sorted(s["icao"] for s in sts) == ["KPHX", "KSEZ"], "geolocated both")
+    check(all(s["src"] == "RDR" for s in sts), "tagged RDR")
+
+    case("latest report per station replaces the old one")
+    store.ingest_gdl90_msg(_uplink_msg(
+        "KSEZ 091853Z 24008KT 1/2SM FG OVC003 28/06 A3001\x03"))
+    check(store.count() == 2, "still two stations (KSEZ updated, not added)")
+    sez = next(s for s in store.metar_stations(_locate) if s["icao"] == "KSEZ")
+    check(sez["fltcat"] == "LIFR", "KSEZ now LIFR from the newer report")
+
+    case("receipt-expired entries are pruned")
+    mono = time.monotonic()
+    store.ingest_gdl90_msg(_uplink_msg("KFLG 091756Z 24008KT 10SM 05/M02 A3010\x03"),
+                           now_mono=mono - 10000.0)        # long ago
+    sts = store.metar_stations(_locate, now_mono=mono)
+    check("KFLG" not in [s["icao"] for s in sts], "stale KFLG pruned on read")
+
+    case("unlocatable stored station is skipped, not crashed")
+    store2 = fisb.FisbWeather()
+    store2.ingest_gdl90_msg(_uplink_msg("ZZZZ 091753Z 24008KT 10SM 28/06 A3001\x03"))
+    check(store2.metar_stations(_locate) == [], "no coords -> not drawn")
+
+
+def test_merge():
+    case("RDR overrides INET per station; INET backfills")
+    inet = [
+        {"icao": "KSEZ", "lat": 1.0, "lon": 2.0, "fltcat": "VFR"},
+        {"icao": "KABC", "lat": 3.0, "lon": 4.0, "fltcat": "MVFR"},
+    ]
+    rdr = [
+        {"icao": "KSEZ", "lat": 1.0, "lon": 2.0, "fltcat": "IFR", "src": "RDR"},
+        {"icao": "KPHX", "lat": 5.0, "lon": 6.0, "fltcat": "VFR", "src": "RDR"},
+    ]
+    merged = fisb.merge_metar_sources(rdr, inet)
+    by = {m["icao"]: m for m in merged}
+    check(set(by) == {"KSEZ", "KABC", "KPHX"}, "union of stations")
+    check(by["KSEZ"]["fltcat"] == "IFR" and by["KSEZ"]["src"] == "RDR",
+          "radio wins for KSEZ")
+    check(by["KABC"]["src"] == "INET", "internet-only station tagged INET")
+    check(by["KPHX"]["src"] == "RDR", "radio-only station kept")
+    n_rdr = sum(1 for m in merged if m["src"] == "RDR")
+    n_inet = sum(1 for m in merged if m["src"] == "INET")
+    check((n_rdr, n_inet) == (2, 1), "source counts for the status line")
+
+    case("merge tolerates empty / None inputs")
+    check(fisb.merge_metar_sources(None, None) == [], "both empty")
+    check(len(fisb.merge_metar_sources([], inet)) == 2, "inet only")
+
+
 def main():
     test_dlac()
     test_framing()
@@ -252,6 +321,8 @@ def main():
     test_metar_parse()
     test_metar_station()
     test_pipeline()
+    test_store()
+    test_merge()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))
 
 
