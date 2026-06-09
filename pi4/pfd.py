@@ -11495,9 +11495,22 @@ def _point_in_poly(x, y, pts):
     return inside
 
 
+def _poly_area(pts):
+    """Shoelace area of a screen-space polygon (for picking the smallest one
+    under a tap when hazard areas overlap)."""
+    a = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        a += x1 * y2 - x2 * y1
+    return abs(a) * 0.5
+
+
 def _mfd_find_graphic(tap_x, tap_y):
-    """The graphical hazard area (polygon) under the tap, or None.  Only on the
-    MET overlay, where the shapes are drawn."""
+    """The graphical hazard area under the tap, or None.  When areas overlap
+    (e.g. a convective cell nested in a turbulence region) the *smallest*
+    containing polygon wins, so the specific hazard is reachable.  MET only."""
     if not disp["ds"].get("map_show_metar"):
         return None
     gfx = disp.get("weather", {}).get("graphics") or []
@@ -11507,13 +11520,17 @@ def _mfd_find_graphic(tap_x, tap_y):
     project, _ = _map_mod.make_projector(
         (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
         _mfd_last_range, disp.get("yaw", 0.0), _mfd_last_track)
+    best, best_area = None, None
     for g in gfx:
         verts = g.get("vertices") or []
         if len(verts) < 3:
             continue
-        if _point_in_poly(tap_x, tap_y, [project(la, lo) for la, lo in verts]):
-            return g
-    return None
+        pts = [project(la, lo) for la, lo in verts]
+        if _point_in_poly(tap_x, tap_y, pts):
+            area = _poly_area(pts)
+            if best is None or area < best_area:
+                best, best_area = g, area
+    return best
 
 
 def _wx_open_graphic_text(g):
