@@ -2854,7 +2854,7 @@ def handle_event(event, demo_mode):
                 _ssync_publish_baro()
 
     # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────
-    global _mfd_drag
+    global _mfd_drag, _wx_drag
     if event.type == pygame.FINGERDOWN:
         _active_fingers[event.finger_id] = pygame.time.get_ticks()
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
@@ -2950,6 +2950,26 @@ def handle_event(event, demo_mode):
                 handle_event(fake, demo_mode)
             finally:
                 _dispatch_replay = False
+        return True
+
+    # Drag-to-scroll the TAF / advisory readouts (tap closes; drag scrolls).
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _wx_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        dy = pos[1] - _wx_drag["down_y"]
+        if abs(dy) > 6:
+            _wx_drag["is_drag"] = True
+        if _wx_drag["is_drag"]:
+            disp["wx_scroll"] = max(0, _wx_drag["scroll0"] - dy)
+        return True
+
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _wx_drag is not None:
+        d = _wx_drag
+        _wx_drag = None
+        if not d["is_drag"]:
+            disp["wx_taf"] = None
+            disp["wx_text"] = None
+            disp["wx_scroll"] = 0
         return True
 
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _mfd_drag is not None:
@@ -3803,11 +3823,11 @@ def handle_event(event, demo_mode):
         # ── MFD taps (display_mode == "mfd" while mode == "pfd") ──────────
         if mode == "pfd" and disp.get("display_mode", "pfd") == "mfd":
             # WX readouts / menus stack on top — they take the tap first.
-            if disp.get("wx_text"):
-                disp["wx_text"] = None
-                return True
-            if disp.get("wx_taf"):
-                disp["wx_taf"] = None
+            # TAF / advisory readouts: start drag-or-tap (drag scrolls, tap
+            # closes — handled on MOTION/UP above).
+            if disp.get("wx_taf") or disp.get("wx_text"):
+                _wx_drag = {"down_y": y, "scroll0": disp.get("wx_scroll", 0),
+                            "is_drag": False}
                 return True
             if disp.get("wx_menu"):
                 _wx_menu_hit(x, y)
@@ -4415,6 +4435,7 @@ _dispatch_replay = False   # guard against infinite recursion in the
 # MFD drag/pan state — set on DOWN inside the map, cleared on UP.
 # Motion exceeding _MFD_DRAG_THRESHOLD converts a tap into a pan-drag.
 _mfd_drag = None
+_wx_drag = None             # drag-to-scroll state for the TAF / advisory readouts
 _MFD_DRAG_THRESHOLD = 8
 
 # FPL list scroll-drag state (mode == "fpl").  Same shape as _ss_drag.
@@ -10488,6 +10509,7 @@ def _wx_menu_hit(x, y):
         if not (enabled and bx <= x <= bx + bw and by <= y <= by + bh):
             continue
         disp["wx_menu"] = None
+        disp["wx_scroll"] = 0
         if kind == "METAR" and menu.get("metar"):
             disp["wx_popup"] = dict(menu["metar"])
         elif kind == "TAF" and store:
@@ -10499,8 +10521,51 @@ def _wx_menu_hit(x, y):
     disp["wx_menu"] = None
 
 
+def _draw_wx_scroll_panel(surf, title, items, pw):
+    """Modal panel with a scrollable content region.  ``items`` is a list of
+    (height, draw_fn(surf, x, y)); content taller than the panel scrolls via
+    disp['wx_scroll'] (clamped here).  A tap closes (handled in the dispatch)."""
+    content_h = sum(h for h, _ in items)
+    px = (DISPLAY_W - pw) // 2
+    ph = min(48 + content_h + 30, DISPLAY_H - 16)
+    py = (DISPLAY_H - ph) // 2
+    ctop, cbot = py + 46, py + ph - 28
+    vis_h = cbot - ctop
+    max_scroll = max(0, content_h - vis_h)
+    sc = max(0, min(int(disp.get("wx_scroll", 0)), max_scroll))
+    disp["wx_scroll"] = sc
+
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, title, 24, (235, 235, 235), bold=True, x=px + 18, y=py + 12)
+
+    old_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(px + 2, ctop, pw - 4, vis_h))
+    y = ctop - sc
+    for h, fn in items:
+        if fn is not None and y + h >= ctop and y <= cbot:
+            fn(surf, px + 18, y)
+        y += h
+    surf.set_clip(old_clip)
+
+    if max_scroll > 0:
+        thumb_h = max(20, int(vis_h * vis_h / content_h))
+        thumb_y = ctop + int((vis_h - thumb_h) * sc / max_scroll)
+        pygame.draw.rect(surf, (90, 120, 160),
+                         (px + pw - 9, thumb_y, 4, thumb_h), border_radius=2)
+        foot = "drag to scroll · tap to close"
+    else:
+        foot = "tap to close"
+    _text(surf, foot, 16, (140, 150, 160), cx=DISPLAY_W // 2, cy=py + ph - 14)
+
+
 def _draw_wx_taf(surf):
-    """Full TAF readout: each forecast period broken out with labeled fields."""
+    """Full TAF readout: each forecast period broken out with labeled fields.
+    Scrolls when the forecast is long."""
     icao = disp.get("wx_taf")
     if not icao:
         return
@@ -10508,84 +10573,46 @@ def _draw_wx_taf(surf):
     raw = store.taf_for(icao) if store else None
     p = _fisb.parse_taf(raw) if raw else None
     pw = min(620, DISPLAY_W - 20)
-
-    blocks = []
+    title = f"TAF  {icao}" + (f"   valid {_fisb._hhz(p['valid_from'])}–"
+                              f"{_fisb._hhz(p['valid_to'])}" if p else "")
+    items = []
     if p:
         for g in p["periods"]:
-            rows = []
-            if g["wind"]:
-                rows.append(("Wind", g["wind"]))
-            if g["vis"]:
-                rows.append(("Vis", g["vis"]))
-            if g["wx"]:
-                rows.append(("Wx", g["wx"]))
-            if g["sky"]:
-                rows.append(("Sky", g["sky"]))
-            blocks.append((g["label"], rows or [("", "—")]))
-
-    nrows = sum(1 + len(rows) for _h, rows in blocks)
-    ph = min(56 + nrows * 24 + 30, DISPLAY_H - 16)
-    px = (DISPLAY_W - pw) // 2
-    py = (DISPLAY_H - ph) // 2
-    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
-    dim.fill((0, 0, 0, 150))
-    surf.blit(dim, (0, 0))
-    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
-    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
-                     border_radius=10)
-    hdr = f"TAF  {icao}" + (f"   valid {_fisb._hhz(p['valid_from'])}–"
-                            f"{_fisb._hhz(p['valid_to'])}" if p else "")
-    _text(surf, hdr, 24, (235, 235, 235), bold=True, x=px + 18, y=py + 12)
-    yy = py + 50
-    for header, rows in blocks:
-        _text(surf, header, 18, (120, 200, 230), bold=True, x=px + 18, y=yy)
-        yy += 24
-        for lbl, val in rows:
-            if lbl:
-                _text(surf, lbl, 16, (140, 160, 180), x=px + 36, y=yy)
-            _text(surf, val, 16, (210, 220, 230), x=px + 110, y=yy)
-            yy += 24
-        if yy > py + ph - 40:
-            break
-    _text(surf, "tap to close", 16, (140, 150, 160),
-          cx=DISPLAY_W // 2, cy=py + ph - 14)
+            items.append((26, lambda s, x, y, t=g["label"]:
+                          _text(s, t, 18, (120, 200, 230), bold=True, x=x, y=y)))
+            rows = [(lbl, v) for lbl, v in (("Wind", g["wind"]),
+                    ("Vis", g["vis"]), ("Wx", g["wx"]), ("Sky", g["sky"])) if v]
+            for lbl, val in (rows or [("", "—")]):
+                def _row(s, x, y, lbl=lbl, val=val):
+                    if lbl:
+                        _text(s, lbl, 16, (140, 160, 180), x=x + 18, y=y)
+                    _text(s, val, 16, (210, 220, 230), x=x + 92, y=y)
+                items.append((24, _row))
+            items.append((8, None))
+    else:
+        items.append((24, lambda s, x, y: _text(s, "No TAF.", 18,
+                                                 (200, 215, 230), x=x, y=y)))
+    _draw_wx_scroll_panel(surf, title, items, pw)
 
 
 def _draw_wx_text(surf):
-    """Text readout for area advisories (AIRMET/SIGMET/NOTAM)."""
+    """Scrolling text readout for area advisories (AIRMET/SIGMET/NOTAM)."""
     wt = disp.get("wx_text")
     if not wt:
         return
     pw = min(640, DISPLAY_W - 16)
     f16 = _get_font(16)
-    lines = []
+    items = []
     bulletins = wt.get("bulletins") or []
     for b in bulletins:
-        lines.extend(_wrap_text(b, f16, pw - 36))
-        lines.append("")
+        for ln in _wrap_text(b, f16, pw - 40):
+            items.append((20, lambda s, x, y, t=ln:
+                          _text(s, t, 16, (200, 215, 230), x=x, y=y)))
+        items.append((10, None))
     if not bulletins:
-        lines = ["None active in range."]
-    maxrows = max(4, (DISPLAY_H - 110) // 20)
-    clipped = len(lines) > maxrows
-    lines = lines[:maxrows]
-    ph = min(52 + len(lines) * 20 + 30, DISPLAY_H - 16)
-    px = (DISPLAY_W - pw) // 2
-    py = (DISPLAY_H - ph) // 2
-    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
-    dim.fill((0, 0, 0, 150))
-    surf.blit(dim, (0, 0))
-    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
-    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
-                     border_radius=10)
-    _text(surf, wt.get("title", "WX"), 24, (235, 235, 235), bold=True,
-          x=px + 18, y=py + 12)
-    yy = py + 48
-    for ln in lines:
-        if ln:
-            _text(surf, ln, 16, (200, 215, 230), x=px + 18, y=yy)
-        yy += 20
-    foot = "more… (tap to close)" if clipped else "tap to close"
-    _text(surf, foot, 16, (140, 150, 160), cx=DISPLAY_W // 2, cy=py + ph - 14)
+        items.append((24, lambda s, x, y: _text(s, "None active in range.",
+                                                 18, (200, 215, 230), x=x, y=y)))
+    _draw_wx_scroll_panel(surf, wt.get("title", "WX"), items, pw)
 
 
 def _mfd_fpl_btn_hit(x, y):
