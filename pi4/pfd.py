@@ -12519,9 +12519,12 @@ def draw_mfd(surf, connected=True, data_stale=False):
     zoom_pref = int(ds.get("map_zoom_nm", 10))
     if zoom_pref == _map_mod.ZOOM_AUTO:
         if d2.get("ident"):
-            cos_lat = max(0.05, math.cos(math.radians(cen_lat)))
-            n_nm = (d2["lat"] - cen_lat) * 60.0
-            e_nm = (d2["lon"] - cen_lon) * 60.0 * cos_lat
+            # Fit range to the leg from the AIRCRAFT to the waypoint — NOT the
+            # panned map centre, or panning would change the distance and
+            # rescale the map every frame (the "jumpy pan" bug).
+            cos_lat = max(0.05, math.cos(math.radians(ac_lat)))
+            n_nm = (d2["lat"] - ac_lat) * 60.0
+            e_nm = (d2["lon"] - ac_lon) * 60.0 * cos_lat
             eff_range = _map_mod.auto_fit_range(math.hypot(n_nm, e_nm) * 1.10)
         else:
             eff_range = _map_mod.ZOOM_LEVELS[-1]
@@ -12571,7 +12574,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
     plate.fill((0, 8, 22, 190))
     surf.blit(plate, (sx, sy))
     pygame.draw.line(surf, (60, 80, 110), (sx, sy), (sx + sw - 1, sy), 1)
-    ctx = _mfd_strip_ctx(cen_lat, cen_lon, alt, hdg, track, gs_kt,
+    # Aircraft data strip — dist/brg/AGL/XTE are all ownship-relative, so feed
+    # the AIRCRAFT position, never the panned map centre (else they drift as you
+    # pan, which is wrong and was part of the "jumpy pan" report).
+    ctx = _mfd_strip_ctx(ac_lat, ac_lon, alt, hdg, track, gs_kt,
                          d2 if d2.get("ident") else None)
     col_w = sw // _MFD_STRIP_SLOT_COUNT
     # Data-strip text uses a gentler scale than the map labels: the airport
