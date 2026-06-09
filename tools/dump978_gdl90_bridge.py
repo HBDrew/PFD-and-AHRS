@@ -68,54 +68,11 @@ def forward_uplink(payload, sock, dest):
 
 
 # ── Synthetic test weather (no radio needed) ────────────────────────────────────
-_DLAC_REV = {ch: i for i, ch in enumerate(fisb._DLAC)}
-
-
-def _dlac_encode(text):
-    bits = nbits = 0
-    out = bytearray()
-    for ch in text:
-        bits = (bits << 6) | _DLAC_REV.get(ch, _DLAC_REV[" "])
-        nbits += 6
-        while nbits >= 8:
-            nbits -= 8
-            out.append((bits >> nbits) & 0xFF)
-    if nbits:
-        out.append((bits << (8 - nbits)) & 0xFF)
-    return bytes(out)
-
-
-def _encode_uplink_header(lat, lon, site_id=0):
-    """8-byte UAT uplink header with a valid ground-station position — inverse
-    of fisb.decode_ground_station, so the test feed also exercises the FIS-B
-    tower symbol."""
-    raw_lat = int(round((lat % 360.0) / 360.0 * 16777216.0)) & 0x7FFFFF
-    raw_lon = int(round((lon % 360.0) / 360.0 * 16777216.0)) & 0xFFFFFF
-    h = bytearray(8)
-    h[0] = (raw_lat >> 15) & 0xFF
-    h[1] = (raw_lat >> 7) & 0xFF
-    h[2] = ((raw_lat << 1) & 0xFE) | ((raw_lon >> 23) & 0x01)
-    h[3] = (raw_lon >> 15) & 0xFF
-    h[4] = (raw_lon >> 7) & 0xFF
-    h[5] = ((raw_lon << 1) & 0xFE) | 0x01           # position_valid
-    h[7] = (site_id & 0x0F) << 4
-    return bytes(h)
-
-
-def make_test_uplink(metar_texts, station=(33.43, -112.01)):
-    """Build a 432-byte UAT uplink payload carrying ``metar_texts`` as one
-    product-413 (Generic Text) FIS-B APDU, from a ground station at
-    ``station`` — the same shape dump978 would hand us for real text weather."""
-    text = "\x1e".join(metar_texts) + "\x03"           # RS-separated, ETX-ended
-    dlac = _dlac_encode(text)
-    pid = 413
-    apdu = bytes([(pid >> 6) & 0x1f, (pid & 0x3f) << 2]) + dlac   # T-opt 0
-    length = len(apdu)
-    info = bytes([(length >> 1) & 0xFF,
-                  ((length & 1) << 7) | fisb.FRAME_TYPE_FISB_APDU]) + apdu
-    app = (info + b"\x00\x00").ljust(424, b"\x00")[:424]
-    header = _encode_uplink_header(station[0], station[1], site_id=1)
-    return header + app                                 # 8-byte header + 424
+def make_test_uplink(metar_texts, station=(33.43, -112.01, 1)):
+    """Build a UAT uplink payload carrying ``metar_texts`` from a ground station
+    at ``station`` — the same shape dump978 hands us for real text weather.
+    (Thin wrapper over the shared fisb encoder.)"""
+    return fisb.encode_text_uplink(metar_texts, station=station)
 
 
 _TEST_METARS = [

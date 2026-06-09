@@ -353,6 +353,25 @@ def test_ground_station():
     check(gss == [], "station pruned past station_expire_s")
 
 
+def test_encoders():
+    case("encode_text_uplink round-trips through the decoder")
+    reports = ["KSEZ 091753Z 24008KT 10SM FEW120 28/06 A3001",
+               "KFLG 091756Z VRB03KT 1/2SM FG VV002 05/05 A3010"]
+    payload = fisb.encode_text_uplink(reports, station=(35.14, -111.67, 2))
+    check(len(payload) == 432, "default payload is 432 bytes")
+    apdus = fisb.decode_uplink(payload)
+    recs = [r for a in apdus for r in fisb.text_records(a["data"])]
+    check(recs == reports, f"reports survive encode→decode: {recs}")
+    gs = fisb.decode_ground_station(payload)
+    check(gs["position_valid"] and abs(gs["lat"] - 35.14) < 0.01
+          and gs["site_id"] == 2, "station header round-trips")
+
+    case("encode_dlac is the inverse of dlac_decode")
+    for s in ("METAR KPHX 121751Z", "0123456789", "A/B-C.D"):
+        check(fisb.dlac_decode(fisb.encode_dlac(s))[:len(s)] == s,
+              f"dlac round-trip {s!r}")
+
+
 def test_merge():
     case("RDR overrides INET per station; INET backfills")
     inet = [
@@ -388,6 +407,7 @@ def main():
     test_pipeline()
     test_store()
     test_ground_station()
+    test_encoders()
     test_merge()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))
 

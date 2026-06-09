@@ -219,6 +219,7 @@ METARs (radio wins per station) and the MFD WX status line shows the split.
 | `tools/dump978_gdl90_bridge.py` | dump978 raw `+` uplink → GDL90 0x07 / UDP. `--emit-test-wx` injects synthetic METARs; `--selftest` round-trips. | `--selftest` |
 | `tools/install_dump978.sh` | Installs dump978-fa on serial 978 + the bridge as systemd units, alongside the untouched 1090 stack. | — |
 | `tools/enable_978_traffic.sh` | Adds a `uat_in` net-connector so readsb folds dump978's 978 *traffic* into its existing SBS/GDL90 output (no new decode path). | — |
+| `tools/fisb_sim.py` | Ground FIS-B simulator — broadcasts a realistic AZ weather field (real idents, all categories, 2 towers) as GDL90 to :4000 for building/testing the WX screens with no radio. | `--selftest` |
 
 Enable on a receiver Pi: `sudo bash tools/install_dump978.sh`.  Stage 1 is text
 weather (METAR/SPECI); winds/AIRMET/SIGMET/NOTAM text and the FIS-B NEXRAD

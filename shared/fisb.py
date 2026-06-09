@@ -566,3 +566,61 @@ def merge_metar_sources(rdr, inet):
         by[d.get("icao")] = d
     by.pop(None, None)
     return list(by.values())
+
+
+# ── Encoders (test feeds / simulators; mirror the decoders) ─────────────────────
+_DLAC_REV = {ch: i for i, ch in enumerate(_DLAC)}
+
+
+def encode_dlac(text):
+    """Pack a string into DLAC 6-bit bytes (inverse of ``dlac_decode``)."""
+    bits = nbits = 0
+    out = bytearray()
+    for ch in text:
+        bits = (bits << 6) | _DLAC_REV.get(ch, _DLAC_REV[" "])
+        nbits += 6
+        while nbits >= 8:
+            nbits -= 8
+            out.append((bits >> nbits) & 0xFF)
+    if nbits:
+        out.append((bits << (8 - nbits)) & 0xFF)
+    return bytes(out)
+
+
+def encode_ground_station_header(lat, lon, site_id=0, position_valid=True):
+    """Build the 8-byte UAT uplink header (inverse of decode_ground_station)."""
+    raw_lat = int(round((lat % 360.0) / 360.0 * 16777216.0)) & 0x7FFFFF
+    raw_lon = int(round((lon % 360.0) / 360.0 * 16777216.0)) & 0xFFFFFF
+    h = bytearray(8)
+    h[0] = (raw_lat >> 15) & 0xFF
+    h[1] = (raw_lat >> 7) & 0xFF
+    h[2] = ((raw_lat << 1) & 0xFE) | ((raw_lon >> 23) & 0x01)
+    h[3] = (raw_lon >> 15) & 0xFF
+    h[4] = (raw_lon >> 7) & 0xFF
+    h[5] = ((raw_lon << 1) & 0xFE) | (0x01 if position_valid else 0x00)
+    h[7] = (site_id & 0x0F) << 4
+    return bytes(h)
+
+
+def encode_text_uplink(reports, station=None, product_id=413, total=432):
+    """Build a UAT uplink payload carrying ``reports`` (a list of text strings)
+    as one text-product FIS-B APDU, optionally from ground station
+    ``station=(lat, lon[, site_id])``.  Mirrors the decode path end-to-end:
+    iter_information_frames → decode_apdu → text_records.  Used by the dump978
+    test emitter and the ground simulator."""
+    text = "\x1e".join(reports) + "\x03"               # RS-separated, ETX-ended
+    dlac = encode_dlac(text)
+    apdu = bytes([(product_id >> 6) & 0x1f,
+                  (product_id & 0x3f) << 2]) + dlac     # T-opt 0 header + data
+    length = len(apdu)
+    info = bytes([(length >> 1) & 0xFF,
+                  ((length & 1) << 7) | FRAME_TYPE_FISB_APDU]) + apdu
+    app_len = total - _UAT_HEADER_LEN
+    app = (info + b"\x00\x00").ljust(app_len, b"\x00")[:app_len]
+    if station:
+        header = encode_ground_station_header(
+            station[0], station[1],
+            site_id=station[2] if len(station) > 2 else 0)
+    else:
+        header = b"\x00" * _UAT_HEADER_LEN
+    return header + app
