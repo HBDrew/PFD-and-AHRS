@@ -201,15 +201,33 @@ courtesy to the free aggregators.
   cleaner weather picture, and skipping the tint build is the biggest CPU
   saving the inset has.
 
+### FIS-B (978 UAT) weather — radio-primary, internet-bonus
+
+Weather over the radio, no internet needed — the same source model as traffic.
+The 978 dongle (serial `978`) is decoded by **dump978**; its raw uplink frames
+(`+…` lines) are bridged to GDL90 0x07 on :4000, where `ADSBClient` folds them
+into `fisb.FisbWeather`.  `_update_weather()` merges that over the internet
+METARs (radio wins per station) and the MFD WX status line shows the split.
+
+```
+ 978 UAT ── NESDR ──► dump978-fa ── raw :30978 ──► dump978_gdl90_bridge.py ──► GDL90/UDP :4000
+```
+
+| File | Role | Tested by |
+|------|------|-----------|
+| `shared/fisb.py` | FIS-B decode (DLAC text, info-frame walk, APDU), METAR parse, `FisbWeather` store, `merge_metar_sources`. | `shared/test_fisb.py` |
+| `tools/dump978_gdl90_bridge.py` | dump978 raw `+` uplink → GDL90 0x07 / UDP. `--emit-test-wx` injects synthetic METARs; `--selftest` round-trips. | `--selftest` |
+| `tools/install_dump978.sh` | Installs dump978-fa on serial 978 + the bridge as systemd units, alongside the untouched 1090 stack. | — |
+
+Enable on a receiver Pi: `sudo bash tools/install_dump978.sh`.  Stage 1 is text
+weather (METAR/SPECI); winds/AIRMET/SIGMET/NOTAM text and the FIS-B NEXRAD
+raster are the next stages.
+
 **Planned:**
-- **FIS-B (978 UAT) weather** without internet (uplink frames already
-  captured/counted; decode the APDU + NEXRAD blocks into the same
-  `disp["weather"]` / nexrad surface).
 - Optional track-up rotation for the NEXRAD raster (cached per heading) if
   the north-up-in-track-up mismatch proves distracting.
-- **FIS-B (978 UAT) weather** without internet: the uplink frames (0x07)
-  are already captured/counted; decoding the APDU + NEXRAD blocks feeds the
-  same `disp["weather"]`.
+- FIS-B Stages 2–3: winds aloft / AIRMET-SIGMET / NOTAM text, then the FIS-B
+  NEXRAD block raster into the existing nexrad surface.
 - METAR detail readout (tap a station → raw METAR / wind / ceiling / vis).
 - On-screen TFC status / count + audible/visual traffic alert ("TRAFFIC")
   driven by `disp["traffic"]["alert"]`.
