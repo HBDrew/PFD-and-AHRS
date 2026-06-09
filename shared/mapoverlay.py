@@ -18,15 +18,16 @@ than one, the state reads "multi" and the next cycle collapses to a single
 overlay.
 """
 
-ORDER = ["asp", "tfc", "wx", "nexrad"]
+ORDER = ["asp", "tfc", "wx", "wnd", "nexrad"]
 
-LABELS = {"asp": "ASP", "tfc": "TFC", "wx": "MET", "nexrad": "NEX",
-          "multi": "MULTI"}
+LABELS = {"asp": "ASP", "tfc": "TFC", "wx": "MET", "wnd": "WND",
+          "nexrad": "NEX", "multi": "MULTI"}
 
 # Overlay key → ds setting it drives.  "tfc" has no key (it's "none on").
 _KEYS = {
     "asp":    "map_show_airspaces",
     "wx":     "map_show_metar",
+    "wnd":    "map_show_winds",
     "nexrad": "map_show_nexrad",
 }
 

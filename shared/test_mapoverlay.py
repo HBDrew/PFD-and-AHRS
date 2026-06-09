@@ -29,9 +29,10 @@ def test_default_state():
 
 def test_cycle_sequence():
     ds = {}
-    seq = [ovl.cycle(ds) for _ in range(5)]
-    # From tfc: → wx → nexrad → asp → tfc → wx  (ORDER = asp,tfc,wx,nexrad)
-    check(seq == ["wx", "nexrad", "asp", "tfc", "wx"], f"cycle seq {seq}")
+    seq = [ovl.cycle(ds) for _ in range(6)]
+    # From tfc → wx → wnd → nexrad → asp → tfc → wx
+    # (ORDER = asp, tfc, wx, wnd, nexrad)
+    check(seq == ["wx", "wnd", "nexrad", "asp", "tfc", "wx"], f"cycle seq {seq}")
 
 
 def test_apply_exclusive():

@@ -701,6 +701,74 @@ def _draw_ground_stations(surf, stations, project, font, rect):
             surf.blit(font.render(lbl, True, _GND_STATION), (ix + r + 3, iy - 7))
 
 
+# ── Winds-aloft barbs ────────────────────────────────────────────────────────
+_WIND_BARB = (180, 220, 245)
+
+
+def _draw_wind_barb(surf, cx, cy, from_dir, speed_kt, rot_deg, col, scale=1.0):
+    """Standard wind barb: shaft toward the source, 50/10/5 kt marks."""
+    a = math.radians((from_dir - rot_deg) % 360.0)
+    sx, sy = math.sin(a), -math.cos(a)
+    L = 28 * scale
+    ex, ey = cx + sx * L, cy + sy * L
+    pygame.draw.line(surf, col, (cx, cy), (int(ex), int(ey)), 2)
+    pygame.draw.circle(surf, col, (int(cx), int(cy)), 3)
+    if speed_kt is None or speed_kt < 3:
+        return
+    barb_ang = a + math.radians(120)
+    bx, by = math.sin(barb_ang), -math.cos(barb_ang)
+    spd = int(round(speed_kt / 5.0)) * 5
+    n50, spd = divmod(spd, 50)
+    n10, spd = divmod(spd, 10)
+    n5 = spd // 5
+    step, full, half = 7 * scale, 11 * scale, 6 * scale
+    pos = 0.0
+
+    def shaft_pt(dist):
+        return (ex - sx * dist, ey - sy * dist)
+
+    for _ in range(n50):
+        p0, p1 = shaft_pt(pos), shaft_pt(pos + step)
+        pygame.draw.polygon(surf, col, [p0, p1,
+                                        (p0[0] + bx * full, p0[1] + by * full)])
+        pos += step
+    for _ in range(n10):
+        p0 = shaft_pt(pos)
+        pygame.draw.line(surf, col, p0,
+                         (p0[0] + bx * full, p0[1] + by * full), 2)
+        pos += step
+    for _ in range(n5):
+        if pos == 0.0:
+            pos = step
+        p0 = shaft_pt(pos)
+        pygame.draw.line(surf, col, p0,
+                         (p0[0] + bx * half, p0[1] + by * half), 2)
+        pos += step
+
+
+def _draw_winds_barbs(surf, barbs, project, rot_deg, rect, font, scale=1.0):
+    """Draw winds-aloft barbs (with a temperature tag) at each station."""
+    x, y, w, h = rect
+    for b in barbs:
+        la, lo = b.get("lat"), b.get("lon")
+        if la is None or lo is None:
+            continue
+        sx, sy = project(la, lo)
+        if not (x - 36 <= sx <= x + w + 36 and y - 36 <= sy <= y + h + 36):
+            continue
+        if b.get("lv"):
+            pygame.draw.circle(surf, _WIND_BARB, (int(sx), int(sy)), 4, 1)
+            if font is not None:
+                surf.blit(font.render("LV", True, _WIND_BARB),
+                          (int(sx) + 6, int(sy) - 7))
+        else:
+            _draw_wind_barb(surf, sx, sy, b.get("dir", 0), b.get("spd", 0),
+                            rot_deg, _WIND_BARB, scale)
+        if font is not None and b.get("temp") is not None:
+            surf.blit(font.render(f"{b['temp']:+d}°", True, (200, 210, 225)),
+                      (int(sx) + 6, int(sy) + 5))
+
+
 # ── ADS-B traffic layer ─────────────────────────────────────────────────────
 _TFC_COLORS = {"alert": _TFC_ALERT, "proximate": _TFC_PROXIMATE,
                "other": _TFC_OTHER}
@@ -825,7 +893,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            own_lat=None, own_lon=None, draw_corner_labels=True,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
            traffic=None, metars=None, nexrad=None, fast=False,
-           ground_stations=None, wx_graphics=None):
+           ground_stations=None, wx_graphics=None, winds_barbs=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1311,6 +1379,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         _draw_ground_stations(surf, ground_stations, _project, font, rect)
     if metars and settings.get("map_show_metar", True) and not fast:
         _draw_metars(surf, metars, _project, rect)
+    if winds_barbs and settings.get("map_show_winds", False) and not fast:
+        _draw_winds_barbs(surf, winds_barbs, _project, rot_deg, rect, font)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Drawn above map features (incl. weather) but below the range ring +

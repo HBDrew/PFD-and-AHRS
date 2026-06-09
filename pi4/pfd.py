@@ -258,6 +258,8 @@ disp["ds"] = {                      # display settings
     "traffic_alt_band":  0,
     "traffic_range_nm":  0,
     "map_show_metar":    False,  # METAR station dots (off until WX selected)
+    "map_show_winds":    False,  # winds-aloft barbs (off until WND selected)
+    "winds_alt_ft":      9000,   # selected altitude for the winds barbs
     "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     # Full-screen MFD: gate for the 3-finger PFD↔MFD swap.  Default on for
     # the larger HDMI screens (that's where a full-screen map earns its keep).
@@ -4832,13 +4834,20 @@ def handle_event(event, demo_mode):
             # A loaded Direct-To destination is tappable at ANY zoom (its
             # diamond is drawn even past the airport-dot range); otherwise
             # hit-test the drawn airport dots.
-            if _map_overlay_state(disp["ds"]) == "tfc":
+            _ovl_state = _map_overlay_state(disp["ds"])
+            if _ovl_state == "tfc":
                 # On the traffic page the map is about aircraft — tap one for
                 # its detail card; airports/METARs/hazards aren't hit-tested
                 # here so the traffic tap is unambiguous.
                 t = _mfd_find_traffic(tx, ty)
                 if t is not None:
                     disp["tfc_popup"] = dict(t)
+            elif _ovl_state == "wnd":
+                # On the winds page, tap a barb for that station's full table.
+                sid = _mfd_find_winds(tx, ty)
+                if sid:
+                    disp["wx_winds"] = {"station": sid, "dist": None,
+                                        "brg": None}
             else:
                 apt = _mfd_find_d2_dest(tx, ty) or _mfd_find_airport(tx, ty)
                 if apt:
@@ -4966,6 +4975,8 @@ def handle_event(event, demo_mode):
                 _mfd_cycle_traffic_source()
             elif _mfd_wx_status_hit(x, y):
                 _mfd_cycle_wx_source()
+            elif _mfd_winds_status_hit(x, y):
+                _mfd_cycle_winds_alt()
             elif _mfd_strip_hit(x, y):
                 disp["mode"] = "mfd_strip_setup"
                 disp["mss_sel"] = 0
@@ -11674,6 +11685,68 @@ def _nearest_winds(lat, lon):
     return best
 
 
+# Altitudes the WND-overlay barbs can show (standard FD levels).
+_WINDS_ALTS = [3000, 6000, 9000, 12000, 18000, 24000, 30000, 34000, 39000]
+_winds_barbs_cache = []
+_winds_barbs_key = None
+
+
+def _winds_barbs():
+    """Geolocated winds-aloft barbs for the selected altitude (rebuilt only when
+    the altitude or the received winds change)."""
+    global _winds_barbs_cache, _winds_barbs_key
+    store = _fisb_store()
+    if store is None:
+        return []
+    alt = int(disp["ds"].get("winds_alt_ft", 9000))
+    key = (alt, store.winds_count)
+    if key == _winds_barbs_key:
+        return _winds_barbs_cache
+    out = []
+    for sid in store.winds_stations():
+        r = _nav_lookup_ident("K" + sid) or _nav_lookup_ident(sid)
+        w = store.winds_for(sid)
+        if not r or not w:
+            continue
+        lvl = next((lv for lv in w["levels"] if lv["alt_ft"] == alt), None)
+        if lvl is None:
+            continue
+        out.append({"lat": r[1], "lon": r[2], "station": sid,
+                    "dir": lvl.get("dir"), "spd": lvl.get("spd"),
+                    "temp": lvl.get("temp"), "lv": lvl.get("lv", False)})
+    _winds_barbs_key, _winds_barbs_cache = key, out
+    return out
+
+
+def _mfd_cycle_winds_alt():
+    """Step the WND overlay to the next altitude that has data (or just the next
+    standard level)."""
+    cur = int(disp["ds"].get("winds_alt_ft", 9000))
+    order = _WINDS_ALTS
+    i = order.index(cur) if cur in order else 0
+    disp["ds"]["winds_alt_ft"] = order[(i + 1) % len(order)]
+    _settings.mark_dirty()
+    return disp["ds"]["winds_alt_ft"]
+
+
+def _mfd_find_winds(tap_x, tap_y, tap_px=34):
+    """Station id of the nearest winds barb under the tap, or None."""
+    barbs = _winds_barbs()
+    if not barbs:
+        return None
+    cen_lat, cen_lon = _mfd_effective_center()
+    project, _ = _map_mod.make_projector(
+        (0, 0, DISPLAY_W, DISPLAY_H), cen_lat, cen_lon, _mfd_last_orient,
+        _mfd_last_range, disp.get("yaw", 0.0), _mfd_last_track)
+    best_d2, best = (tap_px + 1) ** 2, None
+    for b in barbs:
+        sx, sy = project(b["lat"], b["lon"])
+        dd = (sx - tap_x) ** 2 + (sy - tap_y) ** 2
+        if dd < best_d2:
+            best_d2, best = dd, b["station"]
+    return best
+
+
 def _wx_menu_items():
     """(kind, label, enabled) for each product, given what's available for the
     menu's station / area."""
@@ -12250,6 +12323,7 @@ def _p4_mfd_rects():
 
 _mfd_adsb_status_rect = None   # tap zone to cycle traffic_source
 _mfd_wx_status_rect   = None   # tap zone to cycle wx_source
+_mfd_winds_status_rect = None  # tap zone to cycle the winds-barb altitude
 
 
 def _mfd_draw_source_status(surf):
@@ -12258,7 +12332,7 @@ def _mfd_draw_source_status(surf):
     traffic source mode; tap to cycle), WX when METAR overlay is up, NEX when
     NEXRAD overlay is up.  Green = receiving, amber = enabled but no data;
     data age shown for WX/NEX."""
-    global _mfd_adsb_status_rect, _mfd_wx_status_rect
+    global _mfd_adsb_status_rect, _mfd_wx_status_rect, _mfd_winds_status_rect
     now = time.monotonic()
     ds = disp["ds"]
     pt = max(11, int(round(15 * globals().get("MFD_FONT_SCALE", 1.0))))
@@ -12274,6 +12348,7 @@ def _mfd_draw_source_status(surf):
     x = _P4_MFD_PAD
     y = _P4_MFD_PAD + 2 * (_P4_MFD_BH + _P4_MFD_PAD) + 8   # below D2 + OVLY
     _mfd_adsb_status_rect = None
+    _mfd_winds_status_rect = None
 
     if _adsb_client is not None:
         src = disp["cs"].get("traffic_source", "auto")
@@ -12321,6 +12396,14 @@ def _mfd_draw_source_status(surf):
         _text(surf, txt, pt, col, bold=True, x=x, y=y)
         _mfd_wx_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
         y += pt + 8
+    if ds.get("map_show_winds"):
+        alt = int(ds.get("winds_alt_ft", 9000))
+        n = len(_winds_barbs())
+        txt = f"WND {alt:,} ft  ({n})"
+        col = (180, 220, 245) if n else (220, 160, 60)
+        _text(surf, txt, pt, col, bold=True, x=x, y=y)
+        _mfd_winds_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
+        y += pt + 8
     if ds.get("map_show_nexrad") and _nexrad_client is not None:
         if _nexrad_client.connected:
             txt = f"NEX{age(_nexrad_client)}"
@@ -12333,6 +12416,11 @@ def _mfd_draw_source_status(surf):
 
 def _mfd_source_status_hit(x, y):
     r = _mfd_adsb_status_rect
+    return r is not None and r[0] <= x <= r[0]+r[2] and r[1] <= y <= r[1]+r[3]
+
+
+def _mfd_winds_status_hit(x, y):
+    r = _mfd_winds_status_rect
     return r is not None and r[0] <= x <= r[0]+r[2] and r[1] <= y <= r[1]+r[3]
 
 
@@ -12429,6 +12517,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
         metars=disp.get("weather", {}).get("metars"),
         ground_stations=disp.get("weather", {}).get("stations"),
         wx_graphics=disp.get("weather", {}).get("graphics"),
+        winds_barbs=_winds_barbs() if ds.get("map_show_winds") else None,
         nexrad=_nexrad_render_arg(),
         own_lat=ac_lat, own_lon=ac_lon,
         symbol_scale=2.0,            # bigger airport dots on the big MFD
@@ -13735,6 +13824,8 @@ def render(surf, demo_mode, connected, data_stale=False):
             metars=disp.get("weather", {}).get("metars"),
             ground_stations=disp.get("weather", {}).get("stations"),
             wx_graphics=disp.get("weather", {}).get("graphics"),
+            winds_barbs=(_winds_barbs()
+                         if disp["ds"].get("map_show_winds") else None),
             # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"].
             nexrad=_nexrad_render_arg(),
         )
