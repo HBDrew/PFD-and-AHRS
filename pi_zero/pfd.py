@@ -2981,13 +2981,9 @@ def handle_event(event, demo_mode):
             apt = _mfd_find_d2_dest(tx, ty) or _mfd_find_airport(tx, ty)
             if apt:
                 ident, alat, alon = apt
-                wx, wx_d, wx_b = _wx_for_airport(ident, alat, alon)
-                if wx:
-                    disp["mfd_pick"] = {"airport": ident, "metar": dict(wx),
-                                        "wx_dist_nm": wx_d,
-                                        "wx_dir": _compass8(wx_b)}
-                else:
-                    _nav_open_confirm(ident, "pfd")
+                # Store the field + position; the picker resolves WX live so a
+                # post-pan fetch fills it in and far stale WX is never shown.
+                disp["mfd_pick"] = {"airport": ident, "lat": alat, "lon": alon}
             elif disp["ds"].get("map_show_metar"):
                 met = _mfd_find_metar(tx, ty)
                 if met:
@@ -11208,15 +11204,18 @@ def _compass8(deg):
     return _COMPASS8[int((deg + 22.5) % 360 // 45)]
 
 
-def _wx_for_airport(ident, alat, alon):
-    """Best METAR to show for a tapped airport: the station whose ICAO matches
-    the field, else the nearest station to it.  Returns (metar_dict, dist_nm,
-    bearing_deg) — dist 0 / bearing None for an on-field match — or
-    (None, None, None) if no METARs are loaded.  Lets the picker offer weather
-    on any page, even for fields with no AWOS, by falling back to the closest
-    reporting station (with its distance + general direction)."""
+def _wx_for_airport(ident, alat, alon, max_nm=75.0):
+    """Best METAR to show for an airport: the station whose ICAO matches the
+    field, else the nearest station within ``max_nm``.  Returns (metar_dict,
+    dist_nm, bearing_deg) — dist 0 / bearing None for an on-field match — or
+    (None, None, None) if nothing suitable is loaded.
+
+    The distance cap matters after a large pan: the view-driven poller still
+    holds the OLD area's METARs for a few seconds, and the nearest of those to
+    the newly-tapped field can be hundreds of miles away.  Showing none (the
+    live picker fills in when the new fetch lands) beats showing far-off WX."""
     metars = disp.get("weather", {}).get("metars") or []
-    if not metars:
+    if not metars or alat is None or alon is None:
         return None, None, None
     ident_u = (ident or "").upper()
     for m in metars:
@@ -11232,7 +11231,7 @@ def _wx_for_airport(ident, alat, alon):
         d = math.hypot(dlat, dlon)
         if d < best_d:
             best_d, best = d, m
-    if best is None:
+    if best is None or best_d > max_nm:
         return None, None, None
     # Bearing from the field out to the station (where the weather actually is).
     bla, blo = best["lat"], best["lon"]
@@ -11377,12 +11376,17 @@ def _draw_mfd_pick(surf):
                      border_radius=10)
     _text(surf, "What here?", 18, (210, 220, 230), bold=True,
           cx=DISPLAY_W // 2, cy=py + 24)
-    icao = (pick.get("metar") or {}).get("icao", "WX")
     ident = pick.get("airport", "")
-    dist = pick.get("wx_dist_nm")
-    wx_label = (f"WX  {icao} · {dist:.0f}nm {pick.get('wx_dir', '')}".rstrip()
-                if dist and dist >= 2.0 else f"Weather  {icao}")
-    _action_btn(surf, *wx_r, wx_label, "ok", r=8)
+    # Resolve WX live so a post-pan fetch fills the open picker in, and a far
+    # stale station is never shown (_wx_for_airport caps the distance).
+    wx, dist, brg = _wx_for_airport(ident, pick.get("lat"), pick.get("lon"))
+    if wx is None:
+        _action_btn(surf, *wx_r, "WX  …", "normal", r=8)   # loading / none near
+    else:
+        icao = wx.get("icao", "WX")
+        wx_label = (f"WX  {icao} · {dist:.0f}nm {_compass8(brg)}".rstrip()
+                    if dist and dist >= 2.0 else f"Weather  {icao}")
+        _action_btn(surf, *wx_r, wx_label, "ok", r=8)
     _action_btn(surf, *d2_r, f"Direct →  {ident}", "warn", r=8)
     _text(surf, "tap outside to cancel", 13, (140, 150, 160),
           cx=DISPLAY_W // 2, cy=py + ph - 14)
@@ -11398,8 +11402,11 @@ def _mfd_pick_hit(x, y):
     def _in(rc):
         return rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]
     if _in(wx_r):
-        disp["wx_popup"] = dict(pick.get("metar") or {})
-        disp["mfd_pick"] = None
+        wx, _, _ = _wx_for_airport(pick.get("airport", ""),
+                                   pick.get("lat"), pick.get("lon"))
+        if wx:                       # ignore the tap until WX has loaded
+            disp["wx_popup"] = dict(wx)
+            disp["mfd_pick"] = None
     elif _in(d2_r):
         ident = pick.get("airport", "")
         disp["mfd_pick"] = None
