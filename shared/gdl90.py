@@ -355,3 +355,15 @@ def encode_traffic(address, lat, lon, alt_ft, gs_kt=0, track_deg=0.0,
     b[19:27] = cs
     b[27] = 0x00
     return frame_message(b)
+
+
+def encode_uplink(payload, tor=0):
+    """Build an Uplink Data (0x07) frame: msg id + 3-byte Time-of-Reception +
+    the UAT uplink ``payload`` (typically 432 bytes from dump978).  Inverse of
+    the decode path that surfaces ``kind="uplink"`` — used by the dump978→GDL90
+    bridge and by tests.  ``tor`` is the 24-bit reception timestamp (we don't
+    interpret it on decode, so any value round-trips)."""
+    body = bytes([MSG_UPLINK,
+                  tor & 0xFF, (tor >> 8) & 0xFF, (tor >> 16) & 0xFF]) \
+        + bytes(payload)
+    return frame_message(body)

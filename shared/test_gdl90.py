@@ -108,6 +108,18 @@ def test_ownship_msg_id():
     check(t["kind"] == "ownship", "ownship kind from 0x0A id")
 
 
+def test_uplink_encode_roundtrip():
+    # FIS-B uplink (0x07): the bridge encodes a UAT payload; the decoder must
+    # surface it as kind="uplink" with the payload bytes intact (raw[4:] drops
+    # the id + 3-byte Time-of-Reception).
+    payload = bytes(range(80)) * 5 + bytes(32)       # 432-byte stand-in
+    frame = gdl90.encode_uplink(payload, tor=0x123456)
+    msgs = gdl90.decode_stream(frame)
+    check(len(msgs) == 1 and msgs[0]["kind"] == "uplink", "decodes as uplink")
+    check(msgs[0]["raw"][0] == gdl90.MSG_UPLINK, "msg id preserved")
+    check(msgs[0]["raw"][4:] == payload, "uplink payload round-trips intact")
+
+
 def test_multiple_frames_one_datagram():
     f1 = gdl90.encode_traffic(0x111111, 34.0, -111.0, 7000, callsign="AAA")
     f2 = gdl90.encode_traffic(0x222222, 35.0, -112.0, 9000, callsign="BBB")
