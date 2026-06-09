@@ -11716,7 +11716,9 @@ def _mfd_draw_source_status(surf):
         _mfd_adsb_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
         y += pt + 8
     _mfd_wx_status_rect = None
-    if ds.get("map_show_metar") and _wx_client is not None:
+    # WX source line shows on every page (like ADS-B) so the FIS-B/INET counts
+    # and the RADIO/AUTO/INET toggle are always reachable — not just on MET.
+    if _wx_client is not None:
         w = disp.get("weather", {})
         wsrc = disp["cs"].get("wx_source", "auto")
         wmode = {"auto": "AUTO", "radio": "RADIO",
