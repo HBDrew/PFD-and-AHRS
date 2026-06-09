@@ -343,6 +343,28 @@ def taf_ident(rec):
     return m.group(1) if m else None
 
 
+_RE_VALID_RANGE = re.compile(r"VALID\s+(\d{6})/(\d{6})")
+_RE_VALID_UNTIL = re.compile(r"VALID\s+UNTIL\s+(\d{6})")
+
+
+def advisory_valid(text):
+    """Short valid-time string from an AIRMET/SIGMET bulletin (the DDHHMM
+    'VALID UNTIL …' or 'VALID …/…' field) — e.g. 'until 21:00Z' / '16:55Z–
+    20:55Z', or None.  Same idea as the TAF validity header."""
+    if not text:
+        return None
+    s = text.upper()
+    m = _RE_VALID_RANGE.search(s)
+    if m:
+        a, b = m.group(1), m.group(2)
+        return f"{a[2:4]}:{a[4:6]}Z–{b[2:4]}:{b[4:6]}Z"
+    m = _RE_VALID_UNTIL.search(s)
+    if m:
+        u = m.group(1)
+        return f"until {u[2:4]}:{u[4:6]}Z"
+    return None
+
+
 # ── TAF decoding (raw forecast → readable per-period lines) ─────────────────────
 _RE_VALIDITY = re.compile(r"^\d{4}/\d{4}$")
 _RE_FM       = re.compile(r"^FM(\d{2})(\d{2})(\d{2})$")     # FMDDHHMM

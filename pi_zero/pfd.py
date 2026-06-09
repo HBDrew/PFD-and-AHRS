@@ -10532,7 +10532,9 @@ def _wx_open_graphic_text(g):
     disp["wx_scroll"] = 0
     title = f"{g.get('hazard', '')} {kind}".strip()
     if g.get("text"):
-        disp["wx_text"] = {"title": title, "bulletins": [g["text"]]}
+        v = _fisb.advisory_valid(g["text"])
+        bulletin = f"[valid {v}]  {g['text']}" if v else g["text"]
+        disp["wx_text"] = {"title": title, "bulletins": [bulletin]}
         return
     store = _fisb_store()
     disp["wx_text"] = {"title": title,
@@ -10598,6 +10600,9 @@ def _advisory_list(kind):
             parts.append("ON ROUTE")
         if e["dist"] is not None:
             parts.append(f"{e['dist']:.0f} nm")
+        v = _fisb.advisory_valid(e["text"])
+        if v:
+            parts.append(f"valid {v}")
         out.append(f"[{' · '.join(parts) or 'area n/a'}]  {e['text']}")
     return out
 

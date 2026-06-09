@@ -455,6 +455,13 @@ def test_advisories():
     check(len(nts) == 1 and nts[0].startswith("!SEZ"), f"NOTAM: {nts}")
     check(len(store.advisories()) == 3, "all kinds when unfiltered")
 
+    case("advisory_valid extracts the valid time")
+    check(fisb.advisory_valid("AIRMET TANGO ... VALID UNTIL 092100. FROM ...")
+          == "until 21:00Z", "VALID UNTIL")
+    check(fisb.advisory_valid("CONVECTIVE SIGMET 9C VALID 091655/092055 AZ ...")
+          == "16:55Z–20:55Z", "VALID range")
+    check(fisb.advisory_valid("!SEZ 06/001 RWY CLSD") is None, "none -> None")
+
     case("re-broadcast de-dupes (keyed by text)")
     store.ingest_gdl90_msg(_uplink_msg(
         "WAUS46 KKCI 091445 AIRMET TANGO FOR TURB VALID UNTIL 092100\x03"))
