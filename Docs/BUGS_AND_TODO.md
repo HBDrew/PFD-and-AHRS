@@ -615,6 +615,135 @@ remaining vector-line layer (state + country borders) doesn't have
 enough vertex count to justify a build-time LOD pipeline once
 vectorisation removes the Python per-vertex overhead.
 
+### NAVDATA-FAA  IFR nav-data foundation — fixes, airways, navaids, procedures
+Status: **OPEN — data access confirmed (US, free FAA sources); foundation for the IFR FPL items below**
+Target: new `tools/build_navdata_us.py` (28-day converter, mirrors
+`tools/build_airspaces_us.py`), new `shared/navdata.py` parser + spatial
+query (mirrors `shared/airports.py`), runtime cache under
+`data/navdata/`.
+Data-access answer (the open question on approach fixes + victor
+airways): **yes, all of it is available for free, US-only.** Two FAA
+28-day subscription products cover everything the FPL items need —
+none of it is in the OurAirports CSVs we ship today:
+  - **FAA NASR** (National Airspace System Resource, 28-day
+    subscription, free at the FAA ADDS / NASR portal) — the `FIX`
+    file gives named intersections/fixes with lat/lon; the `AWY`
+    file gives Victor (low) and Jet (high) airways as ordered fix
+    sequences; the `NAV` file gives VOR/NDB/DME navaids (also in
+    OurAirports `navaids.csv` if we want a global-but-navaid-only
+    fallback).
+  - **FAA CIFP** (Coded Instrument Flight Procedures, ARINC 424 /
+    "424-18" fixed-width, 28-day, free at the FAA CIFP download) —
+    carries SIDs, STARs, **approaches** (with transitions + final
+    approach fix), **missed-approach** legs, and **holding-pattern**
+    definitions (`PI`/`HM`/`HF`/`HA` leg types) keyed to airport +
+    procedure ident.
+Scope decision (pilot): **US-only is accepted** for all the IFR FPL
+items — no need to chase a global procedure source. Still surface it
+in the UI: gate the IFR features behind a "NAVDATA loaded" badge (same
+pattern as NO APT / EXP APT) so it degrades gracefully outside US
+coverage rather than silently showing nothing. Note these build on
+the **synthetic glideslope already drawn on an active direct-to**
+(`disp["nav"]`, ~line 415–427) — FPL-APPROACHES generalises that
+hand-built threshold guidance to a published procedure.
+Distribution: too big + procedural to
+fetch in-aircraft cleanly — strong candidate to ride the
+DATA-USB-BUNDLER pipeline (add `navdata` to the bundle manifest)
+rather than an in-Pi DOWNLOAD button.
+Work items:
+  - `tools/build_navdata_us.py`: parse NASR FIX/AWY/NAV + CIFP into a
+    compact numpy/JSON cache (sorted by lat for `np.searchsorted`
+    spatial query, same trick as airports/runways).
+  - `shared/navdata.py`: load + spatial-query API — `nearby_fixes`,
+    `airway(ident)`, `navaid(ident)`, `procedure(airport, ident)`,
+    `hold(fix)`. Shared by pi4 + pi_zero + (later) iPhone.
+  - Decide cache format + manifest stamp (28-day cycle date) so a
+    stale-data badge can be shown.
+This entry is the prerequisite for NAV-FIXES-AIRWAYS-DISPLAY,
+FPL-APPROACHES, and FPL-HOLDS below.
+
+### NAV-FIXES-AIRWAYS-DISPLAY  Approach fixes + Victor airways on map/AI
+Status: **OPEN — blocked on NAVDATA-FAA**
+Target: `pi4/moving_map.py` + `pi_zero/moving_map.py` (new fix/airway
+layers), `pi4/pfd.py` + `pi_zero/pfd.py` MAP LAYERS row, optional
+fix symbols projected onto the AI via the airport-projection helper.
+Context: once `shared/navdata.py` exists, render named fixes
+(intersection triangles + ident labels) and Victor airways
+(thin lines along the fix sequence, with airway ident) on the
+moving-map inset / MFD. Mirrors the existing polyline + symbol layers.
+Work items:
+  - New `_draw_fixes` + `_draw_airways` in `moving_map.py` (reuse the
+    vectorised `_draw_polylines` for airways; fixes are point symbols
+    like obstacles/airports).
+  - Two new pills on the MAP LAYERS row (FIX / AWY), persisted with the
+    rest of the layer toggles. Gate display ≥ a sensible zoom so fixes
+    don't clutter wide views.
+  - Fixes become selectable waypoints for the FPL editor (feeds
+    FPL-APPROACHES — a fix ident resolves to lat/lon via navdata).
+  - iPhone parity deferred (same pattern as the #17 airport-overlay
+    port).
+
+### FPL-APPROACHES  Approaches + missed approaches in flight plans
+Status: **OPEN — blocked on NAVDATA-FAA**
+Target: pi_zero FPL editor (`pi_zero/pfd.py` — it owns FPL editing
+today; pi4 renders the active leg via the synced `disp["fpl"]`),
+`disp["fpl"]` schema, screen-sync `KIND_FPL`, the direct-to / leg
+sequencer (`_fpl_is_active`, `_fpl_check_advance`,
+`_FPL_ADVANCE_DIST_NM`).
+Context: today an FPL is a flat list of waypoints with a simple
+distance-gated auto-sequencer. Loading a CIFP **approach** appends its
+ordered leg sequence (transition → IAF → IF → FAF → MAP) to the
+active plan, and the **missed approach** is held as a separate
+segment that the sequencer only arms past the MAP / on a pilot
+"activate missed" action. The system already auto-points the
+direct-to at a runway threshold and draws a glideslope on approach
+(see `disp["nav"]` notes ~line 415–427) — this generalises that to a
+published procedure.
+Work items:
+  - Extend the FPL schema: a waypoint gains an optional `leg_type`
+    (ARINC-424 path/terminator: TF/CF/DF/RF…) and a `segment` tag
+    (`enroute` / `approach` / `missed`). Keep flat-list back-compat so
+    existing saved plans still load (`fpl_saved` is `[{name,
+    waypoints}]`).
+  - FPL editor: "LOAD APPROACH" picker (airport → approach ident →
+    transition) that pulls legs from `navdata.procedure(...)` and
+    appends them; "ACTIVATE MISSED" control that switches the
+    sequencer onto the missed segment.
+  - Sequencer: honour leg types enough to fly the common cases (TF/CF
+    as great-circle-to-fix is most of GA IFR); don't attempt full
+    ARINC-424 leg geometry on day one — document which leg types are
+    approximated.
+  - Screen sync: the richer schema rides the existing `KIND_FPL` /
+    `KIND_FPLLIB` channels — bump a schema version so a peer on the
+    old schema degrades to the flat waypoint list instead of choking.
+  - Render: pi4 + pi_zero draw the approach legs distinctly from
+    enroute (e.g. dashed for missed), FAF/MAP labelled.
+
+### FPL-HOLDS  Holding patterns
+Status: **OPEN — blocked on NAVDATA-FAA**
+Target: same FPL path as FPL-APPROACHES, plus a racetrack-geometry
+helper in `moving_map.py` and a hold-entry cue.
+Context: holds come from CIFP (`HM`/`HF`/`HA` leg types: hold-to-
+manual-termination / -to-fix / -to-altitude) keyed to a fix, and a
+pilot may also build an ad-hoc hold at any fix (inbound course, turn
+direction, leg length/time). Render the racetrack on the moving map
+and sequence the FPL through it.
+Work items:
+  - Hold definition: fix + inbound course + turn direction (L/R) +
+    leg length (nm or time). Pull published holds from
+    `navdata.hold(fix)`; allow a manual hold dialog for the ad-hoc
+    case.
+  - Geometry: racetrack polygon (two semicircles + two straights)
+    computed from the hold params, drawn on the inset/MFD; own-ship
+    chevron shows progress around it.
+  - Entry guidance: classify direct / teardrop / parallel from the
+    inbound heading vs hold course and show the recommended entry —
+    nice-to-have, can ship the racetrack draw first.
+  - Sequencer: a hold leg does NOT auto-advance on the
+    `_FPL_ADVANCE_DIST_NM` gate; it loops until the pilot taps
+    "EXIT HOLD" (then resume the next leg). This is the one place the
+    existing distance-gated sequencer needs a real state change.
+
 ---
 
 ## Completed
