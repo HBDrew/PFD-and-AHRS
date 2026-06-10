@@ -55,6 +55,7 @@ import wx as _wx
 import fisb as _fisb
 import nexrad as _nexrad
 import mapoverlay as _ovl
+import perf as _perf_mod
 from terrain import get_elevation_ft
 from svt_renderer import render_svt as render_svt_pygame
 
@@ -260,6 +261,7 @@ disp["ds"] = {                      # display settings
     "map_show_metar":    False,  # METAR station dots (off until WX selected)
     "map_show_winds":    False,  # winds-aloft barbs (off until WND selected)
     "winds_alt_ft":      9000,   # selected altitude for the winds barbs
+    "winds_time_offset_h": 0,    # WND forecast time: hours ahead of now (0 = now)
     "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     # Full-screen MFD: gate for the 3-finger PFD↔MFD swap.  Default on for
     # the larger HDMI screens (that's where a full-screen map earns its keep).
@@ -310,6 +312,10 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
     "wifi_pass": "",        "wifi_ok":  False,
     "wifi_actual": "",      # SSID actually associated now (from iwgetid -r)
+    # FAA NOTAM API credentials (entered in Connectivity → free key at
+    # api.faa.gov).  Persisted (plaintext) so they survive restarts; the NOTAM
+    # poller reads them live, so entering a key enables NOTAMs without a reboot.
+    "notam_client_id": "",  "notam_client_secret": "",
     "scan_state": "",   "scan_nets": [], "scan_scroll": 0, "scan_error": "",
     "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
     # AHRS link diagnostics (populated by the transport client thread)
@@ -484,7 +490,17 @@ def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
 _sse_client  = None
 _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
 _traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traffic_source
+_prev_alert_ids = set()  # ICAOs already in alert state (edge-trigger the callout)
+_perf = _perf_mod.PerfGrab()   # frame-timing sampler (no-op unless PFD_PERF set)
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
+_taf_client  = None   # AwcPoller (internet TAF backfill) when weather enabled
+_airsig_client = None # AwcPoller (internet AIRMET/SIGMET backfill)
+_winds_client = None  # AwcPoller (internet winds aloft, Open-Meteo grid)
+_notam_client = None  # AwcPoller (internet NOTAMs, FAA API) when creds present
+_taf_fed_at  = 0.0    # updated_s of last TAF snapshot folded into the store
+_airsig_fed_at = 0.0  # updated_s of last AIRMET/SIGMET snapshot folded in
+_winds_fed_at = 0.0   # updated_s of last winds snapshot folded in
+_notam_fed_at = 0.0   # updated_s of last NOTAM snapshot folded in
 _nexrad_client = None # NexradClient (internet radar poller) when enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 # Decoded NEXRAD image cache (pygame surface); re-decoded only on new image.
@@ -1762,6 +1778,19 @@ def _update_traffic(demo_mode):
     tr["n_inet"]  = sum(1 for t in rel if t.get("src") == "internet")
     tr["alert"]   = any_alert
 
+    # Edge-triggered traffic advisory: a "Traffic, Traffic" callout + the banner
+    # fire when a NEW target enters alert state — not re-fired every frame for a
+    # threat already called.  Nearest alert target drives the banner.
+    alerts = sorted((t for t in rel if t.get("threat") == "alert"),
+                    key=lambda d: (d.get("range_nm") is None,
+                                   d.get("range_nm") or 1e9))
+    tr["alert_target"] = alerts[0] if alerts else None
+    global _prev_alert_ids
+    cur_ids = {t.get("icao") for t in alerts}
+    if cur_ids - _prev_alert_ids:           # a threat we hadn't called yet
+        audio_alerts.play("traffic")
+    _prev_alert_ids = cur_ids
+
 
 def _traffic_to_draw():
     """Traffic list for the map.  On the dedicated TFC overlay the full
@@ -1790,6 +1819,38 @@ def _wx_view():
         rng = int(disp["ds"].get("map_zoom_nm", 5)) or 5
     radius = max(WX_MIN_RADIUS_NM, min(WX_MAX_RADIUS_NM, rng * WX_RADIUS_ZOOM_K))
     return float(clat), float(clon), float(radius)
+
+
+def _winds_view():
+    """(center, range_nm) for the winds grid.  Unlike _wx_view this returns the
+    actual map *range* (not the inflated query radius) so the barb grid fills
+    the visible screen instead of overshooting off the top/bottom edges."""
+    if disp.get("display_mode") == "mfd":
+        clat, clon = _mfd_effective_center()
+        rng = _mfd_last_range or 10
+    else:
+        clat = float(disp.get("lat", DEMO_LAT))
+        clon = float(disp.get("lon", DEMO_LON))
+        rng = int(disp["ds"].get("map_zoom_nm", 5)) or 5
+    return float(clat), float(clon), float(rng)
+
+
+def _winds_fetch(lat, lon, range_nm):
+    """Poller fetch shim: winds grid filling the screen (aspect-aware) for the
+    currently selected forecast-time offset."""
+    return _wx.fetch_winds_grid(
+        lat, lon, range_nm, aspect=DISPLAY_W / max(1, DISPLAY_H),
+        hour_offset=int(disp["ds"].get("winds_time_offset_h", 0)))
+
+
+def _notam_fetch(lat, lon, radius_nm):
+    """Poller fetch shim: NOTAMs using the FAA credentials entered in
+    Connectivity (cs) — falls back to the env vars, no-ops without either."""
+    cs = disp.get("cs", {})
+    return _wx.fetch_notams(
+        lat, lon, radius_nm,
+        client_id=(cs.get("notam_client_id") or "").strip() or None,
+        client_secret=(cs.get("notam_client_secret") or "").strip() or None)
 
 
 def _fisb_locate(icao):
@@ -1862,6 +1923,25 @@ def _update_weather():
     # FIS-B ground stations we're hearing (radio reception cue + diagnostic),
     # and graphical hazard areas (G-AIRMET/SIGMET polygons for the MET overlay).
     _store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
+    # Internet TAF + AIRMET/SIGMET backfill: fold each poller's snapshot into the
+    # same FIS-B store the readouts already read, but only when it actually
+    # refreshed (updated_s changed) and we're not radio-only.  Radio wins per
+    # item inside the store, so this purely backfills.  AIRMET/SIGMET carry
+    # geometry, so this also populates the MET-page graphical overlay.
+    if _store is not None and not radio_only:
+        global _taf_fed_at, _airsig_fed_at, _winds_fed_at, _notam_fed_at
+        if _taf_client is not None and _taf_client.updated_s != _taf_fed_at:
+            _taf_fed_at = _taf_client.updated_s
+            _store.add_tafs(_taf_client.snapshot())
+        if _airsig_client is not None and _airsig_client.updated_s != _airsig_fed_at:
+            _airsig_fed_at = _airsig_client.updated_s
+            _store.add_airsigmets(_airsig_client.snapshot())
+        if _winds_client is not None and _winds_client.updated_s != _winds_fed_at:
+            _winds_fed_at = _winds_client.updated_s
+            _store.set_winds(_winds_client.snapshot(), "INET")
+        if _notam_client is not None and _notam_client.updated_s != _notam_fed_at:
+            _notam_fed_at = _notam_client.updated_s
+            _store.add_notams(_notam_client.snapshot())
     w["stations"] = _store.ground_stations() if _store is not None else []
     w["graphics"] = _store.graphics() if _store is not None else []
     cs = disp["cs"]
@@ -4983,6 +5063,8 @@ def handle_event(event, demo_mode):
                 _mfd_cycle_wx_source()
             elif _map_overlay_state(disp["ds"]) == "wnd" and _in(r["winds"]):
                 _mfd_cycle_winds_alt()
+            elif _map_overlay_state(disp["ds"]) == "wnd" and _in(r["wtime"]):
+                _mfd_cycle_winds_time()
             elif _mfd_strip_hit(x, y):
                 disp["mode"] = "mfd_strip_setup"
                 disp["mss_sel"] = 0
@@ -5596,7 +5678,8 @@ def handle_event(event, demo_mode):
             if hit:
                 lbl, sty = hit
                 target  = disp["kbd_target"]
-                _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80}
+                _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80,
+                           "notam_client_id": 80, "notam_client_secret": 80}
                 _FPL_KBD_MAX = {"fpl_ident": 6, "fpl_latlon_ident": 6,
                                 "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
                                 "fpl_save_name": 16, "nav_ident": 6}
@@ -7361,6 +7444,8 @@ _CS_FIELDS = [
     ("ahrs_url",  "AHRS URL",        "Pico W access-point address"),
     ("wifi_ssid", "WiFi SSID",       "Network name to join"),
     ("wifi_pass", "WiFi PASSWORD",   "WPA2 passphrase"),
+    ("notam_client_id",     "NOTAM CLIENT ID", "FAA NOTAM API key — free at api.faa.gov"),
+    ("notam_client_secret", "NOTAM SECRET",    "FAA NOTAM API secret — stored on device"),
 ]
 _CS_BTN_Y  = _ss_row_y(len(_CS_FIELDS) + 2) + 4   # below fields + STATUS + AHRS LINK rows
 _CS_BTN_H  = 50
@@ -7368,7 +7453,7 @@ _CS_BTN_H  = 50
 
 def _cs_val_box(surf, bx, by, bw, bh, key, val):
     """Draw the right-side value box for a connectivity field."""
-    masked = key == "wifi_pass" and val
+    masked = key in ("wifi_pass", "notam_client_secret") and val
     display = "\u25cf" * min(len(val), 16) if masked else val
     vbx = bx+210; vby = by+12; vbw = bx+bw-vbx-12; vbh = bh-24
     pygame.draw.rect(surf, (0,20,42), (vbx, vby, vbw, vbh), border_radius=4)
@@ -11674,18 +11759,28 @@ def _winds_station_for(icao):
     return icao[1:] if len(icao) == 4 and icao.startswith("K") else icao
 
 
+def _winds_pos(sid, w):
+    """(lat, lon) for a winds column: its own coords (internet Open-Meteo grid)
+    when present, else the airport DB for a radio FD station id, else None."""
+    if w and w.get("lat") is not None and w.get("lon") is not None:
+        return (w["lat"], w["lon"])
+    r = _nav_lookup_ident("K" + sid) or _nav_lookup_ident(sid)
+    return (r[1], r[2]) if r else None
+
+
 def _nearest_winds(lat, lon):
     """(station_id, dist_nm, bearing_deg) of the nearest winds-aloft station, or
-    None.  Geolocates the FD id via the airport DB (try K-prefixed first)."""
+    None.  Internet grid columns geolocate by their own coords; radio FD ids via
+    the airport DB."""
     store = _fisb_store()
     if store is None or lat is None or lon is None:
         return None
     best = None
     for sid in store.winds_stations():
-        r = _nav_lookup_ident("K" + sid) or _nav_lookup_ident(sid)
-        if not r:
+        pos = _winds_pos(sid, store.winds_for(sid))
+        if pos is None:
             continue
-        d, b = _nav_geo_dist_brg(lat, lon, r[1], r[2])
+        d, b = _nav_geo_dist_brg(lat, lon, pos[0], pos[1])
         if best is None or d < best[1]:
             best = (sid, d, b)
     return best
@@ -11710,14 +11805,16 @@ def _winds_barbs():
         return _winds_barbs_cache
     out = []
     for sid in store.winds_stations():
-        r = _nav_lookup_ident("K" + sid) or _nav_lookup_ident(sid)
         w = store.winds_for(sid)
-        if not r or not w:
+        if not w:
+            continue
+        pos = _winds_pos(sid, w)        # own lat/lon (internet grid) or airport DB
+        if pos is None:
             continue
         lvl = next((lv for lv in w["levels"] if lv["alt_ft"] == alt), None)
         if lvl is None:
             continue
-        out.append({"lat": r[1], "lon": r[2], "station": sid,
+        out.append({"lat": pos[0], "lon": pos[1], "station": sid,
                     "dir": lvl.get("dir"), "spd": lvl.get("spd"),
                     "temp": lvl.get("temp"), "lv": lvl.get("lv", False)})
     _winds_barbs_key, _winds_barbs_cache = key, out
@@ -11733,6 +11830,22 @@ def _mfd_cycle_winds_alt():
     disp["ds"]["winds_alt_ft"] = order[(i + 1) % len(order)]
     _settings.mark_dirty()
     return disp["ds"]["winds_alt_ft"]
+
+
+_WINDS_TIME_OFFSETS = [0, 3, 6, 9, 12, 18, 24]   # forecast hours ahead
+
+
+def _mfd_cycle_winds_time():
+    """Step the WND overlay to the next forecast-time offset and force the
+    internet winds poller to re-fetch for it (Open-Meteo carries 48 h)."""
+    cur = int(disp["ds"].get("winds_time_offset_h", 0))
+    order = _WINDS_TIME_OFFSETS
+    i = order.index(cur) if cur in order else 0
+    disp["ds"]["winds_time_offset_h"] = order[(i + 1) % len(order)]
+    _settings.mark_dirty()
+    if _winds_client is not None:
+        _winds_client.force_refresh()
+    return disp["ds"]["winds_time_offset_h"]
 
 
 def _mfd_find_winds(tap_x, tap_y, tap_px=34):
@@ -11922,11 +12035,13 @@ def _draw_wx_taf(surf):
     brg = wt.get("brg")
     store = _fisb_store()
     raw = store.taf_for(icao) if store else None
+    src = store.taf_source(icao) if store else None
     p = _fisb.parse_taf(raw) if raw else None
     pw = min(640, DISPLAY_W - 40)
     near_txt = (f" · nearest {near:.0f} nm {_compass8(brg)}".rstrip()
                 if near else "")
-    title = (f"TAF  {icao}" + near_txt
+    src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
+    title = (f"TAF  {icao}" + src_txt + near_txt
              + (f"   valid {_fisb._hhz(p['valid_from'])}–"
                 f"{_fisb._hhz(p['valid_to'])}" if p else ""))
     items = []
@@ -11960,7 +12075,17 @@ def _draw_wx_winds(surf):
     w = store.winds_for(station) if store else None
     near_txt = (f" · nearest {near:.0f} nm {_compass8(brg)}".rstrip()
                 if near else "")
-    title = f"WINDS  {station}{near_txt}"
+    src = (w or {}).get("src")
+    # Internet winds are a forecast grid (coordinate id); label them as a grid
+    # point + source rather than showing a bare lat,lon as if it were a station.
+    head = "grid" if (src == "INET" or "," in str(station)) else station
+    src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
+    off = int((w or {}).get("hour_offset", 0))
+    time_txt = "" if off == 0 else f"  +{off}h"
+    age_s = store.winds_age_s(station) if store else None
+    age_txt = _fisb.short_age(age_s)
+    age_part = f"  ·  {age_txt}" if age_txt else ""
+    title = f"WINDS  {head}{src_txt}{time_txt}{age_part}{near_txt}"
 
     def _hdr(s, x, y):
         _text(s, "ALT", 15, (140, 160, 180), bold=True, x=x, y=y)
@@ -12052,6 +12177,77 @@ def _mfd_find_traffic(tap_x, tap_y, tap_px=32):
             best_d2 = dd
             best = t
     return best
+
+
+def _traffic_clock(brg, own_hdg):
+    """Clock position (1-12) of a target at absolute bearing ``brg`` relative to
+    the aircraft's nose, or None."""
+    if brg is None:
+        return None
+    rel = (brg - (own_hdg or 0.0)) % 360.0
+    c = int(round(rel / 30.0)) % 12
+    return 12 if c == 0 else c
+
+
+def _draw_traffic_banner(surf, rect):
+    """Red collision-alert banner at the top of the map when a target is in the
+    alert band — clock position + relative altitude so it's actionable at a
+    glance (e.g. 'TRAFFIC  2 o'clock  −200').  Flashes at 1 Hz."""
+    t = disp.get("traffic", {}).get("alert_target")
+    if not t:
+        return
+    if (pygame.time.get_ticks() // 500) % 2 == 1:     # 1 Hz flash, off phase
+        return
+    x, y, w, h = rect
+    clk = _traffic_clock(t.get("bearing_deg"), disp.get("yaw"))
+    parts = ["TRAFFIC"]
+    if clk is not None:
+        parts.append(f"{clk} o'clock")
+    ra = t.get("rel_alt_ft")
+    if ra is not None:
+        hund = int(round(ra / 100.0)) * 100
+        parts.append(f"{'+' if hund >= 0 else '−'}{abs(hund)}")
+    rng = t.get("range_nm")
+    if rng is not None:
+        parts.append(f"{rng:.1f} nm")
+    label = "   ".join(parts)
+    f = _get_font(22, bold=True)
+    tw = f.size(label)[0]
+    bw, bh = tw + 36, 36
+    bx, by = x + (w - bw) // 2, y + 8
+    pygame.draw.rect(surf, (200, 0, 0), (bx, by, bw, bh), border_radius=6)
+    pygame.draw.rect(surf, (255, 230, 230), (bx, by, bw, bh), width=2,
+                     border_radius=6)
+    _text(surf, label, 22, (255, 255, 255), bold=True,
+          cx=bx + bw // 2, cy=by + bh // 2)
+
+
+def _draw_pfd_traffic_alert(surf):
+    """Compact traffic collision-alert banner in the PFD badge strip — the same
+    place the TERRAIN/PULL UP banner uses, stacked just below it when terrain is
+    also alerting.  Flashes at 1 Hz."""
+    t = disp.get("traffic", {}).get("alert_target")
+    if not t:
+        return
+    if (pygame.time.get_ticks() // 500) % 2 == 1:     # 1 Hz flash, off phase
+        return
+    clk = _traffic_clock(t.get("bearing_deg"), disp.get("yaw"))
+    parts = ["TFC"]
+    if clk is not None:
+        parts.append(f"{clk}:00")
+    ra = t.get("rel_alt_ft")
+    if ra is not None:
+        hund = int(round(ra / 100.0)) * 100
+        parts.append(f"{'+' if hund >= 0 else '−'}{abs(hund)}")
+    label = "  ".join(parts)
+    bw, bh = 150, 16
+    bx = CX - bw // 2
+    by = 3 + (20 if _terrain_alert_level else 0)      # stack under terrain banner
+    pygame.draw.rect(surf, (200, 0, 0), (bx, by, bw, bh), border_radius=3)
+    pygame.draw.rect(surf, (255, 230, 230), (bx, by, bw, bh), width=1,
+                     border_radius=3)
+    _text(surf, label, 11, (255, 255, 255), bold=True,
+          cx=bx + bw // 2, cy=by + bh // 2)
 
 
 def _draw_tfc_popup(surf):
@@ -12319,6 +12515,7 @@ def _p4_mfd_rects():
     return {
         "d2":       (p, p, bw, bh),                       # top-left
         "winds":    (p + bw + p, p, bw, bh),              # top row, right of D2
+        "wtime":    (p + 2 * (bw + p), p, bw, bh),        # WND only, right of alt
         "fpl":      (W - bw - p, p, bw, bh),              # top-right
         "ovly":     (p, p + bh + p, bw, bh),              # under D2
         "orient":   (W - bw - p, p + bh + p, bw, bh),     # under FPL
@@ -12403,14 +12600,30 @@ def _mfd_draw_source_status(surf):
         _text(surf, txt, pt, col, bold=True, x=x, y=y)
         _mfd_wx_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
         y += pt + 8
-    if ds.get("map_show_nexrad") and _nexrad_client is not None:
-        if _nexrad_client.connected:
-            txt = f"NEX{age(_nexrad_client)}"
-            col = (60, 220, 90)
-        else:
-            txt = f"NEX …{age(_nexrad_client)}"
-            col = (220, 160, 60)
-        _text(surf, txt, pt, col, bold=True, x=x, y=y)
+    if ds.get("map_show_nexrad"):
+        if _nexrad_client is not None:
+            if _nexrad_client.connected:
+                txt = f"NEX{age(_nexrad_client)}"
+                col = (60, 220, 90)
+            else:
+                txt = f"NEX …{age(_nexrad_client)}"
+                col = (220, 160, 60)
+            _text(surf, txt, pt, col, bold=True, x=x, y=y)
+            y += pt + 8
+        # FIS-B radar carries its own *valid* time, which can lag receipt by
+        # minutes — badge that age (green<10 / amber<20 / red) so stale radar
+        # never reads as current.
+        _store = _fisb_store()
+        nst = _store.nexrad_status() if _store is not None else None
+        if nst is not None:
+            va = nst.get("valid_age_min")
+            if va is None:
+                vtxt, vcol = "NEX RDR valid —", (160, 180, 200)
+            else:
+                vtxt = f"NEX RDR valid {va:.0f}m"
+                vcol = ((60, 220, 90) if va < 10 else
+                        (220, 160, 60) if va < 20 else (235, 70, 70))
+            _text(surf, vtxt, pt, vcol, bold=True, x=x, y=y)
 
 
 def _mfd_source_status_hit(x, y):
@@ -12482,9 +12695,12 @@ def draw_mfd(surf, connected=True, data_stale=False):
     zoom_pref = int(ds.get("map_zoom_nm", 10))
     if zoom_pref == _map_mod.ZOOM_AUTO:
         if d2.get("ident"):
-            cos_lat = max(0.05, math.cos(math.radians(cen_lat)))
-            n_nm = (d2["lat"] - cen_lat) * 60.0
-            e_nm = (d2["lon"] - cen_lon) * 60.0 * cos_lat
+            # Fit range to the leg from the AIRCRAFT to the waypoint — NOT the
+            # panned map centre, or panning would change the distance and
+            # rescale the map every frame (the "jumpy pan" bug).
+            cos_lat = max(0.05, math.cos(math.radians(ac_lat)))
+            n_nm = (d2["lat"] - ac_lat) * 60.0
+            e_nm = (d2["lon"] - ac_lon) * 60.0 * cos_lat
             eff_range = _map_mod.auto_fit_range(math.hypot(n_nm, e_nm) * 1.10)
         else:
             eff_range = _map_mod.ZOOM_LEVELS[-1]
@@ -12534,7 +12750,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
     plate.fill((0, 8, 22, 190))
     surf.blit(plate, (sx, sy))
     pygame.draw.line(surf, (60, 80, 110), (sx, sy), (sx + sw - 1, sy), 1)
-    ctx = _mfd_strip_ctx(cen_lat, cen_lon, alt, hdg, track, gs_kt,
+    # Aircraft data strip — dist/brg/AGL/XTE are all ownship-relative, so feed
+    # the AIRCRAFT position, never the panned map centre (else they drift as you
+    # pan, which is wrong and was part of the "jumpy pan" report).
+    ctx = _mfd_strip_ctx(ac_lat, ac_lon, alt, hdg, track, gs_kt,
                          d2 if d2.get("ident") else None)
     col_w = sw // _MFD_STRIP_SLOT_COUNT
     # Data-strip text uses a gentler scale than the map labels: the airport
@@ -12558,10 +12777,13 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _action_btn(surf, *r["d2"], d2_label, d2_style, r=6)
     _action_btn(surf, *r["fpl"], "FPL", "normal", r=6)
     ov_state = _map_overlay_state(ds)
-    # Winds altitude selector — only on the WND page, next to D2.
+    # Winds altitude + forecast-time selectors — only on the WND page.
     if ov_state == "wnd":
         alt_k = int(ds.get("winds_alt_ft", 9000)) // 1000
         _action_btn(surf, *r["winds"], f"{alt_k}k ft", "ok", r=6)
+        off = int(ds.get("winds_time_offset_h", 0))
+        _action_btn(surf, *r["wtime"], "NOW" if off == 0 else f"+{off}h",
+                    "ok" if off == 0 else "warn", r=6)
     _action_btn(surf, *r["ovly"], _map_overlay_label(ds),
                 "ok" if ov_state != "tfc" else "normal", r=6)
     # Orientation: a tappable CYAN label (like piZ), not a button.
@@ -12583,6 +12805,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
               18, (240, 90, 90), bold=True, cx=DISPLAY_W // 2, cy=sy - 12)
 
     _mfd_draw_source_status(surf)
+    _draw_traffic_banner(surf, (0, 0, DISPLAY_W, DISPLAY_H))
     _draw_wx_popup(surf)
     _draw_mfd_pick(surf)
     _draw_wx_menu(surf)
@@ -13901,6 +14124,9 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
     draw_terrain_alert(surf)
+    # 9c. Traffic collision alert — same badge-strip location, stacked just
+    # below the terrain banner when both fire.
+    _draw_pfd_traffic_alert(surf)
 
     # 10. Failure overlays
     draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok,
@@ -14784,6 +15010,33 @@ def main():
         _wx_client = _wx.WxClient(view_fn=_wx_view, interval_s=WX_INTERVAL_S)
         _wx_client.start()
         print("[PFD] Weather poller started (METAR, follows inset zoom)")
+        global _taf_client, _airsig_client
+        _taf_client = _wx.AwcPoller(view_fn=_wx_view, fetch_fn=_wx.fetch_tafs,
+                                    interval_s=TAF_INTERVAL_S, name="TafPoller")
+        _taf_client.start()
+        _airsig_client = _wx.AwcPoller(view_fn=_wx_view,
+                                       fetch_fn=_wx.fetch_airsigmets,
+                                       interval_s=AIRSIG_INTERVAL_S,
+                                       name="AirSigPoller")
+        _airsig_client.start()
+        global _winds_client
+        _winds_client = _wx.AwcPoller(view_fn=_winds_view,
+                                      fetch_fn=_winds_fetch,
+                                      interval_s=WINDS_INET_INTERVAL_S,
+                                      name="WindsPoller")
+        _winds_client.start()
+        print("[PFD] TAF + AIRMET/SIGMET + winds pollers started (internet)")
+        # NOTAMs need an FAA API key.  Always start the poller; its fetch reads
+        # the credentials live from cs (entered in Connectivity) or the env, and
+        # no-ops returning [] until a key is present — so typing one in enables
+        # NOTAMs without a restart.
+        global _notam_client
+        _notam_client = _wx.AwcPoller(view_fn=_wx_view,
+                                      fetch_fn=_notam_fetch,
+                                      interval_s=NOTAM_INTERVAL_S,
+                                      name="NotamPoller")
+        _notam_client.start()
+        print("[PFD] NOTAM poller started (FAA API — keyed via Connectivity)")
         global _nexrad_client
         _nexrad_client = _nexrad.NexradClient(view_fn=_wx_view,
                                               interval_s=NEXRAD_INTERVAL_S)
@@ -14892,6 +15145,17 @@ def main():
         _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
 
+        # Field perf grab (PFD_PERF=1) — render vs flip percentiles per window,
+        # tagged with the view so a slow page/zoom is obvious in the summary.
+        if _perf.enabled:
+            _ptag = disp.get("display_mode", "pfd")
+            if _ptag == "mfd":
+                _ptag = (f"mfd {_map_overlay_state(disp['ds'])} "
+                         f"{int(_mfd_last_range or 0)}nm"
+                         + (" pan" if (_mfd_drag and _mfd_drag.get('is_drag'))
+                            else ""))
+            _perf.add((_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0, tag=_ptag)
+
         # Print frame timing every 60 frames so we can diagnose bottlenecks
         if not hasattr(main, '_frame_n'):
             main._frame_n = 0
@@ -14950,6 +15214,14 @@ def main():
         _traffic_feed.stop()
     if _wx_client:
         _wx_client.stop()
+    if _taf_client:
+        _taf_client.stop()
+    if _airsig_client:
+        _airsig_client.stop()
+    if _winds_client:
+        _winds_client.stop()
+    if _notam_client:
+        _notam_client.stop()
     if _nexrad_client:
         _nexrad_client.stop()
     # Flush any pending settings changes to disk before exiting

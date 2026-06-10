@@ -558,6 +558,32 @@ def test_nexrad():
     check(store2.nexrad_cells(now_mono=mono + store2.nexrad_expire_s + 1) == [],
           "stale pruned")
 
+    case("product valid time surfaces the receipt-vs-valid age (anti-stale)")
+    import calendar
+    now = calendar.timegm((2026, 6, 9, 18, 30, 0, 0, 0, 0))    # 18:30Z
+    s = fisb.FisbWeather()
+    # mosaic stamped 18:18Z -> 12 min old at 18:30Z; minutes >31 prove 6-bit.
+    s.ingest_uplink(fisb.encode_nexrad_uplink(bn, intens, valid_hm=(18, 18),
+                                              station=(33.43, -112.01, 1)))
+    st = s.nexrad_status(now=now)
+    check(st is not None and st["n_blocks"] == 1, "status reports the block")
+    check(abs(st["valid_age_min"] - 12.0) < 0.1, f"valid age ~12: {st}")
+    s.ingest_uplink(fisb.encode_nexrad_uplink(bn + 1, intens, valid_hm=(18, 47),
+                                              station=(33.43, -112.01, 1)))
+    # oldest (worst-case) valid time wins: 18:18 (12 min) vs 18:47 (future->wrap)
+    st2 = s.nexrad_status(now=now)
+    check(st2["valid_age_min"] > 12.0, "oldest contributing block drives the age")
+    # midnight wrap: a 23:55Z mosaic seen at 00:07Z is 12 min old, not ~1 day.
+    check(abs(fisb.valid_age_min(23 * 60 + 55,
+              calendar.timegm((2026, 6, 9, 0, 7, 0, 0, 0, 0))) - 12.0) < 0.1,
+          "valid_age_min handles the midnight wrap")
+    # a block with no timestamp -> no valid age (falls back to receipt age).
+    s3 = fisb.FisbWeather()
+    s3.ingest_uplink(fisb.encode_nexrad_uplink(bn, intens,
+                                               station=(33.43, -112.01, 1)))
+    check(s3.nexrad_status(now=now)["valid_age_min"] is None,
+          "untimestamped block -> valid_age_min None")
+
 
 def test_winds_aloft():
     case("FD code decode: dir/speed/temp, >100kt, light&var")
@@ -656,6 +682,86 @@ def test_merge():
     check(len(fisb.merge_metar_sources([], inet)) == 2, "inet only")
 
 
+def test_internet_backfill():
+    case("internet TAF backfills, radio TAF wins")
+    store = fisb.FisbWeather()
+    store.add_tafs([{"icao": "KSEZ", "raw": "KSEZ inet taf"},
+                    {"icao": "KFLG", "raw": "KFLG inet taf"}])
+    check(set(store.taf_stations()) == {"KSEZ", "KFLG"}, "two internet TAFs")
+    check(store.taf_source("KSEZ") == "INET", "tagged INET")
+    # A radio TAF for KSEZ must win and not be clobbered by a later internet one.
+    store.add_taf("KSEZ", "KSEZ radio taf", source="RDR")
+    check(store.taf_for("KSEZ") == "KSEZ radio taf", "radio TAF taken")
+    check(store.taf_source("KSEZ") == "RDR", "source now RDR")
+    store.add_taf("KSEZ", "KSEZ inet taf 2", source="INET")
+    check(store.taf_for("KSEZ") == "KSEZ radio taf", "internet does not clobber radio")
+    check(store.taf_for("KFLG") == "KFLG inet taf", "internet KFLG still there")
+
+    case("internet airsigmet feeds both advisories and graphics")
+    store2 = fisb.FisbWeather()
+    items = [
+        {"kind": "AIRMET", "hazard": "Turbulence", "raw": "AIRMET TANGO turb",
+         "vertices": [(34.0, -112.0), (35.0, -112.0), (35.0, -111.0)]},
+        {"kind": "SIGMET", "hazard": "Convective", "raw": "SIGMET conv",
+         "vertices": [(33.0, -113.0), (34.0, -113.0), (34.0, -112.0)]},
+        {"kind": "AIRMET", "hazard": "IFR", "raw": "AIRMET SIERRA ifr",
+         "vertices": []},                       # text-only — advisory, no shape
+    ]
+    store2.add_airsigmets(items)
+    air = store2.advisories("AIRMET")
+    sig = store2.advisories("SIGMET")
+    check("AIRMET TANGO turb" in air and "AIRMET SIERRA ifr" in air,
+          "AIRMET texts stored")
+    check("SIGMET conv" in sig, "SIGMET text stored")
+    gfx = store2.graphics()
+    check(len(gfx) == 2, "only the two with rings become graphics")
+    haz = {g["hazard"] for g in gfx}
+    check(haz == {"Turbulence", "Convective"}, "graphic hazards mapped")
+    # Re-feeding the identical snapshot dedupes (same text + same ring).
+    store2.add_airsigmets(items)
+    check(len(store2.graphics()) == 2, "re-feed dedupes graphics")
+
+    case("internet winds carry their own position (grid coords)")
+    store3 = fisb.FisbWeather()
+    store3.add_winds_list([
+        {"station": "34.50,-111.80", "lat": 34.5, "lon": -111.8,
+         "levels": [{"alt_ft": 9000, "dir": 270, "spd": 30, "temp": -5,
+                     "lv": False}]},
+    ])
+    check(store3.winds_stations() == ["34.50,-111.80"], "grid station stored")
+    w = store3.winds_for("34.50,-111.80")
+    check(w["lat"] == 34.5 and w["src"] == "INET", "carries lat/lon + INET tag")
+    check(w["levels"][0]["spd"] == 30, "levels intact")
+
+    case("set_winds replaces the internet grid (no accumulation), keeps radio")
+    lv = [{"alt_ft": 9000, "dir": 270, "spd": 30, "temp": -5, "lv": False}]
+    g1 = [{"station": f"{a:.2f},-111.00", "lat": a, "lon": -111.0, "levels": lv}
+          for a in (34.0, 34.5, 35.0)]
+    store3b = fisb.FisbWeather()
+    store3b.set_winds(g1, "INET")
+    # a radio FD column coexists
+    store3b.add_winds({"station": "FLG", "levels": lv}, source="RDR")
+    # next poll: the view drifted -> all-new grid ids
+    g2 = [{"station": f"{a:.2f},-111.00", "lat": a, "lon": -111.0, "levels": lv}
+          for a in (34.2, 34.7, 35.2)]
+    store3b.set_winds(g2, "INET")
+    sids = set(store3b.winds_stations())
+    check(len([s for s in sids if "," in s]) == 3, "only the latest 3 grid points")
+    check("FLG" in sids, "radio FD column survives the INET replace")
+
+    case("winds fetch age (forecast staleness on a no-internet leg)")
+    mono = time.monotonic()
+    store3c = fisb.FisbWeather()
+    store3c.add_winds({"station": "34.50,-111.80", "lat": 34.5, "lon": -111.8,
+                       "levels": lv}, now_mono=mono - 3 * 3600)
+    age = store3c.winds_age_s("34.50,-111.80", now_mono=mono)
+    check(abs(age - 3 * 3600) < 1.0, "winds_age_s ~3h")
+    check(fisb.short_age(age) == "3.0h old", f"short_age: {fisb.short_age(age)}")
+    check(fisb.short_age(30) == "" and fisb.short_age(45 * 60) == "45m old",
+          "short_age fresh vs minutes")
+    check(store3c.winds_expire_s == 43200.0, "winds expiry extended to 12 h")
+
+
 def main():
     test_dlac()
     test_framing()
@@ -674,6 +780,7 @@ def main():
     test_ranking()
     test_encoders()
     test_merge()
+    test_internet_backfill()
     print("ALL FIS-B TESTS PASSED (%d checks, %d cases)" % (_checks, _cases))
 
 

@@ -17,8 +17,10 @@ Advisory only — like all in-cockpit weather, METARs are observations that
 age; treat them as situational awareness, not a dispatch product.
 """
 
+import calendar
 import json
 import math
+import os
 import threading
 import time
 import urllib.request
@@ -33,8 +35,35 @@ FLIGHT_CAT_COLORS = {
 _UNKNOWN_COLOR = (160, 160, 160)
 
 _AWC_METAR = "https://aviationweather.gov/api/data/metar"
+_AWC_TAF   = "https://aviationweather.gov/api/data/taf"
+_AWC_AIRSIGMET = "https://aviationweather.gov/api/data/airsigmet"
+# Winds/temps aloft: Open-Meteo's free pressure-level forecast (no key).  AWC
+# retired the text FB winds product; the GFS grids behind it now come as JSON
+# here, batched many points per request.
+_OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+# FAA NOTAM API — needs free developer credentials (client_id / client_secret
+# from https://api.faa.gov), supplied via env.  No key → the fetch no-ops, so
+# the rest of the weather suite is unaffected.
+_FAA_NOTAM = "https://external-api.faa.gov/notamapi/v1/notams"
+_FAA_NOTAM_ID_ENV = "FAA_NOTAM_CLIENT_ID"
+_FAA_NOTAM_SECRET_ENV = "FAA_NOTAM_CLIENT_SECRET"
 _UA = "PFD-and-AHRS/wx (experimental EFB; contact via repo)"
 _NM_PER_DEG = 60.0
+_M_TO_FT = 3.280839895
+
+# Pressure levels we pull (hPa) — enough to bracket our FD altitudes up to
+# ~39,000 ft (~200 hPa).  Each level gives wind, temp, and its geopotential
+# height, which we interpolate onto the standard altitudes.
+_OM_LEVELS = (1000, 925, 850, 700, 600, 500, 400, 300, 250, 200)
+
+# AWC airsigmet ``hazard`` codes -> the hazard names our graphics/picker use
+# (must match shared/fisb.py _GFX_HAZARD so internet and radio overlays share a
+# legend and the SIGMET/AIRMET split in _HAZARD_KIND lines up).
+_AWC_HAZARD = {
+    "TURB": "Turbulence", "ICE": "Icing", "IFR": "IFR",
+    "MTN OBSCN": "Mtn Obscuration", "MTOS": "Mtn Obscuration",
+    "CONVECTIVE": "Convective", "CONV": "Convective", "ASH": "Ash",
+}
 
 
 def cat_color(fltcat):
@@ -145,6 +174,322 @@ def fetch_metars(lat, lon, radius_nm, timeout=12):
     return parse_metars(data)
 
 
+# ── TAF (forecast) ─────────────────────────────────────────────────────────────
+def parse_tafs(data):
+    """Parse an AWC TAF JSON array into ``{icao, lat, lon, raw}`` dicts.
+
+    Only the raw text + position are taken here — the same structured TAF
+    decoder used for FIS-B TAFs (fisb.parse_taf) renders these in the picker, so
+    radio and internet forecasts read identically.  Tolerates the feed's varied
+    field names for the raw text (``rawTAF`` / ``rawOb`` / ``raw_text``)."""
+    out = []
+    for t in data or []:
+        icao = (t.get("icaoId") or t.get("stationId") or "").strip()
+        raw = (t.get("rawTAF") or t.get("rawOb") or t.get("raw_text") or "").strip()
+        if not icao or not raw:
+            continue
+        out.append({
+            "icao": icao,
+            "lat": _num(t.get("lat")), "lon": _num(t.get("lon")),
+            "raw": raw, "src": "INET",
+        })
+    return out
+
+
+def fetch_tafs(lat, lon, radius_nm, timeout=12):
+    """Fetch TAFs within a bbox around (lat, lon) from the AWC Data API."""
+    dlat = radius_nm / _NM_PER_DEG
+    dlon = radius_nm / (_NM_PER_DEG * max(0.05, math.cos(math.radians(lat))))
+    bbox = f"{lat-dlat:.4f},{lon-dlon:.4f},{lat+dlat:.4f},{lon+dlon:.4f}"
+    url = f"{_AWC_TAF}?format=json&bbox={bbox}"
+    req = urllib.request.Request(url, headers={"User-Agent": _UA,
+                                               "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8", "ignore"))
+    return parse_tafs(data)
+
+
+# ── AIRMET / SIGMET (text + geometry) ──────────────────────────────────────────
+def _airsig_coords(item):
+    """Pull a [(lat, lon)] ring from an AWC airsigmet record, tolerating the
+    feed's two shapes: a ``coords`` list of {lat,lon}, or top-level
+    ``lat``/``lon`` arrays."""
+    verts = []
+    coords = item.get("coords")
+    if isinstance(coords, list):
+        for c in coords:
+            la, lo = _num(c.get("lat")), _num(c.get("lon"))
+            if la is not None and lo is not None:
+                verts.append((la, lo))
+    if not verts:
+        la, lo = item.get("lat"), item.get("lon")
+        if isinstance(la, list) and isinstance(lo, list):
+            for a, o in zip(la, lo):
+                a, o = _num(a), _num(o)
+                if a is not None and o is not None:
+                    verts.append((a, o))
+    return verts
+
+
+def parse_airsigmets(data):
+    """Parse an AWC airsigmet JSON array into advisory dicts:
+    ``{kind, hazard, raw, valid_from, valid_to, vertices}``.
+
+    ``kind`` is "AIRMET"/"SIGMET" (OUTLOOKs map to SIGMET — they're convective
+    outlooks); ``hazard`` is normalised to our legend names; ``vertices`` is the
+    area ring (possibly empty for a text-only bulletin)."""
+    out = []
+    for it in data or []:
+        raw = (it.get("rawAirSigmet") or it.get("rawSigmet")
+               or it.get("raw_text") or "").strip()
+        atype = (it.get("airSigmetType") or "").strip().upper()
+        kind = "SIGMET" if atype in ("SIGMET", "OUTLOOK") else "AIRMET"
+        hz = (it.get("hazard") or "").strip().upper()
+        hazard = _AWC_HAZARD.get(hz, "Advisory")
+        # Convective is a SIGMET hazard regardless of the type field.
+        if hazard in ("Convective", "Ash"):
+            kind = "SIGMET"
+        out.append({
+            "kind": kind, "hazard": hazard, "raw": raw,
+            "valid_from": _num(it.get("validTimeFrom")),
+            "valid_to": _num(it.get("validTimeTo")),
+            "vertices": _airsig_coords(it), "src": "INET",
+        })
+    return out
+
+
+def fetch_airsigmets(lat=None, lon=None, radius_nm=None, timeout=12):
+    """Fetch domestic AIRMETs + SIGMETs (CONUS) from the AWC Data API.
+
+    The airsigmet endpoint returns the whole active CONUS set (a short list);
+    position args are accepted for the poller's uniform fetch signature but the
+    feed isn't bbox-filtered — ranking/nearest-first happens at read time."""
+    url = f"{_AWC_AIRSIGMET}?format=json"
+    req = urllib.request.Request(url, headers={"User-Agent": _UA,
+                                               "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8", "ignore"))
+    return parse_airsigmets(data)
+
+
+# ── Winds / temps aloft (Open-Meteo pressure levels → FD altitudes) ─────────────
+def _dirspd_to_uv(dir_deg, spd):
+    """Wind direction (deg FROM) + speed → (u, v) components.  The convention
+    is internal only — _uv_to_dirspd inverts it exactly, so it round-trips."""
+    r = math.radians(dir_deg)
+    return spd * math.sin(r), spd * math.cos(r)
+
+
+def _uv_to_dirspd(u, v):
+    d = math.degrees(math.atan2(u, v)) % 360.0
+    return (d or 360.0), math.hypot(u, v)
+
+
+def interp_winds(samples, alts):
+    """Interpolate pressure-level wind samples onto the standard FD altitudes.
+
+    ``samples`` is ``[(height_ft, dir_deg, spd_kt, temp_c), …]`` (any order);
+    ``alts`` the target altitudes (ft).  Interpolates the wind in u/v space
+    (so direction wraps correctly) and temperature linearly by geopotential
+    height.  Target altitudes outside the sampled column are skipped — no
+    extrapolation.  Returns ``[{alt_ft, dir, spd, temp, lv}]``."""
+    pts = sorted((s for s in samples if s[0] is not None), key=lambda s: s[0])
+    if len(pts) < 2:
+        return []
+    out = []
+    for a in alts:
+        if a < pts[0][0] or a > pts[-1][0]:
+            continue
+        # Bracketing levels.
+        for i in range(len(pts) - 1):
+            h0, h1 = pts[i][0], pts[i + 1][0]
+            if h0 <= a <= h1:
+                f = 0.0 if h1 == h0 else (a - h0) / (h1 - h0)
+                u0, v0 = _dirspd_to_uv(pts[i][1], pts[i][2])
+                u1, v1 = _dirspd_to_uv(pts[i + 1][1], pts[i + 1][2])
+                u = u0 + (u1 - u0) * f
+                v = v0 + (v1 - v0) * f
+                d, sp = _uv_to_dirspd(u, v)
+                t0, t1 = pts[i][3], pts[i + 1][3]
+                temp = None if (t0 is None or t1 is None) else \
+                    int(round(t0 + (t1 - t0) * f))
+                lv = sp < 3.0     # light & variable below ~3 kt
+                out.append({"alt_ft": a,
+                            "dir": None if lv else int(round(d / 10.0) * 10) or 360,
+                            "spd": None if lv else int(round(sp)),
+                            "temp": temp, "lv": lv})
+                break
+    return out
+
+
+def parse_open_meteo_winds(data, alts, now=None, hour_offset=0):
+    """Parse an Open-Meteo pressure-level response into winds-aloft dicts:
+    ``{station, lat, lon, levels, src, hour_offset}``.  ``data`` is one point
+    object or a list of them (Open-Meteo returns a list when several coords are
+    queried).  For each point the hour nearest ``now + hour_offset`` is taken
+    and the levels interpolated onto ``alts``.  ``station`` is a stable
+    coordinate label (the grid carries no ICAO)."""
+    now = now if now is not None else time.time()
+    target = now + hour_offset * 3600.0
+    points = data if isinstance(data, list) else [data]
+    out = []
+    for p in points:
+        if not isinstance(p, dict):
+            continue
+        lat, lon = _num(p.get("latitude")), _num(p.get("longitude"))
+        hourly = p.get("hourly") or {}
+        times = hourly.get("time") or []
+        if lat is None or lon is None or not times:
+            continue
+        hi = _nearest_hour_index(times, target)
+        samples = []
+        for hpa in _OM_LEVELS:
+            hgt = _series_at(hourly.get(f"geopotential_height_{hpa}hPa"), hi)
+            spd = _series_at(hourly.get(f"windspeed_{hpa}hPa"), hi)
+            wdir = _series_at(hourly.get(f"winddirection_{hpa}hPa"), hi)
+            temp = _series_at(hourly.get(f"temperature_{hpa}hPa"), hi)
+            if hgt is None or spd is None or wdir is None:
+                continue
+            samples.append((hgt * _M_TO_FT, wdir, spd, temp))
+        levels = interp_winds(samples, alts)
+        if not levels:
+            continue
+        out.append({"station": f"{lat:.2f},{lon:.2f}",
+                    "lat": lat, "lon": lon, "levels": levels, "src": "INET",
+                    "hour_offset": hour_offset})
+    return out
+
+
+def _series_at(series, idx):
+    if not isinstance(series, list) or idx is None or idx >= len(series):
+        return None
+    return _num(series[idx])
+
+
+def _nearest_hour_index(times, now):
+    """Index into Open-Meteo's hourly ``time`` array nearest to ``now`` (epoch
+    s).  Times are ISO 'YYYY-MM-DDTHH:MM' in UTC."""
+    best_i, best_d = None, None
+    for i, t in enumerate(times):
+        try:
+            tm = time.strptime(t[:16], "%Y-%m-%dT%H:%M")
+            ep = calendar.timegm(tm)
+        except (ValueError, TypeError):
+            continue
+        d = abs(ep - now)
+        if best_d is None or d < best_d:
+            best_i, best_d = i, d
+    return best_i
+
+
+def _winds_grid_points(lat, lon, range_nm, aspect=1.0, cols=5, rows=4):
+    """A lat/lon grid that fills the *visible* map, for batched winds barbs.
+
+    ``range_nm`` is the map's shorter-axis half-extent (its vertical half-height
+    in landscape); ``aspect`` = screen width/height widens the grid horizontally
+    so barbs reach the left/right edges instead of bunching in a centre column.
+    The 0.82 inset keeps the edge barbs (and their temp tags) on screen."""
+    span_lat = range_nm * 0.82
+    span_lon = range_nm * 0.82 * max(1.0, aspect)
+    dlat = span_lat / _NM_PER_DEG
+    dlon = span_lon / (_NM_PER_DEG * max(0.05, math.cos(math.radians(lat))))
+    pts = []
+    for r in range(rows):
+        fy = 0.5 if rows == 1 else r / (rows - 1)
+        for c in range(cols):
+            fx = 0.5 if cols == 1 else c / (cols - 1)
+            pts.append((lat - dlat + 2 * dlat * fy,
+                        lon - dlon + 2 * dlon * fx))
+    return pts
+
+
+def fetch_winds_grid(lat, lon, range_nm, aspect=1.7, alts=None,
+                     hour_offset=0, timeout=15):
+    """Fetch winds/temps aloft for a grid filling the visible map in one
+    Open-Meteo request, parsed onto the standard FD altitudes.  ``hour_offset``
+    selects the forecast hour (0 = now, +N hours ahead)."""
+    from fisb import WINDS_ALTS
+    alts = alts if alts is not None else WINDS_ALTS
+    pts = _winds_grid_points(lat, lon, range_nm, aspect)
+    lats = ",".join(f"{p[0]:.3f}" for p in pts)
+    lons = ",".join(f"{p[1]:.3f}" for p in pts)
+    fields = []
+    for hpa in _OM_LEVELS:
+        fields += [f"windspeed_{hpa}hPa", f"winddirection_{hpa}hPa",
+                   f"temperature_{hpa}hPa", f"geopotential_height_{hpa}hPa"]
+    # forecast_days=2 so a +24 h offset still has data late in the UTC day.
+    url = (f"{_OPEN_METEO}?latitude={lats}&longitude={lons}"
+           f"&hourly={','.join(fields)}&windspeed_unit=kn"
+           f"&forecast_days=2&timeformat=iso8601&timezone=UTC")
+    req = urllib.request.Request(url, headers={"User-Agent": _UA,
+                                               "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8", "ignore"))
+    return parse_open_meteo_winds(data, alts, hour_offset=hour_offset)
+
+
+# ── NOTAMs (FAA NOTAM API — needs developer credentials) ────────────────────────
+def have_notam_creds(client_id=None, client_secret=None):
+    """True when both FAA NOTAM credentials are available — the passed pair
+    (entered in-app) takes precedence over the environment."""
+    cid = client_id or os.environ.get(_FAA_NOTAM_ID_ENV)
+    csec = client_secret or os.environ.get(_FAA_NOTAM_SECRET_ENV)
+    return bool(cid and csec)
+
+
+def parse_notams(data):
+    """Parse an FAA NOTAM API (geoJson) response into advisory text strings.
+
+    Prefers the human-readable ``formattedText`` translation, falls back to the
+    raw ICAO ``text``; prefixes the location id so the advisory list can
+    geolocate the NOTAM by airport (``_notam_locate``).  De-duplicates."""
+    out, seen = [], set()
+    for it in (data or {}).get("items") or []:
+        core = ((it.get("properties") or {}).get("coreNOTAMData") or {})
+        notam = core.get("notam") or {}
+        loc = (notam.get("icaoLocation") or notam.get("location") or "").strip()
+        text = ""
+        for tr in core.get("notamTranslation") or []:
+            ft = (tr.get("formattedText") or tr.get("simpleText") or "").strip()
+            if ft:
+                text = ft
+                break
+        if not text:
+            text = (notam.get("text") or "").strip()
+        if not text:
+            continue
+        text = " ".join(text.split())          # collapse newlines / runs
+        if loc and loc.upper() not in text[:12].upper():
+            text = f"{loc} {text}"
+        if text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def fetch_notams(lat, lon, radius_nm, timeout=15, page_size=50,
+                 client_id=None, client_secret=None):
+    """Fetch NOTAMs within ``radius_nm`` (capped at the API's 100 nm) of a point.
+    Credentials come from the passed pair (entered in-app) or, failing that, the
+    environment.  Returns ``[]`` — a harmless no-op — when none are configured,
+    so the rest of the weather suite runs unaffected without an FAA key."""
+    cid = client_id or os.environ.get(_FAA_NOTAM_ID_ENV)
+    csec = client_secret or os.environ.get(_FAA_NOTAM_SECRET_ENV)
+    if not cid or not csec:
+        return []
+    rad = max(1, min(100, int(round(radius_nm))))
+    url = (f"{_FAA_NOTAM}?responseFormat=geoJson"
+           f"&locationLongitude={lon:.4f}&locationLatitude={lat:.4f}"
+           f"&locationRadius={rad}&pageSize={page_size}&pageNum=1"
+           f"&sortBy=effectiveStartDate&sortOrder=Desc")
+    req = urllib.request.Request(url, headers={
+        "client_id": cid, "client_secret": csec,
+        "User-Agent": _UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8", "ignore"))
+    return parse_notams(data)
+
+
 # ── Background poller ─────────────────────────────────────────────────────────
 def _nm_between(a_lat, a_lon, b_lat, b_lon):
     """Approximate great-circle distance in NM (equirectangular — plenty
@@ -252,3 +597,91 @@ class WxClient(threading.Thread):
     def count(self):
         with self._lock:
             return len(self._metars)
+
+
+class AwcPoller(threading.Thread):
+    """View-driven AWC poller for a single product (TAF, AIRMET/SIGMET, …).
+
+    Shares WxClient's debounce + re-fetch-on-move logic but is product-agnostic:
+    ``fetch_fn(lat, lon, radius)`` returns whatever list the caller wants and
+    ``snapshot()`` hands it back.  ``updated_s`` bumps on every successful fetch
+    so the app can feed the store only when data actually changed.  These
+    products refresh slowly (TAFs ~6 h, AIRMET/SIGMET ~hourly), so the default
+    interval is longer than the METAR poller's."""
+
+    def __init__(self, view_fn, fetch_fn, interval_s=300.0, name="AwcPoller",
+                 move_refetch_frac=0.6, poll_slice_s=0.7):
+        super().__init__(daemon=True, name=name)
+        self.view_fn    = view_fn
+        self.fetch_fn   = fetch_fn
+        self.interval_s = max(60.0, interval_s)
+        self.move_frac  = move_refetch_frac
+        self.slice_s    = poll_slice_s
+        self.connected  = False
+        self.paused     = False
+        self.rx_count   = 0
+        self.err_count  = 0
+        self.last_err   = ""
+        self.updated_s  = 0.0
+        self._items      = []
+        self._fetched_at = 0.0
+        self._fetch_ctr  = None
+        self._lock       = threading.Lock()
+        self._stop       = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def force_refresh(self):
+        """Make the next poll re-fetch even if the view hasn't moved — used when
+        a parameter the fetch depends on (e.g. winds forecast time) changes."""
+        self._fetch_ctr = None
+
+    def _should_fetch(self, lat, lon, radius, now):
+        if self._fetch_ctr is None:
+            return True
+        if now - self._fetched_at >= self.interval_s:
+            return True
+        flat, flon, frad = self._fetch_ctr
+        if _nm_between(flat, flon, lat, lon) > self.move_frac * frad:
+            return True
+        if radius > 1.6 * frad or radius < 0.5 * frad:
+            return True
+        return False
+
+    def run(self):
+        prev_view = None
+        while not self._stop.is_set():
+            if not self.paused:
+                try:
+                    lat, lon, radius = self.view_fn()
+                    cur = (round(lat, 2), round(lon, 2), round(radius))
+                    settled = (cur == prev_view)
+                    prev_view = cur
+                    now = time.monotonic()
+                    if settled and self._should_fetch(lat, lon, radius, now):
+                        items = self.fetch_fn(lat, lon, radius)
+                        with self._lock:
+                            self._items = items
+                        self._fetched_at = now
+                        self._fetch_ctr  = (lat, lon, radius)
+                        self.updated_s   = now
+                        self.rx_count   += 1
+                        self.connected   = True
+                except Exception as e:                       # noqa: BLE001
+                    self.err_count += 1
+                    self.last_err = f"{type(e).__name__}: {e}"
+                    self.connected = False
+                    print(f"[WX:{self.name}] {self.last_err}")
+            slept = 0.0
+            while slept < self.slice_s and not self._stop.is_set():
+                time.sleep(min(0.2, self.slice_s - slept))
+                slept += 0.2
+
+    def snapshot(self):
+        with self._lock:
+            return list(self._items)
+
+    def count(self):
+        with self._lock:
+            return len(self._items)

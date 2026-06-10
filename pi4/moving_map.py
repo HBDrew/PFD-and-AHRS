@@ -173,6 +173,21 @@ _tint_cache: dict = {}
 _TINT_CACHE_MAX = 6
 _TINT_N = 64       # elevation samples per side; smoothscaled up to fit
 
+# Cached darkening veil keyed by (w, h).  On the big full-screen MFD this is a
+# multi-MB SRCALPHA surface; re-allocating + filling it every frame (the veil
+# is NOT skipped during a fast pan) was a major source of SDL surface churn —
+# the main reason wide-zoom panning on the MET page felt heavier than piZ.
+# One entry in practice (the map rect size is fixed at runtime).
+_veil_cache: dict = {}
+
+# Cached airport ident labels keyed by (ident, font id).  Each font.render is a
+# real cost on the big MFD; caching lets repeated frames reuse rendered labels.
+# Capped (LRU) so a long flight doesn't grow it unbounded as the visible set
+# shifts.  (Airports only draw <=40 nm, but this keeps close-range pan smooth.)
+import collections as _collections_mm
+_APT_LABEL_CACHE_MAX = 256
+_apt_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
+
 
 def _quantise_centre(lat, lon, range_nm):
     """Snap the centre to ~10% of the visible range so light pan motion
@@ -504,6 +519,59 @@ def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
         pygame.draw.lines(surf, color, False, pts, 1)
 
 
+# ── Cached border rasterisation ─────────────────────────────────────────────
+# Rasterising the 10m admin_0/admin_1 polylines was the dominant MET-page cost
+# on the Pi 4 (~27 ms): full quality, but redrawn from scratch every frame even
+# while the view is parked.  Cache the rendered lines into an SRCALPHA surface
+# keyed by a *fine* (≈3 px) centre quantum + range + rotation, so a stationary
+# (or slowly-drifting-at-wide-zoom) map blits one surface instead of projecting
+# thousands of vertices each frame.  No decimation → borders stay crisp.  The
+# quantum is fine enough that the small positional offset is sub-pixel-ish and
+# never visibly jumps; rebuilds happen only when the view actually moves a few
+# px, and panning skips borders entirely (handled at the call site).
+_border_cache = {"key": None, "surf": None, "blat": 0.0, "blon": 0.0}
+
+
+def _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
+                         range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
+                         sin_r, cos_r, rot_deg, fast):
+    x, y, w, h = rect
+    show_state = state_lines is not None and \
+        settings.get("map_show_state_lines", True)
+    show_ctry = country_lines is not None and \
+        settings.get("map_show_country_lines", True)
+    if not show_state and not show_ctry:
+        return
+    # Quantise the centre to ~3 px of motion so a parked map reuses the surface.
+    qdeg = max(1e-6, 3.0 / max(0.01, px_per_nm) / _NM_PER_DEG_LAT)
+    qlat = round(lat / qdeg)
+    qlon = round(lon / (qdeg / cos_lat))
+    key = (qlat, qlon, round(range_nm, 1), round(rot_deg / 2.0),
+           show_state, show_ctry, w, h)
+    c = _border_cache
+    # Rebuild only when parked (not fast) and the view actually changed — or the
+    # first time.  During a pan we keep the last raster and shift it (below) so
+    # borders stay on screen and track the map without a ~27 ms re-projection
+    # every frame.  They snap to a fresh raster on release.
+    if c["surf"] is None or (not fast and c["key"] != key):
+        bs = pygame.Surface((w, h), pygame.SRCALPHA)
+        lcx, lcy = cx - x, cy - y       # centre is (w/2, h/2) inside bs
+        if show_state:
+            _draw_polylines(bs, state_lines, range_nm, lat, lon, cos_lat,
+                            lcx, lcy, px_per_nm, sin_r, cos_r, _STATE_LINE)
+        if show_ctry:
+            _draw_polylines(bs, country_lines, range_nm, lat, lon, cos_lat,
+                            lcx, lcy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+        c.update(key=key, surf=bs, blat=lat, blon=lon)
+    # Shift the cached raster by the screen-space centre movement since it was
+    # built (zero when parked → exact; a few px while panning → tracks the map).
+    e_nm = (c["blon"] - lon) * _NM_PER_DEG_LAT * cos_lat
+    n_nm = (c["blat"] - lat) * _NM_PER_DEG_LAT
+    dx = (e_nm * cos_r - n_nm * sin_r) * px_per_nm
+    dy = -(e_nm * sin_r + n_nm * cos_r) * px_per_nm
+    surf.blit(c["surf"], (x + dx, y + dy))
+
+
 # ── NEXRAD reflectivity raster ──────────────────────────────────────────────
 _NEXRAD_ALPHA = 150
 _nexrad_scaled = {"seq": None, "w": 0, "h": 0, "surf": None}
@@ -574,24 +642,72 @@ def _draw_nexrad_cells(surf, cells, project, rect):
 
 
 # ── Weather (METAR) layer ───────────────────────────────────────────────────
-def _draw_metars(surf, metars, project, rect):
+_METAR_MAX_DRAW = 160      # cap dots per frame; at wide zoom the rest are clutter
+
+
+def _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
+                 sin_r, cos_r, max_draw=_METAR_MAX_DRAW):
     """Draw METAR stations as flight-category-coloured dots (green/blue/red/
-    magenta).  Mirrors the piZ implementation."""
+    magenta).
+
+    Vectorised: at wide zoom the WX poller pulls a ~250 nm radius (hundreds of
+    stations), and the old per-station projection closure loop dominated the
+    MET-page frame time on the Pi 4.  Project every station in one numpy pass,
+    cull to the visible window, and cap the drawn count to the nearest-to-centre
+    (far dots are unreadable clutter at wide zoom anyway)."""
     x, y, w, h = rect
-    for m in metars:
-        la, lo = m.get("lat"), m.get("lon")
-        if la is None or lo is None:
-            continue
-        sx, sy = project(la, lo)
-        if not (x - 6 <= sx <= x + w + 6 and y - 6 <= sy <= y + h + 6):
-            continue
-        col = _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN)
-        ix, iy = int(sx), int(sy)
-        # Smaller than the piZ MFD dots — the inset is tiny and packs
-        # airports/traffic into the same area.
-        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 8)
-        pygame.draw.circle(surf, col, (ix, iy), 6)
-        pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 6, 1)
+    if not metars:
+        return
+    if not HAS_NUMPY:                       # always present on the Pi builds
+        for m in metars:
+            la, lo = m.get("lat"), m.get("lon")
+            if la is None or lo is None:
+                continue
+            e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+            n_nm = (la - lat) * _NM_PER_DEG_LAT
+            sx = cx + (e_nm * cos_r - n_nm * sin_r) * px_per_nm
+            sy = cy - (e_nm * sin_r + n_nm * cos_r) * px_per_nm
+            if not (x - 6 <= sx <= x + w + 6 and y - 6 <= sy <= y + h + 6):
+                continue
+            _metar_dot(surf, int(sx), int(sy),
+                       _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN))
+        return
+
+    rows = [m for m in metars
+            if m.get("lat") is not None and m.get("lon") is not None]
+    if not rows:
+        return
+    las = np.array([m["lat"] for m in rows], dtype=np.float64)
+    los = np.array([m["lon"] for m in rows], dtype=np.float64)
+    e_nm = (los - lon) * (_NM_PER_DEG_LAT * cos_lat)
+    n_nm = (las - lat) * _NM_PER_DEG_LAT
+    if sin_r != 0.0 or cos_r != 1.0:        # track-up rotation
+        ex = e_nm * cos_r - n_nm * sin_r
+        ny = e_nm * sin_r + n_nm * cos_r
+    else:
+        ex, ny = e_nm, n_nm
+    sx = cx + ex * px_per_nm
+    sy = cy - ny * px_per_nm
+
+    vis = ((sx >= x - 6) & (sx <= x + w + 6)
+           & (sy >= y - 6) & (sy <= y + h + 6))
+    idx = np.flatnonzero(vis)
+    if idx.size > max_draw:                 # keep the nearest-to-centre dots
+        d2 = (sx[idx] - cx) ** 2 + (sy[idx] - cy) ** 2
+        idx = idx[np.argpartition(d2, max_draw)[:max_draw]]
+    sxi = sx.astype(np.int32)
+    syi = sy.astype(np.int32)
+    for i in idx:
+        _metar_dot(surf, int(sxi[i]), int(syi[i]),
+                   _WX_CAT_COLORS.get(rows[i].get("fltcat"), _WX_UNKNOWN))
+
+
+def _metar_dot(surf, ix, iy, col):
+    """One flight-category dot: dark halo + coloured fill + crisp edge.
+    Smaller than the piZ MFD dots — the inset packs airports/traffic in too."""
+    pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 8)
+    pygame.draw.circle(surf, col, (ix, iy), 6)
+    pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 6, 1)
 
 
 _GND_STATION = (90, 210, 230)    # FIS-B ground station: teal, distinct from
@@ -917,6 +1033,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # storm can OOM/swap a Pi 4 hard enough to lock the PFD up. Drop the
     # tint entirely at the widest zoom — state lines, the D2 line, and
     # the range ring still give whole-leg context.
+    tint_drawn = False
     if (settings.get("map_show_terrain", True) and srtm_dir
             and range_nm <= _TINT_RENDER_MAX_NM and not wx_active
             and not fast):
@@ -939,6 +1056,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 tint_r = tint
             tr = tint_r.get_rect(center=(int(cx), int(cy)))
             surf.blit(tint_r, tr)
+            tint_drawn = True
 
             # SVT-style clearance overlay (red / orange / amber).  Inhibit
             # below Vso so taxi and rollout don't paint the inset red —
@@ -954,10 +1072,19 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
                     surf.blit(overlay_r, o_rect)
 
-    # Slightly darker veil under vector layers so labels read cleanly
-    veil = pygame.Surface((w, h), pygame.SRCALPHA)
-    veil.fill((0, 0, 0, 60))
-    surf.blit(veil, (x, y))
+    # Slightly darker veil under vector layers so labels read cleanly — but
+    # only meaningful when the bright terrain tint is behind it.  Above the
+    # tint range (160 nm), on the MET overlay, and during a fast pan the base
+    # is plain black (_BG), so a 60-alpha black veil is a no-op — skip it and
+    # save a full-screen alpha blit every frame.  Cached by (w, h) so when it
+    # IS drawn it isn't re-allocated.
+    if tint_drawn:
+        veil = _veil_cache.get((w, h))
+        if veil is None:
+            veil = pygame.Surface((w, h), pygame.SRCALPHA)
+            veil.fill((0, 0, 0, 60))
+            _veil_cache[(w, h)] = veil
+        surf.blit(veil, (x, y))
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
     if (nexrad is not None and settings.get("map_show_nexrad", False)
@@ -975,16 +1102,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # microseconds at any range.  Country lines paint after state lines so
     # international borders stack visibly on top of admin_1 polygons that
     # happen to share the perimeter (e.g. US/Canada).
-    if (state_lines is not None
-            and settings.get("map_show_state_lines", True)
-            and range_nm >= 20):
-        _draw_polylines(surf, state_lines, range_nm, lat, lon, cos_lat,
-                        cx, cy, px_per_nm, sin_r, cos_r, _STATE_LINE)
-    if (country_lines is not None
-            and settings.get("map_show_country_lines", True)
-            and range_nm >= 20):
-        _draw_polylines(surf, country_lines, range_nm, lat, lon, cos_lat,
-                        cx, cy, px_per_nm, sin_r, cos_r, _COUNTRY_LINE)
+    if range_nm >= 20:
+        _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
+                             range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
+                             sin_r, cos_r, rot_deg, fast)
 
     # ── Airspaces (Class B/C/D + MOA + Restricted) ──────────────────────────
     # Drawn between context lines and runways so airspaces sit UNDER
@@ -1090,6 +1211,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # weather picture — drop the airport dots/labels so the flight-category
     # METAR dots aren't fighting the white airport symbols for the same pixels.
     # (Off the overlay, both draw: white airports + always-on METAR dots.)
+    MAX_AIRPORTS_DRAWN = 60
     if (not fast and settings.get("map_show_airports", True)
             and not wx_active
             and airports_arr is not None and range_nm <= 40):
@@ -1108,7 +1230,14 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
 
             def _r(v):    # scale dot radius for the big full-screen MFD
                 return max(1, int(round(v * symbol_scale)))
+            # query_nearby returns nearest-first, so the cap drops the farthest
+            # fields — bounds the worst case in dense metros without thinning the
+            # richer set the big screen is meant to show.  More generous than
+            # piZ's 40 (more pixels to fill).
+            drawn = 0
             for i in range(len(nearby)):
+                if drawn >= MAX_AIRPORTS_DRAWN:
+                    break
                 atype = str(types[i])
                 if (airport_types_visible is not None
                         and atype not in airport_types_visible):
@@ -1126,13 +1255,25 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                                        _r(4) if atype in ("M", "L") else _r(3))
                 # Dots show to 40 nm (the big MFD has the room).  Labels: all
                 # types within 10 nm; only M/L out to 20 nm so the wider view
-                # stays readable without hiding the dots themselves.
+                # stays readable without hiding the dots themselves.  Rendered
+                # idents are cached (font.render is a real cost repeated every
+                # frame for the same fields while parked over an area).
+                ident_str = str(ids[i])
                 if (font is not None
-                        and str(ids[i]).strip().upper() != _d2_ident
+                        and ident_str.strip().upper() != _d2_ident
                         and (range_nm <= 10
                              or (range_nm <= 20 and atype in ("M", "L")))):
-                    lbl = font.render(str(ids[i]), True, _APT_PUB)
+                    cache_key = (ident_str, id(font))
+                    lbl = _apt_label_cache.get(cache_key)
+                    if lbl is None:
+                        lbl = font.render(ident_str, True, _APT_PUB)
+                        _apt_label_cache[cache_key] = lbl
+                        if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                            _apt_label_cache.popitem(last=False)
+                    else:
+                        _apt_label_cache.move_to_end(cache_key)
                     surf.blit(lbl, (ix + _r(5) + 2, iy - 7))
+                drawn += 1
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:
@@ -1258,18 +1399,34 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if ground_stations and settings.get("map_show_metar", False) and not fast:
         _draw_ground_stations(surf, ground_stations, _project, font, rect,
                               symbol_scale)
-    if metars and not fast:
-        _draw_metars(surf, metars, _project, rect)
+    # Always-on flight-category dots — except on the winds / NEXRAD focus pages,
+    # where they'd fight the barbs / radar for the same pixels (keep those clean).
+    if (metars and not fast
+            and not settings.get("map_show_winds", False)
+            and not settings.get("map_show_nexrad", False)):
+        _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
+                     sin_r, cos_r)
     # Winds-aloft barbs — their own overlay (WND).
     if winds_barbs and settings.get("map_show_winds", False) and not fast:
+        # Smaller than the full symbol scale so the denser barb grid stays
+        # readable on the big MFD (pi4 only — piZ keeps its own size).
         _draw_winds_barbs(surf, winds_barbs, _project, rot_deg, rect, font,
-                          symbol_scale)
+                          symbol_scale * 0.6)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Above map features (incl. weather) but below the range ring + own-ship
-    # chevron so the pilot's own symbol always stays on top.
+    # chevron so the pilot's own symbol always stays on top.  On the weather-
+    # focus pages (MET / WND / NEXRAD) show ONLY alert-level traffic — declutter
+    # the picture without ever hiding a genuine threat.
     if traffic and settings.get("map_show_traffic", True):
-        _draw_traffic(surf, traffic, _project, rot_deg, px_per_nm, font, rect)
+        if (settings.get("map_show_metar", False)
+                or settings.get("map_show_winds", False)
+                or settings.get("map_show_nexrad", False)):
+            tfc = [t for t in traffic if t.get("threat") == "alert"]
+        else:
+            tfc = traffic
+        if tfc:
+            _draw_traffic(surf, tfc, _project, rot_deg, px_per_nm, font, rect)
 
     # ── Range ring ───────────────────────────────────────────────────────────
     # Shrink the ring 2 px inside the inset's shorter axis so the frame
@@ -1374,6 +1531,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                       (x + w - ete_w - 7, y + h - ete_h - 4))
             surf.blit(ete_surf,
                       (x + w - ete_w - 4, y + h - ete_h - 3))
+
 
 
 def hit_test(rect, x, y) -> bool:

@@ -163,7 +163,7 @@ def decode_apdu(frame):
         if len(frame) < 4:
             return None
         hours = ((frame[1] & 0x03) << 3) | (frame[2] >> 5)
-        minutes = frame[2] & 0x1f          # 5-bit minutes (coarse)
+        minutes = ((frame[2] & 0x1f) << 1) | (frame[3] >> 7)   # 6-bit minutes
         offset = 4
     elif t_opt == 2:
         if len(frame) < 5:
@@ -380,6 +380,18 @@ def _hhz(ddhh):
     return f"{ddhh[2:4]}Z" if ddhh and len(ddhh) >= 4 else "?"
 
 
+def short_age(age_s):
+    """Compact data-age annotation ('45m old' / '3.2h old'), or '' when the
+    data is fresh (< ~90 s) or unknown.  Used to flag forecast staleness once
+    the internet drops and the last-fetched data persists."""
+    if age_s is None or age_s < 90:
+        return ""
+    minutes = age_s / 60.0
+    if minutes < 90:
+        return f"{int(round(minutes))}m old"
+    return f"{minutes / 60.0:.1f}h old"
+
+
 def _taf_wind(text):
     m = _RE_WIND.search(text)
     if not m:
@@ -553,6 +565,12 @@ def taf_lines(raw):
 # (ddss[±]tt) per altitude.  The bulletin envelope here is "WINDS <id> <alt>
 # <code> …" pairs (what the simulator emits); real-world FD bulletin column
 # parsing is a refinement, but the per-code decode is the standard one.
+# Standard winds-aloft forecast altitudes (FD levels) the UI offers — one
+# source of truth shared by the radio FD decode, the internet (Open-Meteo)
+# interpolation, and the altitude selector.
+WINDS_ALTS = (3000, 6000, 9000, 12000, 18000, 24000, 30000, 34000, 39000)
+
+
 def decode_fd_code(code, alt_ft):
     """Decode one FD winds code at ``alt_ft`` → {alt_ft, dir, spd, temp, lv}.
     'ddss' = dir (tens of deg) + speed kt; dd>36 means dir-=50, speed+=100;
@@ -752,12 +770,35 @@ def encode_nexrad_block(block_num, intensities, sf=0, ns=False):
     return bytes(out)
 
 
+def _encode_apdu_header(product_id, valid_hm=None):
+    """APDU header bytes — the inverse of ``decode_apdu``'s header read.
+
+    With no time, a 2-byte ``t_opt=0`` header.  With ``valid_hm=(hours,
+    minutes)``, a 4-byte ``t_opt=1`` header carrying the product valid time in
+    the same hours(5)+minutes(5) layout ``decode_apdu`` reads (minutes coarse to
+    5 bits — matching the simplified decode flagged for real-frame validation)."""
+    if valid_hm is None:
+        return bytes([(product_id >> 6) & 0x1f,
+                      (product_id & 0x3f) << 2])
+    hours, minutes = valid_hm
+    hours &= 0x1f
+    minutes &= 0x3f
+    return bytes([
+        (1 << 5) | ((product_id >> 6) & 0x1f),               # S=0, t_opt=1
+        ((product_id & 0x3f) << 2) | ((hours >> 3) & 0x03),
+        ((hours & 0x07) << 5) | ((minutes >> 1) & 0x1f),
+        (minutes & 0x01) << 7,                               # 6th minute bit (offset=4)
+    ])
+
+
 def encode_nexrad_uplink(block_num, intensities, sf=0, station=None,
-                         product_id=63, total=432):
-    """One NEXRAD block as a UAT uplink payload (for the simulator / tests)."""
+                         product_id=63, total=432, valid_hm=None):
+    """One NEXRAD block as a UAT uplink payload (for the simulator / tests).
+
+    ``valid_hm=(hours, minutes)`` stamps the APDU with a product valid time so
+    the receipt-vs-valid age path can be exercised end to end."""
     block = encode_nexrad_block(block_num, intensities, sf)
-    apdu = bytes([(product_id >> 6) & 0x1f,
-                  (product_id & 0x3f) << 2]) + block
+    apdu = _encode_apdu_header(product_id, valid_hm) + block
     return _pack_uplink(product_id, apdu, station, total)
 
 
@@ -782,6 +823,22 @@ def _obs_age_min(parsed, now):
         return max(0.0, (now - obs_epoch) / 60.0)
     except (ValueError, OverflowError):
         return None
+
+
+def valid_age_min(valid_min, now=None):
+    """Age in minutes of a product whose valid time is ``valid_min`` (UTC
+    minute-of-day, 0-1439), given wall-clock ``now`` (epoch s).  Handles the
+    midnight wrap (a 23:5x product seen just after 00:00 is minutes old, not
+    nearly a day).  Returns None if ``valid_min`` is None."""
+    if valid_min is None:
+        return None
+    now = now if now is not None else time.time()
+    tm = time.gmtime(now)
+    now_min = tm.tm_hour * 60 + tm.tm_min + tm.tm_sec / 60.0
+    age = now_min - valid_min
+    if age < -1.0:                  # product time "ahead" -> it's from before midnight
+        age += 1440.0
+    return max(0.0, age)
 
 
 def _station_from_parsed(parsed, lat, lon, now):
@@ -928,14 +985,14 @@ class FisbWeather:
 
     def __init__(self, expire_s=4500.0, station_expire_s=120.0,
                  taf_expire_s=10800.0, advisory_expire_s=14400.0,
-                 graphics_expire_s=14400.0, winds_expire_s=21600.0,
+                 graphics_expire_s=14400.0, winds_expire_s=43200.0,
                  nexrad_expire_s=900.0):
         self.expire_s = expire_s             # 75 min: METARs refresh hourly
         self.station_expire_s = station_expire_s   # towers rebroadcast often
         self.taf_expire_s = taf_expire_s     # 3 h: TAFs reissue ~6 h, valid ~24-30 h
         self.advisory_expire_s = advisory_expire_s  # 4 h: AIRMET/SIGMET/NOTAM text
         self.graphics_expire_s = graphics_expire_s  # 4 h: graphical hazard areas
-        self.winds_expire_s = winds_expire_s        # 6 h: winds aloft forecast
+        self.winds_expire_s = winds_expire_s        # 12 h: keep forecast winds for a long no-internet leg
         self.nexrad_expire_s = nexrad_expire_s      # 15 min: NEXRAD blocks
         self.uplink_count = 0                # uplink frames ingested
         self.metar_count = 0                 # METAR records parsed OK (cumulative)
@@ -946,12 +1003,12 @@ class FisbWeather:
         self.nexrad_count = 0                # NEXRAD blocks stored
         self._lock = threading.Lock()
         self._metars = {}                    # icao -> (parsed_dict, recv_monotonic)
-        self._tafs = {}                      # icao -> (raw_text, recv_monotonic)
+        self._tafs = {}                      # icao -> (raw_text, recv_monotonic, source)
         self._stations = {}                  # (lat,lon) -> {.., last_mono, count}
         self._advisories = {k: {} for k in self.ADVISORY_KINDS}  # kind -> {text: recv}
         self._graphics = {}                  # key -> (graphic_dict, recv_monotonic)
         self._winds = {}                     # station -> (winds_dict, recv_monotonic)
-        self._nexrad = {}                    # block_num -> (cells, recv_monotonic)
+        self._nexrad = {}                    # block_num -> (cells, recv_monotonic, valid_min)
 
     def ingest_gdl90_msg(self, msg, now_mono=None):
         """Decode one ``kind=="uplink"`` GDL90 message and fold its weather +
@@ -984,7 +1041,14 @@ class FisbWeather:
             if apdu.get("product_id") in NEXRAD_PRODUCTS:
                 blk = decode_nexrad_block(apdu["data"])
                 if blk is not None:
-                    nexrad[blk["block_num"]] = blk["cells"]
+                    # Capture the product *valid* time from the APDU header (when
+                    # present) — for NEXRAD this is the mosaic generation time,
+                    # which can lag receipt by minutes.  Surfacing it is what
+                    # keeps stale radar from looking current.
+                    vmin = None
+                    if apdu.get("hours") is not None and apdu.get("minutes") is not None:
+                        vmin = apdu["hours"] * 60 + apdu["minutes"]
+                    nexrad[blk["block_num"]] = (blk["cells"], vmin)
                 continue
             if apdu.get("product_id") in GRAPHICS_PRODUCTS:
                 graphics.extend(decode_graphic_records(apdu["data"]))
@@ -1022,7 +1086,7 @@ class FisbWeather:
                 self._metars[icao] = (parsed, now_mono)
                 self.metar_count += 1
             for icao, raw in tafs.items():
-                self._tafs[icao] = (raw, now_mono)
+                self._tafs[icao] = (raw, now_mono, "RDR")
                 self.taf_count += 1
             for kind, texts in advisories.items():
                 for text in texts:
@@ -1033,11 +1097,121 @@ class FisbWeather:
                 self._graphics[key] = (g, now_mono)
                 self.graphic_count += 1
             for station, w in winds.items():
+                w.setdefault("src", "RDR")
                 self._winds[station] = (w, now_mono)
                 self.winds_count += 1
-            for bnum, cells in nexrad.items():
-                self._nexrad[bnum] = (cells, now_mono)
+            for bnum, (cells, vmin) in nexrad.items():
+                self._nexrad[bnum] = (cells, now_mono, vmin)
                 self.nexrad_count += 1
+
+    # ── Internet backfill ──────────────────────────────────────────────────────
+    # The AWC pollers feed parsed products in through these.  Radio-primary /
+    # internet-bonus mirrors the METAR merge: a radio TAF is never overwritten by
+    # an internet one (radio is local and at least as fresh); advisories and
+    # graphics dedupe by content, so internet simply backfills areas the radio
+    # hasn't delivered.  All keep the same store shapes the readers already use,
+    # so taf_for / advisories / graphics surface internet data with no read-path
+    # change.
+    def add_taf(self, icao, raw, source="INET", now_mono=None):
+        """Store one internet/other-source TAF.  A fresh radio ("RDR") TAF wins —
+        an INET update won't clobber it — but INET refreshes its own entries and
+        backfills stations radio hasn't sent."""
+        if not icao or not raw:
+            return
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            cur = self._tafs.get(icao)
+            if (cur is not None and cur[2] == "RDR" and source != "RDR"
+                    and now_mono - cur[1] <= self.taf_expire_s):
+                return
+            self._tafs[icao] = (raw.strip(), now_mono, source)
+            self.taf_count += 1
+
+    def add_tafs(self, tafs, source="INET", now_mono=None):
+        """Bulk add_taf from a list of ``{icao, raw}`` dicts."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        for t in tafs or []:
+            self.add_taf(t.get("icao"), t.get("raw"), source, now_mono)
+
+    def add_advisory(self, kind, text, now_mono=None):
+        """Store one advisory bulletin (AIRMET/SIGMET/NOTAM).  Dedupes by text,
+        so a radio and internet copy of the same bulletin collapse to one."""
+        if kind not in self.ADVISORY_KINDS or not text:
+            return
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            self._advisories[kind][text.strip()] = now_mono
+            self.advisory_count += 1
+
+    def add_graphic(self, g, now_mono=None):
+        """Store one graphical hazard area (``{hazard, geom, vertices, text}``).
+        Keyed by hazard+geometry+text so identical areas dedupe across sources."""
+        if not g or not g.get("vertices"):
+            return
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        verts = tuple((round(la, 4), round(lo, 4)) for la, lo in g["vertices"])
+        key = (g.get("hazard"), g.get("geom", "polygon"), verts,
+               (g.get("text") or "").strip())
+        gg = {"hazard": g.get("hazard"), "geom": g.get("geom", "polygon"),
+              "vertices": list(g["vertices"]), "text": g.get("text")}
+        with self._lock:
+            self._graphics[key] = (gg, now_mono)
+            self.graphic_count += 1
+
+    def add_airsigmets(self, items, now_mono=None):
+        """Fold an AWC airsigmet snapshot (``{kind, hazard, raw, vertices,
+        valid_from, valid_to}``) into both the text advisories and, when it
+        carries an area, the graphics overlay — the one feed populates the
+        picker bulletins and the MET-page shapes together."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        for it in items or []:
+            kind, raw = it.get("kind"), it.get("raw")
+            if raw:
+                self.add_advisory(kind, raw, now_mono)
+            verts = it.get("vertices") or []
+            if len(verts) >= 3:
+                self.add_graphic({"hazard": it.get("hazard", "Advisory"),
+                                  "geom": "polygon", "vertices": verts,
+                                  "text": raw}, now_mono)
+
+    def add_winds(self, w, source="INET", now_mono=None):
+        """Store one winds-aloft column.  Internet (Open-Meteo grid) entries
+        carry their own ``lat``/``lon`` (the readers geolocate by those rather
+        than the airport DB).  Radio FD stations and internet grid points use
+        different ``station`` keys, so they coexist; ``src`` is tagged for the
+        readout."""
+        if not w or not w.get("station") or not w.get("levels"):
+            return
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        ww = dict(w)
+        ww.setdefault("src", source)
+        with self._lock:
+            self._winds[ww["station"]] = (ww, now_mono)
+            self.winds_count += 1
+
+    def add_winds_list(self, winds, source="INET", now_mono=None):
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        for w in winds or []:
+            self.add_winds(w, source, now_mono)
+
+    def set_winds(self, winds, source="INET", now_mono=None):
+        """Replace *all* winds columns of ``source`` with this snapshot.  The
+        internet grid is a complete picture of the current view, so replacing it
+        each poll (rather than accumulating) stops barbs piling up as the view
+        drifts — radio (``RDR``) columns are untouched."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            for k in [s for s, (w, _r) in self._winds.items()
+                      if (w.get("src") or "RDR") == source]:
+                del self._winds[k]
+        self.add_winds_list(winds, source, now_mono)
+
+    def add_notams(self, texts, now_mono=None):
+        """Fold internet NOTAM bulletins (already-formatted text) into the
+        advisory store, deduped by text like the other advisories."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        for t in texts or []:
+            self.add_advisory("NOTAM", t, now_mono)
 
     def graphics(self, now_mono=None):
         """Active graphical hazard areas (``{hazard, geom, vertices}``), pruned
@@ -1055,14 +1229,41 @@ class FisbWeather:
         ``nexrad_expire_s``.  Each cell: ``{lat, lon, dlat, dlon, i}``."""
         now_mono = now_mono if now_mono is not None else time.monotonic()
         with self._lock:
-            stale = [k for k, (_c, recv) in self._nexrad.items()
+            stale = [k for k, (_c, recv, _v) in self._nexrad.items()
                      if now_mono - recv > self.nexrad_expire_s]
             for k in stale:
                 del self._nexrad[k]
             out = []
-            for cells, _r in self._nexrad.values():
+            for cells, _r, _v in self._nexrad.values():
                 out.extend(cells)
         return out
+
+    def nexrad_status(self, now=None, now_mono=None):
+        """Provenance of the current FIS-B radar picture, or ``None`` when no
+        fresh blocks: ``{n_blocks, recv_age_s, valid_age_min}``.
+
+        ``valid_age_min`` is the *oldest* (worst-case) product valid time across
+        the contributing blocks — the conservative number to badge, since a
+        FIS-B NEXRAD mosaic's valid time can lag its broadcast/receipt by
+        minutes.  ``None`` when no block carried a timestamp.  Caveat: the APDU
+        time decode is the approximate layout flagged for real-frame validation,
+        so treat the figure as indicative until pinned to live frames."""
+        now = now if now is not None else time.time()
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            stale = [k for k, (_c, recv, _v) in self._nexrad.items()
+                     if now_mono - recv > self.nexrad_expire_s]
+            for k in stale:
+                del self._nexrad[k]
+            if not self._nexrad:
+                return None
+            items = list(self._nexrad.values())
+        newest_recv = max(recv for _c, recv, _v in items)
+        recv_age_s = max(0.0, now_mono - newest_recv)
+        ages = [valid_age_min(v, now) for _c, _r, v in items if v is not None]
+        valid_age = max(ages) if ages else None
+        return {"n_blocks": len(items), "recv_age_s": recv_age_s,
+                "valid_age_min": valid_age}
 
     def advisories(self, kind=None, now_mono=None):
         """Active advisory bulletin texts (AIRMET/SIGMET/NOTAM).  ``kind`` filters
@@ -1085,7 +1286,7 @@ class FisbWeather:
         """ICAOs that currently have a fresh TAF (prunes stale ones)."""
         now_mono = now_mono if now_mono is not None else time.monotonic()
         with self._lock:
-            stale = [i for i, (_r, recv) in self._tafs.items()
+            stale = [i for i, (_r, recv, _s) in self._tafs.items()
                      if now_mono - recv > self.taf_expire_s]
             for i in stale:
                 del self._tafs[i]
@@ -1105,6 +1306,15 @@ class FisbWeather:
                 del self._winds[station]
                 return None
             return w
+
+    def winds_age_s(self, station, now_mono=None):
+        """Seconds since this winds column was received, or None.  Surfaces how
+        old a forecast is — important once internet drops on a long flight and
+        the last-fetched grid persists rather than refreshing."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            v = self._winds.get(station)
+            return None if not v else max(0.0, now_mono - v[1])
 
     def winds_stations(self, now_mono=None):
         """Station ids that currently have fresh winds aloft."""
@@ -1126,11 +1336,25 @@ class FisbWeather:
             v = self._tafs.get(icao)
             if not v:
                 return None
-            raw, recv = v
+            raw, recv, _src = v
             if now_mono - recv > self.taf_expire_s:
                 del self._tafs[icao]
                 return None
             return raw
+
+    def taf_source(self, icao, now_mono=None):
+        """Source tag ("RDR"/"INET") of the stored TAF for ``icao``, or None."""
+        if not icao:
+            return None
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            v = self._tafs.get(icao)
+            if not v:
+                return None
+            _raw, recv, src = v
+            if now_mono - recv > self.taf_expire_s:
+                return None
+            return src
 
     def metar_stations(self, locate, now=None, now_mono=None):
         """Return wx-shaped station dicts for every stored, still-fresh METAR

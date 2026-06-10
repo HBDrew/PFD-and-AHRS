@@ -103,6 +103,10 @@ WX_MIN_RADIUS_NM = 60     # floor — always pull at least this much context
 WX_MAX_RADIUS_NM = 250    # cap — biggest single query (AWC-friendly)
 WX_RADIUS_ZOOM_K = 1.8    # query radius = map range × this (clamped min/max)
 WX_INTERVAL_S    = 120    # periodic refresh cadence (METARs update ~hourly)
+TAF_INTERVAL_S   = 600    # TAF refresh cadence (forecasts reissue ~6 h)
+AIRSIG_INTERVAL_S = 300   # AIRMET/SIGMET refresh cadence (~hourly, but watch updates)
+WINDS_INET_INTERVAL_S = 900  # winds aloft refresh (forecast grids update ~hourly+)
+NOTAM_INTERVAL_S = 600    # NOTAM refresh cadence (FAA API; only polled with a key)
 NEXRAD_INTERVAL_S = 300   # radar refresh cadence (NEXRAD updates ~5 min)
 NEXRAD_MAX_PX     = 480   # fetched raster long-side px (decode/scale cost)
 

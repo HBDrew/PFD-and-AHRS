@@ -49,6 +49,9 @@ _CALLOUTS = {
     "obstacle_pull_up":  "Obstacle. Obstacle. Pull up. Pull up.",
     # Attitude
     "bank":              "Bank angle. Bank angle.",
+    # Traffic advisory — standard TCAS/TIS-B "Traffic, Traffic" callout,
+    # fired when a target enters the alert (collision-risk) band.
+    "traffic":           "Traffic. Traffic.",
 }
 
 # Per-alert minimum interval between repeats (seconds). Warning-band
@@ -64,6 +67,7 @@ _MIN_INTERVAL = {
     "terrain_pull_up":   4.0,
     "obstacle_pull_up":  4.0,
     "bank":              3.0,
+    "traffic":           5.0,
 }
 
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".pfd_audio")

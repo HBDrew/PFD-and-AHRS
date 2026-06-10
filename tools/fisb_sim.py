@@ -158,8 +158,13 @@ def build_cycle(now):
     for g in GRAPHICS:
         payloads.append(fisb.encode_graphics_uplink([g], station=TOWER_PHX))
     # NEXRAD — a synthetic storm cell near Flagstaff, one uplink per block.
+    # Stamp the mosaic ~8 min behind real time so the receipt-vs-valid age badge
+    # has something realistic to show (FIS-B radar always lags its valid time).
+    tm = time.gmtime(now - 8 * 60)
+    valid_hm = (tm.tm_hour, tm.tm_min)
     for bn, intens in _nexrad_storm(35.0, -111.6):
-        payloads.append(fisb.encode_nexrad_uplink(bn, intens, station=TOWER_PHX))
+        payloads.append(fisb.encode_nexrad_uplink(bn, intens, station=TOWER_PHX,
+                                                  valid_hm=valid_hm))
     return payloads
 
 
