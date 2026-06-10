@@ -1408,8 +1408,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                      sin_r, cos_r)
     # Winds-aloft barbs — their own overlay (WND).
     if winds_barbs and settings.get("map_show_winds", False) and not fast:
+        # Smaller than the full symbol scale so the denser barb grid stays
+        # readable on the big MFD (pi4 only — piZ keeps its own size).
         _draw_winds_barbs(surf, winds_barbs, _project, rot_deg, rect, font,
-                          symbol_scale)
+                          symbol_scale * 0.6)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Above map features (incl. weather) but below the range ring + own-ship

@@ -195,6 +195,7 @@ disp["ds"] = {                      # display settings
     "map_show_metar":    False,  # METAR station dots (off until WX selected)
     "map_show_winds":    False,  # winds-aloft barbs (off until WND selected)
     "winds_alt_ft":      9000,   # selected altitude for the winds barbs
+    "winds_time_offset_h": 0,    # WND forecast time: hours ahead of now (0 = now)
     "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     "map_show_state_lines": True,
     "map_show_country_lines": True,
@@ -3890,6 +3891,9 @@ def handle_event(event, demo_mode):
             if _mfd_winds_btn_hit(x, y):
                 print(f"[MFD] winds alt → {_mfd_cycle_winds_alt()}")
                 return True
+            if _mfd_winds_time_btn_hit(x, y):
+                print(f"[MFD] winds time → +{_mfd_cycle_winds_time()}h")
+                return True
             if _mfd_zoom_in_hit(x, y):
                 cur = int(disp["ds"].get("map_zoom_nm", 10))
                 disp["ds"]["map_zoom_nm"] = _mfd_map.zoom_in(cur)
@@ -5949,6 +5953,21 @@ def _wx_view():
     rng = int(disp["ds"].get("map_zoom_nm", 10)) or 10
     radius = max(WX_MIN_RADIUS_NM, min(WX_MAX_RADIUS_NM, rng * WX_RADIUS_ZOOM_K))
     return float(clat), float(clon), float(radius)
+
+
+def _winds_view():
+    """(center, range_nm) for the winds grid — the actual map range (not the
+    inflated query radius) so the barb grid fills the visible screen."""
+    clat, clon = _mfd_effective_center()
+    rng = int(disp["ds"].get("map_zoom_nm", 10)) or 10
+    return float(clat), float(clon), float(rng)
+
+
+def _winds_fetch(lat, lon, range_nm):
+    """Poller shim: aspect-aware winds grid for the selected forecast time."""
+    return _wx.fetch_winds_grid(
+        lat, lon, range_nm, aspect=DISPLAY_W / max(1, DISPLAY_H),
+        hour_offset=int(disp["ds"].get("winds_time_offset_h", 0)))
 
 
 def _fisb_locate(icao):
@@ -9767,6 +9786,11 @@ def _mfd_winds_btn_rect():
     return (pad + _MFD_D2_BTN_W + pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H)
 
 
+def _mfd_winds_time_btn_rect():
+    pad = 6
+    return (pad + 2 * (_MFD_D2_BTN_W + pad), pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H)
+
+
 def _mfd_strip_rect():
     """Bottom data strip — flush with the bottom and side edges of the
     display so the dark backplate reads as a real status bar rather
@@ -10418,11 +10442,16 @@ def draw_mfd(surf, connected=True, data_stale=False):
     d2_label = f"D→ {d2['ident']}" if d2 else "D→"
     _action_btn(surf, pad, pad, _MFD_D2_BTN_W, _MFD_D2_BTN_H,
                 d2_label, d2_style, r=5)
-    # Winds-altitude selector — only on the WND page, right of D2.
+    # Winds altitude + forecast-time selectors — only on the WND page.
     if _map_overlay_state(disp["ds"]) == "wnd":
         wbx, wby, wbw, wbh = _mfd_winds_btn_rect()
         alt_k = int(disp["ds"].get("winds_alt_ft", 9000)) // 1000
         _action_btn(surf, wbx, wby, wbw, wbh, f"{alt_k}k ft", "ok", r=5)
+        tbx, tby, tbw, tbh = _mfd_winds_time_btn_rect()
+        off = int(disp["ds"].get("winds_time_offset_h", 0))
+        _action_btn(surf, tbx, tby, tbw, tbh,
+                    "NOW" if off == 0 else f"+{off}h",
+                    "ok" if off == 0 else "warn", r=5)
     # Zoom buttons (bottom corners)
     zo_x, zo_y, zo_w, zo_h = _mfd_zoom_out_rect()
     zi_x, zi_y, zi_w, zi_h = _mfd_zoom_in_rect()
@@ -10774,6 +10803,22 @@ def _mfd_cycle_winds_alt():
     return disp["ds"]["winds_alt_ft"]
 
 
+_WINDS_TIME_OFFSETS = [0, 3, 6, 9, 12, 18, 24]   # forecast hours ahead
+
+
+def _mfd_cycle_winds_time():
+    """Step the WND forecast-time offset and force the winds poller to re-fetch
+    for it (Open-Meteo carries 48 h)."""
+    cur = int(disp["ds"].get("winds_time_offset_h", 0))
+    i = _WINDS_TIME_OFFSETS.index(cur) if cur in _WINDS_TIME_OFFSETS else 0
+    disp["ds"]["winds_time_offset_h"] = \
+        _WINDS_TIME_OFFSETS[(i + 1) % len(_WINDS_TIME_OFFSETS)]
+    _settings.mark_dirty()
+    if _winds_client is not None:
+        _winds_client.force_refresh()
+    return disp["ds"]["winds_time_offset_h"]
+
+
 def _mfd_find_winds(tap_x, tap_y, tap_px=32):
     barbs = _winds_barbs()
     if not barbs:
@@ -11002,7 +11047,9 @@ def _draw_wx_winds(surf):
     src = (w or {}).get("src")
     head = "grid" if (src == "INET" or "," in str(station)) else station
     src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
-    title = f"WINDS  {head}{src_txt}{near_txt}"
+    off = int((w or {}).get("hour_offset", 0))
+    time_txt = "" if off == 0 else f"  +{off}h"
+    title = f"WINDS  {head}{src_txt}{time_txt}{near_txt}"
 
     def _hdr(s, x, y):
         _text(s, "ALT", 15, (140, 160, 180), bold=True, x=x, y=y)
@@ -11068,6 +11115,13 @@ def _mfd_winds_btn_hit(x, y):
     if _map_overlay_state(disp["ds"]) != "wnd":
         return False
     bx, by, bw, bh = _mfd_winds_btn_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_winds_time_btn_hit(x, y):
+    if _map_overlay_state(disp["ds"]) != "wnd":
+        return False
+    bx, by, bw, bh = _mfd_winds_time_btn_rect()
     return bx <= x <= bx + bw and by <= y <= by + bh
 
 
@@ -13216,8 +13270,8 @@ def main():
                                        name="AirSigPoller")
         _airsig_client.start()
         global _winds_client
-        _winds_client = _wx.AwcPoller(view_fn=_wx_view,
-                                      fetch_fn=_wx.fetch_winds_grid,
+        _winds_client = _wx.AwcPoller(view_fn=_winds_view,
+                                      fetch_fn=_winds_fetch,
                                       interval_s=WINDS_INET_INTERVAL_S,
                                       name="WindsPoller")
         _winds_client.start()

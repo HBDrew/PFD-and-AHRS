@@ -261,6 +261,7 @@ disp["ds"] = {                      # display settings
     "map_show_metar":    False,  # METAR station dots (off until WX selected)
     "map_show_winds":    False,  # winds-aloft barbs (off until WND selected)
     "winds_alt_ft":      9000,   # selected altitude for the winds barbs
+    "winds_time_offset_h": 0,    # WND forecast time: hours ahead of now (0 = now)
     "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     # Full-screen MFD: gate for the 3-finger PFD↔MFD swap.  Default on for
     # the larger HDMI screens (that's where a full-screen map earns its keep).
@@ -1800,6 +1801,28 @@ def _wx_view():
         rng = int(disp["ds"].get("map_zoom_nm", 5)) or 5
     radius = max(WX_MIN_RADIUS_NM, min(WX_MAX_RADIUS_NM, rng * WX_RADIUS_ZOOM_K))
     return float(clat), float(clon), float(radius)
+
+
+def _winds_view():
+    """(center, range_nm) for the winds grid.  Unlike _wx_view this returns the
+    actual map *range* (not the inflated query radius) so the barb grid fills
+    the visible screen instead of overshooting off the top/bottom edges."""
+    if disp.get("display_mode") == "mfd":
+        clat, clon = _mfd_effective_center()
+        rng = _mfd_last_range or 10
+    else:
+        clat = float(disp.get("lat", DEMO_LAT))
+        clon = float(disp.get("lon", DEMO_LON))
+        rng = int(disp["ds"].get("map_zoom_nm", 5)) or 5
+    return float(clat), float(clon), float(rng)
+
+
+def _winds_fetch(lat, lon, range_nm):
+    """Poller fetch shim: winds grid filling the screen (aspect-aware) for the
+    currently selected forecast-time offset."""
+    return _wx.fetch_winds_grid(
+        lat, lon, range_nm, aspect=DISPLAY_W / max(1, DISPLAY_H),
+        hour_offset=int(disp["ds"].get("winds_time_offset_h", 0)))
 
 
 def _fisb_locate(icao):
@@ -5012,6 +5035,8 @@ def handle_event(event, demo_mode):
                 _mfd_cycle_wx_source()
             elif _map_overlay_state(disp["ds"]) == "wnd" and _in(r["winds"]):
                 _mfd_cycle_winds_alt()
+            elif _map_overlay_state(disp["ds"]) == "wnd" and _in(r["wtime"]):
+                _mfd_cycle_winds_time()
             elif _mfd_strip_hit(x, y):
                 disp["mode"] = "mfd_strip_setup"
                 disp["mss_sel"] = 0
@@ -11776,6 +11801,22 @@ def _mfd_cycle_winds_alt():
     return disp["ds"]["winds_alt_ft"]
 
 
+_WINDS_TIME_OFFSETS = [0, 3, 6, 9, 12, 18, 24]   # forecast hours ahead
+
+
+def _mfd_cycle_winds_time():
+    """Step the WND overlay to the next forecast-time offset and force the
+    internet winds poller to re-fetch for it (Open-Meteo carries 48 h)."""
+    cur = int(disp["ds"].get("winds_time_offset_h", 0))
+    order = _WINDS_TIME_OFFSETS
+    i = order.index(cur) if cur in order else 0
+    disp["ds"]["winds_time_offset_h"] = order[(i + 1) % len(order)]
+    _settings.mark_dirty()
+    if _winds_client is not None:
+        _winds_client.force_refresh()
+    return disp["ds"]["winds_time_offset_h"]
+
+
 def _mfd_find_winds(tap_x, tap_y, tap_px=34):
     """Station id of the nearest winds barb under the tap, or None."""
     barbs = _winds_barbs()
@@ -12008,7 +12049,9 @@ def _draw_wx_winds(surf):
     # point + source rather than showing a bare lat,lon as if it were a station.
     head = "grid" if (src == "INET" or "," in str(station)) else station
     src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
-    title = f"WINDS  {head}{src_txt}{near_txt}"
+    off = int((w or {}).get("hour_offset", 0))
+    time_txt = "" if off == 0 else f"  +{off}h"
+    title = f"WINDS  {head}{src_txt}{time_txt}{near_txt}"
 
     def _hdr(s, x, y):
         _text(s, "ALT", 15, (140, 160, 180), bold=True, x=x, y=y)
@@ -12367,6 +12410,7 @@ def _p4_mfd_rects():
     return {
         "d2":       (p, p, bw, bh),                       # top-left
         "winds":    (p + bw + p, p, bw, bh),              # top row, right of D2
+        "wtime":    (p + 2 * (bw + p), p, bw, bh),        # WND only, right of alt
         "fpl":      (W - bw - p, p, bw, bh),              # top-right
         "ovly":     (p, p + bh + p, bw, bh),              # under D2
         "orient":   (W - bw - p, p + bh + p, bw, bh),     # under FPL
@@ -12628,10 +12672,13 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _action_btn(surf, *r["d2"], d2_label, d2_style, r=6)
     _action_btn(surf, *r["fpl"], "FPL", "normal", r=6)
     ov_state = _map_overlay_state(ds)
-    # Winds altitude selector — only on the WND page, next to D2.
+    # Winds altitude + forecast-time selectors — only on the WND page.
     if ov_state == "wnd":
         alt_k = int(ds.get("winds_alt_ft", 9000)) // 1000
         _action_btn(surf, *r["winds"], f"{alt_k}k ft", "ok", r=6)
+        off = int(ds.get("winds_time_offset_h", 0))
+        _action_btn(surf, *r["wtime"], "NOW" if off == 0 else f"+{off}h",
+                    "ok" if off == 0 else "warn", r=6)
     _action_btn(surf, *r["ovly"], _map_overlay_label(ds),
                 "ok" if ov_state != "tfc" else "normal", r=6)
     # Orientation: a tappable CYAN label (like piZ), not a button.
@@ -14864,8 +14911,8 @@ def main():
                                        name="AirSigPoller")
         _airsig_client.start()
         global _winds_client
-        _winds_client = _wx.AwcPoller(view_fn=_wx_view,
-                                      fetch_fn=_wx.fetch_winds_grid,
+        _winds_client = _wx.AwcPoller(view_fn=_winds_view,
+                                      fetch_fn=_winds_fetch,
                                       interval_s=WINDS_INET_INTERVAL_S,
                                       name="WindsPoller")
         _winds_client.start()

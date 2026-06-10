@@ -322,14 +322,15 @@ def interp_winds(samples, alts):
     return out
 
 
-def parse_open_meteo_winds(data, alts, now=None):
+def parse_open_meteo_winds(data, alts, now=None, hour_offset=0):
     """Parse an Open-Meteo pressure-level response into winds-aloft dicts:
-    ``{station, lat, lon, levels, src}``.  ``data`` is one point object or a
-    list of them (Open-Meteo returns a list when several coords are queried).
-    For each point the hour nearest ``now`` is taken and the levels interpolated
-    onto ``alts``.  ``station`` is a stable coordinate label (the grid carries
-    no ICAO)."""
+    ``{station, lat, lon, levels, src, hour_offset}``.  ``data`` is one point
+    object or a list of them (Open-Meteo returns a list when several coords are
+    queried).  For each point the hour nearest ``now + hour_offset`` is taken
+    and the levels interpolated onto ``alts``.  ``station`` is a stable
+    coordinate label (the grid carries no ICAO)."""
     now = now if now is not None else time.time()
+    target = now + hour_offset * 3600.0
     points = data if isinstance(data, list) else [data]
     out = []
     for p in points:
@@ -340,7 +341,7 @@ def parse_open_meteo_winds(data, alts, now=None):
         times = hourly.get("time") or []
         if lat is None or lon is None or not times:
             continue
-        hi = _nearest_hour_index(times, now)
+        hi = _nearest_hour_index(times, target)
         samples = []
         for hpa in _OM_LEVELS:
             hgt = _series_at(hourly.get(f"geopotential_height_{hpa}hPa"), hi)
@@ -354,7 +355,8 @@ def parse_open_meteo_winds(data, alts, now=None):
         if not levels:
             continue
         out.append({"station": f"{lat:.2f},{lon:.2f}",
-                    "lat": lat, "lon": lon, "levels": levels, "src": "INET"})
+                    "lat": lat, "lon": lon, "levels": levels, "src": "INET",
+                    "hour_offset": hour_offset})
     return out
 
 
@@ -380,11 +382,17 @@ def _nearest_hour_index(times, now):
     return best_i
 
 
-def _winds_grid_points(lat, lon, radius_nm, cols=4, rows=3):
-    """A small lat/lon grid spanning the view, for batched winds barbs."""
-    span = radius_nm * 0.8
-    dlat = span / _NM_PER_DEG
-    dlon = span / (_NM_PER_DEG * max(0.05, math.cos(math.radians(lat))))
+def _winds_grid_points(lat, lon, range_nm, aspect=1.0, cols=5, rows=4):
+    """A lat/lon grid that fills the *visible* map, for batched winds barbs.
+
+    ``range_nm`` is the map's shorter-axis half-extent (its vertical half-height
+    in landscape); ``aspect`` = screen width/height widens the grid horizontally
+    so barbs reach the left/right edges instead of bunching in a centre column.
+    The 0.82 inset keeps the edge barbs (and their temp tags) on screen."""
+    span_lat = range_nm * 0.82
+    span_lon = range_nm * 0.82 * max(1.0, aspect)
+    dlat = span_lat / _NM_PER_DEG
+    dlon = span_lon / (_NM_PER_DEG * max(0.05, math.cos(math.radians(lat))))
     pts = []
     for r in range(rows):
         fy = 0.5 if rows == 1 else r / (rows - 1)
@@ -395,26 +403,29 @@ def _winds_grid_points(lat, lon, radius_nm, cols=4, rows=3):
     return pts
 
 
-def fetch_winds_grid(lat, lon, radius_nm, alts=None, timeout=15):
-    """Fetch winds/temps aloft for a grid across the view in one Open-Meteo
-    request, parsed onto the standard FD altitudes."""
+def fetch_winds_grid(lat, lon, range_nm, aspect=1.7, alts=None,
+                     hour_offset=0, timeout=15):
+    """Fetch winds/temps aloft for a grid filling the visible map in one
+    Open-Meteo request, parsed onto the standard FD altitudes.  ``hour_offset``
+    selects the forecast hour (0 = now, +N hours ahead)."""
     from fisb import WINDS_ALTS
     alts = alts if alts is not None else WINDS_ALTS
-    pts = _winds_grid_points(lat, lon, radius_nm)
+    pts = _winds_grid_points(lat, lon, range_nm, aspect)
     lats = ",".join(f"{p[0]:.3f}" for p in pts)
     lons = ",".join(f"{p[1]:.3f}" for p in pts)
     fields = []
     for hpa in _OM_LEVELS:
         fields += [f"windspeed_{hpa}hPa", f"winddirection_{hpa}hPa",
                    f"temperature_{hpa}hPa", f"geopotential_height_{hpa}hPa"]
+    # forecast_days=2 so a +24 h offset still has data late in the UTC day.
     url = (f"{_OPEN_METEO}?latitude={lats}&longitude={lons}"
            f"&hourly={','.join(fields)}&windspeed_unit=kn"
-           f"&forecast_days=1&timeformat=iso8601&timezone=UTC")
+           f"&forecast_days=2&timeformat=iso8601&timezone=UTC")
     req = urllib.request.Request(url, headers={"User-Agent": _UA,
                                                "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read().decode("utf-8", "ignore"))
-    return parse_open_meteo_winds(data, alts)
+    return parse_open_meteo_winds(data, alts, hour_offset=hour_offset)
 
 
 # ── NOTAMs (FAA NOTAM API — needs developer credentials) ────────────────────────
@@ -616,6 +627,11 @@ class AwcPoller(threading.Thread):
 
     def stop(self):
         self._stop.set()
+
+    def force_refresh(self):
+        """Make the next poll re-fetch even if the view hasn't moved — used when
+        a parameter the fetch depends on (e.g. winds forecast time) changes."""
+        self._fetch_ctr = None
 
     def _should_fetch(self, lat, lon, radius, now):
         if self._fetch_ctr is None:
