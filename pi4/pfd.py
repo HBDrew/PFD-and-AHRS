@@ -486,6 +486,7 @@ def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
 _sse_client  = None
 _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
 _traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traffic_source
+_prev_alert_ids = set()  # ICAOs already in alert state (edge-trigger the callout)
 _perf = _perf_mod.PerfGrab()   # frame-timing sampler (no-op unless PFD_PERF set)
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
 _taf_client  = None   # AwcPoller (internet TAF backfill) when weather enabled
@@ -1772,6 +1773,19 @@ def _update_traffic(demo_mode):
     tr["n_radio"] = sum(1 for t in rel if t.get("src") == "radio")
     tr["n_inet"]  = sum(1 for t in rel if t.get("src") == "internet")
     tr["alert"]   = any_alert
+
+    # Edge-triggered traffic advisory: a "Traffic, Traffic" callout + the banner
+    # fire when a NEW target enters alert state — not re-fired every frame for a
+    # threat already called.  Nearest alert target drives the banner.
+    alerts = sorted((t for t in rel if t.get("threat") == "alert"),
+                    key=lambda d: (d.get("range_nm") is None,
+                                   d.get("range_nm") or 1e9))
+    tr["alert_target"] = alerts[0] if alerts else None
+    global _prev_alert_ids
+    cur_ids = {t.get("icao") for t in alerts}
+    if cur_ids - _prev_alert_ids:           # a threat we hadn't called yet
+        audio_alerts.play("traffic")
+    _prev_alert_ids = cur_ids
 
 
 def _traffic_to_draw():
@@ -12148,6 +12162,77 @@ def _mfd_find_traffic(tap_x, tap_y, tap_px=32):
     return best
 
 
+def _traffic_clock(brg, own_hdg):
+    """Clock position (1-12) of a target at absolute bearing ``brg`` relative to
+    the aircraft's nose, or None."""
+    if brg is None:
+        return None
+    rel = (brg - (own_hdg or 0.0)) % 360.0
+    c = int(round(rel / 30.0)) % 12
+    return 12 if c == 0 else c
+
+
+def _draw_traffic_banner(surf, rect):
+    """Red collision-alert banner at the top of the map when a target is in the
+    alert band — clock position + relative altitude so it's actionable at a
+    glance (e.g. 'TRAFFIC  2 o'clock  −200').  Flashes at 1 Hz."""
+    t = disp.get("traffic", {}).get("alert_target")
+    if not t:
+        return
+    if (pygame.time.get_ticks() // 500) % 2 == 1:     # 1 Hz flash, off phase
+        return
+    x, y, w, h = rect
+    clk = _traffic_clock(t.get("bearing_deg"), disp.get("yaw"))
+    parts = ["TRAFFIC"]
+    if clk is not None:
+        parts.append(f"{clk} o'clock")
+    ra = t.get("rel_alt_ft")
+    if ra is not None:
+        hund = int(round(ra / 100.0)) * 100
+        parts.append(f"{'+' if hund >= 0 else '−'}{abs(hund)}")
+    rng = t.get("range_nm")
+    if rng is not None:
+        parts.append(f"{rng:.1f} nm")
+    label = "   ".join(parts)
+    f = _get_font(22, bold=True)
+    tw = f.size(label)[0]
+    bw, bh = tw + 36, 36
+    bx, by = x + (w - bw) // 2, y + 8
+    pygame.draw.rect(surf, (200, 0, 0), (bx, by, bw, bh), border_radius=6)
+    pygame.draw.rect(surf, (255, 230, 230), (bx, by, bw, bh), width=2,
+                     border_radius=6)
+    _text(surf, label, 22, (255, 255, 255), bold=True,
+          cx=bx + bw // 2, cy=by + bh // 2)
+
+
+def _draw_pfd_traffic_alert(surf):
+    """Compact traffic collision-alert banner in the PFD badge strip — the same
+    place the TERRAIN/PULL UP banner uses, stacked just below it when terrain is
+    also alerting.  Flashes at 1 Hz."""
+    t = disp.get("traffic", {}).get("alert_target")
+    if not t:
+        return
+    if (pygame.time.get_ticks() // 500) % 2 == 1:     # 1 Hz flash, off phase
+        return
+    clk = _traffic_clock(t.get("bearing_deg"), disp.get("yaw"))
+    parts = ["TFC"]
+    if clk is not None:
+        parts.append(f"{clk}:00")
+    ra = t.get("rel_alt_ft")
+    if ra is not None:
+        hund = int(round(ra / 100.0)) * 100
+        parts.append(f"{'+' if hund >= 0 else '−'}{abs(hund)}")
+    label = "  ".join(parts)
+    bw, bh = 150, 16
+    bx = CX - bw // 2
+    by = 3 + (20 if _terrain_alert_level else 0)      # stack under terrain banner
+    pygame.draw.rect(surf, (200, 0, 0), (bx, by, bw, bh), border_radius=3)
+    pygame.draw.rect(surf, (255, 230, 230), (bx, by, bw, bh), width=1,
+                     border_radius=3)
+    _text(surf, label, 11, (255, 255, 255), bold=True,
+          cx=bx + bw // 2, cy=by + bh // 2)
+
+
 def _draw_tfc_popup(surf):
     """ADS-B target detail card (callsign, altitude, vector, range/bearing,
     source) for the aircraft tapped on the TFC page."""
@@ -12703,6 +12788,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
               18, (240, 90, 90), bold=True, cx=DISPLAY_W // 2, cy=sy - 12)
 
     _mfd_draw_source_status(surf)
+    _draw_traffic_banner(surf, (0, 0, DISPLAY_W, DISPLAY_H))
     _draw_wx_popup(surf)
     _draw_mfd_pick(surf)
     _draw_wx_menu(surf)
@@ -14021,6 +14107,9 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
     draw_terrain_alert(surf)
+    # 9c. Traffic collision alert — same badge-strip location, stacked just
+    # below the terrain banner when both fire.
+    _draw_pfd_traffic_alert(surf)
 
     # 10. Failure overlays
     draw_failure_overlays(surf, ahrs_ok, gps_ok, gps_comm, baro_ok,

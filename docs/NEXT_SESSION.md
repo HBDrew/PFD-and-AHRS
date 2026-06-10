@@ -69,6 +69,10 @@ Still open:
 - **Winds vertical profile / route cross-section (FMS-type, Option B):** a
   chart of altitude vs. position along the active route (wind/temp per level).
   Niche; needs a solid route.  Deferred — do after NEXRAD.
+- **3D traffic:** render ADS-B traffic in the SVT/synthetic-vision view (the
+  PFD 3D backdrop), not just the 2D map — targets placed in the 3D scene at
+  their relative bearing/range/altitude, threat-coloured.  Pairs with the new
+  traffic collision-alert (audio "Traffic, Traffic" + badge-strip banner).
 - **Real-frame validation** of every binary decode written blind: APDU
   timestamps, the 8-byte uplink/station header, graphical geometry overlays,
   and the winds bulletin envelope (the per-code FD decode is standard; the

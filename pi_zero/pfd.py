@@ -2255,6 +2255,74 @@ def draw_terrain_alert(surf):
     _text(surf, sub, 9,  fg, bold=False, x=bx + bw - 52, y=by + 2)
 
 
+def _traffic_clock(brg, own_hdg):
+    """Clock position (1-12) of a target at absolute bearing ``brg`` relative to
+    the aircraft's nose, or None."""
+    if brg is None:
+        return None
+    rel = (brg - (own_hdg or 0.0)) % 360.0
+    c = int(round(rel / 30.0)) % 12
+    return 12 if c == 0 else c
+
+
+def _draw_pfd_traffic_alert(surf):
+    """Compact traffic collision-alert banner in the PFD badge strip — the same
+    place the TERRAIN banner uses, stacked just below it when both fire."""
+    t = disp.get("traffic", {}).get("alert_target")
+    if not t:
+        return
+    if (pygame.time.get_ticks() // 500) % 2 == 1:     # 1 Hz flash
+        return
+    clk = _traffic_clock(t.get("bearing_deg"), disp.get("yaw"))
+    parts = ["TFC"]
+    if clk is not None:
+        parts.append(f"{clk}:00")
+    ra = t.get("rel_alt_ft")
+    if ra is not None:
+        hund = int(round(ra / 100.0)) * 100
+        parts.append(f"{'+' if hund >= 0 else '−'}{abs(hund)}")
+    label = "  ".join(parts)
+    bw, bh = 150, 16
+    bx = CX - bw // 2
+    by = 3 + (20 if _terrain_alert_level else 0)
+    pygame.draw.rect(surf, (200, 0, 0), (bx, by, bw, bh), border_radius=3)
+    pygame.draw.rect(surf, (255, 230, 230), (bx, by, bw, bh), width=1,
+                     border_radius=3)
+    _text(surf, label, 11, (255, 255, 255), bold=True,
+          cx=bx + bw // 2, cy=by + bh // 2)
+
+
+def _draw_mfd_traffic_banner(surf, rect):
+    """Prominent collision-alert banner at the top of the MFD map."""
+    t = disp.get("traffic", {}).get("alert_target")
+    if not t:
+        return
+    if (pygame.time.get_ticks() // 500) % 2 == 1:
+        return
+    x, y, w, h = rect
+    clk = _traffic_clock(t.get("bearing_deg"), disp.get("yaw"))
+    parts = ["TRAFFIC"]
+    if clk is not None:
+        parts.append(f"{clk} o'clock")
+    ra = t.get("rel_alt_ft")
+    if ra is not None:
+        hund = int(round(ra / 100.0)) * 100
+        parts.append(f"{'+' if hund >= 0 else '−'}{abs(hund)}")
+    rng = t.get("range_nm")
+    if rng is not None:
+        parts.append(f"{rng:.1f} nm")
+    label = "   ".join(parts)
+    f = _get_font(20, bold=True)
+    tw = f.size(label)[0]
+    bw, bh = tw + 32, 32
+    bx, by = x + (w - bw) // 2, y + 8
+    pygame.draw.rect(surf, (200, 0, 0), (bx, by, bw, bh), border_radius=6)
+    pygame.draw.rect(surf, (255, 230, 230), (bx, by, bw, bh), width=2,
+                     border_radius=6)
+    _text(surf, label, 20, (255, 255, 255), bold=True,
+          cx=bx + bw // 2, cy=by + bh // 2)
+
+
 # ── Status badges ─────────────────────────────────────────────────────────────
 def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected,
                        hdg_src="mag"):
@@ -5930,6 +5998,12 @@ def _update_traffic(demo_mode):
     tr["n_radio"] = sum(1 for t in rel if t.get("src") == "radio")
     tr["n_inet"]  = sum(1 for t in rel if t.get("src") == "internet")
     tr["alert"]   = any_alert
+    # Nearest alert-band target drives the collision-alert banner (piZ is
+    # visual-only — no audio module — so no callout here).
+    alerts = sorted((t for t in rel if t.get("threat") == "alert"),
+                    key=lambda d: (d.get("range_nm") is None,
+                                   d.get("range_nm") or 1e9))
+    tr["alert_target"] = alerts[0] if alerts else None
 
 
 def _traffic_to_draw():
@@ -10465,6 +10539,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
               cx=DISPLAY_W // 2, cy=DISPLAY_H - 18)
 
     _mfd_draw_source_status(surf)
+    _draw_mfd_traffic_banner(surf, (0, 0, DISPLAY_W, DISPLAY_H))
     # METAR readout panel (drawn last so it sits over the map + chrome).
     _draw_wx_popup(surf)
     _draw_mfd_pick(surf)
@@ -12711,6 +12786,8 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 9b. Terrain / obstacle proximity alert banner (centre of badge strip)
     draw_terrain_alert(surf)
+    # 9c. Traffic collision alert — same badge-strip location.
+    _draw_pfd_traffic_alert(surf)
 
     # 10. Failure overlays
     draw_failure_overlays(surf, ahrs_ok, gps_ok, baro_ok, sats)
