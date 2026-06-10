@@ -660,6 +660,13 @@ def _ssync_publish_ahrs():
 
 
 def _ssync_apply_ahrs(data):
+    # The local flight simulator owns the state dict while it's running.
+    # If this screen is *driving* the sim but also has AHRS consume (RX)
+    # enabled, applying a peer's real attitude here would bash the sim's
+    # output back to the live aircraft every packet — the "bounces but
+    # never goes anywhere" symptom.  Sim wins; ignore peer AHRS.
+    if _sim_state is not None:
+        return
     global _ssync_suppress_publish
     _ssync_suppress_publish += 1
     try:
@@ -1064,6 +1071,11 @@ def _ssync_apply_fpl_lib(data):
 
 
 def _ssync_apply_gps(data):
+    # See _ssync_apply_ahrs: while the local sim is running it owns the
+    # position too, so a sim-driving screen that's also consuming GPS (RX)
+    # must not let a peer's real fix snap it back to the actual aircraft.
+    if _sim_state is not None:
+        return
     global _ssync_suppress_publish
     _ssync_suppress_publish += 1
     try:

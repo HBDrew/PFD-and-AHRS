@@ -547,6 +547,12 @@ def _ssync_apply_ahrs(data):
     smoothing path picks it up.  Only useful when this screen has no
     local AHRS source — otherwise the local writer just bashes it back
     on the next sensor sample."""
+    # The local flight simulator is exactly such a local writer: while it's
+    # running it owns the state dict, so a sim-driving screen that also has
+    # AHRS consume (RX) on must ignore peer attitude or the sim gets snapped
+    # back to the live aircraft every packet.
+    if _sim_state is not None:
+        return
     global _ssync_suppress_publish
     _ssync_suppress_publish += 1
     try:
@@ -606,6 +612,11 @@ def _ssync_publish_gps():
 
 def _ssync_apply_gps(data):
     """Inject remote GPS + altitude + airspeed into shared state."""
+    # While the local sim is running it owns position too — don't let a
+    # peer's real fix clobber the sim on a screen that's driving it with
+    # GPS consume (RX) enabled.
+    if _sim_state is not None:
+        return
     global _ssync_suppress_publish
     _ssync_suppress_publish += 1
     try:
