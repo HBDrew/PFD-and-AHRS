@@ -1838,12 +1838,49 @@ def _winds_view():
     return float(clat), float(clon), float(rng)
 
 
+def _winds_route_points():
+    """The active course as a ``[(lat, lon), ...]`` polyline for the winds
+    corridor: ownship first, then the remaining FPL legs (or the single
+    direct-to waypoint).  ``None`` when no course is active, in which case the
+    poller falls back to the local visible-area grid."""
+    try:
+        olat = float(disp.get("lat", DEMO_LAT))
+        olon = float(disp.get("lon", DEMO_LON))
+    except (TypeError, ValueError):
+        return None
+    if _fpl_is_active():
+        wps = disp["fpl"]["waypoints"]
+        idx = disp["fpl"]["active_idx"]
+        pts = [(olat, olon)]
+        for wp in wps[idx:]:
+            try:
+                pts.append((float(wp["lat"]), float(wp["lon"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return pts if len(pts) >= 2 else None
+    nav = disp.get("nav", {})
+    if nav.get("ident"):
+        try:
+            return [(olat, olon), (float(nav["lat"]), float(nav["lon"]))]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _winds_fetch(lat, lon, range_nm):
-    """Poller fetch shim: winds grid filling the screen (aspect-aware) for the
-    currently selected forecast-time offset."""
+    """Poller fetch shim for winds aloft at the selected forecast-time offset.
+    With an active direct-to / flight plan, fetch a corridor spanning the whole
+    course (±``WINDS_ROUTE_WIDTH_NM`` either side) so the barbs cover the route
+    as the aircraft flies it; otherwise fall back to a grid filling the visible
+    map around the ownship."""
+    hour_offset = int(disp["ds"].get("winds_time_offset_h", 0))
+    route = _winds_route_points()
+    if route:
+        return _wx.fetch_winds_route(
+            route, width_nm=WINDS_ROUTE_WIDTH_NM, hour_offset=hour_offset)
     return _wx.fetch_winds_grid(
         lat, lon, range_nm, aspect=DISPLAY_W / max(1, DISPLAY_H),
-        hour_offset=int(disp["ds"].get("winds_time_offset_h", 0)))
+        hour_offset=hour_offset)
 
 
 def _notam_fetch(lat, lon, radius_nm):

@@ -634,7 +634,29 @@ enough vertex count to justify a build-time LOD pipeline once
 vectorisation removes the Python per-vertex overhead.
 
 ### WINDS-INET-REFETCH  Internet winds aloft freeze at startup, don't follow the route
-Status: **OPEN — diagnosed, fix not yet applied**
+Status: **FIXED — settle gate corrected + route-corridor winds added (pi4 + pi_zero)**
+Resolution: (1) Both `WxClient.run` and `AwcPoller.run` replaced the
+exact-equality `settled` test with a pan-DRAG debounce — a slice is
+treated as a drag only when the view jumped more than
+`max(move_frac·radius, 2 nm)`; ownship motion (even a ~30× time-
+compressed sim, ~0.9 nm/slice) stays under that, and the periodic
+`interval_s` refresh is always allowed through regardless. So
+view-driven products (winds, TAF, AIRMET/SIGMET, NOTAM) now follow the
+aircraft instead of freezing at the departure field. (2) New
+`fetch_winds_route` / `_route_winds_points` in `shared/wx.py` build a
+corridor along an active direct-to / flight-plan course — samples down
+the polyline (ownship first, then remaining legs) with ±`WINDS_ROUTE_
+WIDTH_NM` (=25 nm, `shared/config_base.py`) lateral offsets, deduped and
+capped at 96 points so the batched Open-Meteo request stays bounded.
+`_winds_fetch` (pi4 + pi_zero) uses the corridor when a course is active
+and falls back to the visible-area grid otherwise. Verified: PHX→ABQ
+(~285 nm) yields 60 corridor points covering both ends with lateral
+spread; settle gate passes flight motion and rejects finger-drags;
+`test_wx.py` + `test_fisb.py` still pass. Remaining nicety (not blocking):
+`force_refresh()` on a D2/FPL change so the corridor switches instantly
+rather than on the next move/periodic tick.
+Original diagnosis below for reference.
+Status (orig): **OPEN — diagnosed, fix not yet applied**
 Target: `shared/wx.py` (`WxClient.run` / `AwcPoller.run` settle gate),
 `pi4/pfd.py` `_winds_view` / `_winds_fetch`, `shared/fisb.py`
 `set_winds` (replace-vs-accumulate).

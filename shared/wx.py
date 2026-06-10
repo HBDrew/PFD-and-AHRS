@@ -411,6 +411,79 @@ def fetch_winds_grid(lat, lon, range_nm, aspect=1.7, alts=None,
     from fisb import WINDS_ALTS
     alts = alts if alts is not None else WINDS_ALTS
     pts = _winds_grid_points(lat, lon, range_nm, aspect)
+    return _fetch_om_winds(pts, alts, hour_offset, timeout)
+
+
+def _route_winds_points(route, width_nm=25.0, step_nm=None, max_points=96):
+    """Grid points covering a *route corridor* for the winds barbs.
+
+    ``route`` is the active course as ``[(lat, lon), ...]`` (ownship first,
+    then the remaining FPL legs / the single direct-to waypoint).  Returns
+    samples taken along the polyline at ~``step_nm`` spacing, each with a
+    lateral offset of ±``width_nm`` either side of the course so the barbs
+    blanket a band along the whole route, not just a patch around the
+    aircraft.  Deduped by a coarse snap and capped at ``max_points`` (the
+    along-track spacing widens automatically to stay under the cap — Open-
+    Meteo's multi-point request and the barb render both want a bounded set)."""
+    if not route or len(route) < 2:
+        return []
+    seglen = [_nm_between(route[i][0], route[i][1],
+                          route[i + 1][0], route[i + 1][1])
+              for i in range(len(route) - 1)]
+    total = sum(seglen)
+    lat_lines = 3                                   # centre + both sides
+    if step_nm is None:
+        step_nm = max(15.0, total / max(1.0, (max_points / lat_lines) - 1))
+    offs = (0.0, width_nm, -width_nm)
+    seen, pts = set(), []
+
+    def _add(la, lo):
+        key = (round(la, 1), round(lo, 1))          # ~6 nm snap for dedup
+        if key in seen:
+            return
+        seen.add(key)
+        pts.append((la, lo))
+
+    for i in range(len(route) - 1):
+        (la1, lo1), (la2, lo2) = route[i], route[i + 1]
+        seg = seglen[i]
+        if seg < 1e-6:
+            continue
+        mid_lat = (la1 + la2) / 2.0
+        brg = math.degrees(math.atan2(
+            (lo2 - lo1) * math.cos(math.radians(mid_lat)), (la2 - la1)))
+        perp = math.radians(brg + 90.0)
+        cos_p, sin_p = math.cos(perp), math.sin(perp)
+        n = max(1, int(math.ceil(seg / step_nm)))
+        for s in range(n + 1):
+            f = s / n
+            la = la1 + (la2 - la1) * f
+            lo = lo1 + (lo2 - lo1) * f
+            coslat = max(0.05, math.cos(math.radians(la)))
+            for d in offs:
+                dla = d * cos_p / _NM_PER_DEG
+                dlo = d * sin_p / (_NM_PER_DEG * coslat)
+                _add(la + dla, lo + dlo)
+                if len(pts) >= max_points:
+                    return pts
+    return pts
+
+
+def fetch_winds_route(route, width_nm=25.0, alts=None, hour_offset=0,
+                      timeout=15, max_points=96):
+    """Fetch winds/temps aloft along a route corridor (see
+    ``_route_winds_points``) in one batched Open-Meteo request."""
+    from fisb import WINDS_ALTS
+    alts = alts if alts is not None else WINDS_ALTS
+    pts = _route_winds_points(route, width_nm=width_nm, max_points=max_points)
+    if not pts:
+        return []
+    return _fetch_om_winds(pts, alts, hour_offset, timeout)
+
+
+def _fetch_om_winds(pts, alts, hour_offset, timeout):
+    """Issue one batched Open-Meteo pressure-level request for ``pts``
+    (``[(lat, lon), ...]``) and parse the response onto ``alts``."""
     lats = ",".join(f"{p[0]:.3f}" for p in pts)
     lons = ",".join(f"{p[1]:.3f}" for p in pts)
     fields = []
@@ -549,19 +622,27 @@ class WxClient(threading.Thread):
         return False
 
     def run(self):
-        prev_view = None
+        prev = None
         while not self._stop.is_set():
             if not self.paused:
                 try:
                     lat, lon, radius = self.view_fn()
-                    # Debounce: only act once the view has settled (two
-                    # consecutive slices agree) so a long pan doesn't fire a
-                    # burst of fetches mid-drag.
-                    cur = (round(lat, 2), round(lon, 2), round(radius))
-                    settled = (cur == prev_view)
-                    prev_view = cur
                     now = time.monotonic()
-                    if settled and self._should_fetch(lat, lon, radius, now):
+                    # Debounce an active pan-DRAG only, never ownship motion.
+                    # A finger fling jumps many nm between 0.7 s slices; an
+                    # aircraft in flight (even a time-compressed sim) moves a
+                    # small fraction of the radius per slice.  The old
+                    # exact-equality "settled" test almost never held for a
+                    # moving ownship, so it froze every view-driven product in
+                    # flight (winds stuck at the departure field).  The
+                    # periodic refresh is always allowed through regardless.
+                    step = (_nm_between(prev[0], prev[1], lat, lon)
+                            if prev is not None else 0.0)
+                    prev = (lat, lon)
+                    dragging = step > max(self.move_frac * radius, 2.0)
+                    periodic_due = (now - self._fetched_at) >= self.interval_s
+                    if ((not dragging or periodic_due)
+                            and self._should_fetch(lat, lon, radius, now)):
                         self._fetch(lat, lon, radius)
                 except Exception as e:                       # noqa: BLE001
                     self.err_count += 1
@@ -650,16 +731,23 @@ class AwcPoller(threading.Thread):
         return False
 
     def run(self):
-        prev_view = None
+        prev = None
         while not self._stop.is_set():
             if not self.paused:
                 try:
                     lat, lon, radius = self.view_fn()
-                    cur = (round(lat, 2), round(lon, 2), round(radius))
-                    settled = (cur == prev_view)
-                    prev_view = cur
                     now = time.monotonic()
-                    if settled and self._should_fetch(lat, lon, radius, now):
+                    # Debounce an active pan-DRAG only, not ownship motion —
+                    # see WxClient.run for the full rationale.  The old
+                    # exact-equality settle test froze these products (TAF,
+                    # AIRMET/SIGMET, winds, NOTAM) on a moving aircraft.
+                    step = (_nm_between(prev[0], prev[1], lat, lon)
+                            if prev is not None else 0.0)
+                    prev = (lat, lon)
+                    dragging = step > max(self.move_frac * radius, 2.0)
+                    periodic_due = (now - self._fetched_at) >= self.interval_s
+                    if ((not dragging or periodic_due)
+                            and self._should_fetch(lat, lon, radius, now)):
                         items = self.fetch_fn(lat, lon, radius)
                         with self._lock:
                             self._items = items
