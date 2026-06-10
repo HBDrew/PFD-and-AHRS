@@ -4,6 +4,56 @@ Logged at the end of the radio/ADS-B session (branch
 `claude/nooelec-radio-equipment-0fuq7s`, merged to main). Context for picking
 these up cold.
 
+## ★ BIG: Manuals are stale — full update needed (own session/branch)
+
+The `Docs/` manuals predate this whole session's work.  **The two pilot
+manuals have ZERO coverage** of: the internet + FIS-B weather suite
+(METAR/TAF/AIRMET/SIGMET/NEXRAD/winds/NOTAM), the WX source toggle
+(RADIO/AUTO/INET) + provenance tags + data-age stamps, the full-screen MFD
+weather pages (OVLY cycle ASP→TFC→MET→WND→NEXRAD), the WND page (altitude +
+forecast-time buttons), the traffic collision alert (audio "Traffic, Traffic"
++ banner), alert-only traffic on wx pages, and the in-app NOTAM key entry.
+`ADSB_IN.md` still lists winds/AIRMET/SIGMET/NOTAM + the traffic alert as
+*planned* though they're done.  Decision: **do EVERYTHING, in a new session**
+(likely its own docs branch).  Audited plan, per file:
+
+**`Docs/USER_MANUAL_PI4.md`** (pilot-facing, the big one) — add new sections
+near the moving-map material (§16D):
+- Full-screen MFD: 3-finger swap, pan/recenter/zoom, bottom data strip,
+  D2/FPL buttons, the OVLY overlay cycle.
+- Weather overview & sources: RADIO/AUTO/INET toggle, `[FIS-B]`/`[INET]`
+  tags, data-age stamps, radio-primary/internet-bonus model.
+- Weather products: MET page (category dots, tap-for-readout, the
+  METAR/TAF/AIRMET/SIGMET/NOTAM picker), graphical AIRMET/SIGMET, NEXRAD,
+  nearest-station listing, scrollable readouts.
+- Winds aloft (WND): barb grid, ALT + forecast-time (NOW/+Nh) buttons,
+  data-age stamp, offline-forecast persistence (12 h expiry).
+- Traffic (ADS-B/FIS-B IN): diamonds + threat colours, TFC page + detail
+  card, declutter filters, alert-only on weather pages.
+Edit: §12 Connectivity (the two NOTAM CLIENT ID/SECRET fields + how to get
+the free FAA key at api.faa.gov); §19 Audio Alerts (the "Traffic, Traffic"
+callout + collision banner, PFD badge-strip vs MFD placement); §1/Contents
+renumber.
+
+**`Docs/USER_MANUAL_ZERO.md`** — same additions, piZ-scaled (expand the
+existing "MAP LAYERS" stub), NOTAM fields in §12, note piZ traffic alerting
+is visual-only (no audio module).  FIS-B 978 reception applies here too.
+
+**`Docs/ADSB_IN.md`** — move winds/AIRMET-SIGMET/NOTAM/traffic-alert from
+"planned" → "implemented"; add the internet sources (AWC TAF/airsigmet,
+Open-Meteo winds, FAA NOTAM) alongside the FIS-B/radio path; document the
+dump978 bridge + install scripts, the WX source toggle, the new pollers.
+
+**`Docs/REQUIREMENTS_DISPLAY_PI4.md` / `_ZERO.md`** — new requirements for the
+weather suite, traffic collision alert, in-app NOTAM entry.
+
+**`Docs/TEST_PROCEDURE_PI4.md` / `_ZERO.md`** — test steps per new feature
+(weather/traffic paths exercised by `tools/fisb_sim.py`).
+
+**`README.md`** — refresh the feature list.  **`Docs/BUGS_AND_TODO.md`** —
+fold in this session's fixes (pan/AGL judder, render-perf, border cache) +
+the 3D-traffic and winds-cross-section TODOs.
+
 ## FIS-B WX UI — remaining TODO (branch `claude/open-items-followup-93awex`)
 
 Done this session: METAR, TAF (decoded/labeled + nearest + direction),
