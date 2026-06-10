@@ -89,6 +89,33 @@ via `_winds_pos`, not the airport DB). A `WindsPoller` (15 min) feeds it like
 the other internet sources; readout tags `[INET]` vs `[FIS-B]`. Field names are
 coded to Open-Meteo's documented schema — wants a live-pull check on-device.
 
+### ★ NOTAM access — blocked on FAA approval (key requested by email)
+
+The NOTAM *code* is done and dormant (in-app credential entry + poller no-op
+without a key).  The blocker is purely getting a key:
+
+- **FAA NOTAM API is mid-migration** (legacy `api.faa.gov` → new **NMS**, full
+  transition targeted 2026).  There is **no self-service signup** right now —
+  access is by **emailed request + FAA approval**.  Andrew has **submitted an
+  email request** (the only current path); awaiting approval.
+- Registration paths once live: FNS NDS registration
+  (`notams.aim.faa.gov/fnsAdmin/?page=nds_registration`) and the NMS portal
+  (`nms.aim.faa.gov`).  Still OAuth client_credentials (client_id/secret), so
+  the in-app Connectivity field fits.
+- **Caveat:** our client targets the *legacy* `external-api.faa.gov/notamapi/v1`
+  endpoint.  Once a key arrives, **live-test it** — the NMS migration may have
+  moved the endpoint / changed field names (GeoJSON/AIXM).  Repoint
+  `wx.fetch_notams` if needed.  *No app changes otherwise — paste the key into
+  Connectivity and NOTAMs light up.*
+- **Optional alternative — Notamify** (paid): instant Bearer-token signup, and
+  it returns **plain-English decoded** NOTAMs.  Endpoint `api.notamify.com/api/
+  v2/notams?locations=ICAO` (≤5/call), `Authorization: Bearer`.  Credit-based
+  (50 free to start, ~250 for testing, then paid).  If wanted, add as a *second
+  selectable source* with a **narrow, on-demand, destination-scoped** query
+  (D2 + a couple nearby fields, slow refresh) so credits barely move — NOT the
+  continuous map-following poll FAA uses.  Needs a Bearer field + new fetch/
+  parse for the decoded JSON (`icao_message`, `interpretation.affected_elements`).
+
 **NOTAM (internet) — DONE (needs a free FAA key):** `wx.fetch_notams` queries
 the FAA NOTAM API (`external-api.faa.gov/notamapi/v1/notams`) by lat/lon/radius,
 `parse_notams` takes the human-readable `formattedText` (location-prefixed so
