@@ -749,6 +749,18 @@ def test_internet_backfill():
     check(len([s for s in sids if "," in s]) == 3, "only the latest 3 grid points")
     check("FLG" in sids, "radio FD column survives the INET replace")
 
+    case("winds fetch age (forecast staleness on a no-internet leg)")
+    mono = time.monotonic()
+    store3c = fisb.FisbWeather()
+    store3c.add_winds({"station": "34.50,-111.80", "lat": 34.5, "lon": -111.8,
+                       "levels": lv}, now_mono=mono - 3 * 3600)
+    age = store3c.winds_age_s("34.50,-111.80", now_mono=mono)
+    check(abs(age - 3 * 3600) < 1.0, "winds_age_s ~3h")
+    check(fisb.short_age(age) == "3.0h old", f"short_age: {fisb.short_age(age)}")
+    check(fisb.short_age(30) == "" and fisb.short_age(45 * 60) == "45m old",
+          "short_age fresh vs minutes")
+    check(store3c.winds_expire_s == 43200.0, "winds expiry extended to 12 h")
+
 
 def main():
     test_dlac()

@@ -1500,8 +1500,17 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Drawn above map features (incl. weather) but below the range ring +
     # own-ship chevron so the pilot's own symbol always stays on top.
+    # On the weather-focus pages (MET / WND / NEXRAD) show ONLY alert-level
+    # traffic — declutter the picture without ever hiding a genuine threat.
     if traffic and settings.get("map_show_traffic", True):
-        _draw_traffic(surf, traffic, _project, rot_deg, px_per_nm, font, rect)
+        if (settings.get("map_show_metar", False)
+                or settings.get("map_show_winds", False)
+                or settings.get("map_show_nexrad", False)):
+            tfc = [t for t in traffic if t.get("threat") == "alert"]
+        else:
+            tfc = traffic
+        if tfc:
+            _draw_traffic(surf, tfc, _project, rot_deg, px_per_nm, font, rect)
 
     # ── Range ring ───────────────────────────────────────────────────────────
     # Shrink the ring 2 px inside the inset's shorter axis so the frame

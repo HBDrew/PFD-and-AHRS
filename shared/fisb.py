@@ -380,6 +380,18 @@ def _hhz(ddhh):
     return f"{ddhh[2:4]}Z" if ddhh and len(ddhh) >= 4 else "?"
 
 
+def short_age(age_s):
+    """Compact data-age annotation ('45m old' / '3.2h old'), or '' when the
+    data is fresh (< ~90 s) or unknown.  Used to flag forecast staleness once
+    the internet drops and the last-fetched data persists."""
+    if age_s is None or age_s < 90:
+        return ""
+    minutes = age_s / 60.0
+    if minutes < 90:
+        return f"{int(round(minutes))}m old"
+    return f"{minutes / 60.0:.1f}h old"
+
+
 def _taf_wind(text):
     m = _RE_WIND.search(text)
     if not m:
@@ -973,14 +985,14 @@ class FisbWeather:
 
     def __init__(self, expire_s=4500.0, station_expire_s=120.0,
                  taf_expire_s=10800.0, advisory_expire_s=14400.0,
-                 graphics_expire_s=14400.0, winds_expire_s=21600.0,
+                 graphics_expire_s=14400.0, winds_expire_s=43200.0,
                  nexrad_expire_s=900.0):
         self.expire_s = expire_s             # 75 min: METARs refresh hourly
         self.station_expire_s = station_expire_s   # towers rebroadcast often
         self.taf_expire_s = taf_expire_s     # 3 h: TAFs reissue ~6 h, valid ~24-30 h
         self.advisory_expire_s = advisory_expire_s  # 4 h: AIRMET/SIGMET/NOTAM text
         self.graphics_expire_s = graphics_expire_s  # 4 h: graphical hazard areas
-        self.winds_expire_s = winds_expire_s        # 6 h: winds aloft forecast
+        self.winds_expire_s = winds_expire_s        # 12 h: keep forecast winds for a long no-internet leg
         self.nexrad_expire_s = nexrad_expire_s      # 15 min: NEXRAD blocks
         self.uplink_count = 0                # uplink frames ingested
         self.metar_count = 0                 # METAR records parsed OK (cumulative)
@@ -1294,6 +1306,15 @@ class FisbWeather:
                 del self._winds[station]
                 return None
             return w
+
+    def winds_age_s(self, station, now_mono=None):
+        """Seconds since this winds column was received, or None.  Surfaces how
+        old a forecast is — important once internet drops on a long flight and
+        the last-fetched grid persists rather than refreshing."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            v = self._winds.get(station)
+            return None if not v else max(0.0, now_mono - v[1])
 
     def winds_stations(self, now_mono=None):
         """Station ids that currently have fresh winds aloft."""

@@ -12051,7 +12051,10 @@ def _draw_wx_winds(surf):
     src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
     off = int((w or {}).get("hour_offset", 0))
     time_txt = "" if off == 0 else f"  +{off}h"
-    title = f"WINDS  {head}{src_txt}{time_txt}{near_txt}"
+    age_s = store.winds_age_s(station) if store else None
+    age_txt = _fisb.short_age(age_s)
+    age_part = f"  ·  {age_txt}" if age_txt else ""
+    title = f"WINDS  {head}{src_txt}{time_txt}{age_part}{near_txt}"
 
     def _hdr(s, x, y):
         _text(s, "ALT", 15, (140, 160, 180), bold=True, x=x, y=y)
