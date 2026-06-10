@@ -429,10 +429,12 @@ def fetch_winds_grid(lat, lon, range_nm, aspect=1.7, alts=None,
 
 
 # ── NOTAMs (FAA NOTAM API — needs developer credentials) ────────────────────────
-def have_notam_creds():
-    """True when both FAA NOTAM API credentials are present in the environment."""
-    return bool(os.environ.get(_FAA_NOTAM_ID_ENV)
-                and os.environ.get(_FAA_NOTAM_SECRET_ENV))
+def have_notam_creds(client_id=None, client_secret=None):
+    """True when both FAA NOTAM credentials are available — the passed pair
+    (entered in-app) takes precedence over the environment."""
+    cid = client_id or os.environ.get(_FAA_NOTAM_ID_ENV)
+    csec = client_secret or os.environ.get(_FAA_NOTAM_SECRET_ENV)
+    return bool(cid and csec)
 
 
 def parse_notams(data):
@@ -465,12 +467,14 @@ def parse_notams(data):
     return out
 
 
-def fetch_notams(lat, lon, radius_nm, timeout=15, page_size=50):
+def fetch_notams(lat, lon, radius_nm, timeout=15, page_size=50,
+                 client_id=None, client_secret=None):
     """Fetch NOTAMs within ``radius_nm`` (capped at the API's 100 nm) of a point.
-    Returns ``[]`` — a harmless no-op — when credentials aren't configured, so
-    the rest of the weather suite runs unaffected without an FAA key."""
-    cid = os.environ.get(_FAA_NOTAM_ID_ENV)
-    csec = os.environ.get(_FAA_NOTAM_SECRET_ENV)
+    Credentials come from the passed pair (entered in-app) or, failing that, the
+    environment.  Returns ``[]`` — a harmless no-op — when none are configured,
+    so the rest of the weather suite runs unaffected without an FAA key."""
+    cid = client_id or os.environ.get(_FAA_NOTAM_ID_ENV)
+    csec = client_secret or os.environ.get(_FAA_NOTAM_SECRET_ENV)
     if not cid or not csec:
         return []
     rad = max(1, min(100, int(round(radius_nm))))

@@ -312,6 +312,10 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
     "wifi_pass": "",        "wifi_ok":  False,
     "wifi_actual": "",      # SSID actually associated now (from iwgetid -r)
+    # FAA NOTAM API credentials (entered in Connectivity → free key at
+    # api.faa.gov).  Persisted (plaintext) so they survive restarts; the NOTAM
+    # poller reads them live, so entering a key enables NOTAMs without a reboot.
+    "notam_client_id": "",  "notam_client_secret": "",
     "scan_state": "",   "scan_nets": [], "scan_scroll": 0, "scan_error": "",
     "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
     # AHRS link diagnostics (populated by the transport client thread)
@@ -1837,6 +1841,16 @@ def _winds_fetch(lat, lon, range_nm):
     return _wx.fetch_winds_grid(
         lat, lon, range_nm, aspect=DISPLAY_W / max(1, DISPLAY_H),
         hour_offset=int(disp["ds"].get("winds_time_offset_h", 0)))
+
+
+def _notam_fetch(lat, lon, radius_nm):
+    """Poller fetch shim: NOTAMs using the FAA credentials entered in
+    Connectivity (cs) — falls back to the env vars, no-ops without either."""
+    cs = disp.get("cs", {})
+    return _wx.fetch_notams(
+        lat, lon, radius_nm,
+        client_id=(cs.get("notam_client_id") or "").strip() or None,
+        client_secret=(cs.get("notam_client_secret") or "").strip() or None)
 
 
 def _fisb_locate(icao):
@@ -5664,7 +5678,8 @@ def handle_event(event, demo_mode):
             if hit:
                 lbl, sty = hit
                 target  = disp["kbd_target"]
-                _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80}
+                _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80,
+                           "notam_client_id": 80, "notam_client_secret": 80}
                 _FPL_KBD_MAX = {"fpl_ident": 6, "fpl_latlon_ident": 6,
                                 "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
                                 "fpl_save_name": 16, "nav_ident": 6}
@@ -7429,6 +7444,8 @@ _CS_FIELDS = [
     ("ahrs_url",  "AHRS URL",        "Pico W access-point address"),
     ("wifi_ssid", "WiFi SSID",       "Network name to join"),
     ("wifi_pass", "WiFi PASSWORD",   "WPA2 passphrase"),
+    ("notam_client_id",     "NOTAM CLIENT ID", "FAA NOTAM API key — free at api.faa.gov"),
+    ("notam_client_secret", "NOTAM SECRET",    "FAA NOTAM API secret — stored on device"),
 ]
 _CS_BTN_Y  = _ss_row_y(len(_CS_FIELDS) + 2) + 4   # below fields + STATUS + AHRS LINK rows
 _CS_BTN_H  = 50
@@ -7436,7 +7453,7 @@ _CS_BTN_H  = 50
 
 def _cs_val_box(surf, bx, by, bw, bh, key, val):
     """Draw the right-side value box for a connectivity field."""
-    masked = key == "wifi_pass" and val
+    masked = key in ("wifi_pass", "notam_client_secret") and val
     display = "\u25cf" * min(len(val), 16) if masked else val
     vbx = bx+210; vby = by+12; vbw = bx+bw-vbx-12; vbh = bh-24
     pygame.draw.rect(surf, (0,20,42), (vbx, vby, vbw, vbh), border_radius=4)
@@ -15009,15 +15026,17 @@ def main():
                                       name="WindsPoller")
         _winds_client.start()
         print("[PFD] TAF + AIRMET/SIGMET + winds pollers started (internet)")
-        # NOTAMs need an FAA API key (env); only start the poller when present.
-        if _wx.have_notam_creds():
-            global _notam_client
-            _notam_client = _wx.AwcPoller(view_fn=_wx_view,
-                                          fetch_fn=_wx.fetch_notams,
-                                          interval_s=NOTAM_INTERVAL_S,
-                                          name="NotamPoller")
-            _notam_client.start()
-            print("[PFD] NOTAM poller started (FAA API)")
+        # NOTAMs need an FAA API key.  Always start the poller; its fetch reads
+        # the credentials live from cs (entered in Connectivity) or the env, and
+        # no-ops returning [] until a key is present — so typing one in enables
+        # NOTAMs without a restart.
+        global _notam_client
+        _notam_client = _wx.AwcPoller(view_fn=_wx_view,
+                                      fetch_fn=_notam_fetch,
+                                      interval_s=NOTAM_INTERVAL_S,
+                                      name="NotamPoller")
+        _notam_client.start()
+        print("[PFD] NOTAM poller started (FAA API — keyed via Connectivity)")
         global _nexrad_client
         _nexrad_client = _nexrad.NexradClient(view_fn=_wx_view,
                                               interval_s=NEXRAD_INTERVAL_S)
