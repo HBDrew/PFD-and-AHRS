@@ -188,37 +188,6 @@ import collections as _collections_mm
 _APT_LABEL_CACHE_MAX = 256
 _apt_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
 
-# ── Section profiler (PFD_PERF=1) — find which render layer costs the frame ──────
-# Accumulates wall time per named section and prints averaged ms every ~120
-# render calls to the journal.  Near-zero when off (a single bool check).
-import time as _time
-_PERF_SECT = bool(os.environ.get("PFD_PERF"))
-_perf_acc = {}
-_perf_order = []
-_perf_calls = 0
-
-
-def _ps(name, t0):
-    """Record elapsed since ``t0`` under ``name``; return a fresh timestamp."""
-    now = _time.perf_counter()
-    if name not in _perf_acc:
-        _perf_acc[name] = 0.0
-        _perf_order.append(name)
-    _perf_acc[name] += (now - t0) * 1000.0
-    return now
-
-
-def _perf_frame_end():
-    """Call once per render; every 120 frames print + reset the breakdown."""
-    global _perf_calls
-    _perf_calls += 1
-    if _perf_calls >= 120:
-        parts = [f"{n}={_perf_acc[n] / _perf_calls:.1f}" for n in _perf_order]
-        print("[PERF-SECT] ms/frame  " + "  ".join(parts))
-        _perf_acc.clear()
-        _perf_order.clear()
-        _perf_calls = 0
-
 
 def _quantise_centre(lat, lon, range_nm):
     """Snap the centre to ~10% of the visible range so light pan motion
@@ -1001,7 +970,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         return
 
     pygame.draw.rect(surf, _BG, rect)
-    _pt = _time.perf_counter() if _PERF_SECT else 0.0
 
     # Map rotation: track-up rotates so current track points up.
     # Fall back to magnetic heading whenever GPS groundspeed is below
@@ -1117,8 +1085,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             veil.fill((0, 0, 0, 60))
             _veil_cache[(w, h)] = veil
         surf.blit(veil, (x, y))
-    if _PERF_SECT:
-        _pt = _ps("terrain", _pt)
 
     # ── NEXRAD reflectivity (under symbols, over terrain) ──────────────────
     if (nexrad is not None and settings.get("map_show_nexrad", False)
@@ -1128,8 +1094,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if (nexrad_cells and settings.get("map_show_nexrad", False)
             and not fast):
         _draw_nexrad_cells(surf, nexrad_cells, _project, rect)
-    if _PERF_SECT:
-        _pt = _ps("nexrad", _pt)
 
     # ── State / province lines + country lines ─────────────────────────────
     # Only useful once the inset is showing whole-region context; at close
@@ -1142,8 +1106,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
                              range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
                              sin_r, cos_r, rot_deg, fast)
-    if _PERF_SECT:
-        _pt = _ps("borders", _pt)
 
     # ── Airspaces (Class B/C/D + MOA + Restricted) ──────────────────────────
     # Drawn between context lines and runways so airspaces sit UNDER
@@ -1312,8 +1274,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                         _apt_label_cache.move_to_end(cache_key)
                     surf.blit(lbl, (ix + _r(5) + 2, iy - 7))
                 drawn += 1
-    if _PERF_SECT:
-        _pt = _ps("apt+obs", _pt)
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:
@@ -1432,8 +1392,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # context).  METARs are already drawn after the magenta D2/FPL above, so a
     # dot on a waypoint stays visible over the diamond too.
     #
-    if _PERF_SECT:
-        _pt = _ps("directto", _pt)
     # Graphical hazard areas (G-AIRMET/SIGMET polygons) shade *under* the dots
     # and towers, only on the MET overlay (weather-focus page).
     if (wx_graphics and settings.get("map_show_metar", False) and not fast):
@@ -1454,8 +1412,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # chevron so the pilot's own symbol always stays on top.
     if traffic and settings.get("map_show_traffic", True):
         _draw_traffic(surf, traffic, _project, rot_deg, px_per_nm, font, rect)
-    if _PERF_SECT:
-        _pt = _ps("wx+tfc", _pt)
 
     # ── Range ring ───────────────────────────────────────────────────────────
     # Shrink the ring 2 px inside the inset's shorter axis so the frame
@@ -1561,9 +1517,6 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             surf.blit(ete_surf,
                       (x + w - ete_w - 4, y + h - ete_h - 3))
 
-    if _PERF_SECT:
-        _ps("chrome", _pt)
-        _perf_frame_end()
 
 
 def hit_test(rect, x, y) -> bool:
