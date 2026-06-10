@@ -1182,6 +1182,18 @@ class FisbWeather:
         for w in winds or []:
             self.add_winds(w, source, now_mono)
 
+    def set_winds(self, winds, source="INET", now_mono=None):
+        """Replace *all* winds columns of ``source`` with this snapshot.  The
+        internet grid is a complete picture of the current view, so replacing it
+        each poll (rather than accumulating) stops barbs piling up as the view
+        drifts — radio (``RDR``) columns are untouched."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            for k in [s for s, (w, _r) in self._winds.items()
+                      if (w.get("src") or "RDR") == source]:
+                del self._winds[k]
+        self.add_winds_list(winds, source, now_mono)
+
     def add_notams(self, texts, now_mono=None):
         """Fold internet NOTAM bulletins (already-formatted text) into the
         advisory store, deduped by text like the other advisories."""

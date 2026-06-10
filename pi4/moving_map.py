@@ -1399,7 +1399,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if ground_stations and settings.get("map_show_metar", False) and not fast:
         _draw_ground_stations(surf, ground_stations, _project, font, rect,
                               symbol_scale)
-    if metars and not fast:
+    # Always-on flight-category dots — except on the winds / NEXRAD focus pages,
+    # where they'd fight the barbs / radar for the same pixels (keep those clean).
+    if (metars and not fast
+            and not settings.get("map_show_winds", False)
+            and not settings.get("map_show_nexrad", False)):
         _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
                      sin_r, cos_r)
     # Winds-aloft barbs — their own overlay (WND).

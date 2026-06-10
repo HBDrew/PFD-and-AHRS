@@ -733,6 +733,22 @@ def test_internet_backfill():
     check(w["lat"] == 34.5 and w["src"] == "INET", "carries lat/lon + INET tag")
     check(w["levels"][0]["spd"] == 30, "levels intact")
 
+    case("set_winds replaces the internet grid (no accumulation), keeps radio")
+    lv = [{"alt_ft": 9000, "dir": 270, "spd": 30, "temp": -5, "lv": False}]
+    g1 = [{"station": f"{a:.2f},-111.00", "lat": a, "lon": -111.0, "levels": lv}
+          for a in (34.0, 34.5, 35.0)]
+    store3b = fisb.FisbWeather()
+    store3b.set_winds(g1, "INET")
+    # a radio FD column coexists
+    store3b.add_winds({"station": "FLG", "levels": lv}, source="RDR")
+    # next poll: the view drifted -> all-new grid ids
+    g2 = [{"station": f"{a:.2f},-111.00", "lat": a, "lon": -111.0, "levels": lv}
+          for a in (34.2, 34.7, 35.2)]
+    store3b.set_winds(g2, "INET")
+    sids = set(store3b.winds_stations())
+    check(len([s for s in sids if "," in s]) == 3, "only the latest 3 grid points")
+    check("FLG" in sids, "radio FD column survives the INET replace")
+
 
 def main():
     test_dlac()

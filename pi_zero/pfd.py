@@ -6034,7 +6034,7 @@ def _update_weather():
             _store.add_airsigmets(_airsig_client.snapshot())
         if _winds_client is not None and _winds_client.updated_s != _winds_fed_at:
             _winds_fed_at = _winds_client.updated_s
-            _store.add_winds_list(_winds_client.snapshot())
+            _store.set_winds(_winds_client.snapshot(), "INET")
         if _notam_client is not None and _notam_client.updated_s != _notam_fed_at:
             _notam_fed_at = _notam_client.updated_s
             _store.add_notams(_notam_client.snapshot())
