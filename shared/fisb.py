@@ -1182,6 +1182,13 @@ class FisbWeather:
         for w in winds or []:
             self.add_winds(w, source, now_mono)
 
+    def add_notams(self, texts, now_mono=None):
+        """Fold internet NOTAM bulletins (already-formatted text) into the
+        advisory store, deduped by text like the other advisories."""
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        for t in texts or []:
+            self.add_advisory("NOTAM", t, now_mono)
+
     def graphics(self, now_mono=None):
         """Active graphical hazard areas (``{hazard, geom, vertices}``), pruned
         past ``graphics_expire_s``."""

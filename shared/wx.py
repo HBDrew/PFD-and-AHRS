@@ -20,6 +20,7 @@ age; treat them as situational awareness, not a dispatch product.
 import calendar
 import json
 import math
+import os
 import threading
 import time
 import urllib.request
@@ -40,6 +41,12 @@ _AWC_AIRSIGMET = "https://aviationweather.gov/api/data/airsigmet"
 # retired the text FB winds product; the GFS grids behind it now come as JSON
 # here, batched many points per request.
 _OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+# FAA NOTAM API — needs free developer credentials (client_id / client_secret
+# from https://api.faa.gov), supplied via env.  No key → the fetch no-ops, so
+# the rest of the weather suite is unaffected.
+_FAA_NOTAM = "https://external-api.faa.gov/notamapi/v1/notams"
+_FAA_NOTAM_ID_ENV = "FAA_NOTAM_CLIENT_ID"
+_FAA_NOTAM_SECRET_ENV = "FAA_NOTAM_CLIENT_SECRET"
 _UA = "PFD-and-AHRS/wx (experimental EFB; contact via repo)"
 _NM_PER_DEG = 60.0
 _M_TO_FT = 3.280839895
@@ -408,6 +415,64 @@ def fetch_winds_grid(lat, lon, radius_nm, alts=None, timeout=15):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read().decode("utf-8", "ignore"))
     return parse_open_meteo_winds(data, alts)
+
+
+# ── NOTAMs (FAA NOTAM API — needs developer credentials) ────────────────────────
+def have_notam_creds():
+    """True when both FAA NOTAM API credentials are present in the environment."""
+    return bool(os.environ.get(_FAA_NOTAM_ID_ENV)
+                and os.environ.get(_FAA_NOTAM_SECRET_ENV))
+
+
+def parse_notams(data):
+    """Parse an FAA NOTAM API (geoJson) response into advisory text strings.
+
+    Prefers the human-readable ``formattedText`` translation, falls back to the
+    raw ICAO ``text``; prefixes the location id so the advisory list can
+    geolocate the NOTAM by airport (``_notam_locate``).  De-duplicates."""
+    out, seen = [], set()
+    for it in (data or {}).get("items") or []:
+        core = ((it.get("properties") or {}).get("coreNOTAMData") or {})
+        notam = core.get("notam") or {}
+        loc = (notam.get("icaoLocation") or notam.get("location") or "").strip()
+        text = ""
+        for tr in core.get("notamTranslation") or []:
+            ft = (tr.get("formattedText") or tr.get("simpleText") or "").strip()
+            if ft:
+                text = ft
+                break
+        if not text:
+            text = (notam.get("text") or "").strip()
+        if not text:
+            continue
+        text = " ".join(text.split())          # collapse newlines / runs
+        if loc and loc.upper() not in text[:12].upper():
+            text = f"{loc} {text}"
+        if text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def fetch_notams(lat, lon, radius_nm, timeout=15, page_size=50):
+    """Fetch NOTAMs within ``radius_nm`` (capped at the API's 100 nm) of a point.
+    Returns ``[]`` — a harmless no-op — when credentials aren't configured, so
+    the rest of the weather suite runs unaffected without an FAA key."""
+    cid = os.environ.get(_FAA_NOTAM_ID_ENV)
+    csec = os.environ.get(_FAA_NOTAM_SECRET_ENV)
+    if not cid or not csec:
+        return []
+    rad = max(1, min(100, int(round(radius_nm))))
+    url = (f"{_FAA_NOTAM}?responseFormat=geoJson"
+           f"&locationLongitude={lon:.4f}&locationLatitude={lat:.4f}"
+           f"&locationRadius={rad}&pageSize={page_size}&pageNum=1"
+           f"&sortBy=effectiveStartDate&sortOrder=Desc")
+    req = urllib.request.Request(url, headers={
+        "client_id": cid, "client_secret": csec,
+        "User-Agent": _UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8", "ignore"))
+    return parse_notams(data)
 
 
 # ── Background poller ─────────────────────────────────────────────────────────

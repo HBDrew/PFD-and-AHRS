@@ -106,6 +106,7 @@ WX_INTERVAL_S    = 120    # periodic refresh cadence (METARs update ~hourly)
 TAF_INTERVAL_S   = 600    # TAF refresh cadence (forecasts reissue ~6 h)
 AIRSIG_INTERVAL_S = 300   # AIRMET/SIGMET refresh cadence (~hourly, but watch updates)
 WINDS_INET_INTERVAL_S = 900  # winds aloft refresh (forecast grids update ~hourly+)
+NOTAM_INTERVAL_S = 600    # NOTAM refresh cadence (FAA API; only polled with a key)
 NEXRAD_INTERVAL_S = 300   # radar refresh cadence (NEXRAD updates ~5 min)
 NEXRAD_MAX_PX     = 480   # fetched raster long-side px (decode/scale cost)
 

@@ -197,6 +197,41 @@ def test_parse_open_meteo_winds():
     check(all(250 <= lv["dir"] <= 270 for lv in w["levels"]), "dirs in band")
 
 
+def test_notams():
+    import os
+    # No creds -> fetch is a harmless no-op (the suite runs without an FAA key).
+    saved = (os.environ.pop(wx._FAA_NOTAM_ID_ENV, None),
+             os.environ.pop(wx._FAA_NOTAM_SECRET_ENV, None))
+    try:
+        check(not wx.have_notam_creds(), "no creds detected")
+        check(wx.fetch_notams(34.5, -111.8, 50) == [], "no-creds fetch -> []")
+    finally:
+        if saved[0] is not None:
+            os.environ[wx._FAA_NOTAM_ID_ENV] = saved[0]
+        if saved[1] is not None:
+            os.environ[wx._FAA_NOTAM_SECRET_ENV] = saved[1]
+
+    data = {"items": [
+        {"properties": {"coreNOTAMData": {
+            "notam": {"icaoLocation": "KPHX", "text": "RWY 08/26 CLSD"},
+            "notamTranslation": [
+                {"type": "LOCAL_FORMAT",
+                 "formattedText": "!PHX 08/123 PHX RWY 8/26 CLSD"}]}}},
+        {"properties": {"coreNOTAMData": {
+            "notam": {"location": "KSEZ", "text": "TWY A CLSD"},
+            "notamTranslation": []}}},
+        # duplicate of the first -> deduped
+        {"properties": {"coreNOTAMData": {
+            "notam": {"icaoLocation": "KPHX"},
+            "notamTranslation": [
+                {"formattedText": "!PHX 08/123 PHX RWY 8/26 CLSD"}]}}},
+    ]}
+    n = wx.parse_notams(data)
+    check(len(n) == 2, f"two unique NOTAMs (deduped), got {len(n)}")
+    check(any("PHX" in t and "CLSD" in t for t in n), "formattedText taken")
+    check(any(t.startswith("KSEZ ") for t in n), "location prefixed for geolocate")
+
+
 def test_awcpoller_injected_fetch():
     calls = {"n": 0}
 

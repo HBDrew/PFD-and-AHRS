@@ -39,10 +39,27 @@ via `_winds_pos`, not the airport DB). A `WindsPoller` (15 min) feeds it like
 the other internet sources; readout tags `[INET]` vs `[FIS-B]`. Field names are
 coded to Open-Meteo's documented schema — wants a live-pull check on-device.
 
-**NOTAM (internet) — still TODO:** the FAA NOTAM API requires **OAuth client
-credentials** (free, but a registered key + token refresh). Plan: build the
-client reading creds from env, graceful no-op without them, parse into
-`store.add_advisory("NOTAM", …)`, and document the key setup.
+**NOTAM (internet) — DONE (needs a free FAA key):** `wx.fetch_notams` queries
+the FAA NOTAM API (`external-api.faa.gov/notamapi/v1/notams`) by lat/lon/radius,
+`parse_notams` takes the human-readable `formattedText` (location-prefixed so
+`_notam_locate` can geolocate it), and `store.add_notams` folds them into the
+existing NOTAM advisory path (picker → ranked list). The `NotamPoller` only
+starts when credentials are present, and `fetch_notams` no-ops without them, so
+nothing is affected if no key is set.
+
+To enable, register a free app at https://api.faa.gov (NOTAM API) and set the
+two env vars on the service:
+
+```
+sudo systemctl edit pfd.service
+# [Service]
+# Environment="FAA_NOTAM_CLIENT_ID=xxxx"
+# Environment="FAA_NOTAM_CLIENT_SECRET=yyyy"
+sudo systemctl restart pfd.service
+```
+
+Field names follow the FAA NOTAM API v1 geoJson schema — wants a live-pull check
+once a key is in place.
 
 Still open:
 - **NEXRAD radar (the big one):** decode the FIS-B regional/CONUS run-length

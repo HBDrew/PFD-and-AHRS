@@ -382,9 +382,11 @@ _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
 _taf_client  = None   # AwcPoller (internet TAF backfill) when weather enabled
 _airsig_client = None # AwcPoller (internet AIRMET/SIGMET backfill)
 _winds_client = None  # AwcPoller (internet winds aloft, Open-Meteo grid)
+_notam_client = None  # AwcPoller (internet NOTAMs, FAA API) when creds present
 _taf_fed_at  = 0.0    # updated_s of last TAF snapshot folded into the store
 _airsig_fed_at = 0.0  # updated_s of last AIRMET/SIGMET snapshot folded in
 _winds_fed_at = 0.0   # updated_s of last winds snapshot folded in
+_notam_fed_at = 0.0   # updated_s of last NOTAM snapshot folded in
 _nexrad_client = None # NexradClient (internet radar poller) when enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 # Decoded NEXRAD image cache (pygame surface).  Re-decoded only when the
@@ -6023,7 +6025,7 @@ def _update_weather():
     # only.  Radio wins per item in the store; AIRMET/SIGMET carry geometry, so
     # this also populates the MET-page graphical overlay.
     if _store is not None and not radio_only:
-        global _taf_fed_at, _airsig_fed_at, _winds_fed_at
+        global _taf_fed_at, _airsig_fed_at, _winds_fed_at, _notam_fed_at
         if _taf_client is not None and _taf_client.updated_s != _taf_fed_at:
             _taf_fed_at = _taf_client.updated_s
             _store.add_tafs(_taf_client.snapshot())
@@ -6033,6 +6035,9 @@ def _update_weather():
         if _winds_client is not None and _winds_client.updated_s != _winds_fed_at:
             _winds_fed_at = _winds_client.updated_s
             _store.add_winds_list(_winds_client.snapshot())
+        if _notam_client is not None and _notam_client.updated_s != _notam_fed_at:
+            _notam_fed_at = _notam_client.updated_s
+            _store.add_notams(_notam_client.snapshot())
     w["stations"] = _store.ground_stations() if _store is not None else []
     w["graphics"] = _store.graphics() if _store is not None else []
     cs = disp["cs"]
@@ -13217,6 +13222,14 @@ def main():
                                       name="WindsPoller")
         _winds_client.start()
         print("[PFD] TAF + AIRMET/SIGMET + winds pollers started (internet)")
+        if _wx.have_notam_creds():
+            global _notam_client
+            _notam_client = _wx.AwcPoller(view_fn=_wx_view,
+                                          fetch_fn=_wx.fetch_notams,
+                                          interval_s=NOTAM_INTERVAL_S,
+                                          name="NotamPoller")
+            _notam_client.start()
+            print("[PFD] NOTAM poller started (FAA API)")
         global _nexrad_client
         _nexrad_client = _nexrad.NexradClient(view_fn=_wx_view,
                                               interval_s=NEXRAD_INTERVAL_S)
@@ -13374,6 +13387,8 @@ def main():
         _airsig_client.stop()
     if _winds_client:
         _winds_client.stop()
+    if _notam_client:
+        _notam_client.stop()
     if _nexrad_client:
         _nexrad_client.stop()
     _settings.flush()
