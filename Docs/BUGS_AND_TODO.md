@@ -309,7 +309,25 @@ AOA-PROBE (this entry retires when the probe lands, or stays as
 a redundant cross-check).
 
 ### FPV  Velocity vector / flight-path marker on the AI
-Status: **OPEN — software-only, can land TODAY**
+Status: **pi4 + iPhone LANDED — pi_zero port pending (tracked as FPV-PIZ)**
+Resolution (pi4 + iPhone): `draw_fpv_marker()` in `pi4/pfd.py` projects
+the velocity vector (NED azimuth = GPS track, elevation = flight-path
+angle `atan2(VS, GS)`) into the same `_full_ai` frame the airport /
+runway / obstacle overlays use (ah/48° px-per-deg, roll rotation), so
+it banks with the SVT horizon and aligns with the airport symbols.
+Open circle + two wings + vertical stub, cyan, self-hides below 5 kt
+GS, clamps to the AI box with a ghost arrow when the vector falls
+outside (drawn even in extreme attitudes, unlike the other overlays).
+Toggle `fpv_enabled` (default ON) on the Display setup screen ("FLIGHT
+PATH" row), persisted via the existing `ds` subtree. iPhone mirror:
+`drawFPV()` in `iphone_display/index.html` using the same focal /
+pitchOff / roll math `drawAI()` draws the horizon with, with a "✈
+FLIGHT PATH" toggle in the setup menu (localStorage `fpv_enabled`).
+Sign check (matches the cue we wanted): in a coordinated climb the FPV
+sits below the nose by the AOA. Still open: **pi_zero port** — its AI
+overlays use a rotate-the-whole-SRCALPHA-surface model rather than
+per-feature roll, so the upright-symbol behaviour needs a small
+adaptation; see FPV-PIZ below.
 Target: `pi4/pfd.py` (new draw routine inside the AI block), iPhone
 display equivalent.
 Context: a velocity-vector / flight-path-vector marker shows the
@@ -614,6 +632,72 @@ rendering" case (lakes + ocean via `tools/build_water_tiles.py` +
 remaining vector-line layer (state + country borders) doesn't have
 enough vertex count to justify a build-time LOD pipeline once
 vectorisation removes the Python per-vertex overhead.
+
+### WINDS-INET-REFETCH  Internet winds aloft freeze at startup, don't follow the route
+Status: **OPEN — diagnosed, fix not yet applied**
+Target: `shared/wx.py` (`WxClient.run` / `AwcPoller.run` settle gate),
+`pi4/pfd.py` `_winds_view` / `_winds_fetch`, `shared/fisb.py`
+`set_winds` (replace-vs-accumulate).
+Symptom (reported from an all-night sim run out of PHX): the INET winds
+barbs loaded once for the local area around the departure field and
+never updated as the aircraft flew — no winds along the route, no new
+columns appearing en route.
+Diagnosis — two separate problems:
+  1. **Settle-debounce starves a moving aircraft of refetches.** Both
+     `WxClient.run` and `AwcPoller.run` only fetch when the view has
+     "settled": `settled = (cur == prev_view)` where
+     `cur = (round(lat,2), round(lon,2), round(radius))`, compared
+     between consecutive ~0.7 s poll slices. round(,2) is ~0.01° ≈ 0.6
+     nm. A continuously-moving ownship (and especially a
+     time-compressed overnight sim) changes that rounded tuple on most
+     slices, so `settled` is rarely/never true — and BOTH the
+     move-based AND the periodic (`interval_s`) refetch are gated
+     behind it. Result: the only fetch that fired was the one on the
+     ground at PHX where the view genuinely sat still. The debounce was
+     meant to avoid a burst of fetches mid pan-drag, but it wrongly
+     also suppresses ownship motion. Affects winds, TAF, AIRMET/SIGMET,
+     NOTAM, NEXRAD — every view-driven poller shares this pattern.
+  2. **Replace-not-accumulate + tiny grid = no route picture.**
+     `set_winds()` deletes all prior INET columns each poll
+     (`shared/fisb.py:1197`), and `_winds_view` requests only a
+     `map_zoom_nm`-sized grid (default 5 nm in PFD mode) centred on the
+     ownship. So even with refetch working you'd only ever hold a ~4 nm
+     patch around the aircraft — never the whole route.
+Fix sketch:
+  - Replace the exact-equality settle test with a tolerance + dwell:
+    treat the view as settled when it hasn't moved more than a small
+    fraction of the radius for ~1–2 s (debounce drags) but never let
+    that gate block the periodic `interval_s` refresh or a large
+    ownship move. Cleanest: compute `settled` from a distance
+    threshold against the last *evaluated* view, and always allow the
+    periodic timer through regardless of settle.
+  - For route coverage, decide between (a) widening the winds grid to a
+    forward-biased corridor along the active FPL/track, or (b) keeping
+    the local grid but bumping the grid extent so barbs read for the
+    visible MFD range. (a) is the real fix; (b) is the quick one.
+  - Add a one-line "[WX] winds refetch @lat,lon" debug print behind a
+    flag so the next sim run can confirm the poller is following.
+Bench/sim repro: start at PHX, fly a long leg (time-compressed if
+possible), watch whether the winds barbs re-centre. Pre-fix they stay
+at PHX; post-fix they should track the ownship.
+
+### FPV-PIZ  Port the flight-path-vector marker to pi_zero
+Status: **OPEN — pi4 + iPhone done (see FPV), pi_zero pending**
+Target: `pi_zero/pfd.py` AI overlay block (~the
+`draw_airport_symbols` / `draw_obstacle_symbols` SRCALPHA-rotate path).
+Context: pi4 + iPhone shipped the FPV marker (see the FPV entry). pi_zero
+draws its AI symbol overlays into a roll=0 SRCALPHA surface that is then
+rotated whole by `pygame.transform.rotate(_overlay, roll)`, rather than
+the per-feature roll rotation pi4 uses. Dropping the FPV into that
+overlay would rotate the *symbol* with the bank too, which isn't the
+convention (the FPV glyph should stay upright). Port options:
+  - Compute the FPV screen position the pi4 way (rel-bearing + FPA →
+    px, manual roll rotation) and blit the upright glyph directly onto
+    `surf` after the rotated overlay, OR
+  - Draw it into the overlay but counter-rotate the glyph by `-roll`.
+Reuse the same 5 kt gate, cyan colour, circle+wings+stub geometry, and
+edge-clamp ghost arrow. Add the `fpv_enabled` toggle to pi_zero's
+display-settings screen for parity.
 
 ### NAVDATA-FAA  IFR nav-data foundation — fixes, airways, navaids, procedures
 Status: **OPEN — data access confirmed (US, free FAA sources); foundation for the IFR FPL items below**

@@ -272,6 +272,7 @@
   <button class="setup-btn" onclick="openHdgMenu()">🧭 HEADING</button>
   <button class="setup-btn" onclick="openAsMenu()">💨 AIRSPEED</button>
   <button class="setup-btn" onclick="openSensorMenu()">📡 SENSORS</button>
+  <button class="setup-btn" id="btn-fpv" onclick="fpvTap()">✈ FLIGHT PATH</button>
   <button class="setup-btn" id="btn-keepon" onclick="keepOnTap()">🔆 SCREEN ON</button>
   <button id="setup-close" onclick="closeSetupMenu()">✕ CLOSE</button>
 </div>
@@ -896,6 +897,7 @@ document.addEventListener('touchend', (e) => {
 function openSetupMenu() {
   const setupDiv = document.getElementById('setup-menu');
   if (setupDiv) setupDiv.style.display = 'block';
+  _updateFpvBtn();
 }
 
 function closeSetupMenu() {
@@ -1491,6 +1493,14 @@ function _insetSave() {
   localStorage.setItem('inset_enabled', INSET.enabled ? '1' : '0');
   localStorage.setItem('inset_zoom_nm', String(INSET.zoom));
   localStorage.setItem('inset_orient',  INSET.orient);
+}
+
+// Flight-path vector (velocity-vector) marker on the AI.  Default ON — it's a
+// primary instrument cue and self-hides below 5 kt GS.
+let FPV_ENABLED = (localStorage.getItem('fpv_enabled') ?? '1') === '1';
+function setFpvEnabled(on) {
+  FPV_ENABLED = !!on;
+  localStorage.setItem('fpv_enabled', FPV_ENABLED ? '1' : '0');
 }
 
 function _insetCycleZoom() {
@@ -2341,6 +2351,58 @@ function drawAircraftSymbol() {
   ctx.restore();
 }
 
+// ── Flight-path vector (velocity-vector) marker ─────────────────────────────
+// Shows where the aircraft is actually going through space, not where the nose
+// points: horizontal offset from boresight = drift (track − heading), vertical
+// offset = flight-path angle vs pitch (≈ AOA when wind is along the path).
+// Uses the same focal / pitch-offset / roll math drawAI() draws the horizon and
+// pitch ladder with, so it sits correctly on the rendered scene.  Hidden below
+// 5 kt GS; clamps to the AI box with a ghost arrow when it would fall outside.
+function drawFPV() {
+  if (!FPV_ENABLED || !D.gps_ok || D.speed < 5) return;
+  const { cx, tapeMidY, focal } = L;
+  const hdg   = _activeHdg().value;                 // same heading the scene uses
+  const drift = ((D.track - hdg + 540) % 360) - 180;
+  const gsFpm = D.speed * 101.27;                   // kt → ft/min (6076.12/60)
+  const fpa   = Math.atan2(D.vspeed, Math.max(gsFpm, 1)) / DEG;   // deg
+  const pitchOff = focal * Math.tan(D.pitch * DEG);
+
+  // Position in the roll-rotated AI frame, then rotate into screen space so the
+  // symbol itself stays upright (matches the pi4 marker).
+  const fx = focal * Math.tan(drift * DEG);
+  const fy = pitchOff - focal * Math.tan(fpa * DEG);
+  const rr = -D.roll * DEG, cr = Math.cos(rr), sr = Math.sin(rr);
+  let sx = cx + fx * cr - fy * sr;
+  let sy = tapeMidY + fx * sr + fy * cr;
+
+  const left = L.spdX + L.spdW + 14, right = L.altX - 14;
+  const top  = L.tapeTopY + 14,      bot   = L.tapeBotY - 14;
+  const COL  = '#78dcff';                            // cyan, matches pi4
+
+  ctx.save();
+  ctx.strokeStyle = COL; ctx.fillStyle = COL; ctx.lineWidth = 2;
+  if (sx >= left && sx <= right && sy >= top && sy <= bot) {
+    ctx.beginPath(); ctx.arc(sx, sy, 6, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(sx - 12, sy); ctx.lineTo(sx - 6, sy);     // left wing
+    ctx.moveTo(sx + 6, sy);  ctx.lineTo(sx + 12, sy);    // right wing
+    ctx.moveTo(sx, sy - 12); ctx.lineTo(sx, sy - 6);     // vertical stub
+    ctx.stroke();
+  } else {
+    // Clamp to the AI edge, point a small arrow at the off-screen vector.
+    const gx = Math.min(Math.max(sx, left), right);
+    const gy = Math.min(Math.max(sy, top),  bot);
+    const ang = Math.atan2(sy - gy, sx - gx);
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    ctx.beginPath();
+    ctx.moveTo(gx + 11 * ca, gy + 11 * sa);
+    ctx.lineTo(gx - 5 * ca - 6 * sa, gy - 5 * sa + 6 * ca);
+    ctx.lineTo(gx - 5 * ca + 6 * sa, gy - 5 * sa - 6 * ca);
+    ctx.closePath(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
 // ── Speed tape ─────────────────────────────────────────────────────────────
 function drawSpeedTape() {
   const { spdX, spdW, tapeTopY, tapeH, tapeMidY } = L;
@@ -2941,6 +3003,7 @@ function render(ts) {
   drawRollIndicator();
   drawSlipBall();
   drawAircraftSymbol();
+  drawFPV();
   drawSpeedTape();
   drawAltTape();
   drawHeadingTape();
@@ -3205,6 +3268,18 @@ function keepOnTap() {
   _tryWakeLock();
   const btn = document.getElementById('btn-keepon');
   if (btn) { btn.textContent = '🔆 activating…'; setTimeout(_updateKeepOnBtn, 1000); }
+}
+
+function _updateFpvBtn() {
+  const btn = document.getElementById('btn-fpv');
+  if (!btn) return;
+  btn.textContent       = FPV_ENABLED ? '✈ FLIGHT PATH ✓' : '✈ FLIGHT PATH';
+  btn.style.borderColor = FPV_ENABLED ? '#4f4' : '';
+}
+
+function fpvTap() {
+  setFpvEnabled(!FPV_ENABLED);
+  _updateFpvBtn();
 }
 
 document.addEventListener('touchstart', () => {

@@ -244,6 +244,9 @@ disp["ds"] = {                      # display settings
     # it to a 0.0–1.0 multiplier internally. 0 = effectively muted but
     # the master switch is the cleaner toggle for "I want silence".
     "audio_enabled": True, "audio_volume": 8,
+    # Flight-path vector (velocity vector) marker on the AI.  Default ON —
+    # it's a primary instrument cue and self-hides below 5 kt GS.
+    "fpv_enabled":   True,
     # Lower-left moving-map inset
     "map_enabled":       False,
     "map_orient":        "trk",     # "trk" | "nrth"
@@ -6651,6 +6654,8 @@ _DSP_ROWS = [
      [False, True],      ["OFF", "ON"],       80),
     ("audio_volume","ALERT VOLUME", "Callout volume 1\u201310",
      None, None, None),
+    ("fpv_enabled", "FLIGHT PATH", "Velocity vector / flight-path marker on AI",
+     [False, True],      ["OFF", "ON"],       80),
     # MAP INSET row carries TWO segmented controls: enable + orientation.
     # Custom drawing/hit-test below handles the second pair.  Listed here
     # as a single key so it occupies one row in the standard loop.
@@ -10231,6 +10236,76 @@ def draw_airport_symbols(surf, ai_rect, lat, lon, alt_ft,
                              (sign_x, sign_y, sign_w, sign_h), width=1, border_radius=2)
             _text(surf, lbl, font_sz, col, bold=True,
                   cx=sx, cy=sign_y + sign_h // 2)
+
+
+def draw_fpv_marker(surf, ai_rect, hdg_deg, pitch_deg, roll_deg,
+                    gs_kt, track_deg, vspeed_fpm):
+    """Flight-path vector (velocity-vector) marker on the AI.
+
+    Shows where the aircraft is actually going through space, not where
+    the nose is pointing.  Horizontal offset from the nose = track − heading
+    (drift / crab); vertical offset below the nose = flight-path angle vs
+    pitch, which equals AOA when the wind is along the flight path.  Reuses
+    the same relative-bearing / vertical-angle → AI projection the airport,
+    runway and obstacle overlays use (cx/cy, ah/48° px-per-deg, roll
+    rotation), so the marker banks with the horizon and lines up with the
+    SVT and airport symbols.
+
+    Hidden below 5 kt GS (parked / taxi noise carries no meaningful track).
+    Clamped to the AI rectangle; when the velocity vector falls outside the
+    viewport (extreme attitude / big crab) a small ghost arrow is drawn at
+    the edge pointing toward it — G3X convention, so the cue never just
+    vanishes when it matters most.
+    """
+    if gs_kt < 5.0:
+        return
+
+    ax, ay_r, aw, ah = ai_rect
+    cx = ax + aw // 2
+    cy = ay_r + ah // 2
+    PX_PER_DEG = ah / 48.0    # same vertical-FOV scale as overlays + SVT
+
+    # Velocity vector in the world: azimuth = GPS track, elevation above the
+    # horizon = flight-path angle γ = atan2(VS, GS).
+    rel_brg = (track_deg - hdg_deg + 180.0) % 360.0 - 180.0
+    gs_fpm  = gs_kt * 101.27     # kt → ft/min (6076.12 / 60)
+    fpa_deg = math.degrees(math.atan2(vspeed_fpm, max(gs_fpm, 1.0)))
+
+    sxr = rel_brg * PX_PER_DEG
+    syr = (pitch_deg - fpa_deg) * PX_PER_DEG
+    cos_r = math.cos(math.radians(roll_deg))
+    sin_r = math.sin(math.radians(roll_deg))
+    sx = cx + sxr * cos_r - syr * sin_r
+    sy = cy + sxr * sin_r + syr * cos_r
+
+    FPV_COL = (120, 220, 255)    # cyan — pilot-relevant, matches the bug set
+    margin  = 14
+
+    if (ax + margin <= sx <= ax + aw - margin
+            and ay_r + margin <= sy <= ay_r + ah - margin):
+        ix, iy = int(sx), int(sy)
+        # Open circle + two horizontal wings + a short vertical stub.
+        pygame.draw.circle(surf, FPV_COL, (ix, iy), 6, 2)
+        pygame.draw.line(surf, FPV_COL, (ix - 12, iy), (ix - 6, iy), 2)
+        pygame.draw.line(surf, FPV_COL, (ix + 6, iy), (ix + 12, iy), 2)
+        pygame.draw.line(surf, FPV_COL, (ix, iy - 12), (ix, iy - 6), 2)
+    else:
+        # Clamp to the AI edge, draw a small arrow pointing at the true,
+        # off-screen velocity vector.
+        gx = min(max(sx, ax + margin), ax + aw - margin)
+        gy = min(max(sy, ay_r + margin), ay_r + ah - margin)
+        dx, dy = sx - gx, sy - gy
+        if dx == 0 and dy == 0:
+            return
+        ang = math.atan2(dy, dx)
+        ca, sa = math.cos(ang), math.sin(ang)
+        tip  = (gx + 11 * ca,        gy + 11 * sa)
+        bl   = (gx - 5 * ca - 6 * sa, gy - 5 * sa + 6 * ca)
+        br   = (gx - 5 * ca + 6 * sa, gy - 5 * sa - 6 * ca)
+        pygame.draw.polygon(surf, FPV_COL,
+                            [(int(tip[0]), int(tip[1])),
+                             (int(bl[0]),  int(bl[1])),
+                             (int(br[0]),  int(br[1]))], 1)
 
 
 # ── Direct-to navigation ─────────────────────────────────────────────────────
@@ -13924,6 +13999,13 @@ def render(surf, demo_mode, connected, data_stale=False):
         # active (HITS boxes carry the path instead).
         if _shared_gl_ctx is None and not (disp.get("approach") or {}).get("active"):
             draw_direct_to_trace(surf, _full_ai, lat, lon, alt_render, hdg, pitch, _ov_roll)
+
+    # 1b-2. Flight-path vector marker.  Projected into the same _full_ai
+    # frame as the symbol overlays (so it aligns with airports + SVT), but
+    # NOT gated on _extreme_att — it clamps to a ghost arrow at the AI edge
+    # rather than disappearing, which is exactly when the pilot wants it.
+    if ds.get("fpv_enabled", True) and gps_ok:
+        draw_fpv_marker(surf, _full_ai, hdg, pitch, -roll, speed, track, vspeed)
 
     # 1c. Zero-pitch reference line — always horizontal across AI at
     # screen-centre, regardless of actual horizon position.  Critical with
