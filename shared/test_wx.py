@@ -155,6 +155,48 @@ def test_parse_airsigmets():
     check(a[2]["vertices"] == [], "text-only has empty ring")
 
 
+def test_interp_winds():
+    # Two levels; check the midpoint interpolates wind (u/v) + temp sanely.
+    samples = [(3000, 270, 20, 0), (9000, 280, 40, -10)]
+    lv = wx.interp_winds(samples, [3000, 6000, 9000, 12000])
+    by = {x["alt_ft"]: x for x in lv}
+    check(set(by) == {3000, 6000, 9000}, "12000 above column dropped (no extrap)")
+    check(by[3000]["spd"] == 20 and by[9000]["spd"] == 40, "endpoints preserved")
+    check(28 <= by[6000]["spd"] <= 32, f"mid speed ~30: {by[6000]['spd']}")
+    check(270 <= by[6000]["dir"] <= 290, f"mid dir between: {by[6000]['dir']}")
+    check(by[6000]["temp"] == -5, f"mid temp -5: {by[6000]['temp']}")
+    # Light & variable when interpolated speed is tiny.
+    calm = wx.interp_winds([(3000, 0, 1, 5), (9000, 0, 1, 0)], [6000])
+    check(calm and calm[0]["lv"] and calm[0]["dir"] is None, "light&variable flagged")
+
+
+def test_parse_open_meteo_winds():
+    now = 1_700_000_000
+    iso = time.strftime("%Y-%m-%dT%H:%M", time.gmtime(now))
+    # One grid point, one hour; two pressure levels with heights/wind/temp.
+    pt = {
+        "latitude": 34.5, "longitude": -111.8,
+        "hourly": {
+            "time": [iso],
+            "geopotential_height_850hPa": [1500.0],  # ~4921 ft
+            "windspeed_850hPa": [25.0], "winddirection_850hPa": [250.0],
+            "temperature_850hPa": [5.0],
+            "geopotential_height_500hPa": [5600.0],  # ~18372 ft
+            "windspeed_500hPa": [55.0], "winddirection_500hPa": [270.0],
+            "temperature_500hPa": [-20.0],
+        },
+    }
+    out = wx.parse_open_meteo_winds([pt], [6000, 9000, 12000], now=now)
+    check(len(out) == 1, "one grid column parsed")
+    w = out[0]
+    check(w["lat"] == 34.5 and w["lon"] == -111.8, "carries its own position")
+    check(w["station"] == "34.50,-111.80", "coordinate station id")
+    check(w["src"] == "INET", "tagged INET")
+    alts = {lv["alt_ft"] for lv in w["levels"]}
+    check(alts == {6000, 9000, 12000}, f"interp onto in-range alts: {alts}")
+    check(all(250 <= lv["dir"] <= 270 for lv in w["levels"]), "dirs in band")
+
+
 def test_awcpoller_injected_fetch():
     calls = {"n": 0}
 

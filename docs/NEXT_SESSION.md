@@ -28,15 +28,21 @@ Folding is throttled to each poller's `updated_s` and skipped in RADIO-only
 mode. Caveat: AWC field names (`rawTAF`, `airSigmetType`, `hazard`, `coords`)
 are coded from the documented schema — want a quick check against a live pull.
 
-**WINDS + NOTAM (internet) — researched, not built yet (need decisions):**
-- **WINDS aloft:** AWC retired the old text winds endpoint; the gridded forecast
-  now lives behind the **WIFS / NOMADS GRIB** feeds (GFS winds-aloft grids).
-  That's a real parse (GRIB2 decode + interpolate to station/level), a heavier
-  dependency than the JSON pollers. Radio FIS-B winds already work; internet
-  winds is a meaningful chunk of work for a forecast we get over the air.
-- **NOTAM:** the FAA NOTAM API requires **OAuth client credentials** (free, but a
-  registered key + token refresh). Doable, but it needs a secret stored on the
-  Pi and a token-refresh path — different shape from the keyless AWC pollers.
+**WINDS aloft (internet) — DONE via Open-Meteo (no key):** rather than GRIB,
+the GFS pressure-level winds come as JSON from Open-Meteo
+(`api.open-meteo.com/v1/forecast`, free, no key). `wx.fetch_winds_grid` queries
+a coarse grid across the view in one batched request, `parse_open_meteo_winds`
+interpolates the pressure levels onto our standard FD altitudes (u/v for
+direction, geopotential height for the vertical), and `store.add_winds`
+folds them in carrying their own lat/lon (the barb/readout geolocate by those
+via `_winds_pos`, not the airport DB). A `WindsPoller` (15 min) feeds it like
+the other internet sources; readout tags `[INET]` vs `[FIS-B]`. Field names are
+coded to Open-Meteo's documented schema — wants a live-pull check on-device.
+
+**NOTAM (internet) — still TODO:** the FAA NOTAM API requires **OAuth client
+credentials** (free, but a registered key + token refresh). Plan: build the
+client reading creds from env, graceful no-op without them, parse into
+`store.add_advisory("NOTAM", …)`, and document the key setup.
 
 Still open:
 - **NEXRAD radar (the big one):** decode the FIS-B regional/CONUS run-length

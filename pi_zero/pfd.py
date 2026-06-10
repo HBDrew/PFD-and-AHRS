@@ -381,8 +381,10 @@ _traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traf
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
 _taf_client  = None   # AwcPoller (internet TAF backfill) when weather enabled
 _airsig_client = None # AwcPoller (internet AIRMET/SIGMET backfill)
+_winds_client = None  # AwcPoller (internet winds aloft, Open-Meteo grid)
 _taf_fed_at  = 0.0    # updated_s of last TAF snapshot folded into the store
 _airsig_fed_at = 0.0  # updated_s of last AIRMET/SIGMET snapshot folded in
+_winds_fed_at = 0.0   # updated_s of last winds snapshot folded in
 _nexrad_client = None # NexradClient (internet radar poller) when enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 # Decoded NEXRAD image cache (pygame surface).  Re-decoded only when the
@@ -6021,13 +6023,16 @@ def _update_weather():
     # only.  Radio wins per item in the store; AIRMET/SIGMET carry geometry, so
     # this also populates the MET-page graphical overlay.
     if _store is not None and not radio_only:
-        global _taf_fed_at, _airsig_fed_at
+        global _taf_fed_at, _airsig_fed_at, _winds_fed_at
         if _taf_client is not None and _taf_client.updated_s != _taf_fed_at:
             _taf_fed_at = _taf_client.updated_s
             _store.add_tafs(_taf_client.snapshot())
         if _airsig_client is not None and _airsig_client.updated_s != _airsig_fed_at:
             _airsig_fed_at = _airsig_client.updated_s
             _store.add_airsigmets(_airsig_client.snapshot())
+        if _winds_client is not None and _winds_client.updated_s != _winds_fed_at:
+            _winds_fed_at = _winds_client.updated_s
+            _store.add_winds_list(_winds_client.snapshot())
     w["stations"] = _store.ground_stations() if _store is not None else []
     w["graphics"] = _store.graphics() if _store is not None else []
     cs = disp["cs"]
@@ -10700,16 +10705,25 @@ def _winds_station_for(icao):
     return icao[1:] if len(icao) == 4 and icao.startswith("K") else icao
 
 
+def _winds_pos(sid, w):
+    """(lat, lon) for a winds column: its own coords (internet Open-Meteo grid)
+    when present, else the airport DB for a radio FD station id, else None."""
+    if w and w.get("lat") is not None and w.get("lon") is not None:
+        return (w["lat"], w["lon"])
+    r = _nav_lookup_ident("K" + sid) or _nav_lookup_ident(sid)
+    return (r[1], r[2]) if r else None
+
+
 def _nearest_winds(lat, lon):
     store = _fisb_store()
     if store is None or lat is None or lon is None:
         return None
     best = None
     for sid in store.winds_stations():
-        r = _nav_lookup_ident("K" + sid) or _nav_lookup_ident(sid)
-        if not r:
+        pos = _winds_pos(sid, store.winds_for(sid))
+        if pos is None:
             continue
-        d, b = _nav_geo_dist_brg(lat, lon, r[1], r[2])
+        d, b = _nav_geo_dist_brg(lat, lon, pos[0], pos[1])
         if best is None or d < best[1]:
             best = (sid, d, b)
     return best
@@ -10731,14 +10745,16 @@ def _winds_barbs():
         return _winds_barbs_cache
     out = []
     for sid in store.winds_stations():
-        r = _nav_lookup_ident("K" + sid) or _nav_lookup_ident(sid)
         w = store.winds_for(sid)
-        if not r or not w:
+        if not w:
+            continue
+        pos = _winds_pos(sid, w)
+        if pos is None:
             continue
         lvl = next((lv for lv in w["levels"] if lv["alt_ft"] == alt), None)
         if lvl is None:
             continue
-        out.append({"lat": r[1], "lon": r[2], "station": sid,
+        out.append({"lat": pos[0], "lon": pos[1], "station": sid,
                     "dir": lvl.get("dir"), "spd": lvl.get("spd"),
                     "temp": lvl.get("temp"), "lv": lvl.get("lv", False)})
     _winds_barbs_key, _winds_barbs_cache = key, out
@@ -10978,7 +10994,10 @@ def _draw_wx_winds(surf):
     w = store.winds_for(station) if store else None
     near_txt = (f" · nearest {near:.0f} nm {_compass8(brg)}".rstrip()
                 if near else "")
-    title = f"WINDS  {station}{near_txt}"
+    src = (w or {}).get("src")
+    head = "grid" if (src == "INET" or "," in str(station)) else station
+    src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
+    title = f"WINDS  {head}{src_txt}{near_txt}"
 
     def _hdr(s, x, y):
         _text(s, "ALT", 15, (140, 160, 180), bold=True, x=x, y=y)
@@ -13191,7 +13210,13 @@ def main():
                                        interval_s=AIRSIG_INTERVAL_S,
                                        name="AirSigPoller")
         _airsig_client.start()
-        print("[PFD] TAF + AIRMET/SIGMET pollers started (internet backfill)")
+        global _winds_client
+        _winds_client = _wx.AwcPoller(view_fn=_wx_view,
+                                      fetch_fn=_wx.fetch_winds_grid,
+                                      interval_s=WINDS_INET_INTERVAL_S,
+                                      name="WindsPoller")
+        _winds_client.start()
+        print("[PFD] TAF + AIRMET/SIGMET + winds pollers started (internet)")
         global _nexrad_client
         _nexrad_client = _nexrad.NexradClient(view_fn=_wx_view,
                                               interval_s=NEXRAD_INTERVAL_S)
@@ -13347,6 +13372,8 @@ def main():
         _taf_client.stop()
     if _airsig_client:
         _airsig_client.stop()
+    if _winds_client:
+        _winds_client.stop()
     if _nexrad_client:
         _nexrad_client.stop()
     _settings.flush()

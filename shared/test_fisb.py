@@ -721,6 +721,18 @@ def test_internet_backfill():
     store2.add_airsigmets(items)
     check(len(store2.graphics()) == 2, "re-feed dedupes graphics")
 
+    case("internet winds carry their own position (grid coords)")
+    store3 = fisb.FisbWeather()
+    store3.add_winds_list([
+        {"station": "34.50,-111.80", "lat": 34.5, "lon": -111.8,
+         "levels": [{"alt_ft": 9000, "dir": 270, "spd": 30, "temp": -5,
+                     "lv": False}]},
+    ])
+    check(store3.winds_stations() == ["34.50,-111.80"], "grid station stored")
+    w = store3.winds_for("34.50,-111.80")
+    check(w["lat"] == 34.5 and w["src"] == "INET", "carries lat/lon + INET tag")
+    check(w["levels"][0]["spd"] == 30, "levels intact")
+
 
 def main():
     test_dlac()

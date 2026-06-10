@@ -17,6 +17,7 @@ Advisory only — like all in-cockpit weather, METARs are observations that
 age; treat them as situational awareness, not a dispatch product.
 """
 
+import calendar
 import json
 import math
 import threading
@@ -35,8 +36,18 @@ _UNKNOWN_COLOR = (160, 160, 160)
 _AWC_METAR = "https://aviationweather.gov/api/data/metar"
 _AWC_TAF   = "https://aviationweather.gov/api/data/taf"
 _AWC_AIRSIGMET = "https://aviationweather.gov/api/data/airsigmet"
+# Winds/temps aloft: Open-Meteo's free pressure-level forecast (no key).  AWC
+# retired the text FB winds product; the GFS grids behind it now come as JSON
+# here, batched many points per request.
+_OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 _UA = "PFD-and-AHRS/wx (experimental EFB; contact via repo)"
 _NM_PER_DEG = 60.0
+_M_TO_FT = 3.280839895
+
+# Pressure levels we pull (hPa) — enough to bracket our FD altitudes up to
+# ~39,000 ft (~200 hPa).  Each level gives wind, temp, and its geopotential
+# height, which we interpolate onto the standard altitudes.
+_OM_LEVELS = (1000, 925, 850, 700, 600, 500, 400, 300, 250, 200)
 
 # AWC airsigmet ``hazard`` codes -> the hazard names our graphics/picker use
 # (must match shared/fisb.py _GFX_HAZARD so internet and radio overlays share a
@@ -252,6 +263,151 @@ def fetch_airsigmets(lat=None, lon=None, radius_nm=None, timeout=12):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read().decode("utf-8", "ignore"))
     return parse_airsigmets(data)
+
+
+# ── Winds / temps aloft (Open-Meteo pressure levels → FD altitudes) ─────────────
+def _dirspd_to_uv(dir_deg, spd):
+    """Wind direction (deg FROM) + speed → (u, v) components.  The convention
+    is internal only — _uv_to_dirspd inverts it exactly, so it round-trips."""
+    r = math.radians(dir_deg)
+    return spd * math.sin(r), spd * math.cos(r)
+
+
+def _uv_to_dirspd(u, v):
+    d = math.degrees(math.atan2(u, v)) % 360.0
+    return (d or 360.0), math.hypot(u, v)
+
+
+def interp_winds(samples, alts):
+    """Interpolate pressure-level wind samples onto the standard FD altitudes.
+
+    ``samples`` is ``[(height_ft, dir_deg, spd_kt, temp_c), …]`` (any order);
+    ``alts`` the target altitudes (ft).  Interpolates the wind in u/v space
+    (so direction wraps correctly) and temperature linearly by geopotential
+    height.  Target altitudes outside the sampled column are skipped — no
+    extrapolation.  Returns ``[{alt_ft, dir, spd, temp, lv}]``."""
+    pts = sorted((s for s in samples if s[0] is not None), key=lambda s: s[0])
+    if len(pts) < 2:
+        return []
+    out = []
+    for a in alts:
+        if a < pts[0][0] or a > pts[-1][0]:
+            continue
+        # Bracketing levels.
+        for i in range(len(pts) - 1):
+            h0, h1 = pts[i][0], pts[i + 1][0]
+            if h0 <= a <= h1:
+                f = 0.0 if h1 == h0 else (a - h0) / (h1 - h0)
+                u0, v0 = _dirspd_to_uv(pts[i][1], pts[i][2])
+                u1, v1 = _dirspd_to_uv(pts[i + 1][1], pts[i + 1][2])
+                u = u0 + (u1 - u0) * f
+                v = v0 + (v1 - v0) * f
+                d, sp = _uv_to_dirspd(u, v)
+                t0, t1 = pts[i][3], pts[i + 1][3]
+                temp = None if (t0 is None or t1 is None) else \
+                    int(round(t0 + (t1 - t0) * f))
+                lv = sp < 3.0     # light & variable below ~3 kt
+                out.append({"alt_ft": a,
+                            "dir": None if lv else int(round(d / 10.0) * 10) or 360,
+                            "spd": None if lv else int(round(sp)),
+                            "temp": temp, "lv": lv})
+                break
+    return out
+
+
+def parse_open_meteo_winds(data, alts, now=None):
+    """Parse an Open-Meteo pressure-level response into winds-aloft dicts:
+    ``{station, lat, lon, levels, src}``.  ``data`` is one point object or a
+    list of them (Open-Meteo returns a list when several coords are queried).
+    For each point the hour nearest ``now`` is taken and the levels interpolated
+    onto ``alts``.  ``station`` is a stable coordinate label (the grid carries
+    no ICAO)."""
+    now = now if now is not None else time.time()
+    points = data if isinstance(data, list) else [data]
+    out = []
+    for p in points:
+        if not isinstance(p, dict):
+            continue
+        lat, lon = _num(p.get("latitude")), _num(p.get("longitude"))
+        hourly = p.get("hourly") or {}
+        times = hourly.get("time") or []
+        if lat is None or lon is None or not times:
+            continue
+        hi = _nearest_hour_index(times, now)
+        samples = []
+        for hpa in _OM_LEVELS:
+            hgt = _series_at(hourly.get(f"geopotential_height_{hpa}hPa"), hi)
+            spd = _series_at(hourly.get(f"windspeed_{hpa}hPa"), hi)
+            wdir = _series_at(hourly.get(f"winddirection_{hpa}hPa"), hi)
+            temp = _series_at(hourly.get(f"temperature_{hpa}hPa"), hi)
+            if hgt is None or spd is None or wdir is None:
+                continue
+            samples.append((hgt * _M_TO_FT, wdir, spd, temp))
+        levels = interp_winds(samples, alts)
+        if not levels:
+            continue
+        out.append({"station": f"{lat:.2f},{lon:.2f}",
+                    "lat": lat, "lon": lon, "levels": levels, "src": "INET"})
+    return out
+
+
+def _series_at(series, idx):
+    if not isinstance(series, list) or idx is None or idx >= len(series):
+        return None
+    return _num(series[idx])
+
+
+def _nearest_hour_index(times, now):
+    """Index into Open-Meteo's hourly ``time`` array nearest to ``now`` (epoch
+    s).  Times are ISO 'YYYY-MM-DDTHH:MM' in UTC."""
+    best_i, best_d = None, None
+    for i, t in enumerate(times):
+        try:
+            tm = time.strptime(t[:16], "%Y-%m-%dT%H:%M")
+            ep = calendar.timegm(tm)
+        except (ValueError, TypeError):
+            continue
+        d = abs(ep - now)
+        if best_d is None or d < best_d:
+            best_i, best_d = i, d
+    return best_i
+
+
+def _winds_grid_points(lat, lon, radius_nm, cols=4, rows=3):
+    """A small lat/lon grid spanning the view, for batched winds barbs."""
+    span = radius_nm * 0.8
+    dlat = span / _NM_PER_DEG
+    dlon = span / (_NM_PER_DEG * max(0.05, math.cos(math.radians(lat))))
+    pts = []
+    for r in range(rows):
+        fy = 0.5 if rows == 1 else r / (rows - 1)
+        for c in range(cols):
+            fx = 0.5 if cols == 1 else c / (cols - 1)
+            pts.append((lat - dlat + 2 * dlat * fy,
+                        lon - dlon + 2 * dlon * fx))
+    return pts
+
+
+def fetch_winds_grid(lat, lon, radius_nm, alts=None, timeout=15):
+    """Fetch winds/temps aloft for a grid across the view in one Open-Meteo
+    request, parsed onto the standard FD altitudes."""
+    from fisb import WINDS_ALTS
+    alts = alts if alts is not None else WINDS_ALTS
+    pts = _winds_grid_points(lat, lon, radius_nm)
+    lats = ",".join(f"{p[0]:.3f}" for p in pts)
+    lons = ",".join(f"{p[1]:.3f}" for p in pts)
+    fields = []
+    for hpa in _OM_LEVELS:
+        fields += [f"windspeed_{hpa}hPa", f"winddirection_{hpa}hPa",
+                   f"temperature_{hpa}hPa", f"geopotential_height_{hpa}hPa"]
+    url = (f"{_OPEN_METEO}?latitude={lats}&longitude={lons}"
+           f"&hourly={','.join(fields)}&windspeed_unit=kn"
+           f"&forecast_days=1&timeformat=iso8601&timezone=UTC")
+    req = urllib.request.Request(url, headers={"User-Agent": _UA,
+                                               "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8", "ignore"))
+    return parse_open_meteo_winds(data, alts)
 
 
 # ── Background poller ─────────────────────────────────────────────────────────

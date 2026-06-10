@@ -1085,6 +1085,7 @@ class FisbWeather:
                 self._graphics[key] = (g, now_mono)
                 self.graphic_count += 1
             for station, w in winds.items():
+                w.setdefault("src", "RDR")
                 self._winds[station] = (w, now_mono)
                 self.winds_count += 1
             for bnum, (cells, vmin) in nexrad.items():
@@ -1160,6 +1161,26 @@ class FisbWeather:
                 self.add_graphic({"hazard": it.get("hazard", "Advisory"),
                                   "geom": "polygon", "vertices": verts,
                                   "text": raw}, now_mono)
+
+    def add_winds(self, w, source="INET", now_mono=None):
+        """Store one winds-aloft column.  Internet (Open-Meteo grid) entries
+        carry their own ``lat``/``lon`` (the readers geolocate by those rather
+        than the airport DB).  Radio FD stations and internet grid points use
+        different ``station`` keys, so they coexist; ``src`` is tagged for the
+        readout."""
+        if not w or not w.get("station") or not w.get("levels"):
+            return
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        ww = dict(w)
+        ww.setdefault("src", source)
+        with self._lock:
+            self._winds[ww["station"]] = (ww, now_mono)
+            self.winds_count += 1
+
+    def add_winds_list(self, winds, source="INET", now_mono=None):
+        now_mono = now_mono if now_mono is not None else time.monotonic()
+        for w in winds or []:
+            self.add_winds(w, source, now_mono)
 
     def graphics(self, now_mono=None):
         """Active graphical hazard areas (``{hazard, geom, vertices}``), pruned
