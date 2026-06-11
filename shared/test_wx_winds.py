@@ -93,6 +93,19 @@ def test_fetch_jitter_staggers_due_time():
           "high-jitter screen waits (adopts the feeder's data instead)")
 
 
+def test_peer_feed_is_per_zone():
+    # A peer feeding ONE zone must not stop us pulling other still-stale zones
+    # (the global defer stalled the refresh into 6-min lurches).
+    c = _cache()
+    now = time.time()
+    for i in range(len(c.zones)):
+        c._data[i] = {"cols": [], "fetched": now - 7 * 3600}   # all stale
+    c.ingest_packed(wx.pack_winds_zone(0, now, []))            # peer feeds zone 0
+    due = c._due_zone(34.0, -112.0, now)
+    check(due is not None, "still has a due zone after a peer fed one")
+    check(due != 0, "the zone a peer just fed is not re-fetched, but others are")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

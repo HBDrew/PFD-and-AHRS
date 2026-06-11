@@ -726,6 +726,7 @@ class WindsUSCache(threading.Thread):
         self._backoff_until = 0.0       # monotonic; set after a failed fetch
         self._fail_streak = 0
         self._last_peer_rx = 0.0        # monotonic of last adopted peer zone
+        self._zone_peer_rx = {}         # idx -> monotonic of last FRESH peer feed
         self._started_at = time.monotonic()
         # Per-device fetch stagger: each screen treats a zone as "due" a
         # different random amount past max_age_s, so when several screens hold
@@ -795,6 +796,7 @@ class WindsUSCache(threading.Thread):
         # our fetch, so whichever screen has internet refreshes and feeds the
         # rest; if none can, they fail over to fetching themselves.
         self._last_peer_rx = time.monotonic()
+        self._zone_peer_rx[idx] = self._last_peer_rx   # per-zone: a peer owns this one
         self.updated_s = time.monotonic()
         self._save_disk()
         print(f"[WX:winds] adopted zone {idx} from peer ({len(cols)} cols)")
@@ -820,11 +822,18 @@ class WindsUSCache(threading.Thread):
         """Index of the most-due zone — the aircraft's own zone first, then the
         nearest other stale zone — or None when every zone is fresh."""
         cand = []
+        now_m = time.monotonic()
         due_age = self.max_age_s + self._fetch_jitter   # per-device stagger
         for i, z in enumerate(self.zones):
             rec = self._data.get(i)
             age = (now - rec["fetched"]) if rec else 1e12
             if age < due_age:
+                continue
+            # A peer is actively keeping THIS zone fresh for us → leave it to
+            # them.  Per-zone (not a global defer), so a feeder isn't blocked
+            # from pulling other still-stale zones just because it adopted one
+            # — that global block stalled the refresh after a couple of zones.
+            if (now_m - self._zone_peer_rx.get(i, 0.0)) < self.peer_grace_s:
                 continue
             inside = (z[0] <= lat <= z[1] and z[2] <= lon <= z[3])
             cy, cx = (z[0] + z[1]) / 2.0, (z[2] + z[3]) / 2.0
@@ -882,12 +891,14 @@ class WindsUSCache(threading.Thread):
             # Always share what we have (feeds peers; a screen with internet
             # thereby supplies the rest of the panel).
             self._broadcast_one()
-            # Fetch from Open-Meteo only when enabled, not backing off, past the
-            # startup grace (give peers a chance to feed us first), and not
-            # currently being fed by a peer.
+            # Fetch from Open-Meteo only when enabled, not backing off, and past
+            # the startup grace (give peers a chance to feed us first).  Whether
+            # a peer is covering the most-due zone is decided per-zone inside
+            # _due_zone — a global "a peer fed me" gate here stalled the refresh
+            # for peer_grace_s after adopting a single zone, leaving other zones
+            # stale (the 6-min-lurch you saw).
             if (self.enabled and now_m >= self._backoff_until
-                    and (now_m - self._started_at) >= self.startup_grace_s
-                    and not self._peer_active()):
+                    and (now_m - self._started_at) >= self.startup_grace_s):
                 self.refresh_one()                # one zone per tick, paced
             slept = 0.0
             while slept < self.slice_s and not self._stop.is_set():
