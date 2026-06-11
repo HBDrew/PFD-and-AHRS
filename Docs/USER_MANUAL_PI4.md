@@ -31,6 +31,9 @@
 16C. [Synthetic Approach (HITS + VDI)](#16c-synthetic-approach-hits--vdi)
 16D. [Moving-Map Inset](#16d-moving-map-inset)
 16E. [Winds Aloft (WND)](#16e-winds-aloft-wnd)
+16F. [Weather — Sources and Overlays](#16f-weather--sources-and-overlays)
+16G. [Traffic — ADS-B / FIS-B IN](#16g-traffic--ads-b--fis-b-in)
+16H. [Full-Screen MFD](#16h-full-screen-mfd)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
 19. [Audio Alerts](#19-audio-alerts)
@@ -503,9 +506,9 @@ The compass calibration only affects MAG-mode display. TRK mode is naturally dri
 
 ![Connectivity screen — editable fields, live STATUS badges, AHRS LINK diagnostics, live R/P/Y/ALT values](../pi4/previews/preview_setup_connectivity.png)
 
-Four editable fields + two status rows + two action buttons.
+Editable fields + two status rows + two action buttons.
 
-### Editable fields (rows 1–3)
+### Editable fields
 
 Tap any value box to open the keyboard and edit.
 
@@ -514,8 +517,12 @@ Tap any value box to open the keyboard and edit.
 | **AHRS URL** | Pico W access-point address | `http://192.168.4.1` |
 | **WiFi SSID** | Network name the Pi should join (for downloads) | `AHRS-Link` |
 | **WiFi PASSWORD** | WPA2 passphrase | (blank; not persisted) |
+| **NOTAM CLIENT ID** | FAA NOTAM API key | (blank) |
+| **NOTAM SECRET** | FAA NOTAM API secret (masked) | (blank) |
 
 The Wi-Fi password is intentionally **not** stored in `settings.json` and must be re-entered when you switch networks — see §13.
+
+**NOTAMs** require a free developer key from **api.faa.gov** — register an app there and paste the **client_id** / **client_secret** into these two fields (the secret is masked with bullets). The NOTAM poller reads them live, so entering a key enables NOTAMs (in the MET readout picker, §16F) on the next fetch with **no reboot**; leave them blank and the rest of the weather suite is unaffected.
 
 ### STATUS row
 
@@ -913,6 +920,133 @@ Open-Meteo's free tier is rate-limited **per internet connection**, so three dis
 
 ---
 
+## 16F. Weather — Sources and Overlays
+
+Beyond winds aloft (§16E), the display can show **METARs, TAFs, AIRMETs/SIGMETs, NEXRAD radar, and NOTAMs**. Weather comes from two independent paths and the display blends them:
+
+- **Internet (INET)** — `aviationweather.gov` (AWC) for METAR/TAF/AIRMET/SIGMET, Open-Meteo for winds, and the FAA NOTAM API (key required, see §12). No subscription; needs an internet path.
+- **Radio (FIS-B)** — the 978 MHz UAT uplink decoded from an ADS-B receiver (see `Docs/ADSB_IN.md`). Free over the air, no internet needed.
+
+### Source toggle — RADIO / AUTO / INET
+
+The map's left status strip shows a **WX** line you can tap to cycle the weather source:
+
+- **AUTO** (default) — use both; for any given station FIS-B (radio) wins and the internet backfills everything the radio didn't deliver.
+- **RADIO** — FIS-B only (internet poller paused).
+- **INET** — internet only (radio ignored).
+
+A parallel **ADS-B** line cycles the *traffic* source the same way (§16G). Both persist in `data/settings.json`.
+
+### Status lines and provenance
+
+The status strip reads, e.g., `WX AUTO R3 I12 2m`:
+
+- **mode** — AUTO / RADIO / INET.
+- **R*n*** — stations heard on the **R**adio (FIS-B).
+- **I*n*** — stations from the **I**nternet.
+- **age** — time since the last update (`45s`, `2m`; blank when very fresh).
+- **Colour:** green = receiving; amber (with a trailing `…`) = enabled but nothing yet.
+
+Each readout is tagged with its origin — **`FIS-B`** or **`INET`** — and a data-age (e.g. METARs show "Observed 15 min ago"), so you always know how the weather got to you and how old it is.
+
+### The overlay cycle (OVLY)
+
+The map shows **one** weather/airspace overlay at a time, selected by the **OVLY** label in the map's lower-left corner. Tap it to cycle:
+
+**ASP → TFC → MET → WND → NEX → (back to ASP)**
+
+| Label | Overlay |
+|-------|---------|
+| **ASP** | Airspace (Class B/C/D, MOA, Restricted/Prohibited boundaries) — needs an airspace file (§12 data notes). |
+| **TFC** | Traffic-focus — lifts the nearby-only clamp and shows all ADS-B traffic (§16G). |
+| **MET** | METAR station dots + the tap-for-readout weather picker. |
+| **WND** | Winds aloft (§16E). |
+| **NEX** | NEXRAD reflectivity. |
+
+(If you turn on more than one layer by hand from the MAP LAYERS pills, OVLY reads **MULTI**; the next tap collapses back to a single overlay.) Traffic is drawn on **every** page (clamped to nearby targets except on TFC), so you never lose collision awareness by looking at weather.
+
+### MET page — METARs and the readout picker
+
+On **MET**, each reporting station is a dot coloured by flight category: **green VFR · blue MVFR · red IFR · magenta LIFR**. Tap a dot (or an airport) and choose **Weather *ICAO*** to open the readout, which has tabs for:
+
+- **METAR** — wind, visibility, ceiling, altimeter, temp/dew, and the raw line, with the observation age.
+- **TAF** — the forecast broken into INITIAL / FROM / BECMG / TEMPO / PROB periods.
+- **AIRMET / SIGMET** — scrollable bulletins, **nearest-first**, flagged **ON ROUTE** when the hazard is within ~30 NM of your active leg.
+- **NOTAM** — scrollable, nearest-first (needs the FAA key, §12).
+
+A tab is greyed out when there's no data for it. If the field you tapped has no METAR/TAF/winds of its own, the display falls back to the **nearest** reporting station and labels it with the distance/bearing. Long readouts scroll (drag, with a scrollbar); tap outside to close.
+
+**Graphical AIRMET/SIGMET:** hazard areas that carry a polygon are shaded on the map; tap inside one to open its bulletin (smallest polygon wins when they nest).
+
+### NEX page — NEXRAD radar
+
+On **NEX**, radar reflectivity is painted as coloured intensity cells. Two ages are badged on the status strip: **`NEX`** = how long since the block was received, and **`NEX RDR valid`** = how stale the radar *mosaic* itself is (green < 10 min, amber 10–20, red > 20) — FIS-B radar can be several minutes older than when you received it, so always read the *valid* age.
+
+---
+
+## 16G. Traffic — ADS-B / FIS-B IN
+
+Nearby aircraft are shown on the map (and feed the collision alert) from ADS-B IN — either a radio receiver (1090ES + 978 UAT over GDL90/UDP, port 4000) or the built-in internet feed, blended like weather. Tap the **ADS-B** status line to cycle the traffic source **AUTO / RADIO / INET** (`R`/`I` counts split the two).
+
+### Reading a target
+
+Each target is a **diamond** with a short **leader line** in its direction of travel and a **data tag** showing relative altitude in hundreds of feet (`+05` above, `−12` below) plus `↑`/`↓` when climbing/descending faster than 200 fpm. Colour is the threat tier:
+
+| Tier | Colour | Meaning | Envelope |
+|------|--------|---------|----------|
+| **Alert** | Red (filled) | Collision threat | within **3 NM** *and* **600 ft** |
+| **Proximate** | Amber (filled) | Caution | within **6 NM** *and* **1200 ft** |
+| **Other** | Cyan (outline) | Advisory | beyond the above |
+
+On weather/airspace pages and the PFD inset, traffic is **clamped to nearby** (within ~7 NM / 3000 ft) to keep the picture clean; the **TFC** page lifts the clamp and shows everything. **Alert-class traffic is never hidden** — not by the clamp, and not by the declutter filters below.
+
+### Detail card
+
+On the full-screen MFD, tap a diamond to open its detail card: **callsign** (or hex ID), altitude (absolute + relative), groundspeed, track, vertical speed (Climbing/Descending/Level), and range/bearing (e.g. "5.2 NM SE"), with a **RADIO**/**INET** source tag. Tap again to dismiss.
+
+### Declutter filters
+
+Two DISPLAY-setup rows thin distant/irrelevant traffic (alert-class still always shows):
+
+- **TFC ALT** — ALL / ±2k / ±5k / ±10k ft (hide targets beyond that relative-altitude band).
+- **TFC RANGE** — ALL / 5 / 10 / 20 / 40 NM.
+
+### Collision alert
+
+When a new target enters the alert envelope, a red **TRAFFIC** banner flashes at 1 Hz — on the PFD it's a compact badge ("TFC 2:00 −200" = 2 o'clock, 200 ft below); on the MFD it's a larger top-centre banner with the range added. On the Pi 4 a **"Traffic, Traffic"** voice callout fires with it (rate-limited to one per 5 s, gated by the ALERT AUDIO master switch — §10/§19). The alert is edge-triggered on the nearest new threat, not a continuous nag.
+
+---
+
+## 16H. Full-Screen MFD
+
+The map overlays above (weather, traffic, winds, airspace) also live on a **full-screen multi-function display**. The lower-left **moving-map inset** (§16D) is always available on the PFD; the full-screen MFD trades the PFD instruments for a large map when you want the whole picture.
+
+### Switching PFD ↔ MFD
+
+A **3-finger hold (~2 s)** anywhere on the screen swaps between the PFD and the full-screen MFD. (A **2-finger hold (~0.8 s)** opens the setup menu — different finger count.) The swap is gated by **ENABLE MFD** in DISPLAY setup (default **ON** on the larger HDMI panels); turn it off to lock the display to the PFD and prevent accidental swaps. The unit always boots to the PFD.
+
+### Chrome (buttons and labels)
+
+| Control | Where | Action |
+|---------|-------|--------|
+| **D→** | top-left | Direct-to. Reads `D→` idle, `D→ KSEZ` (magenta) when active. Tap to enter/clear a waypoint (§16A). |
+| **FPL** | top-right | Open the flight-plan editor. |
+| **TRK↑ / N↑** | top-right, under FPL | Cyan label — tap to toggle track-up vs. north-up. |
+| **OVLY** | lower-left | Cycle the weather/airspace overlay (§16F). |
+| **RNG** (e.g. `10 NM` / `AUTO`) | lower-left, above the zoom buttons | Current range; `AUTO` fits the active direct-to leg. |
+| **− / +** | bottom corners | Zoom out / in through the range ladder. |
+| **CTR** | right side | Appears only when the map is **panned**; tap to recenter on the aircraft. |
+
+### Pan and recenter
+
+Drag anywhere on the map (outside a button) to **pan**; heavy layers (terrain tint, water, airspace, NEXRAD, METAR) are skipped while dragging so it tracks your finger, and repaint on release. When panned, the **CTR** button appears — tap it (or the own-ship chevron) to snap back to the aircraft.
+
+### Bottom data strip
+
+A full-width strip along the bottom carries **8 readout slots**, each a cyan caption over a coloured value. **Tap any slot** to open the picker and reassign it. Available kinds include **GS** (groundspeed), **TRK** (track), **ALT** (altitude), **WPT** (active waypoint), **BTW** (bearing-to-waypoint), **DIST**, **ETE**, **ETA**. The default layout is GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA, and your choices persist in `data/settings.json`.
+
+---
+
 ## 17. Demo Mode
 
 Scripted Sedona, AZ flight. No hardware needed.
@@ -1024,6 +1158,7 @@ The PFD ships with an EGPWS-style voice-callout pipeline. Six short clips are ge
 | **Terrain — pull up** | `Terrain. Terrain. Pull up. Pull up.` | Look-ahead clearance < 100 ft | Warning |
 | **Obstacle — pull up** | `Obstacle. Obstacle. Pull up. Pull up.` | Obstacle in the forward wedge with clearance < 100 ft | Warning |
 | **Bank angle** | `Bank angle. Bank angle.` | Roll > 60° absolute, AHRS healthy, sim not paused | Attention |
+| **Traffic** | `Traffic. Traffic.` | A new ADS-B target enters the alert envelope (≤ 3 NM and ≤ 600 ft). Edge-triggered on the nearest new threat, rate-limited to one per 5 s. Pairs with the flashing red TRAFFIC banner (§16G). | Warning |
 
 Source-identifying phrasing follows real EGPWS / TAWS-B convention: at every band the callout names what the airplane is about to hit, so the pilot doesn't have to guess from a generic "TERRAIN" whether to climb or to scan for a tower. The PULL UP suffix is reserved for the warning band — the action verb only fires when an immediate input is required.
 
