@@ -422,6 +422,9 @@ Tap either box to edit. Tap **APPLY WIFI** to write the config and switch networ
 ### NOTAM CLIENT ID / SECRET
 Optional. Paste a free FAA NOTAM API key (**client_id** / **client_secret**, from **api.faa.gov**) to enable NOTAMs in the MET readout picker (§16B). The secret is masked; the poller reads them live (no reboot). Blank = NOTAMs off, rest of weather unaffected.
 
+### Screen Sync
+Like the Pi 4/5, the Zero peer-syncs with other displays on the cabin network — bugs, baro, direct-to, flight plans, **and winds aloft** — over UDP, peer-to-peer. Master enable, the AUTO/USB/NET transport selector, per-category TX/RX toggles, the SHARE FPL toggle, and the peer/links diagnostics are all on the **Screen Sync** setup screen. See **Pi 4 manual §12A** for the full description; behaviour is identical. (Winds sharing is automatic — one display with internet feeds the rest.)
+
 ### STATUS row
 Two coloured badges:
 
@@ -496,6 +499,10 @@ Tap the region button to start. Progress bar and tile count update during downlo
 ### Current area
 
 **DOWNLOAD CURRENT AREA** at the top of the screen downloads a 5°×5° box (~25 tiles, ~35 MB) centred on the current GPS position — the fastest way to get alerting data for an unfamiliar area. Requires GPS fix.
+
+### COMPACT — shrink SRTM1 to SRTM3
+
+If you've copied full-resolution **SRTM1** tiles onto the Zero (e.g. rsynced from a Pi 4/5 that downloaded them), a **COMPACT** button appears in the status bar once SRTM1 tiles are present. Tap it to decimate every tile in place to **SRTM3** (1201², ~3 MB) — about **8.7×** smaller (a CONUS set drops ~3.7 GB → ~430 MB) at the ~90 m resolution the Zero's spot-check TAWS uses anyway. It rewrites each tile atomically (crash-safe), shows a progress bar, and the label flips to **COMPACTING…** (amber) while it runs. The Zero downloads SRTM3 directly, so you normally only need COMPACT after a hand-off of SRTM1 tiles from a Pi 4/5. (Command-line equivalent: `tools/compact_srtm.py` — see the README deploy recipe.)
 
 ### WiFi requirement
 

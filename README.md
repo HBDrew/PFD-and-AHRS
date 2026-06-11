@@ -6,7 +6,7 @@ A two-board avionic display system with **two display versions** that share a si
 |-------|------|
 | **Pico W** | Reads IMU (ICM-42688-P or WT901), GPS, BME280 baro. Serves state to the display over Wi-Fi SSE |
 | **Pi Zero 2W** | Waveshare 3.5" DPI 640×480 PFD — plain horizon, TAWS alerting, airport/runway overlays, no SVT |
-| **Pi 4** | 1024×600 PFD — true 3D Synthetic Vision Terrain rendered through OpenGL ES + same overlays |
+| **Pi 4 / Pi 5** | 1024×600 PFD — true 3D Synthetic Vision Terrain rendered through OpenGL ES + same overlays (same `pi4/` build on either board) |
 
 Both displays connect to the same Pico W AHRS unit over Wi-Fi SSE. The feature set (airports, runways, extended centerlines, obstacles, TAWS, persistence, simulator, demo mode) is identical across both — the Pi 4 adds the OpenGL SVT terrain background with mountains that rise above the horizon line.
 
@@ -112,11 +112,11 @@ The combination produces the full pitot-static set — IAS, TAS, density altitud
 | 64 GB microSD (Class 10 / A1) | Raspberry Pi OS Lite 64-bit |
 | USB-C power (5V 2A+) | |
 
-### Pi 4 display
+### Pi 4 / Pi 5 display
 | Part | Notes |
 |------|-------|
-| Raspberry Pi 4 | 2 GB+ RAM recommended |
-| ROADOM 7" HDMI IPS | 1024×600, HDMI video + USB capacitive touch (no software backlight control). Alternative: ROADOM 10" same electronics, or Waveshare 3.5" DPI as a Pi 4 fallback (`DISPLAY_PROFILE = "waveshare_35"`). |
+| Raspberry Pi 4 **or Pi 5** | 2 GB+ RAM recommended. The `pi4/` build runs unchanged on a Pi 5 — same install, just more frame-rate headroom for the OpenGL SVT. |
+| ROADOM 7" or 10" HDMI IPS | 1024×600, HDMI video + USB capacitive touch (no software backlight control — use the panel button). Set `DISPLAY_PROFILE` to `roadom_7` or `roadom_10` in `pi4/config.py`. Waveshare 3.5" DPI 640×480 (`waveshare_35`) is a panel-mount fallback (BRIGHTNESS over GPIO-18 PWM). |
 | 64 GB microSD (Class 10 / A1) | Raspberry Pi OS Lite 64-bit |
 | USB-C power (5V 3A) | |
 
@@ -178,11 +178,11 @@ sudo reboot
 
 ---
 
-## Quick Start — Pi 4
+## Quick Start — Pi 4 / Pi 5
 
 ### 1. Flash SD card
 
-Same as above, but use a Pi 4 with hostname `pfd4`. Set `DISPLAY_PROFILE` in `pi4/config.py` to match the connected panel (`roadom_7` for 1024×600 HDMI, `waveshare_35` for 640×480 DPI).
+Same as above, but use a Pi 4 **or Pi 5** (hostname e.g. `pfd4` / `pfd5`). The install is identical on both boards. Set `DISPLAY_PROFILE` in `pi4/config.py` to match the connected panel — `roadom_7` or `roadom_10` for the 1024×600 HDMI panels, `waveshare_35` for the 640×480 DPI.
 
 ### 2. Clone and install
 
@@ -218,11 +218,43 @@ sudo reboot
 
 ---
 
-## Pico W — Setup
+## Multi-display panels (Pi 4/5 + Pi Zero together)
+
+Several displays on the same cabin network keep each other in sync (bugs,
+baro, direct-to, flight plans, **and winds aloft**) over UDP — peer-to-peer, no
+master. Turn it on per display from the **Screen Sync** setup screen (see the
+pilot manuals). Winds in particular: only **one** display needs internet — it
+fetches the national winds grid and broadcasts it; the others adopt it and make
+zero Open-Meteo calls (so three displays don't trip the per-IP rate limit).
+
+### Seeding a fresh Pi Zero from a Pi 4/5 (no re-download)
+
+The Pi 4/5 does the heavy data work (SRTM, water masks, Natural Earth). Hand
+the cooked data to a Pi Zero instead of re-downloading on it:
+
+```bash
+# On the Pi 4/5: compact SRTM1 → SRTM3 copies for the Zero
+python3 tools/compact_srtm.py --srtm-dir ~/PFD-and-AHRS/pi4/data/srtm \
+    --output-dir /tmp/srtm3_out
+# Then on the Pi Zero, pull the three datasets over the LAN:
+rsync -av pfd4.local:/tmp/srtm3_out/                      ~/PFD-and-AHRS/pi_zero/data/srtm/
+rsync -av pfd4.local:~/PFD-and-AHRS/pi4/data/water/       ~/PFD-and-AHRS/pi_zero/data/water/
+rsync -av pfd4.local:~/PFD-and-AHRS/pi4/data/natural_earth/ ~/PFD-and-AHRS/pi_zero/data/natural_earth/
+```
+
+The Zero then has terrain + water + boundary lines with no Mapzen/Natural-Earth
+downloads of its own. (A one-command bootstrap wrapper is on the TODO list —
+DEPLOY-RSYNC.)
+
+---
+
+## Pico W / Pico 2W — Setup
+
+> **Pico 2W (RP2350) vs Pico W (RP2040):** either works; the Pico 2W's larger RAM is the recommended board (it absorbs the bigger iPhone page + future growth). Both flash the same way. If the board is **blank** (no MicroPython yet), install MicroPython first: hold the **BOOTSEL** button while plugging the USB cable, release once it mounts as a USB drive (labelled `RPI-RP2` on RP2040 or `RP2350` on the Pico 2W), then **drag the matching MicroPython `.uf2`** onto that drive — be sure to use the **RP2350** build for a Pico 2W. It reboots into MicroPython; then copy the firmware files below.
 
 ### Copy firmware files
 
-Connect Pico W via USB. Copy the `firmware/` folder contents to the Pico root (using Thonny, rshell, or mpremote):
+Connect the Pico via USB. Copy the `firmware/` folder contents to the Pico root (using Thonny, rshell, or mpremote):
 
 ```
 firmware/

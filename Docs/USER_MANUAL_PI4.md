@@ -22,6 +22,7 @@
 10. [Display Settings](#10-display-settings)
 11. [AHRS / Sensors](#11-ahrs--sensors)
 12. [Connectivity](#12-connectivity)
+12A. [Screen Sync (multi-display panels)](#12a-screen-sync-multi-display-panels)
 13. [System](#13-system)
 14. [Terrain Data Download](#14-terrain-data-download)
 15. [Obstacle Data Download](#15-obstacle-data-download)
@@ -479,6 +480,14 @@ The modal shows live readouts for **RAW HDG** (the raw compass output before cal
 | **RESTART** | Abandon partial captures and restart the eight-capture sequence. |
 | **⊕ CAPTURE *X*** | Record the current heading at the cardinal/intercardinal indicated by *X*. Available throughout. |
 
+### Hard-iron calibration (TUMBLE)
+
+The cal modal also has a **TUMBLE** flow — a faster hard-iron calibration that doesn't need you to find headings. Tap **TUMBLE** and then, over about **30 seconds**, slowly rotate the AHRS unit through **all** orientations (roll it, pitch it, yaw it — like polishing every face of a ball). The modal shows the **elapsed time** and the live **per-axis spread** (the min–max range the magnetometer has seen on X / Y / Z) so you can tell when you've covered enough; keep going until each axis stops growing. Tap **STOP TUMBLE** to finish.
+
+The firmware tracks the min/max on each magnetometer axis during the tumble and, on finish, solves the **hard-iron offset** as the centre of that ellipsoid `((min+max)/2)` per axis, writes it to flash, and applies it before computing yaw. It drives the same `/magoff?action=tumble_start` / `tumble_finish` endpoints (over Wi-Fi or USB serial) and persists like the deviation table below — on the **AHRS**, so every display benefits.
+
+Use TUMBLE when you can move the unit freely (bench, or a handheld unit before mounting); use the 8-point walk-through when it's already panel-mounted and you can only swing the airplane. *(The Pi Zero still has the 8-point flow only — its TUMBLE port is pending.)*
+
 ### Storage — AHRS-side, not display-side
 
 Magnetometer calibration and the AHRS orientation / mounting selection both live in flash **on the Pico W**, not in the display's `settings.json`. The wizard builds a 36-point deviation table from your eight samples (linear interpolation per 10° slot) and pushes it to the AHRS over the USB serial link (`$MAGDEV,<36 floats>`) or the Wi-Fi config endpoint (`GET /magcal?action=set&t=…`). The Pico writes the table to `magdev.json` on its own filesystem and applies it before broadcasting yaw on the SSE / `$AHRS` stream. Same for orientation / mounting (`$ORIENT,connector,mounting` → `orient.json`).
@@ -552,6 +561,30 @@ After editing WiFi SSID/password, tap **APPLY WIFI** to actually commit the chan
 
 ---
 
+## 12A. Screen Sync (multi-display panels)
+
+When you run more than one display (e.g. a Pi 5 PFD + a Pi Zero MFD), they keep each other in sync over the cabin network — set a bug or a flight plan on one and it appears on the others. It's **peer-to-peer** (no master), over UDP broadcast on every available link (USB-gadget, cabin Wi-Fi, the Pico-W AP). The **SCREEN SYNC** setup screen controls it:
+
+- **Master enable** — turn all sync on/off.
+- **TRANSPORT** — `AUTO` (broadcast on every link), `USB` (force the USB-gadget link only), or `NET` (force Wi-Fi/ethernet only). Useful for proving a specific link carries packets; the listener still accepts from anywhere.
+- **PEER** badge — green with the peer's short ID + "last *N*s ago" when another display is heard; red "NO PEER" when sync is on but nobody's there; grey when sync is off (peers go stale after 6 s of silence).
+- **LINKS** row — per-interface diagnostics: `●`/`○` eligible, plus TX/RX packet counts and each interface's address.
+
+**Per-category sharing** (each its own TX / RX, so you choose direction):
+
+| Category | What syncs |
+|---|---|
+| **BUGS** | altitude / speed / heading / VS bugs |
+| **BARO** | altimeter setting |
+| **NAV** | the active direct-to (ident, position, activation point) |
+| **AHRS** | pitch / roll / yaw — **OFF / TX / RX** (mutually exclusive, to prevent an echo loop on the streaming sensor) |
+| **GPS** | position / alt / speed / track — **OFF / TX / RX** (same mutex) |
+| **SHARE FPL** | the active flight plan **and** the saved-plan / user-waypoint library — a single bidirectional toggle |
+
+Bugs / baro / nav publish only when *you* edit them, so they don't echo. **Winds aloft are also shared automatically** whenever sync is enabled (a display with internet feeds the winds grid to the others — see §16E), and don't need a toggle. All choices persist in `data/settings.json`.
+
+---
+
 ## 13. System
 
 ![System screen](../pi4/previews/preview_setup_system.png)
@@ -603,6 +636,21 @@ Downloads are resumable: already-present tiles are skipped, so re-tapping a regi
 ### WiFi requirement
 
 The Pi 4 must be on an internet-reachable network to download. Use the Connectivity screen (§12) to switch to your home Wi-Fi, download here, then switch back to the Pico W AP for flight. If you tap DOWNLOAD while still on the Pico W AP the screen will show a "WiFi (home network) required" guard message instead of starting.
+
+### Compacting SRTM (SRTM1 → SRTM3) and the pi4 → pi_zero hand-off
+
+The Pi 4/5 downloads full-resolution **SRTM1** tiles (3601², ~25 MB each). The Pi Zero uses the lighter **SRTM3** (1201², ~3 MB) and can't hold the SRTM1 set, so there's a one-shot compactor, `tools/compact_srtm.py`, that decimates SRTM1 → SRTM3 (~8.7× smaller). On the Pi 4 it's a command line:
+
+```bash
+# Compact in place:
+python3 tools/compact_srtm.py --srtm-dir ~/PFD-and-AHRS/pi4/data/srtm
+# Or write SRTM3 copies elsewhere (leaves the SRTM1 originals untouched) —
+# the hand-off path for seeding a Pi Zero:
+python3 tools/compact_srtm.py --srtm-dir ~/PFD-and-AHRS/pi4/data/srtm \
+    --output-dir ~/srtm3_for_zero        #  then rsync that to the Zero
+```
+
+(The Pi Zero also has an on-screen **COMPACT** button that does this in place — see the Pi Zero manual. See also the multi-display deploy recipe in the README.)
 
 ---
 

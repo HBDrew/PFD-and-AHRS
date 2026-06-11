@@ -53,6 +53,38 @@ calc).  Target: the display-setup scroll/clamp logic in `pi4/pfd.py`
 content_height − viewport_height and confirm content_height counts every
 row (incl. the MAP LAYERS sub-rows) plus bottom padding.
 
+### INSET-ORIENT-STUCK  Moving-map inset stuck north-up — TRK↑ toggle dead
+Status: **OPEN**
+The PFD moving-map inset won't go track-up: tapping the **TRK↑ / N↑**
+label on the inset does nothing, and the **MAP INSET** orientation pill
+on the DISPLAY setup screen doesn't change it either — it stays N-up.
+Two suspects: (a) the inset **force-north-up-at-wide-zoom** rule
+(`_eff_orient = "nrth" if _eff_range > 40 else _orient_pref` in
+`pi4/pfd.py`) is firing when it shouldn't — e.g. on the WND page the
+inset uses the winds zoom (≥ 40 NM) so it's *always* past the 40 NM
+force threshold → always N-up; (b) the orient tap-hit-test / the
+`map_orient` write isn't actually toggling the setting (or the inset
+read ignores it).  Fix: confirm `map_orient` flips on both the inset
+label tap and the setup pill, and that the force-N-up threshold isn't
+swallowing the pilot's choice at the inset's normal zooms; consider
+raising/removing the force-N-up cap for the inset, or only forcing it
+when the *terrain tint* is on (the original reason was the rotated-tint
+smear).  Target: inset render + orient hit-test in `pi4/pfd.py`
+(and `pi_zero/pfd.py` if shared).
+
+### WINDS-INSET-ALT-SELECT  No winds-altitude selector on the inset
+Status: **OPEN**
+The winds-aloft **altitude** (3k/6k/9k/12k/18k) and forecast-time
+buttons live on the full-screen MFD chrome, so when the WND overlay is
+shown on the **PFD inset** there's no way to change the level — you're
+stuck on whatever `winds_alt_ft` was last set on the MFD.  Need a way to
+pick the winds level while on the inset.  Options: a tiny alt readout/
+tap-target on the inset when the WND overlay is active (tap to cycle the
+level, like the MFD button), or expose `winds_alt_ft` (and the forecast
+time) on the DISPLAY setup screen so it's settable without the MFD.
+Target: inset chrome + tap handler in `pi4/pfd.py`; reuse
+`_mfd_cycle_winds_alt` / `_mfd_cycle_winds_time`.
+
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
 Today PFD picks the AHRS transport once at startup (USB if
@@ -625,10 +657,19 @@ AIRMET/SIGMET, NEXRAD), **traffic** (diamonds/threat/TFC/detail-card/
 declutter + collision alert), the **full-screen MFD** chrome, and the
 **NOTAM** key fields.  `ADSB_IN.md` shipped items moved to Implemented;
 `README.md` roadmap refreshed.  iPhone manual covers the FPV.
-Still pending (smaller, mostly setup/dev docs): screen-sync setup +
-per-category TX/RX UX, TUMBLE hard-iron mag-cal flow, COMPACT button +
-`tools/compact_srtm.py`, Pico 2W BOOTSEL/UF2 flashing, the DEPLOY-RSYNC
-deploy recipe, and the REQUIREMENTS_* / TEST_PROCEDURE_* docs.
+Also done (full-update pass): **Pi 4 / Pi 5** reframe + the three
+**display profiles** (roadom_7 / roadom_10 / waveshare_35) in pi4 §1 and
+README; **Screen Sync** setup (pi4 §12A, pi_zero §12); **TUMBLE**
+hard-iron mag-cal (pi4 §11); **COMPACT** + `tools/compact_srtm.py`
+(pi_zero §14, pi4 §14); **Pico 2W** BOOTSEL/UF2 flashing + the
+**multi-display deploy (rsync)** recipe + winds-sharing note (README);
+**flight-path-vector** preview wired into the render tool, with image
+refs + a live-capture catalog for the WND/MET/TFC/MFD shots in
+`pi4/previews/README.md`.
+Still pending: only the internal **REQUIREMENTS_* / TEST_PROCEDURE_***
+docs (architectural/QA, not pilot-facing) and **regenerating the actual
+preview PNGs** on a Pi (the cloud box has no display/GL — run
+`tools/regen_previews.sh` + the live `fbgrab` captures).
 
 ### PI4-ETE-LATENCY  pi4 inset ETE takes a beat to populate
 Status: **OPEN — investigate**
