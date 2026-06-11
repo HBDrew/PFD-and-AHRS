@@ -462,8 +462,11 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
         if not in_flight:
             _tint_pending.add(key)
     if not in_flight and _TINT_DEBUG:
-        print(f"[tint] KICK key={key} (cache_keys={list(_tint_cache.keys())[:3]}"
-              f"{'…' if len(_tint_cache) > 3 else ''})", flush=True)
+        _step = max(0.002, (range_nm / _NM_PER_DEG_LAT) * 0.10)
+        _cl = max(0.05, math.cos(math.radians(c_lat)))
+        print(f"[tint] KICK c=({c_lat!r},{c_lon!r}) q=({q_lat!r},{q_lon!r}) "
+              f"step={_step:.6f} lonstep={_step / _cl:.6f} "
+              f"NM={_NM_PER_DEG_LAT!r} key={key}", flush=True)
     if not in_flight:
         threading.Thread(
             target=_tint_async_worker,
