@@ -498,8 +498,16 @@ def fetch_winds(lat, lon, range_nm, aspect=1.7, route=None,
     alts = alts if alts is not None else WINDS_ALTS
     pts = list(_winds_grid_points(lat, lon, range_nm, aspect))
     if route and len(route) >= 2:
-        pts += _route_winds_points(route, width_nm=route_width_nm,
-                                   max_points=max_points)
+        # The visible-area grid already owns the on-screen picture.  Keep only
+        # the corridor points that fall OUTSIDE the visible window so a short
+        # direct-to doesn't stack a second batch of barbs on top of the grid;
+        # the corridor then just extends data coverage along the part of the
+        # route that runs off-screen (it scrolls into view, cleanly gridded,
+        # as the aircraft flies the leg).
+        reach = range_nm
+        pts += [p for p in _route_winds_points(route, width_nm=route_width_nm,
+                                               max_points=max_points)
+                if _nm_between(lat, lon, p[0], p[1]) > reach]
     # Drop only true duplicates (~0.06 nm) — a coarse snap here would collapse
     # the regular visible-area grid at close zoom (e.g. a 5 nm inset has ~2.7
     # nm row spacing) and leave a handful of unevenly-placed barbs.  The
@@ -654,8 +662,8 @@ class WxClient(threading.Thread):
         flat, flon, frad = self._fetch_ctr
         if _nm_between(flat, flon, lat, lon) > self.move_frac * frad:
             return True                                  # panned far enough
-        if radius > 1.5 * frad or radius < 0.6 * frad:
-            return True                                  # zoom changed a lot
+        if radius > 1.4 * frad or radius < 0.7 * frad:
+            return True                                  # zoom changed a step
         return False
 
     def run(self):
@@ -763,7 +771,7 @@ class AwcPoller(threading.Thread):
         flat, flon, frad = self._fetch_ctr
         if _nm_between(flat, flon, lat, lon) > self.move_frac * frad:
             return True
-        if radius > 1.6 * frad or radius < 0.5 * frad:
+        if radius > 1.4 * frad or radius < 0.7 * frad:   # any discrete zoom step
             return True
         return False
 
