@@ -202,14 +202,18 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int, prefer: str = None):
     _disk_reads += 1
     if HAS_NUMPY:
         if decimate_to_srtm3:
-            # Read SRTM1 raw int16 (~25 MB), slice every third sample to
-            # SRTM3 resolution, copy to release the big buffer.  Decimated
-            # array then goes through the same metres→feet + void mask +
-            # int16-recast as a native SRTM3 file.
-            raw_full = np.fromfile(path, dtype='>i2').reshape(
-                (SRTM1_SAMPLES, SRTM1_SAMPLES))
-            data_raw = raw_full[::3, ::3].copy()
-            del raw_full
+            # Memory-map and slice every third ROW so only ~1/3 of the 26 MB
+            # SRTM1 file is faulted in (a touched row's columns are
+            # contiguous, so column-striding saves no I/O, but skipping 2 of
+            # every 3 rows cuts the cold read ~3x — important on the Pi 4's
+            # SD card, where reading the whole file per tile made the
+            # wide-zoom tint build take tens of seconds).  Decimated array
+            # then goes through the same metres→feet + void mask + int16
+            # recast as a native SRTM3 file.
+            mm = np.memmap(path, dtype='>i2', mode='r',
+                           shape=(SRTM1_SAMPLES, SRTM1_SAMPLES))
+            data_raw = np.array(mm[::3, ::3])
+            del mm
         else:
             data_raw = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
         # metres → feet, replace voids, then store as int16 to halve the

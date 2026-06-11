@@ -59,14 +59,24 @@ import perf as _perf_mod
 from terrain import get_elevation_ft, set_tile_cache_max as _set_tile_cache_max
 from svt_renderer import render_svt as render_svt_pygame
 
-# The Pi 4/5 has the RAM (and needs it): an 80 NM moving-map tint in TRK-UP
-# spans ~25-30 one-degree tiles, well past the default 16-tile cache sized
-# for the Pi Zero.  Without headroom the tint re-reads every tile each build
-# (the "BUILDING…" hang) and thrashes against the TAWS/AGL terrain reads.
-# Decimated SRTM3 tint tiles are ~2.8 MB, so the extra entries are cheap;
-# 64 holds a full TRK-UP footprint plus cell-transition hysteresis and the
-# SVT scene's ~12 full-SRTM1 tiles.
-_set_tile_cache_max(64)
+# Size the SRTM tile cache to available RAM.  Now that the moving-map tint
+# cache key is stable (see _quantise_centre), the wide-zoom tint rebuilds
+# only when the aircraft actually crosses a grid cell — not every frame — so
+# we no longer need a huge tile cache to survive per-frame thrash.  Keep it
+# modest so a 2-4 GB Pi 4 can't OOM (full SRTM1 tiles are ~26 MB each; the
+# SVT 3D scene loads them at native res).  A Pi 5 with more RAM gets a larger
+# warm working set.
+def _ram_gb():
+    try:
+        with open("/proc/meminfo") as _f:
+            for _l in _f:
+                if _l.startswith("MemTotal"):
+                    return int(_l.split()[1]) / 1024.0 / 1024.0
+    except Exception:
+        pass
+    return 2.0
+_mem_gb = _ram_gb()
+_set_tile_cache_max(48 if _mem_gb >= 6.0 else (28 if _mem_gb >= 3.5 else 16))
 
 # Try to load the OpenGL SVT renderer.  Falls back to pygame on failure.
 # NOTE: GL SVT is disabled while we resolve EGL/KMS device contention on
