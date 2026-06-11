@@ -32,3 +32,4 @@ pi4/data/settings.json
 
 # Local config overrides
 config_local.py
+pi4/data/
