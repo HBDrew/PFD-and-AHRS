@@ -10,6 +10,52 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### WINDS-FORECAST-SERIES  Winds roll forward to "now"; inset is always now
+Status: **DONE (pi4 + pi_zero)** — winds-aloft barbs are no longer a frozen
+fetch-time snapshot.  Each national-cache column now carries the forecast
+**series** (per-hour `[dir,spd,temp]` flat rows out to ~30 h, stored in
+`t0`/`step_s`/`series`/`alts`).  Open-Meteo already returns a 48 h forecast per
+call, so the series is free; we just stopped throwing all but one hour away.
+- **Retarget at draw time.** `_winds_barbs(offset_h)` and the barb-tap table
+  pick the hour for `now + offset_h` via `wx.winds_levels_at()`.  The PFD inset
+  passes `offset_h=0` → it is ALWAYS *now*, independent of the WND-page
+  forecast-time selector.  The page passes its `winds_time_offset_h`.  A target
+  outside the held window draws blank (no wrong-time forecast).
+- **Re-pull on the 6 h GFS run** (`max_age_s`), not to chase "now" — the series
+  advances on its own between fetches.  Changing the page offset no longer
+  forces a re-fetch (instant, zero API calls); `force_refresh()` removed from
+  `_mfd_cycle_winds_time`.
+- **LAN sharing stays compact.** The full series is ~30× too big for one UDP
+  datagram, so a feeder broadcasts a single-hour *now*-snapshot (existing
+  packet format) re-derived each tick and stamped `st=now`; adopters roll
+  forward as `st` advances (`ingest_packed` adopts a newer run OR a newer
+  snapshot of the same run).  A relayed/frozen snapshot carries an
+  un-advancing `st`, so a dead feeder can't pin the panel — deferral lapses and
+  someone re-pulls.  A screen holding its own series ignores peer snapshots
+  (never downgrades).
+- Memory: series kept as flat int rows (~7.5 MB national, shared by reference
+  into the FIS-B store), not dicts (~90 MB).  Disk persists the series.
+- Files: `shared/wx.py` (`parse_open_meteo_winds(series_h=…)`,
+  `_build_winds_series`, `winds_levels_at`, `_winds_cols_snapshot`,
+  `_zone_packet`, `ingest_packed`, `WindsUSCache(series_h=30)`); `_winds_barbs`
+  + `_draw_wx_winds` + `_mfd_cycle_winds_time` in both `pi4/pfd.py` and
+  `pi_zero/pfd.py`.  Tests: `shared/test_wx_winds.py` (12 cases).
+- **DEFERRED — WINDS-SERIES-PEER-OFFSET (Phase 2):** a screen that ONLY ever
+  adopts a zone (never fetches it) holds just the now-snapshot, so its WND-page
+  `+Nh` selector reads *now* for that zone until it fetches.  Full `+Nh` on
+  pure-adopters needs chunked/compressed series sharing in `screen_sync`
+  (reassembly across datagrams) — not built; feeding rotates across the 3 Pis,
+  so each holds series for most zones in practice.  The inset (now) is correct
+  everywhere regardless.
+
+### WINDS-STALE-STATUS  "6/6 loaded" was uninformative; report stale/expired
+Status: **DONE** — zones refresh in place and never drop, so a loaded-count
+sat at `6/6` forever.  `status()` now returns `(fresh, total, age_s, stale,
+expired)`: fresh `< max_age_s` (6 h), stale `6–24 h` (drawn as a fallback),
+expired `≥ expire_s` (24 h — `columns()`/`count()` stop SERVING it, drawn
+blank).  Status line reads e.g. `WINDS 4/6 · 7h · 2 stale`.  `stale_zones()`
+lists which.  `shared/wx.py`, status line in both `pfd.py`.
+
 ### TFC-RA-SENSITIVITY  Traffic collision alert (RA) fires too eagerly
 Status: **FIXED** — closure/tau-based RA (replaces the flat ring)
 `threat_level` now fires the "alert" (red / "Traffic, Traffic") tier only

@@ -323,13 +323,20 @@ def interp_winds(samples, alts):
     return out
 
 
-def parse_open_meteo_winds(data, alts, now=None, hour_offset=0):
+def parse_open_meteo_winds(data, alts, now=None, hour_offset=0, series_h=0):
     """Parse an Open-Meteo pressure-level response into winds-aloft dicts:
     ``{station, lat, lon, levels, src, hour_offset}``.  ``data`` is one point
     object or a list of them (Open-Meteo returns a list when several coords are
     queried).  For each point the hour nearest ``now + hour_offset`` is taken
     and the levels interpolated onto ``alts``.  ``station`` is a stable
-    coordinate label (the grid carries no ICAO)."""
+    coordinate label (the grid carries no ICAO).
+
+    When ``series_h`` > 0 each column also carries the forecast SERIES — the
+    per-hour ``levels`` spanning ``[now, now + series_h h]`` plus ``t0``/``step_s``
+    — so the draw side can retarget to any valid hour (``now``, ``now + offset``)
+    without a re-fetch.  We already download a 48 h forecast per call, so the
+    series is free; keeping it lets the picture roll forward to the correct hour
+    on its own instead of freezing at the fetch-time snapshot."""
     now = now if now is not None else time.time()
     target = now + hour_offset * 3600.0
     points = data if isinstance(data, list) else [data]
@@ -342,22 +349,110 @@ def parse_open_meteo_winds(data, alts, now=None, hour_offset=0):
         times = hourly.get("time") or []
         if lat is None or lon is None or not times:
             continue
-        hi = _nearest_hour_index(times, target)
-        samples = []
-        for hpa in _OM_LEVELS:
-            hgt = _series_at(hourly.get(f"geopotential_height_{hpa}hPa"), hi)
-            spd = _series_at(hourly.get(f"windspeed_{hpa}hPa"), hi)
-            wdir = _series_at(hourly.get(f"winddirection_{hpa}hPa"), hi)
-            temp = _series_at(hourly.get(f"temperature_{hpa}hPa"), hi)
-            if hgt is None or spd is None or wdir is None:
-                continue
-            samples.append((hgt * _M_TO_FT, wdir, spd, temp))
-        levels = interp_winds(samples, alts)
+        epochs = [_iso_to_epoch(t) for t in times]
+        levels = _levels_at(hourly, _nearest_epoch_index(epochs, target), alts)
         if not levels:
             continue
-        out.append({"station": f"{lat:.2f},{lon:.2f}",
-                    "lat": lat, "lon": lon, "levels": levels, "src": "INET",
-                    "hour_offset": hour_offset})
+        col = {"station": f"{lat:.2f},{lon:.2f}",
+               "lat": lat, "lon": lon, "levels": levels, "src": "INET",
+               "hour_offset": hour_offset}
+        if series_h > 0:
+            t0, step_s, series = _build_winds_series(
+                hourly, epochs, alts, now, series_h)
+            if series:
+                col["t0"], col["step_s"] = t0, step_s
+                col["series"], col["alts"] = series, list(alts)
+        out.append(col)
+    return out
+
+
+def _levels_to_row(levels, alts):
+    """Flatten ``levels`` dicts to ``[dir,spd,temp]`` per altitude (in ``alts``
+    order) — the compact per-hour form stored in a column's forecast series."""
+    by = {lv.get("alt_ft"): lv for lv in levels}
+    row = []
+    for a in alts:
+        lv = by.get(a)
+        row += [lv.get("dir"), lv.get("spd"), lv.get("temp")] if lv \
+            else [None, None, None]
+    return row
+
+
+def _row_to_levels(row, alts):
+    """Expand a flat series row back to ``levels`` dicts (calm/None-speed levels
+    are dropped, matching the packed LAN form)."""
+    out = []
+    for k, a in enumerate(alts):
+        b = k * 3
+        if b + 2 >= len(row):
+            break
+        d, s, t = row[b], row[b + 1], row[b + 2]
+        if s is None:
+            continue
+        out.append({"alt_ft": a, "dir": d, "spd": s, "temp": t, "lv": False})
+    return out
+
+
+def _build_winds_series(hourly, epochs, alts, now, series_h):
+    """Compact per-hour forecast for the hours in ``[now, now + series_h h]``,
+    aligned to a uniform ``t0 + i*step_s`` grid.  Returns ``(t0, step_s, rows)``
+    where each row is the flat ``[dir,spd,temp …]`` for that hour (kept as flat
+    lists, not dicts, so a 30 h national series is a few MB of RAM, not ~90).
+    A failed hour stays in place as an empty row so the index grid is intact."""
+    valid = [(i, ep) for i, ep in enumerate(epochs) if ep is not None]
+    if len(valid) < 2:
+        return None, 3600, []
+    step_s = valid[1][1] - valid[0][1] or 3600
+    lo, hi_t = now - step_s * 0.5, now + series_h * 3600.0 + step_s * 0.5
+    t0, rows = None, []
+    for i, ep in valid:
+        if ep < lo:
+            continue
+        if ep > hi_t:
+            break
+        if t0 is None:
+            t0 = ep
+        rows.append(_levels_to_row(_levels_at(hourly, i, alts), alts))
+    return t0, step_s, rows
+
+
+def winds_levels_at(col, target_ts, alts=None):
+    """The winds ``levels`` of a column valid at ``target_ts`` (epoch s).
+
+    Columns that carry a forecast ``series`` are retargeted to the nearest hour
+    (expanded from the compact flat row); a target outside the held window
+    returns ``[]`` (drawn blank — we don't pass off a wrong-time forecast as
+    current).  Columns without a series (a peer's now-snapshot, radio winds, or
+    a disk-loaded snapshot) fall back to their single ``levels``."""
+    series = col.get("series")
+    t0 = col.get("t0")
+    if not series or t0 is None:
+        return col.get("levels", [])
+    step = col.get("step_s") or 3600
+    fi = (target_ts - t0) / step
+    if fi < -0.5 or fi > len(series) - 0.5:
+        return []
+    row = series[max(0, min(len(series) - 1, int(round(fi))))]
+    return _row_to_levels(row, alts or col.get("alts") or _winds_alts())
+
+
+def _winds_alts():
+    from fisb import WINDS_ALTS
+    return list(WINDS_ALTS)
+
+
+def _winds_cols_snapshot(cols, target_ts):
+    """Collapse series-carrying columns to a single-hour snapshot valid at
+    ``target_ts`` — the compact form shared over the LAN (a peer adopts just the
+    current hour, which ``pack_winds_zone`` already packs)."""
+    out = []
+    for c in cols:
+        levels = winds_levels_at(c, target_ts)
+        if not levels:
+            continue
+        out.append({"station": c.get("station"), "lat": c["lat"],
+                    "lon": c["lon"], "levels": levels, "src": "INET",
+                    "hour_offset": 0})
     return out
 
 
@@ -365,6 +460,43 @@ def _series_at(series, idx):
     if not isinstance(series, list) or idx is None or idx >= len(series):
         return None
     return _num(series[idx])
+
+
+def _iso_to_epoch(t):
+    """ISO 'YYYY-MM-DDTHH:MM' (UTC) -> epoch seconds, or None."""
+    try:
+        return calendar.timegm(time.strptime(t[:16], "%Y-%m-%dT%H:%M"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _nearest_epoch_index(epochs, target):
+    """Index of the epoch nearest ``target`` (skips None entries)."""
+    best_i, best_d = None, None
+    for i, ep in enumerate(epochs):
+        if ep is None:
+            continue
+        d = abs(ep - target)
+        if best_d is None or d < best_d:
+            best_i, best_d = i, d
+    return best_i
+
+
+def _levels_at(hourly, hi, alts, levels_hpa=_OM_LEVELS):
+    """Interpolated winds ``levels`` for one hourly index of an Open-Meteo
+    pressure-level response (``[]`` when that hour has no usable column)."""
+    if hi is None:
+        return []
+    samples = []
+    for hpa in levels_hpa:
+        hgt = _series_at(hourly.get(f"geopotential_height_{hpa}hPa"), hi)
+        spd = _series_at(hourly.get(f"windspeed_{hpa}hPa"), hi)
+        wdir = _series_at(hourly.get(f"winddirection_{hpa}hPa"), hi)
+        temp = _series_at(hourly.get(f"temperature_{hpa}hPa"), hi)
+        if hgt is None or spd is None or wdir is None:
+            continue
+        samples.append((hgt * _M_TO_FT, wdir, spd, temp))
+    return interp_winds(samples, alts)
 
 
 def _nearest_hour_index(times, now):
@@ -548,10 +680,12 @@ _OM_MAX_BATCH = 250
 _OM_LEVELS_LOW = (1000, 925, 850, 700, 600, 500)
 
 
-def _fetch_om_batch(pts, alts, hour_offset, timeout, levels=None, model=None):
+def _fetch_om_batch(pts, alts, hour_offset, timeout, levels=None, model=None,
+                    series_h=0):
     """One Open-Meteo pressure-level request for up to ``_OM_MAX_BATCH`` points.
     ``levels`` caps the vertical (defaults to the full set); ``model`` pins an
-    explicit model (e.g. ``gfs025`` — required for pressure levels)."""
+    explicit model (e.g. ``gfs025`` — required for pressure levels).  ``series_h``
+    keeps the per-hour forecast series (see ``parse_open_meteo_winds``)."""
     levels = levels if levels is not None else _OM_LEVELS
     lats = ",".join(f"{p[0]:.3f}" for p in pts)
     lons = ",".join(f"{p[1]:.3f}" for p in pts)
@@ -569,10 +703,12 @@ def _fetch_om_batch(pts, alts, hour_offset, timeout, levels=None, model=None):
                                                "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read().decode("utf-8", "ignore"))
-    return parse_open_meteo_winds(data, alts, hour_offset=hour_offset)
+    return parse_open_meteo_winds(data, alts, hour_offset=hour_offset,
+                                  series_h=series_h)
 
 
-def _fetch_om_winds(pts, alts, hour_offset, timeout, levels=None, model=None):
+def _fetch_om_winds(pts, alts, hour_offset, timeout, levels=None, model=None,
+                    series_h=0):
     """Fetch winds/temps aloft for ``pts`` (``[(lat, lon), ...]``) in batches of
     ``_OM_MAX_BATCH``, combining the parsed columns.  Returns whatever batches
     succeed; raises only if every batch fails (so one transient error doesn't
@@ -581,7 +717,8 @@ def _fetch_om_winds(pts, alts, hour_offset, timeout, levels=None, model=None):
     for i in range(0, len(pts), _OM_MAX_BATCH):
         try:
             out.extend(_fetch_om_batch(pts[i:i + _OM_MAX_BATCH], alts,
-                                       hour_offset, timeout, levels, model))
+                                       hour_offset, timeout, levels, model,
+                                       series_h))
         except Exception as e:                                   # noqa: BLE001
             last_err = e
     if not out and last_err is not None:
@@ -609,10 +746,12 @@ def conus_grid_points(bbox, spacing_nm):
 
 
 def fetch_winds_us(bbox, spacing_nm, alts=None, hour_offset=0, timeout=30,
-                   model="gfs025", max_alt_ft=18000):
+                   model="gfs025", max_alt_ft=18000, series_h=0):
     """Fetch one coarse winds grid over ``bbox`` in a single (or few) batched
     call(s), capped at ``max_alt_ft`` and pinned to ``model``.  Returns the
-    parsed winds columns (each ``{station, lat, lon, levels, ...}``)."""
+    parsed winds columns (each ``{station, lat, lon, levels, ...}``).  ``series_h``
+    keeps the per-hour forecast series so the cache can roll forward to ``now``
+    between fetches (see ``parse_open_meteo_winds``)."""
     from fisb import WINDS_ALTS
     alts = alts if alts is not None else WINDS_ALTS
     alts = [a for a in alts if a <= max_alt_ft]
@@ -620,7 +759,8 @@ def fetch_winds_us(bbox, spacing_nm, alts=None, hour_offset=0, timeout=30,
     pts = conus_grid_points(bbox, spacing_nm)
     if not pts:
         return []
-    return _fetch_om_winds(pts, alts, hour_offset, timeout, levels, model)
+    return _fetch_om_winds(pts, alts, hour_offset, timeout, levels, model,
+                           series_h)
 
 
 def conus_zones(bbox, rows, cols):
@@ -696,7 +836,7 @@ class WindsUSCache(threading.Thread):
                  hour_offset_fn=None, model="gfs025", max_alt_ft=18000,
                  max_age_s=6 * 3600, slice_s=20.0, publish_fn=None,
                  peer_grace_s=360.0, startup_grace_s=45.0,
-                 fetch_jitter_s=180.0, expire_s=24 * 3600):
+                 fetch_jitter_s=180.0, expire_s=24 * 3600, series_h=30):
         super().__init__(daemon=True, name="WindsUSCache")
         self.zones = conus_zones(bbox, rows, cols)
         self.spacing_nm = spacing_nm
@@ -706,6 +846,13 @@ class WindsUSCache(threading.Thread):
         self.model = model
         self.max_alt_ft = max_alt_ft
         self.max_age_s = max_age_s
+        # We keep a SERIES of forecast hours per column (free — the fetch already
+        # downloads ~48 h), spanning ``series_h`` ahead of now.  The draw side
+        # retargets to ``now`` (inset) or ``now + offset`` (WND page) out of this
+        # series, so the picture rolls forward to the correct hour on its own
+        # between the 6 h re-pulls instead of freezing at the fetch snapshot.
+        # 30 h covers the +24 h selector plus a 6 h refresh interval of drift.
+        self.series_h = series_h
         # Hard expiry: a GFS winds-aloft forecast is refreshed on a 6 h cycle, so
         # past max_age_s (6 h) a zone is "stale" — still a usable fallback while
         # we re-pull.  But once it's a full day old it's no forecast at all any
@@ -815,30 +962,73 @@ class WindsUSCache(threading.Thread):
                 and (time.monotonic() - self._last_peer_rx) < self.peer_grace_s)
 
     def ingest_packed(self, data):
-        """Adopt a zone shared by a peer screen (``pack_winds_zone`` form).  Used
-        as the screen-sync KIND_WINDS callback.  Adopts only if fresher than what
-        we hold, and marks a peer active so we stop fetching ourselves."""
+        """Adopt a zone shared by a peer screen (``pack_winds_zone`` form, plus a
+        ``st`` snapshot-valid-time).  Used as the screen-sync KIND_WINDS callback.
+
+        Two timestamps coordinate the panel: ``t`` is the model RUN (stable
+        across a feeder's re-broadcasts; bumps every 6 h re-pull) and ``st`` is
+        the SNAPSHOT valid-time, which a live feeder advances to *now* on every
+        broadcast.  We adopt on a newer run OR a newer snapshot of the same run —
+        the latter is how a peer's now-snapshot rolls our barbs forward so an
+        adopting screen's inset also stays current.  A relayed (frozen) snapshot
+        carries an un-advancing ``st``, so when the feeder dies the deferral
+        lapses and a screen re-pulls (no 'everyone waits on someone else')."""
         try:
             idx, ts, cols = unpack_winds_zone(data)
         except Exception:                                        # noqa: BLE001
             return
+        try:
+            st = float(data.get("st", ts))
+        except (TypeError, ValueError):
+            st = ts
         with self._lock:
             cur = self._data.get(idx)
-            if cur is not None and ts <= cur.get("fetched", 0.0):
-                return                       # ours is as fresh or fresher
-            self._data[idx] = {"cols": cols, "fetched": ts}
-        # Mark a peer "active" (so we stop fetching) ONLY when it actually fed
-        # us FRESHER data.  Marking on every received packet — including a
-        # stale rebroadcast we just skipped — made every screen defer to every
-        # other while all held the same stale data, so nobody ever re-pulled
-        # ("everyone waits on someone else").  Now a stale peer can't suppress
-        # our fetch, so whichever screen has internet refreshes and feeds the
-        # rest; if none can, they fail over to fetching themselves.
+            # We hold our OWN forecast series for this zone (we fetched it) — a
+            # peer's single-hour snapshot is a downgrade (no series → no page
+            # offset, no roll-forward), so keep ours.  Our own 6 h re-pull picks
+            # up any newer model run.
+            if cur is not None and any(c.get("series") for c in cur["cols"]):
+                return
+            if cur is not None:
+                cur_run = cur.get("fetched", 0.0)
+                cur_st = cur.get("snap_ts", cur_run)
+                if ts < cur_run:
+                    return                   # older model run — ignore
+                if ts == cur_run and st <= cur_st:
+                    return                   # same run, no newer snapshot
+            self._data[idx] = {"cols": cols, "fetched": ts, "snap_ts": st}
         self._last_peer_rx = time.monotonic()
         self._zone_peer_rx[idx] = self._last_peer_rx   # per-zone: a peer owns this one
         self.updated_s = time.monotonic()
-        self._save_disk()
         print(f"[WX:winds] adopted zone {idx} from peer ({len(cols)} cols)")
+
+    def _zone_packet(self, idx):
+        """Build the LAN packet for a held zone: a single-hour snapshot valid at
+        *now* (the full 30 h series is ~30× too big for one UDP datagram, and a
+        peer only needs the current hour).  A feeder re-derives the snapshot from
+        its series and stamps ``st=now`` so adopters roll forward; a screen that
+        only holds a peer snapshot relays it with the snapshot's own (frozen)
+        ``st`` so it can't masquerade as a live feed.  ``None`` when the zone has
+        nothing valid to send (expired, or its series no longer reaches now)."""
+        with self._lock:
+            rec = self._data.get(idx)
+            if not rec:
+                return None
+            cols = list(rec["cols"])
+            ts = rec["fetched"]
+            snap_ts = rec.get("snap_ts")
+        now = time.time()
+        if now - ts >= self.expire_s:
+            return None
+        if any(c.get("series") for c in cols):
+            snap, st = _winds_cols_snapshot(cols, now), now
+        else:
+            snap, st = cols, (snap_ts if snap_ts else ts)
+        if not snap:
+            return None
+        pkt = pack_winds_zone(idx, ts, snap)
+        pkt["st"] = round(float(st), 1)
+        return pkt
 
     def _broadcast_one(self):
         """Round-robin broadcast one held zone to peers (cheap, LAN-local)."""
@@ -850,10 +1040,11 @@ class WindsUSCache(threading.Thread):
             keys = sorted(self._data.keys())
             idx = keys[self._bcast_idx % len(keys)]
             self._bcast_idx += 1
-            rec = self._data.get(idx)
-            cols, ts = list(rec["cols"]), rec["fetched"]
+        pkt = self._zone_packet(idx)
+        if pkt is None:
+            return
         try:
-            self.publish_fn(pack_winds_zone(idx, ts, cols))
+            self.publish_fn(pkt)
         except Exception:                                        # noqa: BLE001
             pass
 
@@ -893,9 +1084,13 @@ class WindsUSCache(threading.Thread):
         if idx is None:
             return False
         try:
+            # Fetch the whole series from *now* (hour_offset 0): the draw side
+            # retargets to now / now+offset locally, so the per-screen forecast
+            # offset no longer drives the fetch (and no longer forces a re-pull).
             cols = fetch_winds_us(self.zones[idx], self.spacing_nm,
-                                  hour_offset=self.hour_offset_fn(),
-                                  model=self.model, max_alt_ft=self.max_alt_ft)
+                                  hour_offset=0, model=self.model,
+                                  max_alt_ft=self.max_alt_ft,
+                                  series_h=self.series_h)
             with self._lock:
                 self._data[idx] = {"cols": cols, "fetched": now}
             self.updated_s = time.monotonic()
@@ -905,12 +1100,15 @@ class WindsUSCache(threading.Thread):
             self._backoff_until = 0.0
             self._save_disk()
             print(f"[WX:winds] fetched zone {idx} ({len(cols)} cols)")
-            # Share it with peer screens straight away so they don't re-fetch.
+            # Share it with peer screens straight away so they don't re-fetch
+            # (a now-snapshot derived from the fresh series, with st=now).
             if self.publish_fn is not None:
-                try:
-                    self.publish_fn(pack_winds_zone(idx, now, cols))
-                except Exception:                                # noqa: BLE001
-                    pass
+                pkt = self._zone_packet(idx)
+                if pkt is not None:
+                    try:
+                        self.publish_fn(pkt)
+                    except Exception:                            # noqa: BLE001
+                        pass
             return True
         except Exception as e:                                   # noqa: BLE001
             self.err_count += 1

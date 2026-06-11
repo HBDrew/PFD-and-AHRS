@@ -148,6 +148,81 @@ def test_stale_zones_lists_off_indices():
           "never-loaded zones are flagged too")
 
 
+def _series_col(now, spd0=20, n=31, alt=6000):
+    """A column carrying a forecast series whose speed grows 1 kt per hour."""
+    t0 = (int(now) // 3600) * 3600
+    rows = [[270, spd0 + i, -5] for i in range(n)]
+    return {"lat": 34.0, "lon": -112.0, "station": "x", "alts": [alt],
+            "t0": t0, "step_s": 3600, "series": rows, "levels": []}, t0
+
+
+def _snap_col(spd, alt=6000):
+    return {"lat": 34.0, "lon": -112.0,
+            "levels": [{"alt_ft": alt, "dir": 270, "spd": spd, "temp": -5,
+                        "lv": False}]}
+
+
+def test_series_retargets_by_time():
+    # The picture rolls forward to the right hour on its own: the same stored
+    # column reads a different (correct) hour as now advances.
+    now = time.time()
+    col, t0 = _series_col(now)
+    check(wx.winds_levels_at(col, t0)[0]["spd"] == 20, "series reads the now hour")
+    check(wx.winds_levels_at(col, t0 + 6 * 3600)[0]["spd"] == 26,
+          "series rolls forward to +6 h")
+    check(wx.winds_levels_at(col, t0 + 50 * 3600) == [],
+          "a target outside the held window blanks (no wrong-time forecast)")
+
+
+def test_peer_snapshot_rolls_forward():
+    # An adopting screen (no series of its own) must roll its barbs forward as
+    # the feeder re-broadcasts a fresher now-snapshot of the SAME model run.
+    c = _cache()
+    run = time.time() - 1800
+    p = wx.pack_winds_zone(0, run, [_snap_col(20)]); p["st"] = run
+    c.ingest_packed(p)
+    check(c._data[0]["cols"][0]["levels"][0]["spd"] == 20, "first snapshot adopted")
+    p2 = wx.pack_winds_zone(0, run, [_snap_col(33)]); p2["st"] = run + 600
+    c.ingest_packed(p2)
+    check(c._data[0]["cols"][0]["levels"][0]["spd"] == 33,
+          "newer snapshot of the same run rolls the barbs forward")
+    # A relayed (frozen) snapshot carries an older st — must be ignored, so a
+    # dead feeder's relays can't pin us (the deferral lapses → we re-pull).
+    p3 = wx.pack_winds_zone(0, run, [_snap_col(20)]); p3["st"] = run + 300
+    c.ingest_packed(p3)
+    check(c._data[0]["cols"][0]["levels"][0]["spd"] == 33,
+          "an older relayed snapshot is ignored")
+
+
+def test_series_holder_ignores_peer_snapshot():
+    # A screen that fetched (holds the full series) must NOT downgrade to a
+    # peer's single-hour snapshot — even a newer run — or it loses the series
+    # (and with it the page offset / roll-forward).
+    c = _cache()
+    now = time.time()
+    col, _ = _series_col(now)
+    c._data[0] = {"cols": [col], "fetched": now}
+    p = wx.pack_winds_zone(0, now + 1000, [_snap_col(99)]); p["st"] = now + 1000
+    c.ingest_packed(p)
+    check("series" in c._data[0]["cols"][0], "kept our own series")
+    check(not c._peer_active(), "ignoring the snapshot doesn't mark a peer active")
+
+
+def test_zone_packet_is_now_snapshot():
+    # A feeder shares a compact single-hour snapshot stamped st=now (so adopters
+    # roll forward), not the whole series (too big for one datagram).
+    c = _cache()
+    now = time.time()
+    col, _ = _series_col(now)
+    c._data[0] = {"cols": [col], "fetched": now}
+    pkt = c._zone_packet(0)
+    check(pkt is not None and "st" in pkt, "feeder packet carries a snapshot time")
+    check(abs(pkt["st"] - now) < 5, "feeder stamps st = now")
+    _idx, _ts, cols = wx.unpack_winds_zone(pkt)
+    check(bool(cols and cols[0]["levels"]), "packet carries a single-hour snapshot")
+    check("series" not in cols[0], "the heavy series is not shared over the LAN")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

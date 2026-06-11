@@ -11999,15 +11999,24 @@ _winds_barbs_cache = []
 _winds_barbs_key = None
 
 
-def _winds_barbs():
-    """Geolocated winds-aloft barbs for the selected altitude (rebuilt only when
-    the altitude or the received winds change)."""
+def _winds_barbs(offset_h=None):
+    """Geolocated winds-aloft barbs for the selected altitude, valid at
+    ``now + offset_h`` hours.  ``offset_h=None`` uses the WND-page forecast-time
+    selector; the PFD inset passes 0 so it always shows *now*, independent of the
+    page selector.  Each column carries a forecast series, so the right hour is
+    picked here at draw time — the picture rolls forward to now on its own
+    between fetches.  Rebuilt only when the altitude, the data, the offset, or
+    the target hour changes."""
     global _winds_barbs_cache, _winds_barbs_key
     store = _fisb_store()
     if store is None:
         return []
+    if offset_h is None:
+        offset_h = int(disp["ds"].get("winds_time_offset_h", 0))
     alt = int(disp["ds"].get("winds_alt_ft", 9000))
-    key = (alt, store.winds_count)
+    target = time.time() + offset_h * 3600.0
+    hour_bucket = int((target + 1800.0) // 3600.0)
+    key = (alt, store.winds_count, offset_h, hour_bucket)
     if key == _winds_barbs_key:
         return _winds_barbs_cache
     out = []
@@ -12018,7 +12027,8 @@ def _winds_barbs():
         pos = _winds_pos(sid, w)        # own lat/lon (internet grid) or airport DB
         if pos is None:
             continue
-        lvl = next((lv for lv in w["levels"] if lv["alt_ft"] == alt), None)
+        levels = _wx.winds_levels_at(w, target)
+        lvl = next((lv for lv in levels if lv["alt_ft"] == alt), None)
         if lvl is None:
             continue
         out.append({"lat": pos[0], "lon": pos[1], "station": sid,
@@ -12043,15 +12053,15 @@ _WINDS_TIME_OFFSETS = [0, 3, 6, 9, 12, 18, 24]   # forecast hours ahead
 
 
 def _mfd_cycle_winds_time():
-    """Step the WND overlay to the next forecast-time offset and force the
-    internet winds poller to re-fetch for it (Open-Meteo carries 48 h)."""
+    """Step the WND overlay to the next forecast-time offset.  No re-fetch: each
+    column already carries the forecast series (out to ~30 h), so the barbs
+    retarget to ``now + offset`` locally — changing the time is instant and
+    costs no Open-Meteo call."""
     cur = int(disp["ds"].get("winds_time_offset_h", 0))
     order = _WINDS_TIME_OFFSETS
     i = order.index(cur) if cur in order else 0
     disp["ds"]["winds_time_offset_h"] = order[(i + 1) % len(order)]
     _settings.mark_dirty()
-    if _winds_client is not None:
-        _winds_client.force_refresh()
     return disp["ds"]["winds_time_offset_h"]
 
 
@@ -12343,7 +12353,13 @@ def _draw_wx_winds(surf):
     # point + source rather than showing a bare lat,lon as if it were a station.
     head = "grid" if (src == "INET" or "," in str(station)) else station
     src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
-    off = int((w or {}).get("hour_offset", 0))
+    # Retarget the column to the WND-page forecast time, like the barbs, so the
+    # table rolls forward to now and tracks the +Nh selector (internet winds now
+    # carry a forecast series rather than a single fetch-time hour).
+    off = int(disp["ds"].get("winds_time_offset_h", 0)) if src == "INET" \
+        else int((w or {}).get("hour_offset", 0))
+    levels = (_wx.winds_levels_at(w, time.time() + off * 3600.0)
+              if (w and src == "INET") else ((w or {}).get("levels") or []))
     time_txt = "" if off == 0 else f"  +{off}h"
     age_s = store.winds_age_s(station) if store else None
     age_txt = _fisb.short_age(age_s)
@@ -12355,8 +12371,8 @@ def _draw_wx_winds(surf):
         _text(s, "WIND", 15, (140, 160, 180), bold=True, x=x + 115, y=y)
         _text(s, "TEMP", 15, (140, 160, 180), bold=True, x=x + 270, y=y)
     items = [(24, _hdr)]
-    if w:
-        for lv in w["levels"]:
+    if levels:
+        for lv in levels:
             if lv.get("lv"):
                 wind = "LT & VAR"
             elif lv.get("dir") is None:
@@ -14338,7 +14354,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             metars=disp.get("weather", {}).get("metars"),
             ground_stations=disp.get("weather", {}).get("stations"),
             wx_graphics=disp.get("weather", {}).get("graphics"),
-            winds_barbs=(_winds_barbs()
+            winds_barbs=(_winds_barbs(0)        # inset is always NOW
                          if (disp["ds"].get("map_show_winds")
                              and _eff_range >= WINDS_MIN_RENDER_NM) else None),
             # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"].

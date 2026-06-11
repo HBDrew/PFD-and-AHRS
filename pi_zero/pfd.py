@@ -10922,13 +10922,21 @@ _winds_barbs_cache = []
 _winds_barbs_key = None
 
 
-def _winds_barbs():
+def _winds_barbs(offset_h=None):
+    """Winds-aloft barbs at the selected altitude, valid at ``now + offset_h``
+    hours (``None`` uses the WND forecast-time selector).  Each column carries a
+    forecast series, so the hour is picked here at draw time and the picture
+    rolls forward to now on its own between fetches."""
     global _winds_barbs_cache, _winds_barbs_key
     store = _fisb_store()
     if store is None:
         return []
+    if offset_h is None:
+        offset_h = int(disp["ds"].get("winds_time_offset_h", 0))
     alt = int(disp["ds"].get("winds_alt_ft", 9000))
-    key = (alt, store.winds_count)
+    target = time.time() + offset_h * 3600.0
+    hour_bucket = int((target + 1800.0) // 3600.0)
+    key = (alt, store.winds_count, offset_h, hour_bucket)
     if key == _winds_barbs_key:
         return _winds_barbs_cache
     out = []
@@ -10939,7 +10947,8 @@ def _winds_barbs():
         pos = _winds_pos(sid, w)
         if pos is None:
             continue
-        lvl = next((lv for lv in w["levels"] if lv["alt_ft"] == alt), None)
+        levels = _wx.winds_levels_at(w, target)
+        lvl = next((lv for lv in levels if lv["alt_ft"] == alt), None)
         if lvl is None:
             continue
         out.append({"lat": pos[0], "lon": pos[1], "station": sid,
@@ -10961,15 +10970,14 @@ _WINDS_TIME_OFFSETS = [0, 3, 6, 9, 12, 18, 24]   # forecast hours ahead
 
 
 def _mfd_cycle_winds_time():
-    """Step the WND forecast-time offset and force the winds poller to re-fetch
-    for it (Open-Meteo carries 48 h)."""
+    """Step the WND forecast-time offset.  No re-fetch: each column already
+    carries the forecast series (out to ~30 h), so the barbs retarget to
+    ``now + offset`` locally — changing the time is instant and costs no call."""
     cur = int(disp["ds"].get("winds_time_offset_h", 0))
     i = _WINDS_TIME_OFFSETS.index(cur) if cur in _WINDS_TIME_OFFSETS else 0
     disp["ds"]["winds_time_offset_h"] = \
         _WINDS_TIME_OFFSETS[(i + 1) % len(_WINDS_TIME_OFFSETS)]
     _settings.mark_dirty()
-    if _winds_client is not None:
-        _winds_client.force_refresh()
     return disp["ds"]["winds_time_offset_h"]
 
 
@@ -11264,7 +11272,12 @@ def _draw_wx_winds(surf):
     src = (w or {}).get("src")
     head = "grid" if (src == "INET" or "," in str(station)) else station
     src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
-    off = int((w or {}).get("hour_offset", 0))
+    # Retarget internet (forecast-series) winds to the WND-page time, like the
+    # barbs, so the table rolls forward to now and tracks the +Nh selector.
+    off = int(disp["ds"].get("winds_time_offset_h", 0)) if src == "INET" \
+        else int((w or {}).get("hour_offset", 0))
+    levels = (_wx.winds_levels_at(w, time.time() + off * 3600.0)
+              if (w and src == "INET") else ((w or {}).get("levels") or []))
     time_txt = "" if off == 0 else f"  +{off}h"
     age_txt = _fisb.short_age(store.winds_age_s(station) if store else None)
     age_part = f"  ·  {age_txt}" if age_txt else ""
@@ -11275,8 +11288,8 @@ def _draw_wx_winds(surf):
         _text(s, "WIND", 15, (140, 160, 180), bold=True, x=x + 110, y=y)
         _text(s, "TEMP", 15, (140, 160, 180), bold=True, x=x + 250, y=y)
     items = [(24, _hdr)]
-    if w:
-        for lv in w["levels"]:
+    if levels:
+        for lv in levels:
             if lv.get("lv"):
                 wind = "LT & VAR"
             elif lv.get("dir") is None:
