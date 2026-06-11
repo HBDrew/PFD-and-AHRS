@@ -154,6 +154,48 @@ def set_srtm3_cache_dir(path: str):
     _srtm3_cache_dir = path or ""
 
 
+def build_srtm3_cache(srtm_dir: str, cache_dir: str, progress=None,
+                      skip_existing: bool = True):
+    """Pre-decimate every full-SRTM1 .hgt in ``srtm_dir`` into ``cache_dir``
+    at SRTM3 resolution so the moving-map tint never has to decimate on the
+    fly (the on-demand path still works; this just front-loads it).
+
+    Idempotent: tiles already cached at the right size are skipped, and
+    non-SRTM1 sources (already small) are left for the tint to read directly.
+    ``progress(done, total, name)`` is called per tile if given.  Returns
+    (built, skipped, errors)."""
+    import glob
+    if not HAS_NUMPY or not srtm_dir or not os.path.isdir(srtm_dir):
+        return (0, 0, 0)
+    os.makedirs(cache_dir, exist_ok=True)
+    srtm1_bytes = SRTM1_SAMPLES * SRTM1_SAMPLES * 2
+    srtm3_bytes = SRTM3_SAMPLES * SRTM3_SAMPLES * 2
+    files = sorted(glob.glob(os.path.join(srtm_dir, "*.hgt")))
+    built = skipped = errors = 0
+    for i, path in enumerate(files):
+        fname = os.path.basename(path)
+        try:
+            if os.path.getsize(path) != srtm1_bytes:
+                skipped += 1            # already SRTM3 / unknown — tint reads it directly
+            else:
+                dst = os.path.join(cache_dir, fname)
+                if (skip_existing and os.path.exists(dst)
+                        and os.path.getsize(dst) == srtm3_bytes):
+                    skipped += 1
+                else:
+                    mm = np.memmap(path, dtype='>i2', mode='r',
+                                   shape=(SRTM1_SAMPLES, SRTM1_SAMPLES))
+                    data_raw = np.array(mm[::3, ::3])
+                    del mm
+                    _write_srtm3_cache(cache_dir, fname, data_raw)
+                    built += 1
+        except Exception:
+            errors += 1
+        if progress:
+            progress(i + 1, len(files), fname)
+    return (built, skipped, errors)
+
+
 def _write_srtm3_cache(cache_dir: str, fname: str, data_raw):
     """Persist a decimated tile (raw int16 big-endian metres, SRTM3 size) so
     the next cold read is a direct ~2.8 MB read.  Atomic temp+rename;
