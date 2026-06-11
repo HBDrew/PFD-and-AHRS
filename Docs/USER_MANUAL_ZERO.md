@@ -29,6 +29,7 @@
 16A. [Full-Screen MFD](#16a-full-screen-mfd)
 16B. [Weather](#16b-weather)
 16C. [Traffic (ADS-B / FIS-B IN)](#16c-traffic-ads-b--fis-b-in)
+16D. [Airspace Data](#16d-airspace-data)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
 19. [AHRS PCB and Air-Data Hardware](#19-ahrs-pcb-and-air-data-hardware)
@@ -407,6 +408,18 @@ Corrects horizon tilt. ±0.5° steps.
 | **IAS SENSOR** | SDP33-1500Pa differential pressure + BME280 density correction. Cyan readout. Default when the AHRS reports `airdata_ok`. |
 | **GPS GS** | GPS groundspeed. Magenta readout. Auto fallback when SDP33 is absent / unhealthy. |
 
+### Compass calibration
+
+![Compass-calibration wizard mid-walk — "Captured NORTH", prompting for the next cardinal heading](../pi_zero/previews/preview_mag_cal.png)
+
+The calibration wizard walks you through the four cardinal headings, capturing the magnetometer at each (e.g. **Captured NORTH**) and prompting for the next. Run it after a mounting change or when MAG heading drifts.
+
+### AHRS firmware update
+
+![AHRS firmware loader — "Pushed firmware.py ✓" done state](../pi_zero/previews/preview_ahrs_firmware.png)
+
+The firmware loader pushes `firmware.py` to the Pico W AHRS over USB and reports a **Pushed firmware.py ✓** done state when complete.
+
 ---
 
 ## 12. Connectivity
@@ -419,11 +432,17 @@ Default `http://192.168.4.1`. Tap to edit — the keyboard lets you enter URLs d
 ### WiFi SSID / PASSWORD
 Tap either box to edit. Tap **APPLY WIFI** to write the config and switch networks. The Wi-Fi password is intentionally **not** persisted in `settings.json` — it must be re-entered when joining a new network.
 
+![WiFi networks scan list — networks with signal-strength bars and WPA/OPEN tags, plus a RESCAN button](../pi_zero/previews/preview_wifi_scan.png)
+
+The **WIFI NETWORKS** scan lists nearby networks with signal-strength bars and a **WPA / OPEN** tag; tap one to fill the SSID, or tap **RESCAN** to refresh.
+
 ### NOTAM CLIENT ID / SECRET
 Optional. Paste a free FAA NOTAM API key (**client_id** / **client_secret**, from **api.faa.gov**) to enable NOTAMs in the MET readout picker (§16B). The secret is masked; the poller reads them live (no reboot). Blank = NOTAMs off, rest of weather unaffected.
 
 ### Screen Sync
 Like the Pi 4/5, the Zero peer-syncs with other displays on the cabin network — bugs, baro, direct-to, flight plans, **and winds aloft** — over UDP, peer-to-peer. Master enable, the AUTO/USB/NET transport selector, per-category TX/RX toggles, the SHARE FPL toggle, and the peer/links diagnostics are all on the **Screen Sync** setup screen. See **Pi 4 manual §12A** for the full description; behaviour is identical. (Winds sharing is automatic — one display with internet feeds the rest.)
+
+![Screen Sync setup — master enable, AUTO/USB/NET transport, per-category TX/RX toggles, SHARE FPL, and peers/links diagnostics](../pi_zero/previews/preview_setup_screen_sync.png)
 
 ### STATUS row
 Two coloured badges:
@@ -603,7 +622,47 @@ The Pi Zero has a full-screen moving-map MFD in addition to the PFD.
 - **Chrome:** **D→** (direct-to) top-left, **FPL** top-right, the **TRK↑/N↑** orientation label, **OVLY** overlay cycle, the **RNG** label, **−/+** zoom buttons, and a **CTR** recenter button that appears when the map is panned. Drag the map to pan; tap **CTR** (or the own-ship chevron) to recenter.
 - **Data strip:** a bottom row of **8 readout slots** (GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA by default). Tap a slot to open the picker, then tap a field to assign it — the selection advances to the next slot so you can fill the row with successive taps. Persists in `data/settings.json`. Assignable fields: **GS** (groundspeed), **AS** (indicated airspeed), **TAS**, **TRK** (track), **HDG**, **ALT**, **AGL** (above terrain), **VS**, **UTC**, **BARO**, **SAT**, and the nav-derived **WPT · BTW · DTK · DIST · DISW · XTE · ETE · ETEW · ETA · ETW**. The nav fields render magenta and show `--` until a Direct-To or flight-plan leg is active.
 
+![MFD data-field picker — eight slot pills across the top (selected WPT ringed cyan) over the assignable-field grid; nav-derived fields tagged "needs D2" in magenta](../pi_zero/previews/preview_mfd_strip_setup.png)
+
+The picker shows the eight slot pills across the top (the one being edited is ringed cyan) above a grid of assignable fields; nav-derived fields are tagged **needs D2** in magenta because they read `--` until a Direct-To or flight-plan leg is active.
+
 The map's **MAP LAYERS** (§10) and the **winds (WND)** overlay (§10) render here, plus the weather and traffic overlays below.
+
+### Orientation and range
+
+![Full-screen MFD in TRACK-UP orientation at 40 NM — the orientation label toggles N↑ / TRK↑](../pi_zero/previews/preview_mfd_trk_up.png)
+
+Tap the **N↑ / TRK↑** label to switch between north-up and track-up orientation. The **RNG** label and **−/+** buttons step the map range.
+
+![Full-screen MFD zoomed out to 160 NM, showing the wider extent](../pi_zero/previews/preview_mfd_160.png)
+
+### Airspace overlay (ASP)
+
+![Full-screen MFD with the ASP airspace overlay — a magenta Class C ring "PRESCOTT 45/SFC" and a blue Class D ring around KSEZ over the moving map](../pi_zero/previews/preview_mfd_airspace.png)
+
+The **ASP** stop in the **OVLY** cycle draws airspace boundaries on the moving map: Class C as a magenta ring (labelled with its ceiling/floor, e.g. `PRESCOTT 45/SFC`), Class D as a blue ring. Which classes render is set on the airspace-class toggles (§16D); the ASP overlay is the master on/off. Requires the airspace data set to be downloaded (§16D).
+
+### Flight plan (multi-waypoint)
+
+![Flight-plan editor — ordered waypoint list KPRC → KSEZ → KFLG with the KSEZ leg active (green highlight, ● ACTIVE badge, magenta ident), + ICAO / + LAT/LON / + USER buttons, SAVE / LOAD row, DEACTIVATE, and per-row ↑ / ↓ / ✕ controls](../pi_zero/previews/preview_fpl_editor.png)
+
+Tap **FPL** on the MFD to open the flight-plan editor. Build an ordered list with **+ ICAO**, **+ LAT/LON**, or **+ USER**; reorder or remove rows with the per-row **↑ / ↓ / ✕** buttons. Tapping a row activates that leg as the direct-to (green highlight, **● ACTIVE** badge, magenta ident); the plan auto-sequences to the next leg as you pass each waypoint. **DEACTIVATE** clears the active leg.
+
+### Saving and loading plans
+
+![Load-plan picker — saved named plans "RIM TOUR" and "SEDONA LOOP" with leg count and first→last idents, each with LOAD / DEL buttons](../pi_zero/previews/preview_fpl_load.png)
+
+**SAVE** on the flight-plan page stores the current list under a typed name; **LOAD** opens the picker, which lists each saved plan with its leg count and first→last idents and **LOAD / DEL** buttons. Plans persist across power cycles and sync to other displays when **SHARE FPL** is on (§12).
+
+### Custom waypoints
+
+![Add user waypoint — IDENT / LAT / LON fields (FISH, 34.523, -111.812) with CANCEL / SAVE](../pi_zero/previews/preview_fpl_latlon.png)
+
+**+ LAT/LON** on the flight-plan page opens the **ADD USER WAYPOINT** screen — enter an **IDENT** and **LAT / LON**, then **SAVE** to add it to the plan. Points created this way are auto-saved to the user-waypoint library for reuse.
+
+![User waypoints library — saved user points FISH / RDV1 / CAMP with their lat/lon and ADD / DEL buttons](../pi_zero/previews/preview_user_wpt.png)
+
+The **USER WAYPOINTS** library lists every saved user point with its lat/lon; **ADD** inserts it into the current plan and **DEL** removes it from the library.
 
 ## 16B. Weather
 
@@ -616,6 +675,8 @@ The Pi Zero shows the same internet + FIS-B weather as the Pi 4 — METARs, TAFs
 ![MET overlay — flight-category station dots on the MFD](../pi_zero/previews/preview_metar.png)
 ![WND overlay — wind barbs + temperatures with the alt / time buttons](../pi_zero/previews/preview_winds.png)
 - **NEX page** — NEXRAD reflectivity with receipt-age and **valid**-age badges (green < 10 min, amber < 20, red beyond).
+
+![NEX overlay — green→yellow→red NEXRAD reflectivity cell over the moving map](../pi_zero/previews/preview_mfd_nexrad.png)
 - **Winds (WND)** — see §10.
 
 NOTAMs need the free FAA key entered in Connectivity (§12).
@@ -629,6 +690,18 @@ Nearby aircraft from ADS-B IN (radio GDL90/UDP or the built-in internet feed; ta
 - **Diamonds** with a heading leader and a relative-altitude tag; colour by threat — **red alert** (≤ 3 NM and ≤ 600 ft), **amber proximate** (≤ 6 NM and ≤ 1200 ft), **cyan** advisory.
 - On non-traffic pages traffic is clamped to nearby; the **TFC** page shows everything. **Alert-class is never hidden.** Tap a target for the detail card; declutter with **TFC ALT** / **TFC RANGE** (§10).
 - **Collision alert:** a flashing red **TRAFFIC** banner when a new target enters the alert envelope. **The Pi Zero is visual-only — there is no "Traffic, Traffic" voice callout** (no audio stack); the banner is the alert.
+
+## 16D. Airspace Data
+
+![Airspace data download — loaded state, "Done ✓ 9,183 airspaces loaded"](../pi_zero/previews/preview_airspace_data.png)
+
+Airspace boundaries drive the MFD **ASP** overlay (§16A). Tap **DOWNLOAD** to fetch the airspace set; the screen mirrors the terrain / obstacle / airport download screens with a progress bar, then reports the loaded count (e.g. **Done ✓ 9,183 airspaces loaded**). The Pi must be on an internet-reachable network — switch to home Wi-Fi via Connectivity, download here, then switch back to the Pico W AP for flight.
+
+### Airspace classes
+
+![Airspace class toggles — color-coded badges for Class B / C / D / MOA / R / P / TFR, each with ON / OFF](../pi_zero/previews/preview_airspace_classes.png)
+
+The class-toggle screen has a color-coded badge per class — **Class B / C / D / MOA / R (Restricted) / P (Prohibited) / TFR** — each with **ON / OFF** to hide individual classes on the moving map. The **ASP** overlay (§16A) is the master toggle; these select which classes it draws.
 
 ---
 

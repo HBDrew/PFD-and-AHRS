@@ -25,6 +25,7 @@
 12A. [Screen Sync (multi-display panels)](#12a-screen-sync-multi-display-panels)
 13. [System](#13-system)
 14. [Terrain Data Download](#14-terrain-data-download)
+14A. [Airspace Data Download](#14a-airspace-data-download)
 15. [Obstacle Data Download](#15-obstacle-data-download)
 16. [Airport Data Download](#16-airport-data-download)
 16A. [Direct-to Navigation](#16a-direct-to-navigation)
@@ -511,6 +512,12 @@ Displayed heading sub-tag: `M` (cyan) for MAG, `G` (magenta) for TRK. AUTO shows
 
 The compass calibration only affects MAG-mode display. TRK mode is naturally drift-free because it's slaved to GPS ground track — a constant cal correction's frame-to-frame derivative blends invisibly into the complementary filter.
 
+### AHRS firmware update
+
+The AHRS firmware loader pushes `firmware.py` to the Pico W AHRS over the USB serial link. Tap the loader, and it transfers the firmware and reboots the Pico, showing a `Pushed firmware.py ✓` done state on success. (Re-flashing the Pico wipes the on-AHRS compass cal — re-run the wizard afterward, see Storage above.)
+
+![AHRS firmware loader — pushes firmware.py to the Pico W AHRS over USB, "Pushed firmware.py ✓" done state](../pi4/previews/preview_ahrs_firmware.png)
+
 ---
 
 ## 12. Connectivity
@@ -532,6 +539,10 @@ Tap any value box to open the keyboard and edit.
 | **NOTAM SECRET** | FAA NOTAM API secret (masked) | (blank) |
 
 The Wi-Fi password is intentionally **not** stored in `settings.json` and must be re-entered when you switch networks — see §13.
+
+Rather than type the SSID by hand, tap the WiFi SSID field to open the **WIFI NETWORKS** scan list: nearby networks with signal-strength bars and a **WPA** / **OPEN** tag, plus a **RESCAN** button. Tap a network to drop it into the SSID field.
+
+![WIFI NETWORKS scan list — networks with signal-strength bars and WPA / OPEN tags plus a RESCAN button](../pi4/previews/preview_wifi_scan.png)
 
 **NOTAMs** require a free developer key from **api.faa.gov** — register an app there and paste the **client_id** / **client_secret** into these two fields (the secret is masked with bullets). The NOTAM poller reads them live, so entering a key enables NOTAMs (in the MET readout picker, §16F) on the next fetch with **no reboot**; leave them blank and the rest of the weather suite is unaffected.
 
@@ -569,6 +580,8 @@ When you run more than one display (e.g. a Pi 5 PFD + a Pi Zero MFD), they keep 
 - **TRANSPORT** — `AUTO` (broadcast on every link), `USB` (force the USB-gadget link only), or `NET` (force Wi-Fi/ethernet only). Useful for proving a specific link carries packets; the listener still accepts from anywhere.
 - **PEER** badge — green with the peer's short ID + "last *N*s ago" when another display is heard; red "NO PEER" when sync is on but nobody's there; grey when sync is off (peers go stale after 6 s of silence).
 - **LINKS** row — per-interface diagnostics: `●`/`○` eligible, plus TX/RX packet counts and each interface's address.
+
+![Screen Sync setup screen — master enable, AUTO/USB/NET transport, per-category TX/RX toggles, SHARE FPL, and the peer / links diagnostics](../pi4/previews/preview_setup_screen_sync.png)
 
 **Per-category sharing** (each its own TX / RX, so you choose direction):
 
@@ -651,6 +664,20 @@ python3 tools/compact_srtm.py --srtm-dir ~/PFD-and-AHRS/pi4/data/srtm \
 ```
 
 (The Pi Zero also has an on-screen **COMPACT** button that does this in place — see the Pi Zero manual. See also the multi-display deploy recipe in the README.)
+
+---
+
+## 14A. Airspace Data Download
+
+The AIRSPACE DATA screen downloads the airspace boundary file that feeds the **ASP** overlay (§16F). It mirrors the terrain / obstacle / airport download screens: tap **DOWNLOAD**, watch the progress bar, and the status line reads e.g. `Done ✓ 9,183 airspaces loaded` when the file is parsed and cached.
+
+![Airspace data screen — loaded, "Done ✓ 9,183 airspaces loaded"](../pi4/previews/preview_airspace_data.png)
+
+### Airspace classes
+
+Per-class toggles hide individual airspace classes on the map without turning off the whole overlay (the master switch is the **ASP** stop in the OVLY cycle). Each colour-coded badge — **Class B / C / D / MOA / R / P / TFR** — has its own **ON / OFF**.
+
+![Airspace class toggles — colour-coded Class B / C / D / MOA / R / P / TFR badges, each ON / OFF](../pi4/previews/preview_airspace_classes.png)
 
 ---
 
@@ -815,6 +842,16 @@ Tap **FPL** (top-right on the MFD, §16H) to open the flight-plan editor — an 
 **SAVE** stores the current waypoint list under a name you type; **LOAD (*n*)** opens the saved-plan picker. Each saved plan shows its leg count and first → last idents; tap **LOAD** to recall it into the editor or **DEL** to remove it. Saved plans (and the user-waypoint library) persist across power cycles and sync to the other displays when **SHARE FPL** is on (§12A).
 
 ![Load-plan picker — saved plans (SEDONA LOOP, RIM TOUR) each with a leg count, first → last idents, and LOAD / DEL buttons](../pi4/previews/preview_fpl_load.png)
+
+### Custom waypoints
+
+**+ LAT/LON** on the flight-plan page opens the add-user-waypoint entry screen: an **IDENT** field plus **LAT** / **LON** in decimal degrees (e.g. `FISH`, `34.523`, `-111.812`), with **CANCEL** / **SAVE**. The saved point is added to the plan and auto-stored in the user-waypoint library for reuse.
+
+![Add user waypoint — IDENT / LAT / LON fields (FISH, 34.523, -111.812) with CANCEL / SAVE](../pi4/previews/preview_fpl_latlon.png)
+
+The **+ USER** button picks from the **user-waypoints** library — every point you've made with +LAT/LON, listed with its lat/lon. **ADD** inserts the selected point into the plan; **DEL** removes it from the library. The library persists across power cycles and syncs to the other displays when **SHARE FPL** is on (§12A).
+
+![User waypoints library — saved points FISH / RDV1 / CAMP with lat/lon and ADD / DEL](../pi4/previews/preview_user_wpt.png)
 
 ---
 
@@ -1050,7 +1087,15 @@ A tab is greyed out when there's no data for it. If the field you tapped has no 
 
 **Graphical AIRMET/SIGMET:** hazard areas that carry a polygon are shaded on the map; tap inside one to open its bulletin (smallest polygon wins when they nest).
 
+### ASP page — airspace
+
+On **ASP**, airspace boundaries are drawn over the map: a magenta ring for Class C (labelled with the facility name and the floor/ceiling, e.g. `PRESCOTT 45/SFC`) and a blue ring for Class D. ASP is one stop in the OVLY cycle and needs an airspace file loaded (see §14A). Individual classes can be hidden with the per-class toggles (§14A).
+
+![Full-screen MFD on the ASP page — magenta Class C ring (PRESCOTT 45/SFC) and a blue Class D ring around KSEZ over the map with the magenta course line and bottom data strip](../pi4/previews/pfd_gl/preview_mfd_airspace.png)
+
 ### NEX page — NEXRAD radar
+
+![Full-screen MFD on the NEX page — a green→yellow→red NEXRAD reflectivity cell painted over the moving map](../pi4/previews/pfd_gl/preview_mfd_nexrad.png)
 
 On **NEX**, radar reflectivity is painted as coloured intensity cells. Two ages are badged on the status strip: **`NEX`** = how long since the block was received, and **`NEX RDR valid`** = how stale the radar *mosaic* itself is (green < 10 min, amber 10–20, red > 20) — FIS-B radar can be several minutes older than when you received it, so always read the *valid* age.
 
@@ -1112,6 +1157,14 @@ A **3-finger hold (~2 s)** anywhere on the screen swaps between the PFD and the 
 | **RNG** (e.g. `10 NM` / `AUTO`) | lower-left, above the zoom buttons | Current range; `AUTO` fits the active direct-to leg. |
 | **− / +** | bottom corners | Zoom out / in through the range ladder. |
 | **CTR** | right side | Appears only when the map is **panned**; tap to recenter on the aircraft. |
+
+The **TRK↑ / N↑** label toggles the map orientation between track-up (own-ship heading at the top) and north-up.
+
+![Full-screen MFD in TRACK-UP orientation — the orientation label reads TRK↑](../pi4/previews/pfd_gl/preview_mfd_trk_up.png)
+
+The **− / +** buttons step the **RNG** through the range ladder out to 160 NM for a cross-country overview.
+
+![Full-screen MFD zoomed out to the 160 NM range](../pi4/previews/pfd_gl/preview_mfd_160.png)
 
 ### Pan and recenter
 
