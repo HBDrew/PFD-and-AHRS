@@ -85,6 +85,37 @@ time) on the DISPLAY setup screen so it's settable without the MFD.
 Target: inset chrome + tap handler in `pi4/pfd.py`; reuse
 `_mfd_cycle_winds_alt` / `_mfd_cycle_winds_time`.
 
+### FPLLIB-DELETE-RESURRECT  Deleted saved flight plans come back from peers
+Status: **OPEN**
+Deleting a saved flight plan (LOAD-plan picker → DEL) only removes it on
+the local display.  The saved-plan / user-waypoint library syncs between
+screens (`KIND_FPLLIB`, gated by SHARE FPL), and that sync is a pure
+**additive union merge** with no concept of deletion: `_ssync_apply_fpl_lib`
+adds any peer plan whose name we don't already have, and every display
+re-broadcasts its full plan list every ~5 s (`_ssync_publish_fpl_lib`).
+So a plan you delete on screen A is re-broadcast by screen B (which still
+has it) and re-added on A within ~5 s — it "resurrects" unless you race to
+delete it on every connected screen at once.  Same flaw applies to **user
+waypoint** deletes.  Repro: two+ displays with SHARE FPL on, DEL a plan on
+one → it reappears.
+Root cause: union merge can't express "this was deleted" — there is no
+tombstone or deletion propagation.
+Fix options:
+  - **Tombstones (preferred):** on delete, record `{name, deleted_ts}` and
+    include a `deleted` set in the `KIND_FPLLIB` payload.  Peers drop any
+    plan whose name has a tombstone newer than the plan's own
+    creation/update time, and don't re-add a tombstoned name.  Expire
+    tombstones after a window (e.g. 24 h) so the set stays small.  Needs a
+    creation/update timestamp per saved plan (currently plans carry only
+    `name` + `waypoints`).
+  - **Explicit delete event:** broadcast a one-shot `KIND_FPLLIB_DELETE`
+    `{name}` that peers apply immediately — simpler, but lost if a peer is
+    offline during the delete (it'll re-resurrect when that peer rejoins,
+    so tombstones are still the robust answer).
+Touches: `shared/screen_sync.py` (payload shape), `_ssync_apply_fpl_lib` /
+`_ssync_publish_fpl_lib` / `_fpl_plan_delete` (+ the user-waypoint delete
+path) in both `pi4/pfd.py` and `pi_zero/pfd.py`.
+
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
 Today PFD picks the AHRS transport once at startup (USB if
