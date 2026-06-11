@@ -28,19 +28,21 @@
 14A. [Airspace Data Download](#14a-airspace-data-download)
 15. [Obstacle Data Download](#15-obstacle-data-download)
 16. [Airport Data Download](#16-airport-data-download)
-16A. [Direct-to Navigation](#16a-direct-to-navigation)
-16B. [AGL Readout](#16b-agl-readout)
-16C. [Synthetic Approach (HITS + VDI)](#16c-synthetic-approach-hits--vdi)
-16D. [Moving-Map Inset](#16d-moving-map-inset)
-16E. [Winds Aloft (WND)](#16e-winds-aloft-wnd)
-16F. [Weather — Sources and Overlays](#16f-weather--sources-and-overlays)
-16G. [Traffic — ADS-B / FIS-B IN](#16g-traffic--ads-b--fis-b-in)
-16H. [Full-Screen MFD](#16h-full-screen-mfd)
-17. [Demo Mode](#17-demo-mode)
-18. [Flight Simulator](#18-flight-simulator)
-19. [Audio Alerts](#19-audio-alerts)
-20. [Unusual-Attitude Recovery Cues](#20-unusual-attitude-recovery-cues)
-21. [AHRS PCB and Air-Data Hardware](#21-ahrs-pcb-and-air-data-hardware)
+17. [Navigation & Approach](#17-navigation--approach)
+    - [Direct-to Navigation](#direct-to-navigation)
+    - [AGL Readout](#agl-readout)
+    - [Synthetic Approach (HITS + VDI)](#synthetic-approach-hits--vdi)
+18. [Moving Map & Overlays](#18-moving-map--overlays)
+    - [Moving-Map Inset](#moving-map-inset)
+    - [Winds Aloft (WND)](#winds-aloft-wnd)
+    - [Weather — Sources and Overlays](#weather--sources-and-overlays)
+    - [Traffic — ADS-B / FIS-B IN](#traffic--ads-b--fis-b-in)
+19. [Full-Screen MFD](#19-full-screen-mfd)
+20. [Demo Mode](#20-demo-mode)
+21. [Flight Simulator](#21-flight-simulator)
+22. [Audio Alerts](#22-audio-alerts)
+23. [Unusual-Attitude Recovery Cues](#23-unusual-attitude-recovery-cues)
+24. [AHRS PCB and Air-Data Hardware](#24-ahrs-pcb-and-air-data-hardware)
 
 ---
 
@@ -50,11 +52,11 @@ This build runs on a **Raspberry Pi 4 or Pi 5** (identical software; the Pi 5 ju
 
 | Profile (`DISPLAY_PROFILE`) | Display | Resolution | Interface | Backlight |
 |---|---|---|---|---|
-| `roadom_7` (default) | ROADOM 7" HDMI | 1024×600 | HDMI + USB touch | none (panel button) |
-| `roadom_10` | ROADOM 10" HDMI | 1024×600 | HDMI + USB touch | none (panel button) |
+| `roadom_7` (default) | ROADOM 7" HDMI | 1024×600 | HDMI + USB touch | DDC/CI (BRIGHTNESS slider) |
+| `roadom_10` | ROADOM 10" HDMI | 1024×600 | HDMI + USB touch | DDC/CI (BRIGHTNESS slider) |
 | `waveshare_35` | Waveshare 3.5" DPI | 640×480 | DPI GPIO + I2C touch | PWM on GPIO 18 |
 
-All layout elements scale automatically to the resolution. Pick your panel by setting **`DISPLAY_PROFILE`** in `pi4/config.py` (or override `DISPLAY_W`/`DISPLAY_H` in `config_local.py` for a custom panel). Both ROADOM panels are 1024×600 — the 7" and 10" differ only physically — so the layout is identical; the 10" just shows it bigger. The ROADOM panels have no software backlight control (use the panel's own button); the Waveshare is dimmed by the BRIGHTNESS slider over GPIO-18 PWM (§10).
+All layout elements scale automatically to the resolution. Pick your panel by setting **`DISPLAY_PROFILE`** in `pi4/config.py` (or override `DISPLAY_W`/`DISPLAY_H` in `config_local.py` for a custom panel). Both ROADOM panels are 1024×600 — the 7" and 10" differ only physically — so the layout is identical; the 10" just shows it bigger. **All three panels respond to the BRIGHTNESS slider** (§10): the ROADOM HDMI panels over **DDC/CI** (the Pi 4 setup script installs `ddcutil`; the panel's own hardware button still works too), the Waveshare over **GPIO-18 PWM**.
 
 The display is divided into five fixed zones (sizes shown for 1024×600 default):
 
@@ -237,7 +239,7 @@ A short white horizontal bar (16×4 px) sits below the roll pointer's doghouse b
 
 **Low-speed inhibit**: alerts (terrain and obstacle, both banners *and* the voice callouts) are silenced below **VS0** (default 48 kt). This kills the nuisance fire during taxi, takeoff roll, and landing rollout where the aircraft is in continuous "ground-impact territory" by design. Sink-rate / bank-angle callouts share the same inhibit.
 
-**Approach-corridor auto-inhibit**: when a synthetic approach is loaded (§16C) and the aircraft is inside the published-approach corridor, TAWS callouts auto-suppress — same Mode 7 convention Honeywell MK V/VII and Garmin G3X use. The corridor is defined as:
+**Approach-corridor auto-inhibit**: when a synthetic approach is loaded (§17) and the aircraft is inside the published-approach corridor, TAWS callouts auto-suppress — same Mode 7 convention Honeywell MK V/VII and Garmin G3X use. The corridor is defined as:
 
 - Within **5 NM** of the threshold along the approach course
 - Cross-track within **±0.3 NM** of the published centreline (matches the CDI full-scale on approach)
@@ -251,11 +253,11 @@ A `TER INH APR` amber badge appears in the status strip whenever the auto-corrid
 
 Requires GPS fix and SRTM tiles (terrain) or FAA obstacle data (obstacles) loaded.
 
-Voice callouts for the same conditions live in §19. The full alert pipeline (banner + voice + on-AI red recovery cues at extreme attitudes) is designed so the pilot gets the same information whether their eyes are on the instruments or on the windscreen.
+Voice callouts for the same conditions live in §22. The full alert pipeline (banner + voice + on-AI red recovery cues at extreme attitudes) is designed so the pilot gets the same information whether their eyes are on the instruments or on the windscreen.
 
 ### Past 60° bank — sky/ground and pitch ladder agreement
 
-At extreme bank the simple sky/ground polygon (used when there is no SRTM tile or when the unusual-attitude declutter has stripped the SVT mesh, see §20) is drawn from a roll-aware horizon **direction vector** rather than a fixed-up horizontal line. Past ±60° this prevents the brown half from sliding across the wrong side of the AI — the sky/ground split now agrees with the pitch ladder all the way to inverted, and the AI no longer flips to "all brown" when rolled past vertical.
+At extreme bank the simple sky/ground polygon (used when there is no SRTM tile or when the unusual-attitude declutter has stripped the SVT mesh, see §23) is drawn from a roll-aware horizon **direction vector** rather than a fixed-up horizontal line. Past ±60° this prevents the brown half from sliding across the wrong side of the AI — the sky/ground split now agrees with the pitch ladder all the way to inverted, and the AI no longer flips to "all brown" when rolled past vertical.
 
 ### Roll-aware horizon point
 
@@ -297,7 +299,7 @@ Blank during normal flight. Appear only when attention required.
 | `NO APT` | Amber | No airport data loaded |
 | `EXP APT` | Orange | Airport data older than expiry |
 | `TER INH` *N*`s` | Amber | TAWS callouts muted by the pilot, *N* seconds remain on the 120 s inhibit |
-| `TER INH APR` | Amber | TAWS callouts auto-inhibited because the aircraft is inside the approach corridor of an active synthetic approach (§16C). Clears automatically when you leave the corridor or cancel the approach. |
+| `TER INH APR` | Amber | TAWS callouts auto-inhibited because the aircraft is inside the approach corridor of an active synthetic approach (§17). Clears automatically when you leave the corridor or cancel the approach. |
 | `GPS TRK` | Magenta | GPS TRK heading mode active |
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
 | `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites |
@@ -403,7 +405,7 @@ The period and colon keys are useful for entering URLs (e.g. `http://192.168.4.1
 | **ALERT AUDIO** | OFF / ON | ON | Master mute for the voice-callout pipeline. When OFF, terrain / obstacle / sink-rate / bank-angle callouts are suppressed and any in-flight clip is cut. The visual banners stay on regardless. |
 | **ALERT VOLUME** | 1 – 10 | 8 | Callout volume scale. 0 is effectively muted; 10 is unity. Applied live to the pygame mixer; takes effect on the next callout. |
 | **FLIGHT PATH** | OFF / ON | ON | Flight-path vector (velocity-vector) marker on the AI. See §4. |
-| **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §16D. |
+| **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §18. |
 | **MAP RANGE** | 1/2/5/10/20/40/80/160 NM · AUTO | 5 NM | Default inset radius; AUTO fits to the active direct-to. |
 | **MAP LAYERS** | TER · WTR · APT · OBS · STA · CTRY (independent pills) | all ON | Per-layer visibility for the moving-map inset. **TER** terrain tint; **WTR** ocean/lake water mask; **APT** airport / heliport / seaplane symbols; **OBS** FAA DOF obstacles; **STA** state / province boundary lines (Natural Earth admin_1, slate-blue, fades in at ≥ 20 NM); **CTRY** country boundary lines (Natural Earth admin_0, tan, also ≥ 20 NM). Toggles are independent and persist in `data/settings.json`. |
 | **SUN POSITION** | FIXED / REAL | REAL | SVT terrain lighting: FIXED uses a SE mid-morning sun; REAL pulls UTC + GPS lat/lon through the NOAA solar formulas. |
@@ -544,7 +546,7 @@ Rather than type the SSID by hand, tap the WiFi SSID field to open the **WIFI NE
 
 ![WIFI NETWORKS scan list — networks with signal-strength bars and WPA / OPEN tags plus a RESCAN button](../pi4/previews/preview_wifi_scan.png)
 
-**NOTAMs** require a free developer key from **api.faa.gov** — register an app there and paste the **client_id** / **client_secret** into these two fields (the secret is masked with bullets). The NOTAM poller reads them live, so entering a key enables NOTAMs (in the MET readout picker, §16F) on the next fetch with **no reboot**; leave them blank and the rest of the weather suite is unaffected.
+**NOTAMs** require a free developer key from **api.faa.gov** — register an app there and paste the **client_id** / **client_secret** into these two fields (the secret is masked with bullets). The NOTAM poller reads them live, so entering a key enables NOTAMs (in the MET readout picker, §18) on the next fetch with **no reboot**; leave them blank and the rest of the weather suite is unaffected.
 
 ### STATUS row
 
@@ -594,7 +596,7 @@ When you run more than one display (e.g. a Pi 5 PFD + a Pi Zero MFD), they keep 
 | **GPS** | position / alt / speed / track — **OFF / TX / RX** (same mutex) |
 | **SHARE FPL** | the active flight plan **and** the saved-plan / user-waypoint library — a single bidirectional toggle |
 
-Bugs / baro / nav publish only when *you* edit them, so they don't echo. **Winds aloft are also shared automatically** whenever sync is enabled (a display with internet feeds the winds grid to the others — see §16E), and don't need a toggle. All choices persist in `data/settings.json`.
+Bugs / baro / nav publish only when *you* edit them, so they don't echo. **Winds aloft are also shared automatically** whenever sync is enabled (a display with internet feeds the winds grid to the others — see §18), and don't need a toggle. All choices persist in `data/settings.json`.
 
 ---
 
@@ -669,7 +671,7 @@ python3 tools/compact_srtm.py --srtm-dir ~/PFD-and-AHRS/pi4/data/srtm \
 
 ## 14A. Airspace Data Download
 
-The AIRSPACE DATA screen downloads the airspace boundary file that feeds the **ASP** overlay (§16F). It mirrors the terrain / obstacle / airport download screens: tap **DOWNLOAD**, watch the progress bar, and the status line reads e.g. `Done ✓ 9,183 airspaces loaded` when the file is parsed and cached.
+The AIRSPACE DATA screen downloads the airspace boundary file that feeds the **ASP** overlay (§18). It mirrors the terrain / obstacle / airport download screens: tap **DOWNLOAD**, watch the progress bar, and the status line reads e.g. `Done ✓ 9,183 airspaces loaded` when the file is parsed and cached.
 
 ![Airspace data screen — loaded, "Done ✓ 9,183 airspaces loaded"](../pi4/previews/preview_airspace_data.png)
 
@@ -764,7 +766,9 @@ The Pi 4 must be on an internet-reachable network to download. Use the Connectiv
 
 ---
 
-## 16A. Direct-to Navigation
+## 17. Navigation & Approach
+
+### Direct-to Navigation
 
 ![Direct-to keyboard with WAYPOINT title and existing ident as placeholder](../pi4/previews/preview_direct_to_keyboard.png)
 
@@ -817,7 +821,7 @@ Above the heading box: a horizontal bar with cross-track-error scale. The magent
 | Mode | Full-scale | Reference line |
 |------|-----------|----------------|
 | En-route / Direct-to | ±1.0 NM | Activation point → waypoint great circle |
-| Synthetic approach (§16C active) | ±0.3 NM | Extended runway centreline (threshold + published course) |
+| Synthetic approach (§17 active) | ±0.3 NM | Extended runway centreline (threshold + published course) |
 
 The tighter approach scale matches RNAV / LPV convention so a half-scale needle on final actually means something. When the ident on the readout includes a runway suffix (e.g. `KSEZ/03`), the approach-mode scaling is in effect.
 
@@ -827,7 +831,7 @@ When no waypoint is active the strip is still drawn but reads **"DIRECT  →"** 
 
 ### Flight plan (multi-waypoint)
 
-Tap **FPL** (top-right on the MFD, §16H) to open the flight-plan editor — an ordered list of waypoints where each leg is one ICAO ident. Tap a row to **activate that leg** as the direct-to (the active leg is highlighted green with an **● ACTIVE** badge and its waypoint turns magenta); auto-sequencing advances to the next leg as you pass each waypoint.
+Tap **FPL** (top-right on the MFD, §19) to open the flight-plan editor — an ordered list of waypoints where each leg is one ICAO ident. Tap a row to **activate that leg** as the direct-to (the active leg is highlighted green with an **● ACTIVE** badge and its waypoint turns magenta); auto-sequencing advances to the next leg as you pass each waypoint.
 
 ![Flight-plan editor — KPRC → KSEZ → KFLG with the KSEZ leg active, +ICAO/+LAT-LON/+USER add buttons, SAVE / LOAD, and a DEACTIVATE button](../pi4/previews/preview_fpl_editor.png)
 
@@ -855,7 +859,7 @@ The **+ USER** button picks from the **user-waypoints** library — every point 
 
 ---
 
-## 16B. AGL Readout
+### AGL Readout
 
 ![AGL readout bottom-right of the AI](../pi4/previews/preview_agl_readout.png)
 
@@ -888,13 +892,13 @@ Reuses the same SRTM lookup the SVT renderer does for the camera-floor clamp, so
 
 ---
 
-## 16C. Synthetic Approach (HITS + VDI)
+### Synthetic Approach (HITS + VDI)
 
 The PFD can load a synthetic 3° approach to any runway in the airport database. While an approach is active you get three coordinated cues:
 
 - **HITS boxes** (cyan, 3D) along the extended centreline — fly through them.
 - **VDI** (vertical glideslope diamond) on the right side of the AI — fly to the diamond.
-- **CDI** scaled to ±0.3 NM full-scale (see §16A) — fly to the diamond.
+- **CDI** scaled to ±0.3 NM full-scale (see §17) — fly to the diamond.
 
 The trace on the moving-map inset turns cyan to match while approach is active; the magenta direct-to line and HITS boxes are mutually exclusive — when you load an approach the magenta D2 trace is hidden.
 
@@ -941,11 +945,13 @@ The lower-left moving-map inset already shows a course trace; while an approach 
 
 ### Sim glideslope behaviour
 
-When the simulator is in **FOLLOW FLT PLAN** with an approach active (see §18), the AP captures the GS **only from above**. Below the GS it holds altitude until the GS descends to meet the aircraft, then captures from above — the standard real-world AP convention. This avoids the unphysical "climb to chase the diamond" behaviour and matches what most autopilots will (or won't) do when wired into the real system later.
+When the simulator is in **FOLLOW FLT PLAN** with an approach active (see §21), the AP captures the GS **only from above**. Below the GS it holds altitude until the GS descends to meet the aircraft, then captures from above — the standard real-world AP convention. This avoids the unphysical "climb to chase the diamond" behaviour and matches what most autopilots will (or won't) do when wired into the real system later.
 
 ---
 
-## 16D. Moving-Map Inset
+## 18. Moving Map & Overlays
+
+### Moving-Map Inset
 
 A 2D top-down moving map sits at the lower-left of the AI. Off by default — turn it on in DISPLAY setup (`MAP INSET`). When enabled it draws hypsometric terrain, water, state and country boundary lines, runways, airports, obstacles, and the active direct-to course line over a black backplate, with own-ship pinned to the centre and the map rotating in either **TRK↑** or **N↑**.
 
@@ -957,7 +963,7 @@ The magenta direct-to line is drawn as a polyline along the **great circle** fro
 
 ### When an approach is active
 
-The magenta D2 line is replaced by a cyan line drawn from the **threshold along the reciprocal of the published course** (the actual extended centreline) for the same 5 NM final length the HITS boxes cover. The ETE label in the corner also turns cyan to match the HITS / VDI / cyan-CDI colour cluster (§16C).
+The magenta D2 line is replaced by a cyan line drawn from the **threshold along the reciprocal of the published course** (the actual extended centreline) for the same 5 NM final length the HITS boxes cover. The ETE label in the corner also turns cyan to match the HITS / VDI / cyan-CDI colour cluster (§17).
 
 ### Zoom ranges + orientation
 
@@ -984,7 +990,7 @@ Defaults for range and orientation are set in DISPLAY setup (`MAP RANGE`, `MAP I
 
 ---
 
-## 16E. Winds Aloft (WND)
+### Winds Aloft (WND)
 
 Wind barbs and temperatures aloft can be overlaid on the moving map (both the inset and the full-screen MFD). The data is the GFS pressure-level forecast, pulled from Open-Meteo over the internet — **US-only**, no key required.
 
@@ -1027,9 +1033,9 @@ Open-Meteo's free tier is rate-limited **per internet connection**, so three dis
 
 ---
 
-## 16F. Weather — Sources and Overlays
+### Weather — Sources and Overlays
 
-Beyond winds aloft (§16E), the display can show **METARs, TAFs, AIRMETs/SIGMETs, NEXRAD radar, and NOTAMs**. Weather comes from two independent paths and the display blends them:
+Beyond winds aloft (§18), the display can show **METARs, TAFs, AIRMETs/SIGMETs, NEXRAD radar, and NOTAMs**. Weather comes from two independent paths and the display blends them:
 
 - **Internet (INET)** — `aviationweather.gov` (AWC) for METAR/TAF/AIRMET/SIGMET, Open-Meteo for winds, and the FAA NOTAM API (key required, see §12). No subscription; needs an internet path.
 - **Radio (FIS-B)** — the 978 MHz UAT uplink decoded from an ADS-B receiver (see `Docs/ADSB_IN.md`). Free over the air, no internet needed.
@@ -1042,7 +1048,7 @@ The map's left status strip shows a **WX** line you can tap to cycle the weather
 - **RADIO** — FIS-B only (internet poller paused).
 - **INET** — internet only (radio ignored).
 
-A parallel **ADS-B** line cycles the *traffic* source the same way (§16G). Both persist in `data/settings.json`.
+A parallel **ADS-B** line cycles the *traffic* source the same way (§18). Both persist in `data/settings.json`.
 
 ### Status lines and provenance
 
@@ -1065,9 +1071,9 @@ The map shows **one** weather/airspace overlay at a time, selected by the **OVLY
 | Label | Overlay |
 |-------|---------|
 | **ASP** | Airspace (Class B/C/D, MOA, Restricted/Prohibited boundaries) — needs an airspace file (§12 data notes). |
-| **TFC** | Traffic-focus — lifts the nearby-only clamp and shows all ADS-B traffic (§16G). |
+| **TFC** | Traffic-focus — lifts the nearby-only clamp and shows all ADS-B traffic (§18). |
 | **MET** | METAR station dots + the tap-for-readout weather picker. |
-| **WND** | Winds aloft (§16E). |
+| **WND** | Winds aloft (§18). |
 | **NEX** | NEXRAD reflectivity. |
 
 (If you turn on more than one layer by hand from the MAP LAYERS pills, OVLY reads **MULTI**; the next tap collapses back to a single overlay.) Traffic is drawn on **every** page (clamped to nearby targets except on TFC), so you never lose collision awareness by looking at weather.
@@ -1101,7 +1107,7 @@ On **NEX**, radar reflectivity is painted as coloured intensity cells. Two ages 
 
 ---
 
-## 16G. Traffic — ADS-B / FIS-B IN
+### Traffic — ADS-B / FIS-B IN
 
 Nearby aircraft are shown on the map (and feed the collision alert) from ADS-B IN — either a radio receiver (1090ES + 978 UAT over GDL90/UDP, port 4000) or the built-in internet feed, blended like weather. Tap the **ADS-B** status line to cycle the traffic source **AUTO / RADIO / INET** (`R`/`I` counts split the two).
 
@@ -1132,13 +1138,13 @@ Two DISPLAY-setup rows thin distant/irrelevant traffic (alert-class still always
 
 ### Collision alert
 
-When a new target enters the alert envelope, a red **TRAFFIC** banner flashes at 1 Hz — on the PFD it's a compact badge ("TFC 2:00 −200" = 2 o'clock, 200 ft below); on the MFD it's a larger top-centre banner with the range added. On the Pi 4 a **"Traffic, Traffic"** voice callout fires with it (rate-limited to one per 5 s, gated by the ALERT AUDIO master switch — §10/§19). The alert is edge-triggered on the nearest new threat, not a continuous nag.
+When a new target enters the alert envelope, a red **TRAFFIC** banner flashes at 1 Hz — on the PFD it's a compact badge ("TFC 2:00 −200" = 2 o'clock, 200 ft below); on the MFD it's a larger top-centre banner with the range added. On the Pi 4 a **"Traffic, Traffic"** voice callout fires with it (rate-limited to one per 5 s, gated by the ALERT AUDIO master switch — §10/§22). The alert is edge-triggered on the nearest new threat, not a continuous nag.
 
 ---
 
-## 16H. Full-Screen MFD
+## 19. Full-Screen MFD
 
-The map overlays above (weather, traffic, winds, airspace) also live on a **full-screen multi-function display**. The lower-left **moving-map inset** (§16D) is always available on the PFD; the full-screen MFD trades the PFD instruments for a large map when you want the whole picture.
+The map overlays above (weather, traffic, winds, airspace) also live on a **full-screen multi-function display**. The lower-left **moving-map inset** (§18) is always available on the PFD; the full-screen MFD trades the PFD instruments for a large map when you want the whole picture.
 
 ![Full-screen MFD — large moving map with D2/FPL/OVLY chrome and the bottom data strip](../pi4/previews/pfd_gl/preview_mfd.png)
 
@@ -1150,10 +1156,10 @@ A **3-finger hold (~2 s)** anywhere on the screen swaps between the PFD and the 
 
 | Control | Where | Action |
 |---------|-------|--------|
-| **D→** | top-left | Direct-to. Reads `D→` idle, `D→ KSEZ` (magenta) when active. Tap to enter/clear a waypoint (§16A). |
+| **D→** | top-left | Direct-to. Reads `D→` idle, `D→ KSEZ` (magenta) when active. Tap to enter/clear a waypoint (§17). |
 | **FPL** | top-right | Open the flight-plan editor. |
 | **TRK↑ / N↑** | top-right, under FPL | Cyan label — tap to toggle track-up vs. north-up. |
-| **OVLY** | lower-left | Cycle the weather/airspace overlay (§16F). |
+| **OVLY** | lower-left | Cycle the weather/airspace overlay (§18). |
 | **RNG** (e.g. `10 NM` / `AUTO`) | lower-left, above the zoom buttons | Current range; `AUTO` fits the active direct-to leg. |
 | **− / +** | bottom corners | Zoom out / in through the range ladder. |
 | **CTR** | right side | Appears only when the map is **panned**; tap to recenter on the aircraft. |
@@ -1208,7 +1214,7 @@ The seven nav-derived fields (**WPT, BTW, DTK, DIST, DISW, XTE, ETE, ETEW, ETA, 
 
 ---
 
-## 17. Demo Mode
+## 20. Demo Mode
 
 Scripted Sedona, AZ flight. No hardware needed.
 
@@ -1221,7 +1227,7 @@ Cycles: level cruise → climbing left turn → level → descending right turn.
 
 ---
 
-## 18. Flight Simulator
+## 21. Flight Simulator
 
 ![Flight simulator setup screen](../pi4/previews/preview_sim_setup.png)
 
@@ -1305,7 +1311,7 @@ SIM CONTROLS → **EXIT SIM** returns you to the live PFD. If no AHRS unit is co
 
 ---
 
-## 19. Audio Alerts
+## 22. Audio Alerts
 
 The PFD ships with an EGPWS-style voice-callout pipeline. Six short clips are generated once at first boot using `espeak`, cached in `~/.pfd_audio/`, and played through the SDL/ALSA mixer pinned to the HDMI panel speakers (the ROADOM panels carry the audio out alongside HDMI; the Waveshare 3.5" DPI has no speaker pad so audio is silent on that variant).
 
@@ -1319,7 +1325,7 @@ The PFD ships with an EGPWS-style voice-callout pipeline. Six short clips are ge
 | **Terrain — pull up** | `Terrain. Terrain. Pull up. Pull up.` | Look-ahead clearance < 100 ft | Warning |
 | **Obstacle — pull up** | `Obstacle. Obstacle. Pull up. Pull up.` | Obstacle in the forward wedge with clearance < 100 ft | Warning |
 | **Bank angle** | `Bank angle. Bank angle.` | Roll > 60° absolute, AHRS healthy, sim not paused | Attention |
-| **Traffic** | `Traffic. Traffic.` | A new ADS-B target enters the alert envelope (≤ 3 NM and ≤ 600 ft). Edge-triggered on the nearest new threat, rate-limited to one per 5 s. Pairs with the flashing red TRAFFIC banner (§16G). | Warning |
+| **Traffic** | `Traffic. Traffic.` | A new ADS-B target enters the alert envelope (≤ 3 NM and ≤ 600 ft). Edge-triggered on the nearest new threat, rate-limited to one per 5 s. Pairs with the flashing red TRAFFIC banner (§18). | Warning |
 
 Source-identifying phrasing follows real EGPWS / TAWS-B convention: at every band the callout names what the airplane is about to hit, so the pilot doesn't have to guess from a generic "TERRAIN" whether to climb or to scan for a tower. The PULL UP suffix is reserved for the warning band — the action verb only fires when an immediate input is required.
 
@@ -1359,9 +1365,9 @@ If audio is dead but visual alerts work, the master mute is the right fallback �
 
 ---
 
-## 20. Unusual-Attitude Recovery Cues
+## 23. Unusual-Attitude Recovery Cues
 
-At **|pitch| > 30°** or **|roll| > 60°** the PFD enters an unusual-attitude declutter mode. The SVT mesh, water mask, airport / runway / obstacle / direct-to overlays all come off so the pilot sees nothing but solid sky/ground + the pitch ladder + a pair of red recovery glyphs centred on the aircraft symbol. The same triggers that fire the visual cues also fire the bank-angle voice callout (§19).
+At **|pitch| > 30°** or **|roll| > 60°** the PFD enters an unusual-attitude declutter mode. The SVT mesh, water mask, airport / runway / obstacle / direct-to overlays all come off so the pilot sees nothing but solid sky/ground + the pitch ladder + a pair of red recovery glyphs centred on the aircraft symbol. The same triggers that fire the visual cues also fire the bank-angle voice callout (§22).
 
 ![Unusual-attitude recovery — 75° right bank, nose +25°; curved red arrow sweeps left (CCW) over the ownship, sky/ground polygon agrees with the pitch ladder past 60°](../pi4/previews/pfd_gl/preview_unusual_attitude.png)
 
@@ -1393,7 +1399,7 @@ When the AHRS reports pitch outside ±90° (over-the-top loop, split-S, aerobati
 
 ---
 
-## 21. AHRS PCB and Air-Data Hardware
+## 24. AHRS PCB and Air-Data Hardware
 
 The AHRS sensor head is now a single PCB (rev A) that integrates the Pico W, IMU, GPS, baro and the new SDP33-1500Pa differential-pressure sensor on one board. The bench-breakout build path is documented in the README appendix and remains supported — same firmware, same wiring map.
 
