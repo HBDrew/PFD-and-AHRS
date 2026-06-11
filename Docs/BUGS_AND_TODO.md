@@ -140,17 +140,15 @@ Apply to both `pi4/moving_map.py` and `pi_zero/moving_map.py`.  Verify on
 the Pi 5 (a slow pan should show terrain sliding smoothly, no shading pop).
 
 ### WINDS-INSET-ALT-SELECT  No winds-altitude selector on the inset
-Status: **OPEN**
-The winds-aloft **altitude** (3k/6k/9k/12k/18k) and forecast-time
-buttons live on the full-screen MFD chrome, so when the WND overlay is
-shown on the **PFD inset** there's no way to change the level — you're
-stuck on whatever `winds_alt_ft` was last set on the MFD.  Need a way to
-pick the winds level while on the inset.  Options: a tiny alt readout/
-tap-target on the inset when the WND overlay is active (tap to cycle the
-level, like the MFD button), or expose `winds_alt_ft` (and the forecast
-time) on the DISPLAY setup screen so it's settable without the MFD.
-Target: inset chrome + tap handler in `pi4/pfd.py`; reuse
-`_mfd_cycle_winds_alt` / `_mfd_cycle_winds_time`.
+Status: **FIXED (verify position on hardware)**
+When the WND overlay is up on the PFD inset, a small **"9k ft"** readout
+now sits just under the range label and **cycles the level** (3k/6k/9k/12k/
+18k) on tap, reusing `_mfd_cycle_winds_alt` — so the inset can change winds
+altitude without the full-screen MFD.  Winds zoom stays on the L/R half
+taps.  The draw box + the hit-test box are kept in sync in `pi4/pfd.py`
+(inset overlay draw + the `_last_map_rect` tap handler); eyeball the exact
+position/size on the panel and nudge the two boxes if needed.  Forecast-time
+on the inset (`_mfd_cycle_winds_time`) was left for later — not requested.
 
 ### FPLLIB-DELETE-RESURRECT  Deleted saved flight plans come back from peers
 Status: **OPEN**
