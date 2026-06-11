@@ -4804,6 +4804,20 @@ def handle_event(event, demo_mode):
             return True
         if event.key == pygame.K_d:
             return "toggle_demo"
+        if event.key == pygame.K_F9:
+            # Guided live preview capture — save the current frame to the
+            # next manual filename (serviced in the render loop so the
+            # saved PNG is toast-free).
+            global _preview_cap_pending
+            _preview_cap_pending = True
+            return True
+        if event.key == pygame.K_F10:
+            # Reset the capture sequence back to the first target.
+            global _preview_cap_idx, _preview_cap_msg, _preview_cap_msg_t
+            _preview_cap_idx = 0
+            _preview_cap_msg = "capture reset → next: full-screen MFD"
+            _preview_cap_msg_t = time.monotonic()
+            return True
         if disp["mode"] == "pfd":
             if event.key == pygame.K_UP:
                 disp["alt_bug"] = round(disp["alt_bug"] / 100) * 100 + 100
@@ -14540,6 +14554,72 @@ def _asp_build_from_geojson():
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
+# ── Live guided preview capture (F9) ──────────────────────────────────────────
+# fbgrab can't capture this app: on kmsdrm the GL frame goes straight to the
+# DRM display plane and /dev/fb0 only mirrors the (blank) text console.  But
+# the full-screen MFD and every setup/list screen are drawn entirely into the
+# 2D pygame `surf` (only the PFD's 3D SVT terrain lives in the GL framebuffer),
+# so saving `surf` captures those pages perfectly.  F9 walks this ordered list,
+# saving the live frame to the exact manual filename and announcing the next
+# target on-screen.  Navigate to each page, press F9.
+_PREVIEW_CAPTURE_LIST = [
+    ("preview_mfd.png",          "full-screen MFD (plan loaded)"),
+    ("preview_winds.png",        "OVLY → WND"),
+    ("preview_metar.png",        "OVLY → MET"),
+    ("preview_traffic.png",      "OVLY → TFC, traffic in view"),
+    ("preview_mfd_airspace.png", "OVLY → ASP"),
+    ("preview_mfd_nexrad.png",   "OVLY → NEX"),
+    ("preview_mfd_trk_up.png",   "tap N↑ → TRK↑"),
+    ("preview_mfd_160.png",      "zoom out to 160 NM"),
+]
+_PREVIEW_CAPTURE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "previews", "pfd_gl")
+_preview_cap_idx = 0
+_preview_cap_pending = False     # set by F9 in handle_event, serviced in main loop
+_preview_cap_msg = ""
+_preview_cap_msg_t = 0.0
+
+
+def _do_preview_capture(surf):
+    """Save the just-rendered (toast-free) frame to the next manual filename
+    and advance.  Called from the render loop AFTER render() and BEFORE the
+    toast is drawn, so the saved PNG never contains the overlay."""
+    global _preview_cap_idx, _preview_cap_msg, _preview_cap_msg_t
+    name, _hint = _PREVIEW_CAPTURE_LIST[_preview_cap_idx
+                                        % len(_PREVIEW_CAPTURE_LIST)]
+    try:
+        os.makedirs(_PREVIEW_CAPTURE_DIR, exist_ok=True)
+        out = os.path.join(_PREVIEW_CAPTURE_DIR, name)
+        pygame.image.save(surf, out)
+        _preview_cap_idx += 1
+        nxt = _PREVIEW_CAPTURE_LIST[_preview_cap_idx
+                                    % len(_PREVIEW_CAPTURE_LIST)]
+        n = len(_PREVIEW_CAPTURE_LIST)
+        done = _preview_cap_idx
+        if done >= n:
+            _preview_cap_msg = f"Saved {name}  ({n}/{n})  ✓ all done"
+        else:
+            _preview_cap_msg = (f"Saved {name}  ({done}/{n})   "
+                                f"next: {nxt[1]} → {nxt[0]}")
+        print(f"[PFD] preview capture → {out}")
+    except Exception as e:
+        _preview_cap_msg = f"capture FAILED: {e}"
+        print(f"[PFD] preview capture failed: {e}", file=sys.stderr)
+    _preview_cap_msg_t = time.monotonic()
+
+
+def _draw_capture_toast(surf, msg):
+    """Small banner across the top — display feedback only, never saved."""
+    w = DISPLAY_W
+    bar = pygame.Surface((w, 30), pygame.SRCALPHA)
+    bar.fill((10, 20, 35, 230))
+    surf.blit(bar, (0, 0))
+    pygame.draw.line(surf, (90, 200, 130), (0, 30), (w, 30), 1)
+    f = _get_font(16, bold=True)
+    t = f.render(msg, True, (150, 230, 175))
+    surf.blit(t, (10, 7))
+
+
 def main():
     parser = argparse.ArgumentParser(description="PFD Display")
     parser.add_argument("--demo", action="store_true",
@@ -15216,6 +15296,28 @@ def main():
         _nexrad_client.start()
         print("[PFD] NEXRAD poller started (radar, follows inset zoom)")
 
+    # Signal-driven preview capture so a headless / SSH session (panel is
+    # touch-only, no keyboard) can grab each page: navigate by touch, then
+    # `kill -USR1 <pid>` to save the next manual filename, `kill -USR2 <pid>`
+    # to reset the sequence.  The handler only flips a flag — the save runs
+    # in the render loop where the frame is fresh and toast-free.
+    import signal as _signal
+
+    def _sigusr1(_sig, _frm):
+        global _preview_cap_pending
+        _preview_cap_pending = True
+
+    def _sigusr2(_sig, _frm):
+        global _preview_cap_idx, _preview_cap_msg, _preview_cap_msg_t
+        _preview_cap_idx = 0
+        _preview_cap_msg = "capture reset → next: full-screen MFD"
+        _preview_cap_msg_t = time.monotonic()
+    try:
+        _signal.signal(_signal.SIGUSR1, _sigusr1)
+        _signal.signal(_signal.SIGUSR2, _sigusr2)
+    except Exception:
+        pass   # non-main-thread / unsupported platform — F9/F10 still work
+
     running = True
     while running:
         # Update demo state
@@ -15314,6 +15416,14 @@ def main():
             print("[PFD] render crashed:", file=sys.stderr)
             traceback.print_exc()
         _t1 = time.monotonic()
+        # Guided preview capture — save the clean (toast-free) frame first,
+        # then draw the feedback banner for display only.
+        global _preview_cap_pending
+        if _preview_cap_pending:
+            _preview_cap_pending = False
+            _do_preview_capture(surf)
+        if _preview_cap_msg and time.monotonic() - _preview_cap_msg_t < 5.0:
+            _draw_capture_toast(surf, _preview_cap_msg)
         _flip()
         _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
