@@ -1192,11 +1192,13 @@ Nearby aircraft are shown on the map (and feed the collision alert) from ADS-B I
 
 Each target is a **diamond** with a short **leader line** in its direction of travel and a **data tag** showing relative altitude in hundreds of feet (`+05` above, `−12` below) plus `↑`/`↓` when climbing/descending faster than 200 fpm. Colour is the threat tier:
 
-| Tier | Colour | Meaning | Envelope |
-|------|--------|---------|----------|
-| **Alert** | Red (filled) | Collision threat | within **3 NM** *and* **600 ft** |
+| Tier | Colour | Meaning | Criterion |
+|------|--------|---------|-----------|
+| **Alert** | Red (filled) | Collision threat (RA) | **closure-based** — actually converging and time-to-closest **tau ≤ 30 s** while within the vertical band (±600 ft), plus a hard floor (anything inside **1 NM / 400 ft** regardless of closure) |
 | **Proximate** | Amber (filled) | Caution | within **6 NM** *and* **1200 ft** |
 | **Other** | Cyan (outline) | Advisory | beyond the above |
+
+The **Alert** tier is **closure/time-based**, like a real TAS — not a flat ring. Parallel, diverging, or co-altitude-but-not-closing traffic (very common in the pattern) stays **amber proximate** and does *not* trip a red RA or the callout; only traffic that's genuinely converging *and* will be close soon goes red. Closure is estimated over real ADS-B update intervals and smoothed; the RA must persist briefly before it fires (so a borderline target flickers amber, not red) and then latches so the cue stays up and the callout fires once. Tuning lives in `shared/config_base.py` (`ADSB_TAU_S`, `ADSB_ALERT_FLOOR_NM/FT`, `ADSB_RA_ARM_S/HOLD_S`).
 
 On weather/airspace pages and the PFD inset, traffic is **clamped to nearby** (within ~7 NM / 3000 ft) to keep the picture clean; the **TFC** page lifts the clamp and shows everything. **Alert-class traffic is never hidden** — not by the clamp, and not by the declutter filters below.
 
@@ -1213,7 +1215,7 @@ Two DISPLAY-setup rows thin distant/irrelevant traffic (alert-class still always
 
 ### Collision alert
 
-When a new target enters the alert envelope, a red **TRAFFIC** banner flashes at 1 Hz — on the PFD it's a compact badge ("TFC 2:00 −200" = 2 o'clock, 200 ft below); on the MFD it's a larger top-centre banner with the range added. On the Pi 4 a **"Traffic, Traffic"** voice callout fires with it (rate-limited to one per 5 s, gated by the ALERT AUDIO master switch — §10/§20). The alert is edge-triggered on the nearest new threat, not a continuous nag.
+When a target becomes an alert (RA) — i.e. it's genuinely converging with tau ≤ 30 s, or inside the 1 NM/400 ft floor — a red **TRAFFIC** banner flashes at 1 Hz: on the PFD it's a compact badge ("TFC 2:00 −200" = 2 o'clock, 200 ft below); on the MFD it's a larger top-centre banner with the range added. On the Pi 4 a **"Traffic, Traffic"** voice callout fires with it (gated by the ALERT AUDIO master switch — §10/§20). The callout is edge-triggered on the nearest **new** threat and the alert **latches** for a few seconds, so it fires once and the cue stays up rather than stuttering on a borderline geometry.
 
 ---
 
@@ -1328,7 +1330,7 @@ The PFD ships with an EGPWS-style voice-callout pipeline. Six short clips are ge
 | **Terrain — pull up** | `Terrain. Terrain. Pull up. Pull up.` | Look-ahead clearance < 100 ft | Warning |
 | **Obstacle — pull up** | `Obstacle. Obstacle. Pull up. Pull up.` | Obstacle in the forward wedge with clearance < 100 ft | Warning |
 | **Bank angle** | `Bank angle. Bank angle.` | Roll > 60° absolute, AHRS healthy, sim not paused | Attention |
-| **Traffic** | `Traffic. Traffic.` | A new ADS-B target enters the alert envelope (≤ 3 NM and ≤ 600 ft). Edge-triggered on the nearest new threat, rate-limited to one per 5 s. Pairs with the flashing red TRAFFIC banner (§17). | Warning |
+| **Traffic** | `Traffic. Traffic.` | A new ADS-B target becomes a closure-based RA (converging, tau ≤ 30 s, or inside the 1 NM/400 ft floor). Edge-triggered on the nearest new threat; the alert latches so it fires once, not repeatedly. Pairs with the flashing red TRAFFIC banner (§17). | Warning |
 
 Source-identifying phrasing follows real EGPWS / TAWS-B convention: at every band the callout names what the airplane is about to hit, so the pilot doesn't have to guess from a generic "TERRAIN" whether to climb or to scan for a tower. The PULL UP suffix is reserved for the warning band — the action verb only fires when an immediate input is required.
 
