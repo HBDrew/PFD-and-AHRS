@@ -105,7 +105,10 @@ WX_RADIUS_ZOOM_K = 1.8    # query radius = map range × this (clamped min/max)
 WX_INTERVAL_S    = 120    # periodic refresh cadence (METARs update ~hourly)
 TAF_INTERVAL_S   = 600    # TAF refresh cadence (forecasts reissue ~6 h)
 AIRSIG_INTERVAL_S = 300   # AIRMET/SIGMET refresh cadence (~hourly, but watch updates)
-WINDS_INET_INTERVAL_S = 900  # winds aloft refresh (forecast grids update ~hourly+)
+WINDS_INET_INTERVAL_S = 3600  # winds aloft refresh — hourly. Forecasts reissue
+                              # ~hourly and we hold 48 h per pull, so this stays
+                              # well under Open-Meteo's free budget (each fetch
+                              # counts as locations × variables, not 1 call).
 WINDS_ROUTE_WIDTH_NM = 25    # winds corridor half-width either side of an active D2/FPL course
 # Winds aloft are a smooth field, so we cache a grid a few times wider than the
 # view and just draw the in-view subset — zoom + small pans then need no network
