@@ -568,7 +568,9 @@ def taf_lines(raw):
 # Standard winds-aloft forecast altitudes (FD levels) the UI offers — one
 # source of truth shared by the radio FD decode, the internet (Open-Meteo)
 # interpolation, and the altitude selector.
-WINDS_ALTS = (3000, 6000, 9000, 12000, 18000, 24000, 30000, 34000, 39000)
+# Capped at 18,000 ft — keeps the Open-Meteo pull cheap (fewer pressure levels)
+# and covers the altitudes a non-pressurised GA airplane actually flies.
+WINDS_ALTS = (3000, 6000, 9000, 12000, 18000)
 
 
 def decode_fd_code(code, alt_ft):

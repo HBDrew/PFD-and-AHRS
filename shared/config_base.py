@@ -105,22 +105,23 @@ WX_RADIUS_ZOOM_K = 1.8    # query radius = map range × this (clamped min/max)
 WX_INTERVAL_S    = 120    # periodic refresh cadence (METARs update ~hourly)
 TAF_INTERVAL_S   = 600    # TAF refresh cadence (forecasts reissue ~6 h)
 AIRSIG_INTERVAL_S = 300   # AIRMET/SIGMET refresh cadence (~hourly, but watch updates)
-WINDS_INET_INTERVAL_S = 3600  # winds aloft refresh — hourly. Forecasts reissue
-                              # ~hourly and we hold 48 h per pull, so this stays
-                              # well under Open-Meteo's free budget (each fetch
-                              # counts as locations × variables, not 1 call).
-WINDS_ROUTE_WIDTH_NM = 25    # winds corridor half-width either side of an active D2/FPL course
-# Winds aloft are a smooth field, so we cache a grid a few times wider than the
-# view and just draw the in-view subset — zoom + small pans then need no network
-# at all (the old fetch-per-view hammered Open-Meteo and stalled for seconds on
-# every change).  The cache extent scales WITH the zoom, and the barb spacing
-# scales with it too, so the fetch stays ~WINDS_GRID_AXIS_PTS² points no matter
-# how wide the cache is (a fixed-spacing wide cache would cost O(area) points —
-# 10-20 MB JSON at the wide end).  Winds page zoom is limited to WINDS_ZOOMS_NM
-# (winds don't vary enough to need a close-in view).
-WINDS_ZOOMS_NM = [40, 80, 160]   # zoom steps offered on the winds (WND) overlay
-WINDS_CACHE_MARGIN = 2.0         # cache half-extent = this × the current render zoom
-WINDS_GRID_AXIS_PTS = 8          # winds grid points per axis (~64-pt pool, fetched in batches)
+# ── Winds aloft — one coarse NATIONAL grid, fetched rarely, cached on disk ─────
+# GFS pressure-level winds only refresh every ~6 h, and we only draw barbs at the
+# widest (160 nm) zoom where a coarse grid is plenty.  So instead of chasing the
+# map view (which got us rate-limited — Open-Meteo meters by locations, and we
+# were re-pulling on every move / restart), we pull ONE coarse coordinate-list
+# grid covering CONUS in a single call (the API allows up to 1000 locations;
+# ~100 nm spacing over CONUS is ~450 points), cache it to disk, and just
+# read/decimate the in-view subset.  No per-move/zoom refetch.
+WINDS_US_BBOX         = (24.0, 50.0, -125.0, -66.0)  # min/max lat, min/max lon (CONUS)
+WINDS_US_SPACING_NM   = 60         # coarse grid spacing — ~16-24 barbs at the 160 nm view
+WINDS_INET_INTERVAL_S = 6 * 3600   # GFS reissues every ~6 h — refresh no faster
+WINDS_MAX_ALT_FT      = 18000      # cap — fewer pressure levels = a much cheaper call
+WINDS_MIN_RENDER_NM   = 120        # only draw barbs when the map range is >= this (160 nm view)
+WINDS_GFS_MODEL       = "gfs025"   # pressure levels require an explicit GFS model
+WINDS_DISK_MAX_AGE_S  = 3600       # a zone is "stale" after 1 h — only then re-pull
+                                   # (when connected); within the hour we read disk.
+WINDS_ROUTE_WIDTH_NM  = 25         # (legacy) winds corridor half-width — unused by the national grid
 NOTAM_INTERVAL_S = 600    # NOTAM refresh cadence (FAA API; only polled with a key)
 NEXRAD_INTERVAL_S = 300   # radar refresh cadence (NEXRAD updates ~5 min)
 NEXRAD_MAX_PX     = 480   # fetched raster long-side px (decode/scale cost)

@@ -386,7 +386,9 @@ _traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traf
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
 _taf_client  = None   # AwcPoller (internet TAF backfill) when weather enabled
 _airsig_client = None # AwcPoller (internet AIRMET/SIGMET backfill)
-_winds_client = None  # AwcPoller (internet winds aloft, Open-Meteo grid)
+_winds_client = None  # WindsUSCache (zoned national winds aloft, disk-cached)
+_WINDS_DISK_PATH = os.path.join(os.path.dirname(SRTM_DIR), "winds",
+                                "conus_winds.json")
 _notam_client = None  # AwcPoller (internet NOTAMs, FAA API) when creds present
 _taf_fed_at  = 0.0    # updated_s of last TAF snapshot folded into the store
 _airsig_fed_at = 0.0  # updated_s of last AIRMET/SIGMET snapshot folded in
@@ -6034,83 +6036,6 @@ def _wx_view():
     return float(clat), float(clon), float(radius)
 
 
-def _winds_cache_range(zoom_nm):
-    """Cache half-extent = WINDS_CACHE_MARGIN × the zoom.  The cache and its
-    barb spacing scale with the zoom, so the fetch stays a bounded
-    ~WINDS_GRID_AXIS_PTS² points however wide the cache gets, and density per
-    screen stays constant at every zoom."""
-    z = int(zoom_nm) if zoom_nm else 80
-    z = max(20, min(160, z))
-    return float(z) * WINDS_CACHE_MARGIN
-
-
-def _winds_view():
-    """(center, cache_range) the winds poller follows.  Range scales with the
-    current zoom; the renderer culls the wide cache to the view, so zoom and
-    small pans need no refetch."""
-    clat, clon = _mfd_effective_center()
-    return (float(clat), float(clon),
-            _winds_cache_range(int(disp["ds"].get("map_zoom_nm", 10))))
-
-
-def _ll_extend(la, lo, brg_rad, dist_nm):
-    """Point ``dist_nm`` from (la, lo) along bearing ``brg_rad`` (rad, 0=N)."""
-    dla = dist_nm * math.cos(brg_rad) / 60.0
-    dlo = dist_nm * math.sin(brg_rad) / (60.0 * max(0.05,
-                                                    math.cos(math.radians(la))))
-    return (la + dla, lo + dlo)
-
-
-def _winds_route_points():
-    """Active course as ``[(lat, lon), ...]`` (ownship first, then remaining FPL
-    legs / the direct-to waypoint), EXTENDED past the final waypoint along the
-    inbound course so the corridor wraps the destination instead of stopping at
-    it.  ``None`` when no course is active."""
-    try:
-        olat = float(disp.get("lat", DEMO_LAT))
-        olon = float(disp.get("lon", DEMO_LON))
-    except (TypeError, ValueError):
-        return None
-    pts = None
-    if _fpl_is_active():
-        wps = disp["fpl"]["waypoints"]
-        idx = disp["fpl"]["active_idx"]
-        pts = [(olat, olon)]
-        for wp in wps[idx:]:
-            try:
-                pts.append((float(wp["lat"]), float(wp["lon"])))
-            except (KeyError, TypeError, ValueError):
-                continue
-        if len(pts) < 2:
-            pts = None
-    if pts is None:
-        nav = disp.get("nav", {})
-        if nav.get("ident"):
-            try:
-                pts = [(olat, olon), (float(nav["lat"]), float(nav["lon"]))]
-            except (TypeError, ValueError):
-                pts = None
-    if pts is None or len(pts) < 2:
-        return None
-    (la1, lo1), (la2, lo2) = pts[-2], pts[-1]
-    mlat = math.radians((la1 + la2) / 2.0)
-    brg = math.atan2((lo2 - lo1) * math.cos(mlat), (la2 - la1))
-    pts.append(_ll_extend(la2, lo2, brg, WINDS_ROUTE_WIDTH_NM + 5.0))
-    return pts
-
-
-def _winds_fetch(lat, lon, range_nm):
-    """Poller shim: one winds grid sized to the cache (~WINDS_GRID_AXIS_PTS pts
-    per axis) the renderer culls to the view, plus a corridor along (and past)
-    an active D2/FPL course."""
-    hour_offset = int(disp["ds"].get("winds_time_offset_h", 0))
-    spacing = (2.0 * range_nm * 0.82) / max(1, WINDS_GRID_AXIS_PTS - 1)
-    return _wx.fetch_winds(
-        lat, lon, range_nm, aspect=1.0, spacing_nm=spacing,
-        route=_winds_route_points(), route_width_nm=WINDS_ROUTE_WIDTH_NM,
-        hour_offset=hour_offset)
-
-
 def _notam_fetch(lat, lon, radius_nm):
     """Poller shim: NOTAMs using the FAA credentials entered in Connectivity
     (cs), falling back to the env vars; no-ops without either."""
@@ -6175,6 +6100,12 @@ def _update_weather():
     radio_only = (src == "radio")
     inet_only  = (src == "internet")
     _wx_client.paused = radio_only
+    # Pre-load the WHOLE national winds grid whenever we have internet (not
+    # radio-only) so the pilot can pull the entire US on the ground and fly with
+    # no connection.  Walks every stale zone (aircraft's first), one per tick,
+    # then idles until the ~6 h GFS cadence; disk-cached across restarts.
+    if _winds_client is not None:
+        _winds_client.enabled = not radio_only
     w = disp["weather"]
     inet = [] if radio_only else _wx_client.snapshot()
     rdr  = [] if inet_only  else _fisb_rdr_snapshot()
@@ -6204,7 +6135,7 @@ def _update_weather():
             _store.add_airsigmets(_airsig_client.snapshot())
         if _winds_client is not None and _winds_client.updated_s != _winds_fed_at:
             _winds_fed_at = _winds_client.updated_s
-            _store.set_winds(_winds_client.snapshot(), "INET")
+            _store.set_winds(_winds_client.columns(), "INET")
         if _notam_client is not None and _notam_client.updated_s != _notam_fed_at:
             _notam_fed_at = _notam_client.updated_s
             _store.add_notams(_notam_client.snapshot())
@@ -10525,7 +10456,8 @@ def draw_mfd(surf, connected=True, data_stale=False):
         ground_stations=disp.get("weather", {}).get("stations"),
         wx_graphics=disp.get("weather", {}).get("graphics"),
         winds_barbs=(_winds_barbs()
-                     if disp["ds"].get("map_show_winds") else None),
+                     if (disp["ds"].get("map_show_winds")
+                         and range_nm >= WINDS_MIN_RENDER_NM) else None),
         # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"] (NEX).
         nexrad=_nexrad_render_arg(),
         nexrad_cells=(_fisb_nexrad_cells()
@@ -10917,7 +10849,7 @@ def _nearest_winds(lat, lon):
     return best
 
 
-_WINDS_ALTS = [3000, 6000, 9000, 12000, 18000, 24000, 30000, 34000, 39000]
+_WINDS_ALTS = [3000, 6000, 9000, 12000, 18000]   # capped at 18k (see WINDS_ALTS)
 _winds_barbs_cache = []
 _winds_barbs_key = None
 
@@ -13428,11 +13360,14 @@ def main():
                                        name="AirSigPoller")
         _airsig_client.start()
         global _winds_client
-        _winds_client = _wx.AwcPoller(view_fn=_winds_view,
-                                      fetch_fn=_winds_fetch,
-                                      interval_s=WINDS_INET_INTERVAL_S,
-                                      move_refetch_frac=0.5,
-                                      name="WindsPoller")
+        _winds_client = _wx.WindsUSCache(
+            WINDS_US_BBOX, rows=2, cols=3, spacing_nm=WINDS_US_SPACING_NM,
+            disk_path=_WINDS_DISK_PATH,
+            locate_fn=lambda: (float(disp.get("lat", DEMO_LAT)),
+                               float(disp.get("lon", DEMO_LON))),
+            hour_offset_fn=lambda: int(disp["ds"].get("winds_time_offset_h", 0)),
+            model=WINDS_GFS_MODEL, max_alt_ft=WINDS_MAX_ALT_FT,
+            max_age_s=WINDS_DISK_MAX_AGE_S)
         _winds_client.start()
         print("[PFD] TAF + AIRMET/SIGMET + winds pollers started (internet)")
         # Always start the NOTAM poller; its fetch reads the FAA key live from

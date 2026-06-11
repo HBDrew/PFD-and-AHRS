@@ -534,26 +534,36 @@ def fetch_winds(lat, lon, range_nm, aspect=1.0, route=None,
     return _fetch_om_winds(uniq, alts, hour_offset, timeout)
 
 
-# Open-Meteo's free tier refuses very large multi-location requests, so we keep
-# each HTTP call to a safe number of points and fan a big pool out across
-# several small batches (combined on return).  Fetches are rare (the cache is
-# wide and only re-pulls on a big pan / the periodic timer), so a handful of
-# small requests is cheap and far more reliable than one oversized one.
-_OM_MAX_BATCH = 25
+# Open-Meteo allows up to 1000 locations per call.  We stay well under that with
+# one big batch (a coarse CONUS grid is ~450 points), so the whole national grid
+# comes down in ONE or two requests rather than dozens of tiny ones.  Each call's
+# cost is metered by locations, so keep a single call under the per-minute
+# budget — 250 keeps us safe even at full national density.
+_OM_MAX_BATCH = 250
+
+# Pressure levels that bracket the standard FD altitudes up to ~18,000 ft
+# (~500 hPa).  Capping the vertical here drops 4 of the 10 levels, cutting the
+# per-location variable cost (and the response size) by ~40 %.
+_OM_LEVELS_LOW = (1000, 925, 850, 700, 600, 500)
 
 
-def _fetch_om_batch(pts, alts, hour_offset, timeout):
-    """One Open-Meteo pressure-level request for up to ``_OM_MAX_BATCH`` points."""
+def _fetch_om_batch(pts, alts, hour_offset, timeout, levels=None, model=None):
+    """One Open-Meteo pressure-level request for up to ``_OM_MAX_BATCH`` points.
+    ``levels`` caps the vertical (defaults to the full set); ``model`` pins an
+    explicit model (e.g. ``gfs025`` — required for pressure levels)."""
+    levels = levels if levels is not None else _OM_LEVELS
     lats = ",".join(f"{p[0]:.3f}" for p in pts)
     lons = ",".join(f"{p[1]:.3f}" for p in pts)
     fields = []
-    for hpa in _OM_LEVELS:
+    for hpa in levels:
         fields += [f"windspeed_{hpa}hPa", f"winddirection_{hpa}hPa",
                    f"temperature_{hpa}hPa", f"geopotential_height_{hpa}hPa"]
     # forecast_days=2 so a +24 h offset still has data late in the UTC day.
     url = (f"{_OPEN_METEO}?latitude={lats}&longitude={lons}"
            f"&hourly={','.join(fields)}&windspeed_unit=kn"
            f"&forecast_days=2&timeformat=iso8601&timezone=UTC")
+    if model:
+        url += f"&models={model}"
     req = urllib.request.Request(url, headers={"User-Agent": _UA,
                                                "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -561,7 +571,7 @@ def _fetch_om_batch(pts, alts, hour_offset, timeout):
     return parse_open_meteo_winds(data, alts, hour_offset=hour_offset)
 
 
-def _fetch_om_winds(pts, alts, hour_offset, timeout):
+def _fetch_om_winds(pts, alts, hour_offset, timeout, levels=None, model=None):
     """Fetch winds/temps aloft for ``pts`` (``[(lat, lon), ...]``) in batches of
     ``_OM_MAX_BATCH``, combining the parsed columns.  Returns whatever batches
     succeed; raises only if every batch fails (so one transient error doesn't
@@ -570,12 +580,203 @@ def _fetch_om_winds(pts, alts, hour_offset, timeout):
     for i in range(0, len(pts), _OM_MAX_BATCH):
         try:
             out.extend(_fetch_om_batch(pts[i:i + _OM_MAX_BATCH], alts,
-                                       hour_offset, timeout))
+                                       hour_offset, timeout, levels, model))
         except Exception as e:                                   # noqa: BLE001
             last_err = e
     if not out and last_err is not None:
         raise last_err
     return out
+
+
+def conus_grid_points(bbox, spacing_nm):
+    """Coarse lat/lon grid covering ``bbox`` = (min_lat, max_lat, min_lon,
+    max_lon) at ~``spacing_nm`` spacing — the national winds grid.  Longitude
+    step widens with latitude so the spacing stays ~uniform in nm."""
+    min_lat, max_lat, min_lon, max_lon = bbox
+    dlat = spacing_nm / 60.0
+    pts = []
+    la = min_lat
+    while la <= max_lat + 1e-6:
+        coslat = max(0.2, math.cos(math.radians(la)))
+        dlon = spacing_nm / (60.0 * coslat)
+        lo = min_lon
+        while lo <= max_lon + 1e-6:
+            pts.append((round(la, 3), round(lo, 3)))
+            lo += dlon
+        la += dlat
+    return pts
+
+
+def fetch_winds_us(bbox, spacing_nm, alts=None, hour_offset=0, timeout=30,
+                   model="gfs025", max_alt_ft=18000):
+    """Fetch one coarse winds grid over ``bbox`` in a single (or few) batched
+    call(s), capped at ``max_alt_ft`` and pinned to ``model``.  Returns the
+    parsed winds columns (each ``{station, lat, lon, levels, ...}``)."""
+    from fisb import WINDS_ALTS
+    alts = alts if alts is not None else WINDS_ALTS
+    alts = [a for a in alts if a <= max_alt_ft]
+    levels = _OM_LEVELS_LOW if max_alt_ft <= 18000 else _OM_LEVELS
+    pts = conus_grid_points(bbox, spacing_nm)
+    if not pts:
+        return []
+    return _fetch_om_winds(pts, alts, hour_offset, timeout, levels, model)
+
+
+def conus_zones(bbox, rows, cols):
+    """Split ``bbox`` into ``rows × cols`` sub-boxes (each a winds zone)."""
+    min_lat, max_lat, min_lon, max_lon = bbox
+    dlat = (max_lat - min_lat) / rows
+    dlon = (max_lon - min_lon) / cols
+    return [(min_lat + r * dlat, min_lat + (r + 1) * dlat,
+             min_lon + c * dlon, min_lon + (c + 1) * dlon)
+            for r in range(rows) for c in range(cols)]
+
+
+class WindsUSCache(threading.Thread):
+    """National winds-aloft cache, split into zones and fetched lazily.
+
+    Winds aloft (GFS) only reissue every ~6 h, so there's no point chasing the
+    map view — we pull a coarse coordinate-list grid for each zone, ONE zone per
+    refresh tick (the zone the aircraft is in first, then outward), timestamp
+    each, and never re-pull a zone until it's ``max_age_s`` stale.  The whole
+    thing is persisted to disk so a restart reloads instantly with zero calls.
+    ``enabled`` is set by the app (only while the WND overlay is up), so we make
+    no calls at all when winds aren't being looked at.
+
+    ``locate_fn`` -> (lat, lon) of the aircraft; ``hour_offset_fn`` -> the
+    selected forecast-time offset.  Diagnostics mirror the pollers."""
+
+    def __init__(self, bbox, rows, cols, spacing_nm, disk_path, locate_fn,
+                 hour_offset_fn=None, model="gfs025", max_alt_ft=18000,
+                 max_age_s=6 * 3600, slice_s=20.0):
+        super().__init__(daemon=True, name="WindsUSCache")
+        self.zones = conus_zones(bbox, rows, cols)
+        self.spacing_nm = spacing_nm
+        self.disk_path = disk_path
+        self.locate_fn = locate_fn
+        self.hour_offset_fn = hour_offset_fn or (lambda: 0)
+        self.model = model
+        self.max_alt_ft = max_alt_ft
+        self.max_age_s = max_age_s
+        self.slice_s = slice_s
+        self.enabled = False
+        self.updated_s = 0.0
+        self.rx_count = 0
+        self.err_count = 0
+        self.last_err = ""
+        self.connected = False
+        self._data = {}                 # zone idx -> {"cols": [...], "fetched": epoch}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._load_disk()
+
+    def stop(self):
+        self._stop.set()
+
+    def columns(self):
+        """All cached winds columns, merged across zones."""
+        with self._lock:
+            out = []
+            for rec in self._data.values():
+                out.extend(rec["cols"])
+            return out
+
+    def count(self):
+        with self._lock:
+            return sum(len(rec["cols"]) for rec in self._data.values())
+
+    def force_refresh(self):
+        """Mark every zone stale (e.g. when the forecast time changes)."""
+        with self._lock:
+            self._data = {}
+        self.updated_s = time.monotonic()
+
+    def _due_zone(self, lat, lon, now):
+        """Index of the most-due zone — the aircraft's own zone first, then the
+        nearest other stale zone — or None when every zone is fresh."""
+        cand = []
+        for i, z in enumerate(self.zones):
+            rec = self._data.get(i)
+            age = (now - rec["fetched"]) if rec else 1e12
+            if age < self.max_age_s:
+                continue
+            inside = (z[0] <= lat <= z[1] and z[2] <= lon <= z[3])
+            cy, cx = (z[0] + z[1]) / 2.0, (z[2] + z[3]) / 2.0
+            cand.append((0 if inside else 1, _nm_between(lat, lon, cy, cx), i))
+        if not cand:
+            return None
+        cand.sort()
+        return cand[0][2]
+
+    def refresh_one(self):
+        """Fetch the single most-due zone (local first).  True if it fetched."""
+        try:
+            lat, lon = self.locate_fn()
+        except Exception:                                        # noqa: BLE001
+            return False
+        now = time.time()
+        idx = self._due_zone(lat, lon, now)
+        if idx is None:
+            return False
+        try:
+            cols = fetch_winds_us(self.zones[idx], self.spacing_nm,
+                                  hour_offset=self.hour_offset_fn(),
+                                  model=self.model, max_alt_ft=self.max_alt_ft)
+            with self._lock:
+                self._data[idx] = {"cols": cols, "fetched": now}
+            self.updated_s = time.monotonic()
+            self.rx_count += 1
+            self.connected = True
+            self._save_disk()
+            return True
+        except Exception as e:                                   # noqa: BLE001
+            self.err_count += 1
+            self.last_err = f"{type(e).__name__}: {e}"
+            self.connected = False
+            print(f"[WX:winds] {self.last_err}")
+            return False
+
+    def run(self):
+        while not self._stop.is_set():
+            if self.enabled:
+                self.refresh_one()                # one zone per tick, paced
+            slept = 0.0
+            while slept < self.slice_s and not self._stop.is_set():
+                time.sleep(0.2)
+                slept += 0.2
+
+    def _save_disk(self):
+        try:
+            os.makedirs(os.path.dirname(self.disk_path), exist_ok=True)
+            with self._lock:
+                payload = {"saved": time.time(),
+                           "zones": {str(i): rec
+                                     for i, rec in self._data.items()}}
+            tmp = self.disk_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(payload, f)
+            os.replace(tmp, self.disk_path)
+        except Exception as e:                                   # noqa: BLE001
+            print(f"[WX:winds] disk save failed: {e}")
+
+    def _load_disk(self):
+        try:
+            if not os.path.exists(self.disk_path):
+                return
+            with open(self.disk_path) as f:
+                payload = json.load(f)
+            data = {}
+            for k, rec in (payload.get("zones") or {}).items():
+                data[int(k)] = {"cols": rec.get("cols", []),
+                                "fetched": float(rec.get("fetched", 0.0))}
+            with self._lock:
+                self._data = data
+            if data:
+                self.updated_s = time.monotonic()   # so the app folds it in
+            print(f"[WX:winds] loaded {self.count()} cached columns "
+                  f"({len(data)} zones) from disk")
+        except Exception as e:                                   # noqa: BLE001
+            print(f"[WX:winds] disk load failed: {e}")
 
 
 # ── NOTAMs (FAA NOTAM API — needs developer credentials) ────────────────────────
