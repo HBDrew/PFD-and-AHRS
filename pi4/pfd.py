@@ -5019,8 +5019,10 @@ def handle_event(event, demo_mode):
             _ss_drag["is_drag"] = True
         if _ss_drag["is_drag"]:
             mode = _ss_drag["mode"]
-            n_rows = _SS_DRAG_MODES.get(mode, 5)
-            max_s = _ss_max_scroll(n_rows)
+            if mode == "display_setup":
+                max_s = _dsp_max_scroll()   # ends with the taller MAP LAYERS row
+            else:
+                max_s = _ss_max_scroll(_SS_DRAG_MODES.get(mode, 5))
             new_scroll = _ss_drag["scroll_at_down"] - dy
             _ss_scroll[mode] = max(0, min(max_s, new_scroll))
         _ss_drag["pos"] = (x, y)
@@ -6760,6 +6762,20 @@ _DSP_LAYERS_BTN_H      = 44
 _DSP_LAYERS_SUB_GAP    = 8
 _DSP_LAYERS_ROW_H      = (2 * _DSP_LAYERS_BTN_H
                           + _DSP_LAYERS_SUB_GAP + 16)
+
+
+def _dsp_max_scroll():
+    """Max scroll for the DISPLAY setup screen.  The generic row-count clamp
+    (_ss_max_scroll) assumes every row is _SS_RH tall, but this screen ends
+    with the taller MAP LAYERS row (_DSP_LAYERS_ROW_H), so it under-counts the
+    content height and stops the scroll short of the bottom — worse now that
+    _DSP_ROWS grew (FLIGHT PATH / TFC ALT / TFC RANGE).  Compute the real
+    content bottom: the standard rows, then the MAP LAYERS row, plus a little
+    bottom padding."""
+    base = _SS_Y0 + _DSP_LAYERS_ROW_INDEX * (_SS_RH + _SS_GAP)  # MAP LAYERS top
+    content_h = base + _DSP_LAYERS_ROW_H + _SS_GAP
+    visible = DISPLAY_H - _SS_TITLE_BAR_H
+    return max(0, content_h - _SS_TITLE_BAR_H - visible)
 
 
 def _dsp_layers_subrow_count():
@@ -14214,13 +14230,16 @@ def render(surf, demo_mode, connected, data_stale=False):
         else:
             _eff_range  = _zoom_pref
             _eff_label  = None  # use the inset's standard "X NM" label
-        # Force north-up at wide ranges regardless of how we got there
-        # (AUTO-resolved or manually selected). At 80+ nm the whole-leg
-        # picture matters more than nose-up orientation, the rotated
-        # tint smear is more pronounced, and the async tint rebuild only
-        # has to run once per quantised centre instead of every heading
-        # change.
-        _eff_orient = "nrth" if _eff_range > 40 else _orient_pref
+        # Honour the pilot's TRK↑ / N↑ choice at every manual inset range.
+        # The old wide-zoom force-north-up was for rotated-tint smear and a
+        # supposed per-heading rebuild; both are gone now (the tint registers
+        # + rotates correctly and the cache key doesn't include rotation, so a
+        # heading change re-rotates the cached surface rather than rebuilding).
+        # Forcing N-up at >40 nm was swallowing the toggle on the WND page
+        # (winds zoom ≥40) and at wide manual zooms.  AUTO still pins north-up
+        # so the destination doesn't spin under the chevron during whole-leg
+        # fit.
+        _eff_orient = "nrth" if _eff_label == "AUTO" else _orient_pref
         _map_mod.render(
             surf, rect, lat, lon, alt, hdg, _map_track,
             _eff_orient,
