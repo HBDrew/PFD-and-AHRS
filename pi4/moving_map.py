@@ -42,12 +42,11 @@ import water as _water_mod     # noqa: E402
 from terrain import load_tile  # noqa: E402
 import terrain as _terrain_mod  # noqa: E402  (for disk_reads() diagnostics)
 
-# Tint build diagnostics — ON by default (one line per async build: tile
-# count, cold disk reads, elapsed ms, plus a KICK line showing the cache key)
-# so a persistent "BUILDING…" can be diagnosed as cold-read cost vs a
-# re-kick/key thrash without editing the service.  Set PFD_TINT_DEBUG=0 to
-# silence once diagnosed.
-_TINT_DEBUG = os.environ.get("PFD_TINT_DEBUG", "1") != "0"
+# Tint build diagnostics — OFF by default; set PFD_TINT_DEBUG=1 to log one
+# line per async build (tile count, cold disk reads, elapsed ms) plus a KICK
+# line (raw vs quantised centre, step) for diagnosing a persistent
+# "BUILDING…".
+_TINT_DEBUG = os.environ.get("PFD_TINT_DEBUG", "0") != "0"
 _tint_build_seq = 0
 
 
@@ -199,12 +198,21 @@ _apt_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
 
 
 def _quantise_centre(lat, lon, range_nm):
-    """Snap the centre to ~10% of the visible range so light pan motion
-    re-uses the same cached surface."""
+    """Snap the centre to ~10% of the visible range so light pan / flight
+    motion re-uses the same cached surface.
+
+    The longitude grid spacing must be derived from the *quantised*
+    latitude, not the raw one.  `step_deg / cos(raw_lat)` drifts every
+    frame as the aircraft's latitude creeps, which stretches the lon grid
+    and shifts q_lon a hair each frame even when the cell index is
+    unchanged — so the cache key never stabilises and the tint rebuilds
+    every frame (a continuous "BUILDING…" flash at 80 nm; silent per-frame
+    sync rebuilds at 40 nm).  cos(q_lat) is stable because q_lat is already
+    snapped, so q_lon holds steady within a cell."""
     step_deg = max(0.002, (range_nm / _NM_PER_DEG_LAT) * 0.10)
-    cos_lat = max(0.05, math.cos(math.radians(lat)))
-    return (round(lat / step_deg) * step_deg,
-            round(lon / (step_deg / cos_lat)) * (step_deg / cos_lat))
+    q_lat = round(lat / step_deg) * step_deg
+    lon_step = step_deg / max(0.05, math.cos(math.radians(q_lat)))
+    return (q_lat, round(lon / lon_step) * lon_step)
 
 
 # Vectorised palette breakpoints, used by np.interp inside _build_tint.

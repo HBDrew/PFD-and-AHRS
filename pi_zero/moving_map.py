@@ -206,11 +206,19 @@ def _quantise_centre(lat, lon, range_nm):
     """Snap the centre to ~25% of the visible range so light pan motion
     re-uses the same cached surface.  Was 10% — too fine at sim speeds
     where the aircraft crossed cell boundaries faster than the async
-    tint worker could finish, leaving "BUILDING…" flashing constantly."""
+    tint worker could finish, leaving "BUILDING…" flashing constantly.
+
+    The longitude grid spacing is derived from the *quantised* latitude,
+    not the raw one: `step_deg / cos(raw_lat)` drifts frame-to-frame as the
+    aircraft's latitude creeps, shifting q_lon a hair each frame even when
+    the cell index is unchanged, so the key never stabilises and the tint
+    rebuilds every frame.  cos(q_lat) is stable, so q_lon holds within a
+    cell.  (Coarsening the step only reduced how often this bit; this is
+    the actual fix.)"""
     step_deg = max(0.002, (range_nm / _NM_PER_DEG_LAT) * 0.25)
-    cos_lat = max(0.05, math.cos(math.radians(lat)))
-    return (round(lat / step_deg) * step_deg,
-            round(lon / (step_deg / cos_lat)) * (step_deg / cos_lat))
+    q_lat = round(lat / step_deg) * step_deg
+    lon_step = step_deg / max(0.05, math.cos(math.radians(q_lat)))
+    return (q_lat, round(lon / lon_step) * lon_step)
 
 
 # Vectorised palette breakpoints, used by np.interp inside _build_tint.
