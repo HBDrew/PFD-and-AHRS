@@ -574,14 +574,18 @@ and README don't yet cover:
   - Updated zoom ladder (1/2/5/10/20/40/80/160/AUTO) on pi_zero MFD
   - Heading-source AUTO + 3 kt threshold
 README needs the deploy story from DEPLOY-RSYNC once that's nailed.
-Done this session (winds/FPV): pi4 §4 + §10 + new §16E and pi_zero §10
-now document the **flight-path vector** and the **winds-aloft (WND)**
-feature (national grid, alt/time selectors, 40/80/160 zoom, status
-line, disk cache, LAN sharing); iPhone manual §4 documents the FPV.
-Still pending — the **larger weather/traffic suite** (METAR/TAF/AIRMET/
-SIGMET/NEXRAD/NOTAM, the OVLY cycle + MFD weather pages, the
-RADIO/AUTO/INET source toggle, the traffic collision alert) per the
-detailed per-file plan in `docs/NEXT_SESSION.md` (★ Manuals section).
+Done this session (winds/FPV + weather/traffic): both pilot manuals now
+cover the **flight-path vector**, **winds aloft (WND)**, the full
+**weather suite** (RADIO/AUTO/INET sources, OVLY cycle, MET page with
+the METAR/TAF/AIRMET/SIGMET/NOTAM readout picker, graphical
+AIRMET/SIGMET, NEXRAD), **traffic** (diamonds/threat/TFC/detail-card/
+declutter + collision alert), the **full-screen MFD** chrome, and the
+**NOTAM** key fields.  `ADSB_IN.md` shipped items moved to Implemented;
+`README.md` roadmap refreshed.  iPhone manual covers the FPV.
+Still pending (smaller, mostly setup/dev docs): screen-sync setup +
+per-category TX/RX UX, TUMBLE hard-iron mag-cal flow, COMPACT button +
+`tools/compact_srtm.py`, Pico 2W BOOTSEL/UF2 flashing, the DEPLOY-RSYNC
+deploy recipe, and the REQUIREMENTS_* / TEST_PROCEDURE_* docs.
 
 ### PI4-ETE-LATENCY  pi4 inset ETE takes a beat to populate
 Status: **OPEN — investigate**

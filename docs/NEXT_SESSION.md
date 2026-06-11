@@ -6,6 +6,24 @@ these up cold.
 
 ## ★ BIG: Manuals are stale — full update needed (own session/branch)
 
+**STATUS — largely DONE (winds/FPV docs session).** The pilot manuals now cover
+the full weather + traffic suite and today's additions:
+- `USER_MANUAL_PI4.md`: §16E winds, §16F weather (sources/OVLY/MET/AIRMET-SIGMET/
+  NOTAM/NEXRAD + provenance/age), §16G traffic (diamonds/threat/TFC/detail-card/
+  declutter/collision alert), §16H full-screen MFD (swap/chrome/data-strip/pan),
+  §4 + §10 flight-path vector, §12 NOTAM key fields, §19 "Traffic" callout.
+- `USER_MANUAL_ZERO.md`: §16A MFD, §16B weather, §16C traffic (visual-only),
+  §10 winds + MAP LAYERS, §12 NOTAM fields.
+- `USER_MANUAL_IPHONE.md`: §4 flight-path vector.
+- `ADSB_IN.md`: shipped items moved Planned→Implemented; `README.md` roadmap
+  refreshed (V5.4 traffic + V5.5 weather + V5.6 winds + V5.7 FPV done).
+Still TODO (smaller, mostly setup/dev docs, not flying procedures): screen-sync
+setup + per-category TX/RX UX, TUMBLE hard-iron mag-cal flow, COMPACT button +
+compact_srtm, Pico 2W BOOTSEL/UF2 flashing, the DEPLOY-RSYNC deploy story, and
+the REQUIREMENTS_*/TEST_PROCEDURE_* docs.
+
+Original plan below (for the remaining items).
+
 The `Docs/` manuals predate this whole session's work.  **The two pilot
 manuals have ZERO coverage** of: the internet + FIS-B weather suite
 (METAR/TAF/AIRMET/SIGMET/NEXRAD/winds/NOTAM), the WX source toggle
