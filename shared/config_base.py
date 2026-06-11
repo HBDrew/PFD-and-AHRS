@@ -116,8 +116,8 @@ WINDS_ROUTE_WIDTH_NM = 25    # winds corridor half-width either side of an activ
 # 10-20 MB JSON at the wide end).  Winds page zoom is limited to WINDS_ZOOMS_NM
 # (winds don't vary enough to need a close-in view).
 WINDS_ZOOMS_NM = [40, 80, 160]   # zoom steps offered on the winds (WND) overlay
-WINDS_CACHE_MARGIN = 1.6         # cache half-extent = this × the current render zoom
-WINDS_GRID_AXIS_PTS = 6          # winds grid points per axis -> ~36-pt fetch, proven-safe size
+WINDS_CACHE_MARGIN = 2.0         # cache half-extent = this × the current render zoom
+WINDS_GRID_AXIS_PTS = 8          # winds grid points per axis (~64-pt pool, fetched in batches)
 NOTAM_INTERVAL_S = 600    # NOTAM refresh cadence (FAA API; only polled with a key)
 NEXRAD_INTERVAL_S = 300   # radar refresh cadence (NEXRAD updates ~5 min)
 NEXRAD_MAX_PX     = 480   # fetched raster long-side px (decode/scale cost)

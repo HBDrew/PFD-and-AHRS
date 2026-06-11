@@ -490,7 +490,7 @@ def fetch_winds_route(route, width_nm=25.0, alts=None, hour_offset=0,
 
 def fetch_winds(lat, lon, range_nm, aspect=1.0, route=None,
                 route_width_nm=25.0, spacing_nm=None, alts=None, hour_offset=0,
-                timeout=15, max_points=96):
+                timeout=15, max_points=120):
     """Winds/temps aloft for a WIDE cached area, PLUS a corridor along an
     active route when one is given — in a single batched request.
 
@@ -534,9 +534,16 @@ def fetch_winds(lat, lon, range_nm, aspect=1.0, route=None,
     return _fetch_om_winds(uniq, alts, hour_offset, timeout)
 
 
-def _fetch_om_winds(pts, alts, hour_offset, timeout):
-    """Issue one batched Open-Meteo pressure-level request for ``pts``
-    (``[(lat, lon), ...]``) and parse the response onto ``alts``."""
+# Open-Meteo's free tier refuses very large multi-location requests, so we keep
+# each HTTP call to a safe number of points and fan a big pool out across
+# several small batches (combined on return).  Fetches are rare (the cache is
+# wide and only re-pulls on a big pan / the periodic timer), so a handful of
+# small requests is cheap and far more reliable than one oversized one.
+_OM_MAX_BATCH = 25
+
+
+def _fetch_om_batch(pts, alts, hour_offset, timeout):
+    """One Open-Meteo pressure-level request for up to ``_OM_MAX_BATCH`` points."""
     lats = ",".join(f"{p[0]:.3f}" for p in pts)
     lons = ",".join(f"{p[1]:.3f}" for p in pts)
     fields = []
@@ -552,6 +559,23 @@ def _fetch_om_winds(pts, alts, hour_offset, timeout):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read().decode("utf-8", "ignore"))
     return parse_open_meteo_winds(data, alts, hour_offset=hour_offset)
+
+
+def _fetch_om_winds(pts, alts, hour_offset, timeout):
+    """Fetch winds/temps aloft for ``pts`` (``[(lat, lon), ...]``) in batches of
+    ``_OM_MAX_BATCH``, combining the parsed columns.  Returns whatever batches
+    succeed; raises only if every batch fails (so one transient error doesn't
+    blank the whole picture)."""
+    out, last_err = [], None
+    for i in range(0, len(pts), _OM_MAX_BATCH):
+        try:
+            out.extend(_fetch_om_batch(pts[i:i + _OM_MAX_BATCH], alts,
+                                       hour_offset, timeout))
+        except Exception as e:                                   # noqa: BLE001
+            last_err = e
+    if not out and last_err is not None:
+        raise last_err
+    return out
 
 
 # ── NOTAMs (FAA NOTAM API — needs developer credentials) ────────────────────────

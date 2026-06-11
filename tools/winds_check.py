@@ -61,11 +61,12 @@ def _single_point(lat, lon):
 
 
 def _grid(lat, lon, n_axis):
-    rng = 80.0 * 1.6                              # WINDS_CACHE_MARGIN at 80 nm
+    rng = 80.0 * 2.0                              # WINDS_CACHE_MARGIN at 80 nm
     sp = (2.0 * rng * 0.82) / max(1, n_axis - 1)
     pts = wx._winds_grid_points(lat, lon, rng, 1.0, spacing_nm=sp)
-    print(f"\n[2] Grid request: {len(pts)} points (±{rng:.0f} nm, "
-          f"~{n_axis}/axis) — this is what the app sends...")
+    nb = (len(pts) + wx._OM_MAX_BATCH - 1) // wx._OM_MAX_BATCH
+    print(f"\n[2] Grid request: {len(pts)} points (±{rng:.0f} nm, ~{n_axis}/axis), "
+          f"sent as {nb} batch(es) of ≤{wx._OM_MAX_BATCH} — what the app does...")
     try:
         t = time.time()
         cols = wx.fetch_winds(lat, lon, rng, aspect=1.0, spacing_nm=sp,
@@ -102,7 +103,7 @@ def main():
     if not _single_point(lat, lon):
         print("\nStopping: basic Open-Meteo access failed (see above).")
         return
-    _grid(lat, lon, n_axis=6)
+    _grid(lat, lon, n_axis=8)
     print("\nDone.  If [1] works but [2] is refused, it's the point count.")
     print("If [2] returns columns with real numbers, the fetch is fine and "
           "the issue is display-side.")
