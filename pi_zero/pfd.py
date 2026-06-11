@@ -10298,6 +10298,14 @@ def _mfd_draw_source_status(surf):
         _text(surf, txt, 13, col, bold=True, x=x, y=y)
         _mfd_wx_status_rect = (x - 6, y - 6, f.size(txt)[0] + 14, 28)
         y += 32
+    # Winds-cache fill + age — only on the WND page (informational).
+    if ds.get("map_show_winds") and _winds_client is not None:
+        txt = _winds_status_text()
+        loaded, total, _age = _winds_client.status()
+        col = (60, 220, 90) if loaded >= total and loaded > 0 else (220, 160, 60)
+        _text(surf, txt, 13, col, bold=True, x=x, y=y)
+        _mfd_winds_status_rect = (x - 6, y - 6, f.size(txt)[0] + 14, 28)
+        y += 32
     if ds.get("map_show_nexrad"):
         if _nexrad_client is not None:
             if _nexrad_client.connected:
@@ -10903,6 +10911,32 @@ def _mfd_cycle_winds_time():
     if _winds_client is not None:
         _winds_client.force_refresh()
     return disp["ds"]["winds_time_offset_h"]
+
+
+def _winds_age_str(age_s):
+    """Compact age label for the winds cache (None -> '--')."""
+    if age_s is None:
+        return "--"
+    if age_s < 90:
+        return "now"
+    if age_s < 3600:
+        return f"{int(age_s / 60)}m"
+    return f"{int(age_s / 3600)}h{int((age_s % 3600) / 60):02d}m"
+
+
+def _winds_status_text():
+    """'WINDS 4/6 · 12m' — fill + oldest-zone age of the national winds cache,
+    with a trailing '…' while it's still loading zones."""
+    if _winds_client is None:
+        return "WINDS --"
+    loaded, total, age_s = _winds_client.status()
+    if loaded == 0:
+        return (f"WINDS 0/{total} loading…" if getattr(_winds_client, "enabled",
+                False) else f"WINDS 0/{total}")
+    txt = f"WINDS {loaded}/{total} · {_winds_age_str(age_s)}"
+    if loaded < total and getattr(_winds_client, "enabled", False):
+        txt += " …"
+    return txt
 
 
 def _mfd_find_winds(tap_x, tap_y, tap_px=32):

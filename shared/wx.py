@@ -685,6 +685,16 @@ class WindsUSCache(threading.Thread):
         with self._lock:
             return sum(len(rec["cols"]) for rec in self._data.values())
 
+    def status(self):
+        """``(zones_loaded, zones_total, age_s)`` for a status readout — ``age_s``
+        is the OLDEST loaded zone's age (None when nothing is loaded yet)."""
+        now = time.time()
+        with self._lock:
+            loaded = len(self._data)
+            ages = [now - rec["fetched"] for rec in self._data.values()
+                    if rec.get("fetched")]
+        return loaded, len(self.zones), (max(ages) if ages else None)
+
     def force_refresh(self):
         """Mark every zone stale (e.g. when the forecast time changes)."""
         with self._lock:
