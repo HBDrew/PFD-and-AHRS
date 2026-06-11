@@ -6077,7 +6077,7 @@ def handle_event(event, demo_mode):
                     # Top-left winds-altitude tap-target (matches the readout
                     # drawn under the range label) cycles the level; the rest
                     # of the inset still controls winds zoom on the L/R halves.
-                    if x <= mrx + 54 and mry + 14 <= y <= mry + 34:
+                    if x <= mrx + 54 and mry + 26 <= y <= mry + 46:
                         _mfd_cycle_winds_alt()
                         return True
                     _winds_zoom_step(-1 if x >= mrx + mrw / 2 else +1)
@@ -14346,12 +14346,12 @@ def render(surf, demo_mode, connected, data_stale=False):
         # Hit-test mirrors this box in the inset tap handler.
         if _ov_state == "wnd":
             _wk = int(disp["ds"].get("winds_alt_ft", 9000)) // 1000
-            pygame.draw.rect(surf, (0, 20, 40), (_mx + 2, _my + 15, 52, 18),
+            pygame.draw.rect(surf, (0, 20, 40), (_mx + 2, _my + 27, 52, 18),
                              border_radius=4)
-            pygame.draw.rect(surf, (0, 150, 200), (_mx + 2, _my + 15, 52, 18),
+            pygame.draw.rect(surf, (0, 150, 200), (_mx + 2, _my + 27, 52, 18),
                              width=1, border_radius=4)
             _text(surf, f"{_wk}k ft", 11, (120, 210, 255), bold=True,
-                  x=_mx + 8, y=_my + 17)
+                  x=_mx + 8, y=_my + 29)
 
     # 2. Pitch ladder (with roll rotation)
     draw_pitch_ladder(surf, ai_rect, pitch, roll)
