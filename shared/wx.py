@@ -668,6 +668,8 @@ class WindsUSCache(threading.Thread):
         self._data = {}                 # zone idx -> {"cols": [...], "fetched": epoch}
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._backoff_until = 0.0       # monotonic; set after a failed fetch
+        self._fail_streak = 0
         self._load_disk()
 
     def stop(self):
@@ -737,18 +739,25 @@ class WindsUSCache(threading.Thread):
             self.updated_s = time.monotonic()
             self.rx_count += 1
             self.connected = True
+            self._fail_streak = 0
+            self._backoff_until = 0.0
             self._save_disk()
             return True
         except Exception as e:                                   # noqa: BLE001
             self.err_count += 1
             self.last_err = f"{type(e).__name__}: {e}"
             self.connected = False
-            print(f"[WX:winds] {self.last_err}")
+            # Back off exponentially after a failure (rate limit / no internet)
+            # so we don't hammer a locked door — 1, 2, 4 … min, capped at 30.
+            self._fail_streak += 1
+            wait = min(1800.0, 60.0 * (2 ** (self._fail_streak - 1)))
+            self._backoff_until = time.monotonic() + wait
+            print(f"[WX:winds] {self.last_err} — backing off {int(wait)}s")
             return False
 
     def run(self):
         while not self._stop.is_set():
-            if self.enabled:
+            if self.enabled and time.monotonic() >= self._backoff_until:
                 self.refresh_one()                # one zone per tick, paced
             slept = 0.0
             while slept < self.slice_s and not self._stop.is_set():
