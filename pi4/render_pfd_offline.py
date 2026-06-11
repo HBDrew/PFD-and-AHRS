@@ -724,10 +724,79 @@ def main():
     pygame.image.save(surf, os.path.join(setup_outdir, "preview_mfd_strip_setup.png"))
     print("  → preview_mfd_strip_setup.png")
 
+    # Lat/lon waypoint entry (mid-edit) and the user-waypoint library.
+    pfd.disp["fpl_new"] = {"ident": "FISH", "lat": 34.523, "lon": -111.812,
+                           "lat_str": "34.523", "lon_str": "-111.812"}
+    pfd.disp["mode"] = "fpl_latlon_entry"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_fpl_latlon.png"))
+    print("  → preview_fpl_latlon.png")
+    pfd.disp["fpl_new"] = {"ident": "", "lat": 0.0, "lon": 0.0,
+                           "lat_str": "", "lon_str": ""}
+
+    pfd.disp["user_wpts"]["list"] = [
+        {"ident": "FISH", "lat": 34.5230, "lon": -111.8120, "elev_ft": 4200},
+        {"ident": "RDV1", "lat": 34.9011, "lon": -112.0050, "elev_ft": 5100},
+        {"ident": "CAMP", "lat": 35.0421, "lon": -111.5533, "elev_ft": 6800},
+    ]
+    pfd.disp["mode"] = "user_wpt_picker"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_user_wpt.png"))
+    print("  → preview_user_wpt.png")
+    pfd.disp["user_wpts"]["list"] = []
+
     pfd._fpl_deactivate()
     pfd.disp["fpl"]["waypoints"] = []
     pfd.disp["fpl"]["active_idx"] = -1
     pfd.disp["fpl_saved"]["plans"] = []
+    pfd.disp["mode"] = "pfd"
+
+    # Screen Sync setup.
+    pfd.disp["cs"]["sync_enabled"]   = True
+    pfd.disp["cs"]["sync_transport"] = "auto"
+    pfd.disp["mode"] = "screen_sync_setup"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_setup_screen_sync.png"))
+    print("  → preview_setup_screen_sync.png")
+
+    # Airspace data screen (loaded) + class toggles.
+    pfd.disp["asp"]["records"]   = 9183
+    pfd.disp["asp"]["dl_status"] = "Done ✓  9,183 airspaces loaded"
+    pfd.disp["mode"] = "airspace_data"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_airspace_data.png"))
+    print("  → preview_airspace_data.png")
+    pfd.disp["asp"]["dl_status"] = ""
+
+    pfd.disp["mode"] = "airspace_classes"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_airspace_classes.png"))
+    print("  → preview_airspace_classes.png")
+
+    # Wi-Fi scan list.
+    pfd.disp["cs"]["scan_state"] = "done"
+    pfd.disp["cs"]["scan_nets"]  = [
+        {"ssid": "Hangar-5G",   "signal": 92, "secured": True},
+        {"ssid": "AHRS-Link",   "signal": 78, "secured": True},
+        {"ssid": "FBO-Guest",   "signal": 60, "secured": False},
+        {"ssid": "N12345-Pico", "signal": 45, "secured": True},
+    ]
+    pfd.disp["mode"] = "wifi_scan"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_wifi_scan.png"))
+    print("  → preview_wifi_scan.png")
+    pfd.disp["cs"]["scan_state"] = ""
+    pfd.disp["cs"]["scan_nets"]  = []
+
+    # AHRS firmware loader.
+    pfd.disp["fw"]["push_state"] = "done"
+    pfd.disp["fw"]["push_msg"]   = "Pushed firmware.py ✓  (rebooting Pico)"
+    pfd.disp["mode"] = "ahrs_firmware"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_ahrs_firmware.png"))
+    print("  → preview_ahrs_firmware.png")
+    pfd.disp["fw"]["push_state"] = ""
+    pfd.disp["fw"]["push_msg"]   = ""
     pfd.disp["mode"] = "pfd"
 
     # AGL readout - normal cruise frame (the box appears bottom-right of AI).

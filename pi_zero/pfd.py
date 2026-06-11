@@ -13297,6 +13297,56 @@ def main():
         _save("preview_winds.png")
         globals()["_winds_barbs"] = _winds_barbs_real
 
+        # Airspace (ASP) — synthetic Class C (Prescott) + Class D (Sedona) rings.
+        import math as _math
+        def _ring(clat, clon, rad_nm, n=48):
+            out = []
+            for k in range(n):
+                a = 2.0 * _math.pi * k / n
+                out.append((
+                    clat + (rad_nm / 60.0) * _math.cos(a),
+                    clon + (rad_nm / 60.0 / _math.cos(_math.radians(clat)))
+                    * _math.sin(a)))
+            return out
+        def _bbox(poly):
+            las = [p[0] for p in poly]; los = [p[1] for p in poly]
+            return (min(las), max(las), min(los), max(los))
+        _c_poly = _ring(34.6545, -112.4196, 9.0)
+        _d_poly = _ring(34.8486, -111.7884, 4.2)
+        _fake_asp = [
+            {"class": "C", "ident": "PRESCOTT", "floor_ft": 0,
+             "ceiling_ft": 4500, "polygon": _c_poly, "bbox": _bbox(_c_poly)},
+            {"class": "D", "ident": "SEDONA", "floor_ft": 0,
+             "ceiling_ft": 5500, "polygon": _d_poly, "bbox": _bbox(_d_poly)},
+        ]
+        _enter_mfd(40, "asp")
+        globals()["_airspaces"] = _fake_asp
+        _save("preview_mfd_airspace.png")
+        globals()["_airspaces"] = None
+
+        # NEXRAD (NEX) — synthetic reflectivity cell (green → yellow → red core).
+        _nx = pygame.Surface((140, 140), pygame.SRCALPHA)
+        for (cx_, cy_, rr, col) in (
+            (78, 52, 40, (40, 200, 40, 150)),
+            (84, 48, 26, (230, 220, 40, 170)),
+            (90, 45, 14, (230, 60, 40, 200))):
+            pygame.draw.circle(_nx, col, (cx_, cy_), rr)
+        _nexrad_decoded.update(seq=1, surf=_nx,
+                               bbox=(-112.6, 34.1, -111.3, 35.2))  # (w,s,e,n)
+        _enter_mfd(80, "nexrad")
+        _save("preview_mfd_nexrad.png")
+        _nexrad_decoded.update(seq=-1, surf=None, bbox=None)
+
+        # Track-up orientation (the default in flight; the bare-MFD shot above
+        # is north-up).  Same 40 NM traffic page, ownship tracking 040.
+        _enter_mfd(40, "tfc")
+        disp["ds"]["map_orient"] = "trk"
+        _save("preview_mfd_trk_up.png")
+
+        # Wide 160 NM range — shows the zoom-out extent and the whole plan.
+        _enter_mfd(160, "tfc")
+        _save("preview_mfd_160.png")
+
         # ── Flight-plan editor + loader + data-field picker ───────────────────
         # The preview plan from _enter_mfd is still loaded (KPRC→KSEZ→KFLG,
         # KSEZ leg active), so the FLIGHT PLAN page shows a populated, active
@@ -13384,6 +13434,72 @@ def main():
         disp["mode"] = "ahrs_setup"
         _save("preview_setup_ahrs_gpstrk.png")
         disp["ss"]["hdg_src"] = "auto"
+
+        # ── Screen Sync setup ──────────────────────────────────────────────────
+        disp["mode"] = "screen_sync_setup"
+        disp["cs"]["sync_enabled"]   = True
+        disp["cs"]["sync_transport"] = "auto"
+        disp["cs"]["sync_peers"]     = 2
+        _save("preview_setup_screen_sync.png")
+
+        # ── Airspace data + class toggles ──────────────────────────────────────
+        disp["mode"] = "airspace_data"
+        disp["asp"]["records"]   = 9183
+        disp["asp"]["used_mb"]   = 3.1
+        disp["asp"]["dl_status"] = "Done ✓  9,183 airspaces loaded"
+        _save("preview_airspace_data.png")
+        disp["asp"]["dl_status"] = ""
+
+        disp["mode"] = "airspace_classes"
+        _save("preview_airspace_classes.png")
+
+        # ── Wi-Fi scan list ────────────────────────────────────────────────────
+        disp["mode"] = "wifi_scan"
+        disp["cs"]["scan_state"] = "done"
+        disp["cs"]["scan_nets"]  = [
+            {"ssid": "Hangar-5G",   "signal": 92, "secured": True},
+            {"ssid": "AHRS-Link",   "signal": 78, "secured": True},
+            {"ssid": "FBO-Guest",   "signal": 60, "secured": False},
+            {"ssid": "N12345-Pico", "signal": 45, "secured": True},
+        ]
+        _save("preview_wifi_scan.png")
+        disp["cs"]["scan_state"] = ""
+        disp["cs"]["scan_nets"]  = []
+
+        # ── Compass-calibration wizard ──────────────────────────────────────────
+        _seed(roll=0, pitch=0, hdg=88, alt=4830, speed=0, vspeed=0)
+        disp["mag_cal_wiz"] = {
+            "step": 1, "samples": [(0.0, 358.5)],
+            "msg":  "Captured NORTH.", "prev": "ahrs_setup",
+        }
+        disp["mode"] = "mag_cal"
+        _save("preview_mag_cal.png")
+        disp["mag_cal_wiz"] = None
+
+        # ── AHRS firmware loader ────────────────────────────────────────────────
+        disp["mode"] = "ahrs_firmware"
+        disp["fw"]["push_state"] = "done"
+        disp["fw"]["push_msg"]   = "Pushed firmware.py ✓  (rebooting Pico)"
+        _save("preview_ahrs_firmware.png")
+        disp["fw"]["push_state"] = ""
+        disp["fw"]["push_msg"]   = ""
+
+        # ── Waypoint entry + user-waypoint library ──────────────────────────────
+        disp["mode"] = "fpl_latlon_entry"
+        disp["fpl_new"] = {
+            "ident": "FISH", "lat_str": "34.523", "lon_str": "-111.812",
+        }
+        _save("preview_fpl_latlon.png")
+        disp["fpl_new"] = {"ident": "", "lat_str": "", "lon_str": ""}
+
+        disp["mode"] = "user_wpt_picker"
+        disp["user_wpts"]["list"] = [
+            {"ident": "FISH", "lat": 34.5230, "lon": -111.8120, "elev_ft": 4200},
+            {"ident": "RDV1", "lat": 34.9011, "lon": -112.0050, "elev_ft": 5100},
+            {"ident": "CAMP", "lat": 35.0421, "lon": -111.5533, "elev_ft": 6800},
+        ]
+        _save("preview_user_wpt.png")
+        disp["user_wpts"]["list"] = []
 
         # ── Terrain data screen states ────────────────────────────────────────
         disp["mode"] = "terrain_data"
