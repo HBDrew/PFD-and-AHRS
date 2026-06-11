@@ -1133,14 +1133,27 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if (settings.get("map_show_terrain", True) and srtm_dir
             and range_nm <= _TINT_RENDER_MAX_NM and not wx_active
             and not fast):
-        oversize = 1.0 if orient == "nrth" else 1.45
+        # Build a square tint around the QUANTISED centre, at the same
+        # px_per_nm as the vector features, large enough to cover the
+        # (non-square) screen plus rotation + snapped-centre margin.
+        #  • Scale: size to min(w,h)/(2*range) — the features' px_per_nm —
+        #    NOT max(w,h), or terrain renders ~max/min too big on a non-square
+        #    MFD (e.g. 1.7x on 1024x600) and slides faster than the map on a
+        #    pan, throwing peaks several NM off.
+        #  • Offset: blit at the *projected quantised centre*, not the screen
+        #    centre, or the tint (built around the snapped centre) jumps up to
+        #    a full cell (~8 NM) when the snap crosses a boundary mid-pan.
+        cover_px = (math.hypot(w, h) if orient == "trk" else float(max(w, h)))
+        cover_px *= 1.06   # margin for rotation + the snapped-centre offset
+        oversize = cover_px / max(1.0, float(min(w, h)))
         _wd = water_dir if settings.get("map_show_water", True) else ""
         tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
-                                    max(w, h), oversize)
+                                    min(w, h), oversize)
+        q_lat, q_lon = _quantise_centre(lat, lon, range_nm)
+        qx, qy = _project(q_lat, q_lon)
         if tint is None and range_nm > _TINT_SYNC_MAX_NM and font is not None:
-            # Async build in flight at 80 nm — small breadcrumb at centre
-            # so the pilot sees the inset is still alive while the
-            # worker churns through SRTM tile loads.
+            # Async build in flight — breadcrumb at centre so the pilot sees
+            # the map is still alive while the worker loads tiles.
             wait_surf = font.render("BUILDING…", True, _LABEL)
             surf.blit(wait_surf,
                       (int(cx) - wait_surf.get_width() // 2,
@@ -1150,7 +1163,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 tint_r = pygame.transform.rotate(tint, rot_deg)
             else:
                 tint_r = tint
-            tr = tint_r.get_rect(center=(int(cx), int(cy)))
+            tr = tint_r.get_rect(center=(int(qx), int(qy)))
             surf.blit(tint_r, tr)
             tint_drawn = True
 
@@ -1159,13 +1172,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             # mirrors how the PFD's TAWS banner is gated.
             if vso_kt is not None and gs_kt >= vso_kt and elev_grid is not None:
                 overlay = _build_alert_overlay(
-                    elev_grid, alt_ft, max(w, h))
+                    elev_grid, alt_ft, int(min(w, h) * oversize))
                 if overlay is not None:
                     if orient == "trk" and rot_deg != 0.0:
                         overlay_r = pygame.transform.rotate(overlay, rot_deg)
                     else:
                         overlay_r = overlay
-                    o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
+                    o_rect = overlay_r.get_rect(center=(int(qx), int(qy)))
                     surf.blit(overlay_r, o_rect)
 
     # Slightly darker veil under vector layers so labels read cleanly — but

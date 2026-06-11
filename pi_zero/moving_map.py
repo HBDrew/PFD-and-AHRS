@@ -1144,14 +1144,23 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if (settings.get("map_show_terrain", True) and srtm_dir
             and range_nm <= _TINT_RENDER_MAX_NM and not wx_active
             and not fast):
-        oversize = 1.0 if orient == "nrth" else 1.45
+        # Square tint around the QUANTISED centre, at the features' px_per_nm,
+        # sized to cover the (non-square) inset plus rotation + snapped-centre
+        # margin.  Scale off min(w,h) — not max(w,h) — or terrain renders too
+        # big on a non-square screen and slides faster than the map on a pan;
+        # and blit at the projected quantised centre, not the screen centre,
+        # so the snapped tint registers with the vector layers and doesn't
+        # jump a cell when the snap moves during a pan.
+        cover_px = (math.hypot(w, h) if orient == "trk" else float(max(w, h)))
+        cover_px *= 1.06   # margin for rotation + the snapped-centre offset
+        oversize = cover_px / max(1.0, float(min(w, h)))
         _wd = water_dir if settings.get("map_show_water", True) else ""
         tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
-                                    max(w, h), oversize)
+                                    min(w, h), oversize)
+        q_lat, q_lon = _quantise_centre(lat, lon, range_nm)
+        qx, qy = _project(q_lat, q_lon)
         if tint is None and range_nm > _TINT_SYNC_MAX_NM and font is not None:
-            # Async build in flight at 80 nm — small breadcrumb at centre
-            # so the pilot sees the inset is still alive while the
-            # worker churns through SRTM tile loads.
+            # Async build in flight — breadcrumb at centre.
             wait_surf = font.render("BUILDING…", True, _LABEL)
             surf.blit(wait_surf,
                       (int(cx) - wait_surf.get_width() // 2,
@@ -1161,7 +1170,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 tint_r = pygame.transform.rotate(tint, rot_deg)
             else:
                 tint_r = tint
-            tr = tint_r.get_rect(center=(int(cx), int(cy)))
+            tr = tint_r.get_rect(center=(int(qx), int(qy)))
             surf.blit(tint_r, tr)
             tint_drawn = True
 
@@ -1169,20 +1178,16 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             # below Vso so taxi and rollout don't paint the inset red —
             # mirrors how the PFD's TAWS banner is gated.
             if vso_kt is not None and gs_kt >= vso_kt and elev_grid is not None:
-                # Cap target_px the same way as the tint so the overlay
-                # stays proportional and bilinear-stretches to the inset
-                # at blit time.  Without this the overlay was a full
-                # max(w, h)² surface (1.6 MB at 640²) and dominated the
-                # memory budget at wider zooms.
+                # Match the tint's target_px so the overlay stays proportional
+                # and bilinear-stretches to the inset at blit time.
                 overlay = _build_alert_overlay(
-                    elev_grid, alt_ft,
-                    max(w, h))
+                    elev_grid, alt_ft, int(min(w, h) * oversize))
                 if overlay is not None:
                     if orient == "trk" and rot_deg != 0.0:
                         overlay_r = pygame.transform.rotate(overlay, rot_deg)
                     else:
                         overlay_r = overlay
-                    o_rect = overlay_r.get_rect(center=(int(cx), int(cy)))
+                    o_rect = overlay_r.get_rect(center=(int(qx), int(qy)))
                     surf.blit(overlay_r, o_rect)
 
     # Slightly darker veil under vector layers so labels read cleanly — only
