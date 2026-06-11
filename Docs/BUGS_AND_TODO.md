@@ -42,16 +42,50 @@ a tau-based `threat_level`) and `pi4/pfd.py _update_traffic` (per-target
 previous-range memory).  `shared/config_base.py` gains `ADSB_TAU_S` etc.
 
 ### SETUP-SCROLL-SHORT  Display setup page scroll stops before the bottom
-Status: **OPEN**
-The DISPLAY setup screen scrolls but **stops short of the last row(s)** —
-the bottom of the page can't be reached, so the final settings are
-clipped off-screen.  Likely the scroll clamp uses the wrong content
-height (doesn't account for the full row count after the new FLIGHT PATH
-/ winds / traffic rows were added, or an off-by-one on the max-scroll
-calc).  Target: the display-setup scroll/clamp logic in `pi4/pfd.py`
-(and `pi_zero/pfd.py` if it shares it) — find where max-scroll =
-content_height − viewport_height and confirm content_height counts every
-row (incl. the MAP LAYERS sub-rows) plus bottom padding.
+Status: **FIXED (band-aid)** — superseded by DISPLAY-SETUP-SPLIT
+`_DSP_ROWS` had grown to 12 rows (FLIGHT PATH / TFC ALT / TFC RANGE) but the
+scroll clamp still assumed 11 + a 2-row approximation of the taller MAP
+LAYERS row, so it stopped ~56 px short.  Fixed on pi4 by `_dsp_max_scroll()`
+computing the real content height (standard rows + `_DSP_LAYERS_ROW_H` +
+padding).  pi_zero was already correct (7 rows, clamp 9).  Proper long-term
+fix is the page split below.
+
+### DISPLAY-SETUP-SPLIT  Break the DISPLAY setup screen into 3 tabbed pages
+Status: **OPEN** — design agreed
+The DISPLAY setup screen has outgrown one page.  Split it into three tabbed
+sub-pages (tab bar across the top, no scrolling on any page).  Grouping
+(agreed with the pilot):
+  - **UNITS** — SPEED UNITS, ALTITUDE, PRESSURE
+  - **DISPLAY** — BRIGHTNESS, ALERT AUDIO, ALERT VOLUME, SUN POSITION,
+    FLIGHT PATH
+  - **MAP** — MAP INSET (+ TRK↑/N↑ orient pair), MAP RANGE, MAP LAYERS
+    (the tall multi-toggle), TFC ALT, TFC RANGE
+Navigation: a 3-segment tab bar (UNITS · DISPLAY · MAP) under the header,
+tapping a tab swaps the visible rows; `disp["dsp_tab"]` holds the current
+tab.  Each page fits without scrolling (MAP is the tallest: 4 rows + the
+112 px MAP LAYERS row + tab bar ≈ 476 px — fits 600 px pi4 and *just* fits
+480 px pi_zero, so verify the MAP tab on the Zero / consider trimming the
+tab-bar height there).
+Implementation notes:
+  - Replace single `_DSP_ROWS` with `_DSP_ROWS_UNITS/_AV/_MAP` + a
+    `_DSP_TAB_ROWS` dict; draw + hit-test iterate the *current* tab's rows
+    by LOCAL index via a shared `_dsp_row_y(local_i)` (offset below the tab
+    bar) and the existing `_dsp_rx()` so draw/hit can't diverge.  Pass the
+    local y to `_setting_row(..., _y_override=...)` (already supported).
+  - MAP LAYERS draws after the MAP tab's standard rows at
+    `_dsp_row_y(len(_DSP_ROWS_MAP))`; `_DSP_LAYERS_ROW_INDEX` becomes
+    `len(_DSP_ROWS_MAP)`.
+  - Add a `tab:<id>` action from `display_setup_hit` handled in the
+    `mode == "display_setup"` dispatcher; remove `"display_setup"` from
+    `_SS_DRAG_MODES` (no scroll) and drop `_dsp_max_scroll()`.
+  - Mirror to `pi_zero/pfd.py` (same structure, smaller constants), then
+    regenerate the piZ `preview_setup_display.png` (now 3 captures, e.g.
+    `_units` / `_av` / `_map`) and update the manual figures/§.
+Best done in a focused session: it's layout-precise and the pi4 half can't
+be render-verified here (no GL), so each tab should be checked on hardware
+(or via the piZ headless render, which shares the layout).  Target:
+`draw_display_setup` + `display_setup_hit` + the `_DSP_*` row tables in
+`pi4/pfd.py` and `pi_zero/pfd.py`.
 
 ### INSET-ORIENT-STUCK  Moving-map inset stuck north-up — TRK↑ toggle dead
 Status: **OPEN**
