@@ -846,17 +846,26 @@ def _draw_wind_barb(surf, cx, cy, from_dir, speed_kt, rot_deg, col, scale=1.0):
         pos += step
 
 
+# Minimum on-screen spacing between barbs (px).  This thins only where the
+# national grid would crowd a SMALL viewport at WIDE zoom (the PFD inset at
+# 160 nm) — the big MFD and the closer inset zooms keep every barb because they
+# already exceed this spacing.
+_WINDS_MIN_BARB_PX = 70.0
+
+
 def _winds_decimate(barbs, project, rect, range_nm):
     """Pick ~one barb per WORLD cell (quantised lat/lon) — NOT per screen cell —
     so the displayed set stays put as the map pans/rotates.  The old
     screen-anchored grid reshuffled which barb filled each cell every time the
     map moved (the "grid moves around when I pan" bug).  Cell size scales with
-    the zoom so on-screen density stays ~constant, and it also dedupes the
-    duplicate points adjacent zone grids share on their seams.  Returns
-    [(b, sx, sy)] — the barb nearest each cell's world centre (a stable,
-    pan-independent choice)."""
+    the zoom AND a minimum on-screen spacing (so a small inset at wide zoom
+    thins to stay readable while the big MFD keeps the full grid), and it also
+    dedupes the duplicate points adjacent zone grids share on their seams.
+    Returns [(b, sx, sy)] — the barb nearest each cell's world centre."""
     x, y, w, h = rect
-    cell_deg = max(0.15, (range_nm / 5.0) / 60.0)
+    px_per_nm = (min(w, h) / 2.0) / max(1.0, range_nm)
+    pixel_nm = _WINDS_MIN_BARB_PX / max(1e-6, px_per_nm)
+    cell_deg = max(0.15, max(range_nm / 5.0, pixel_nm) / 60.0)
     best = {}
     for b in barbs:
         la, lo = b.get("lat"), b.get("lon")

@@ -878,14 +878,21 @@ def _draw_wind_barb(surf, cx, cy, from_dir, speed_kt, rot_deg, col, scale=1.0):
         pos += step
 
 
+# Minimum on-screen spacing between barbs (px) — thins a small viewport at wide
+# zoom while leaving a big screen's full grid intact.
+_WINDS_MIN_BARB_PX = 70.0
+
+
 def _winds_decimate(barbs, project, rect, range_nm):
     """Pick ~one barb per WORLD cell (quantised lat/lon) — NOT per screen cell —
     so the displayed set stays put as the map pans/rotates (the old
     screen-anchored grid reshuffled which barb filled each cell on every move).
-    Cell size scales with the zoom; also dedupes the points adjacent zone grids
-    share on their seams.  Returns [(b, sx, sy)]."""
+    Cell size scales with the zoom AND a minimum on-screen spacing; also dedupes
+    the points adjacent zone grids share on their seams.  Returns [(b, sx, sy)]."""
     x, y, w, h = rect
-    cell_deg = max(0.15, (range_nm / 5.0) / 60.0)
+    px_per_nm = (min(w, h) / 2.0) / max(1.0, range_nm)
+    pixel_nm = _WINDS_MIN_BARB_PX / max(1e-6, px_per_nm)
+    cell_deg = max(0.15, max(range_nm / 5.0, pixel_nm) / 60.0)
     best = {}
     for b in barbs:
         la, lo = b.get("lat"), b.get("lon")
