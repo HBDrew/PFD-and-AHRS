@@ -54,6 +54,30 @@ weather suite, traffic collision alert, in-app NOTAM entry.
 fold in this session's fixes (pan/AGL judder, render-perf, border cache) +
 the 3D-traffic and winds-cross-section TODOs.
 
+### Added (winds/FPV session) — fold into the above
+
+The winds suite was reworked and a flight-path marker added; the manual plan
+above must also cover:
+- **Flight-path vector (FPV)** — cyan circle+wings+stub velocity-vector marker
+  on the AI (where the airplane is *going*, vs the nose).  pi4 + iPhone only
+  (pi_zero port pending, FPV-PIZ).  Display-setup `FLIGHT PATH` toggle (default
+  ON); iPhone `✈ FLIGHT PATH` in the setup menu.  Hides < 5 kt GS; ghost arrow
+  at the AI edge in extreme attitudes.  → §4 (AI) + §10 (Display) on pi4; the
+  iPhone manual setup section.
+- **Winds aloft — rebuilt as a cached national grid** (supersedes the
+  "barb grid + 12 h expiry" bullet above).  CONUS grid in 6 zones via Open-Meteo
+  `gfs025`, capped at **18,000 ft**, fetched **on the ground** (one zone at a
+  time, aircraft's zone first), **disk-cached** (`data/winds/conus_winds.json`),
+  re-pulled only when a zone is **> 3 h** stale.  WND page has its **own zoom
+  (40/80/160 only)**; barbs render at 40/80/160 (hidden below); a **WINDS n/6 ·
+  age** status line shows fill + age; barbs are world-anchored (pan-stable) and
+  the small inset thins at 160.  **LAN sharing:** with multiple displays, one
+  fetches and broadcasts each zone over screen-sync (`KIND_WINDS`); peers adopt
+  and make **zero** Open-Meteo calls (per-IP rate-limit fix).  Alt selector is
+  now 3k/6k/9k/12k/18k.  → pi4 §winds + pi_zero (same, no FPV).
+- **Screen-sync** now also shares winds zones (always-on when sync is enabled),
+  in addition to bugs/baro/nav/AHRS/GPS/FPL.
+
 ## FIS-B WX UI — remaining TODO (branch `claude/open-items-followup-93awex`)
 
 Done this session: METAR, TAF (decoded/labeled + nearest + direction),

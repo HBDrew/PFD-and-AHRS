@@ -30,6 +30,7 @@
 16B. [AGL Readout](#16b-agl-readout)
 16C. [Synthetic Approach (HITS + VDI)](#16c-synthetic-approach-hits--vdi)
 16D. [Moving-Map Inset](#16d-moving-map-inset)
+16E. [Winds Aloft (WND)](#16e-winds-aloft-wnd)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
 19. [Audio Alerts](#19-audio-alerts)
@@ -197,6 +198,17 @@ Graduated arc at the top of the AI implementing the **sky-pointer** convention. 
 ### Aircraft symbol
 
 Amber swept-delta wing symbol fixed at AI centre.
+
+### Flight-path vector (velocity vector)
+
+A cyan open circle with two short horizontal wings and a vertical stub marks the **flight-path vector (FPV)** — where the airplane is actually going through space, not where the nose is pointed. It's computed from GPS: azimuth = ground **track**, elevation = flight-path angle (`atan2(vertical speed, groundspeed)`).
+
+- **Horizontal offset** from the aircraft symbol = drift/crab (track vs. heading). In a left crosswind the FPV sits right of the nose, and vice-versa.
+- **Vertical offset** = the difference between pitch and flight-path angle. In a steady climb the FPV sits **below the nose by the angle of attack** — fly the FPV onto the runway numbers on approach and that's where you'll touch down, whatever the crab and AOA are doing.
+- **Hidden below 5 kt** groundspeed (parked / taxi has no meaningful track).
+- In an extreme attitude (or large crab) where the vector would fall outside the AI, it's **clamped to the edge as a small arrow** pointing toward the true off-screen vector, so the cue never just vanishes.
+
+Toggle it on the DISPLAY setup screen — **FLIGHT PATH** (default **ON**). It draws over the synthetic-vision background and airport symbols, under the pitch ladder.
 
 ### Slip/skid indicator
 
@@ -383,6 +395,7 @@ The period and colon keys are useful for entering URLs (e.g. `http://192.168.4.1
 | **BRIGHTNESS** | 1 – 10 | 8 | Backlight level. Routed to the active backlight transport (see below). |
 | **ALERT AUDIO** | OFF / ON | ON | Master mute for the voice-callout pipeline. When OFF, terrain / obstacle / sink-rate / bank-angle callouts are suppressed and any in-flight clip is cut. The visual banners stay on regardless. |
 | **ALERT VOLUME** | 1 – 10 | 8 | Callout volume scale. 0 is effectively muted; 10 is unity. Applied live to the pygame mixer; takes effect on the next callout. |
+| **FLIGHT PATH** | OFF / ON | ON | Flight-path vector (velocity-vector) marker on the AI. See §4. |
 | **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §16D. |
 | **MAP RANGE** | 1/2/5/10/20/40/80/160 NM · AUTO | 5 NM | Default inset radius; AUTO fits to the active direct-to. |
 | **MAP LAYERS** | TER · WTR · APT · OBS · STA · CTRY (independent pills) | all ON | Per-layer visibility for the moving-map inset. **TER** terrain tint; **WTR** ocean/lake water mask; **APT** airport / heliport / seaplane symbols; **OBS** FAA DOF obstacles; **STA** state / province boundary lines (Natural Earth admin_1, slate-blue, fades in at ≥ 20 NM); **CTRY** country boundary lines (Natural Earth admin_0, tan, also ≥ 20 NM). Toggles are independent and persist in `data/settings.json`. |
@@ -856,6 +869,47 @@ Tap-zones inside the inset:
 - **Tap the orientation label** in the chrome (`TRK↑` / `N↑`) → toggle between the two. The toggle is inert at 80 NM and above (the inset is locked to N↑ there).
 
 Defaults for range and orientation are set in DISPLAY setup (`MAP RANGE`, `MAP INSET` orientation pair). Per-layer visibility (terrain / water / airports / runways / obstacles / state lines / country lines / direct-to) is toggleable from the same setup screen via the `MAP LAYERS` row of pills.
+
+---
+
+## 16E. Winds Aloft (WND)
+
+Wind barbs and temperatures aloft can be overlaid on the moving map (both the inset and the full-screen MFD). The data is the GFS pressure-level forecast, pulled from Open-Meteo over the internet — **US-only**, no key required.
+
+### Turning it on
+
+The map carries a cycle of weather/airspace overlays selected by the **OVLY** label (lower-left corner of the map). Cycle it to **WND** to show winds. The overlay choice persists.
+
+### Reading the barbs
+
+Each barb is a standard meteorological wind barb at a grid point: the shaft points **toward the wind source**, with pennants = 50 kt, full barbs = 10 kt, half barbs = 5 kt. The number beside each barb is the **temperature** (°C) at the selected altitude. `LV` (light/variable) is shown as a small circle when the wind is below ~3 kt.
+
+### Altitude and forecast time
+
+Two buttons appear in the map chrome on the WND page:
+
+- **Altitude** (e.g. `9k ft`) — cycles the barb altitude through **3,000 / 6,000 / 9,000 / 12,000 / 18,000 ft**. (Capped at 18,000 ft — non-pressurised GA altitudes — which also keeps the data pull small.)
+- **Forecast time** (`NOW`, `+3h`, `+6h` …) — steps the forecast valid-time ahead; each pull carries 48 h of hourly steps so changing the altitude doesn't re-fetch, but changing the forecast time does.
+
+### Zoom on the WND page
+
+The winds page keeps its **own zoom, limited to 40 / 80 / 160 NM** (winds don't vary enough to need a closer view, and this doesn't disturb your terrain-map zoom when you switch overlays). Barbs render at all three; below 40 NM they're hidden. The barb spread is denser on the big MFD and thinned on the small inset at 160 NM so it stays readable.
+
+### Status line — `WINDS n/6 · age`
+
+A status line under the WX line shows how much of the national grid is loaded and how old it is: e.g. `WINDS 4/6 · 12m` (4 of 6 zones, oldest 12 min old). **Green** when all six zones are loaded, **amber** while it's still filling (with a trailing `…`).
+
+### How the data is fetched — pull on the ground, fly offline
+
+Winds are cached as a **national grid split into 6 zones** and written to disk (`data/winds/conus_winds.json`):
+
+- Whenever the display has internet, it fills any stale zone **one at a time**, the **zone you're in first**, then outward — so you can pull the whole US **on the ground** and then fly with no connection.
+- A zone is only re-pulled once it's **more than 3 hours old** (GFS only reissues every ~6 h). A restart reloads the disk cache instantly with **no** network calls.
+- If a fetch fails (no signal, server busy, rate-limited) it backs off and retries later; the cached picture keeps showing.
+
+### Sharing between displays (multi-screen panels)
+
+Open-Meteo's free tier is rate-limited **per internet connection**, so three displays each pulling the whole US would trip the limit and starve each other. They now **share over the cabin network** (the same screen-sync link used for bugs/flight-plans): the display with internet fetches each zone and broadcasts it, and the **others adopt it and make no Open-Meteo calls of their own** while a peer is feeding them. One display feeds the whole panel. This is automatic whenever screen-sync is enabled. In the journal you'll see one display log `[WX:winds] fetched zone N` and the others `adopted zone N from peer`.
 
 ---
 

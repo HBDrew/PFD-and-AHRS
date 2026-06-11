@@ -360,6 +360,19 @@ A row of six toggle pills that gate which optional layers render on the MFD (and
 
 Toggling a pill takes effect on the next frame. Layers that aren't available because their data hasn't been downloaded yet (e.g. CTRY before the first water-mask download) silently no-op — the pill stays in whatever state you left it.
 
+### Winds aloft (WND overlay)
+
+Wind barbs + temperatures aloft can be overlaid on the MFD. Cycle the **OVLY** label (lower-left of the map) to **WND**. The data is the GFS pressure-level forecast from Open-Meteo (internet, US-only, no key). Identical to the Pi 4 — see the Pi 4 manual §16E for the full description. In brief:
+
+- **Barbs** are standard met barbs (pennants 50 kt / full 10 kt / half 5 kt), shaft toward the source, with the temperature (°C) tagged beside each.
+- **Altitude button** cycles **3k / 6k / 9k / 12k / 18k ft**; **forecast-time button** steps `NOW` / `+3h` / … (48 h carried per pull).
+- The WND page keeps its **own zoom (40 / 80 / 160 NM only)**; barbs hide below 40 NM.
+- A **`WINDS n/6 · age`** status line shows grid fill + age (green when all six zones are loaded, amber while filling).
+- Winds are a **cached national grid (6 zones), pulled on the ground and written to disk** (`data/winds/conus_winds.json`), re-pulled only when a zone is **> 3 h** stale — so they survive a restart and work with no in-flight connection.
+- **Multi-display sharing:** when more than one screen is on the cabin network with screen-sync enabled, the one with internet fetches and broadcasts each zone and the others **adopt it without calling Open-Meteo** — one display feeds the whole panel and the per-IP rate limit is never an issue.
+
+(Pi Zero has no flight-path-vector marker yet — that's pi4 + iPhone only for now.)
+
 ---
 
 ## 11. AHRS / Sensors

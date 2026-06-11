@@ -117,6 +117,12 @@ Sky-blue above, brown ground below, split by a white horizon line. The aircraft 
 
 The fixed aircraft reference is the **amber swept-delta symbol** ported from the Pi 4 PFD (same geometry, same inner/outer colour split, same engine nacelles). It sits at the centre of the AI and stays fixed while the horizon, terrain, and pitch ladder move around it.
 
+### Flight-path vector (velocity vector)
+
+A cyan open circle with two wings and a vertical stub shows the **flight-path vector** — where the airplane is actually going, not where the nose points. Its horizontal offset from the aircraft symbol is drift/crab (GPS track vs. heading) and its vertical offset is the flight-path angle (from GPS groundspeed + vertical speed), so in a climb it sits below the nose by the angle of attack. It's hidden below 5 kt groundspeed and clamps to a small edge arrow if it would leave the AI.
+
+Toggle it from the setup menu — **✈ FLIGHT PATH** (a check mark shows when it's on; default ON). It works on either data source: the Pico W AHRS feed or the phone's own GPS in standalone mode.
+
 ### Pitch ladder
 
 Short white bars at ±10°, ±20°, ±30°, scale matches the horizon projection so pitch bars, horizon, and zero-pitch line all line up at any attitude.

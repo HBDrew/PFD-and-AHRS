@@ -574,6 +574,14 @@ and README don't yet cover:
   - Updated zoom ladder (1/2/5/10/20/40/80/160/AUTO) on pi_zero MFD
   - Heading-source AUTO + 3 kt threshold
 README needs the deploy story from DEPLOY-RSYNC once that's nailed.
+Done this session (winds/FPV): pi4 §4 + §10 + new §16E and pi_zero §10
+now document the **flight-path vector** and the **winds-aloft (WND)**
+feature (national grid, alt/time selectors, 40/80/160 zoom, status
+line, disk cache, LAN sharing); iPhone manual §4 documents the FPV.
+Still pending — the **larger weather/traffic suite** (METAR/TAF/AIRMET/
+SIGMET/NEXRAD/NOTAM, the OVLY cycle + MFD weather pages, the
+RADIO/AUTO/INET source toggle, the traffic collision alert) per the
+detailed per-file plan in `docs/NEXT_SESSION.md` (★ Manuals section).
 
 ### PI4-ETE-LATENCY  pi4 inset ETE takes a beat to populate
 Status: **OPEN — investigate**
