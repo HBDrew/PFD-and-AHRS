@@ -196,6 +196,9 @@ disp["ds"] = {                      # display settings
     "map_show_winds":    False,  # winds-aloft barbs (off until WND selected)
     "winds_alt_ft":      9000,   # selected altitude for the winds barbs
     "winds_time_offset_h": 0,    # WND forecast time: hours ahead of now (0 = now)
+    # The WND overlay keeps its OWN zoom (40/80/160 only) so it doesn't disturb
+    # the moving-map zoom when you switch overlays.
+    "winds_zoom_nm":     80,
     "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     "map_show_state_lines": True,
     "map_show_country_lines": True,
@@ -3970,11 +3973,17 @@ def handle_event(event, demo_mode):
                 print(f"[MFD] winds time → +{_mfd_cycle_winds_time()}h")
                 return True
             if _mfd_zoom_in_hit(x, y):
+                if _map_overlay_state(disp["ds"]) == "wnd":
+                    _winds_zoom_step(-1)
+                    return True
                 cur = int(disp["ds"].get("map_zoom_nm", 10))
                 disp["ds"]["map_zoom_nm"] = _mfd_map.zoom_in(cur)
                 _settings.mark_dirty()
                 return True
             if _mfd_zoom_out_hit(x, y):
+                if _map_overlay_state(disp["ds"]) == "wnd":
+                    _winds_zoom_step(+1)
+                    return True
                 cur = int(disp["ds"].get("map_zoom_nm", 10))
                 new = _mfd_map.zoom_out(
                     cur, allow_auto=bool(disp.get("nav", {}).get("ident")))
@@ -4016,7 +4025,7 @@ def handle_event(event, demo_mode):
                 hdg = disp.get("yaw", 0.0)
                 track = disp.get("track", hdg)
                 orient = disp["ds"].get("map_orient", "trk")
-                range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+                range_nm = _mfd_zoom_nm()
                 rot_deg = _mfd_map._rot_deg_for(orient, hdg, track, disp.get('speed', 0.0))
                 px_per_nm = min(DISPLAY_W, DISPLAY_H) / 2.0 / max(0.5, range_nm)
                 _mfd_drag = {
@@ -10391,7 +10400,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
     hdg = disp.get("yaw", 0.0)
     track = disp.get("track", hdg)
     orient    = disp["ds"].get("map_orient", "trk")
-    range_nm  = int(disp["ds"].get("map_zoom_nm", 10))
+    range_nm  = _mfd_zoom_nm()
     nav = disp.get("nav", {})
     d2  = None
     if nav.get("ident"):
@@ -10709,7 +10718,7 @@ def _mfd_find_graphic(tap_x, tap_y):
     gfx = disp.get("weather", {}).get("graphics") or []
     if not gfx:
         return None
-    range_nm = int(disp["ds"].get("map_zoom_nm", 10)) or 10
+    range_nm = _mfd_zoom_nm()
     cen_lat, cen_lon = _mfd_effective_center()
     hdg = disp.get("yaw", 0.0)
     track = disp.get("track", hdg)
@@ -10913,6 +10922,32 @@ def _mfd_cycle_winds_time():
     return disp["ds"]["winds_time_offset_h"]
 
 
+def _winds_zoom():
+    """The WND page's own zoom (one of WINDS_ZOOMS_NM)."""
+    z = int(disp["ds"].get("winds_zoom_nm", 80))
+    return z if z in WINDS_ZOOMS_NM else min(
+        WINDS_ZOOMS_NM, key=lambda t: abs(t - z))
+
+
+def _winds_zoom_step(delta):
+    """Step the WND page's own zoom within WINDS_ZOOMS_NM (-1 = in, +1 = out)."""
+    try:
+        i = WINDS_ZOOMS_NM.index(_winds_zoom())
+    except ValueError:
+        i = len(WINDS_ZOOMS_NM) // 2
+    i = max(0, min(len(WINDS_ZOOMS_NM) - 1, i + delta))
+    disp["ds"]["winds_zoom_nm"] = WINDS_ZOOMS_NM[i]
+    _settings.mark_dirty()
+
+
+def _mfd_zoom_nm():
+    """Effective MFD range — the WND overlay's own limited zoom when it's the
+    active overlay, else the shared moving-map zoom."""
+    if _map_overlay_state(disp["ds"]) == "wnd":
+        return _winds_zoom()
+    return int(disp["ds"].get("map_zoom_nm", 10)) or 10
+
+
 def _winds_age_str(age_s):
     """Compact age label for the winds cache (None -> '--')."""
     if age_s is None:
@@ -10943,7 +10978,7 @@ def _mfd_find_winds(tap_x, tap_y, tap_px=32):
     barbs = _winds_barbs()
     if not barbs:
         return None
-    range_nm = int(disp["ds"].get("map_zoom_nm", 10)) or 10
+    range_nm = _mfd_zoom_nm()
     cen_lat, cen_lon = _mfd_effective_center()
     hdg = disp.get("yaw", 0.0)
     track = disp.get("track", hdg)
@@ -12104,7 +12139,7 @@ def _mfd_find_metar(tap_x, tap_y, tap_px=28):
     metars = disp.get("weather", {}).get("metars") or []
     if not metars:
         return None
-    range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+    range_nm = _mfd_zoom_nm()
     if range_nm <= 0:
         range_nm = 10
     rect = (0, 0, DISPLAY_W, DISPLAY_H)
@@ -12134,7 +12169,7 @@ def _mfd_find_traffic(tap_x, tap_y, tap_px=30):
     targets = _traffic_to_draw()
     if not targets:
         return None
-    range_nm = int(disp["ds"].get("map_zoom_nm", 10)) or 10
+    range_nm = _mfd_zoom_nm()
     cen_lat, cen_lon = _mfd_effective_center()
     hdg = disp.get("yaw", 0.0)
     track = disp.get("track", hdg)
@@ -12268,7 +12303,7 @@ def _mfd_find_airport(tap_x, tap_y, tap_px=38):
     above 5 nm (same filter the draw loop uses)."""
     if _airports is None:
         return None
-    range_nm = int(disp["ds"].get("map_zoom_nm", 10))
+    range_nm = _mfd_zoom_nm()
     # Past 40 nm moving_map skips airports entirely — accept no tap
     # there so a finger landing on empty terrain doesn't D2 to an
     # invisible airport (most often hit while reaching for the orient
@@ -12354,7 +12389,7 @@ def _mfd_find_d2_dest(tap_x, tap_y, tap_px=42):
     ident = nav.get("ident")
     if not ident or nav.get("lat") is None or nav.get("lon") is None:
         return None
-    range_nm = int(disp["ds"].get("map_zoom_nm", 10)) or 10
+    range_nm = _mfd_zoom_nm()
     cen_lat, cen_lon = _mfd_effective_center()
     hdg = disp.get("yaw", 0.0)
     track = disp.get("track", hdg)

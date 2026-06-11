@@ -265,6 +265,9 @@ disp["ds"] = {                      # display settings
     "map_show_winds":    False,  # winds-aloft barbs (off until WND selected)
     "winds_alt_ft":      9000,   # selected altitude for the winds barbs
     "winds_time_offset_h": 0,    # WND forecast time: hours ahead of now (0 = now)
+    # The WND overlay keeps its OWN zoom (40/80/160 — it never needs a close-in
+    # view) so it doesn't disturb the terrain-map zoom when you switch pages.
+    "winds_zoom_nm":     80,
     "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     # Full-screen MFD: gate for the 3-finger PFD↔MFD swap.  Default on for
     # the larger HDMI screens (that's where a full-screen map earns its keep).
@@ -5029,15 +5032,21 @@ def handle_event(event, demo_mode):
             elif _mfd_is_panned() and _in(r["center"]):
                 _mfd_clear_pan()
             elif _in(r["zoom_in"]):
-                cur = int(disp["ds"].get("map_zoom_nm", 10))
-                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
-                _settings.mark_dirty()
+                if _map_overlay_state(disp["ds"]) == "wnd":
+                    _winds_zoom_step(-1)
+                else:
+                    cur = int(disp["ds"].get("map_zoom_nm", 10))
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
+                    _settings.mark_dirty()
             elif _in(r["zoom_out"]):
-                cur = int(disp["ds"].get("map_zoom_nm", 10))
-                has_d2 = bool((disp.get("nav") or {}).get("ident"))
-                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur,
-                                                              allow_auto=has_d2)
-                _settings.mark_dirty()
+                if _map_overlay_state(disp["ds"]) == "wnd":
+                    _winds_zoom_step(+1)
+                else:
+                    cur = int(disp["ds"].get("map_zoom_nm", 10))
+                    has_d2 = bool((disp.get("nav") or {}).get("ident"))
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(
+                        cur, allow_auto=has_d2)
+                    _settings.mark_dirty()
             elif _in(r["d2"]):
                 # Direct-to entry — reuse the PFD's nav keyboard (NEAREST /
                 # CANCEL FP / APPR / ENTER → nav_confirm).  kbd_prev="pfd"
@@ -5963,6 +5972,9 @@ def handle_event(event, demo_mode):
                     nxt = _map_overlay_cycle(disp["ds"])
                     print(f"[inset] overlay → {nxt}")
                     _settings.mark_dirty()
+                    return True
+                if _map_overlay_state(disp["ds"]) == "wnd":
+                    _winds_zoom_step(-1 if x >= mrx + mrw / 2 else +1)
                     return True
                 cur = int(disp["ds"].get("map_zoom_nm", 5))
                 _has_d2 = bool((disp.get("nav") or {}).get("ident"))
@@ -11910,6 +11922,24 @@ def _mfd_cycle_winds_time():
     return disp["ds"]["winds_time_offset_h"]
 
 
+def _winds_zoom():
+    """The WND page's own zoom (one of WINDS_ZOOMS_NM)."""
+    z = int(disp["ds"].get("winds_zoom_nm", 80))
+    return z if z in WINDS_ZOOMS_NM else min(
+        WINDS_ZOOMS_NM, key=lambda t: abs(t - z))
+
+
+def _winds_zoom_step(delta):
+    """Step the WND page's own zoom within WINDS_ZOOMS_NM (-1 = in, +1 = out)."""
+    try:
+        i = WINDS_ZOOMS_NM.index(_winds_zoom())
+    except ValueError:
+        i = len(WINDS_ZOOMS_NM) // 2
+    i = max(0, min(len(WINDS_ZOOMS_NM) - 1, i + delta))
+    disp["ds"]["winds_zoom_nm"] = WINDS_ZOOMS_NM[i]
+    _settings.mark_dirty()
+
+
 def _winds_age_str(age_s):
     """Compact age label for the winds cache (None -> '--')."""
     if age_s is None:
@@ -12788,7 +12818,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
     if _ad.get("show_other", False):
         types_vis.add("B")
 
-    zoom_pref = int(ds.get("map_zoom_nm", 10))
+    # The WND overlay carries its own limited zoom (40/80/160) so it neither
+    # offers a useless close-in view nor disturbs the terrain-map zoom.
+    zoom_pref = (_winds_zoom() if _map_overlay_state(ds) == "wnd"
+                 else int(ds.get("map_zoom_nm", 10)))
     if zoom_pref == _map_mod.ZOOM_AUTO:
         if d2.get("ident"):
             # Fit range to the leg from the AIRCRAFT to the waypoint — NOT the
@@ -14096,7 +14129,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         # direct-to and forces north-up so the destination doesn't spin
         # under the chevron. If no D2 is active the fallback is 80 nm —
         # the user can still pan around at the widest standard range.
-        _zoom_pref  = int(ds.get("map_zoom_nm", 5))
+        _zoom_pref  = (_winds_zoom() if _map_overlay_state(ds) == "wnd"
+                       else int(ds.get("map_zoom_nm", 5)))
         _orient_pref = ds.get("map_orient", "trk")
         if _zoom_pref == _map_mod.ZOOM_AUTO:
             _d2_dst = d2 if d2.get("ident") else None

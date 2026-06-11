@@ -118,6 +118,7 @@ WINDS_US_SPACING_NM   = 60         # coarse grid spacing — ~16-24 barbs at the
 WINDS_INET_INTERVAL_S = 6 * 3600   # GFS reissues every ~6 h — refresh no faster
 WINDS_MAX_ALT_FT      = 18000      # cap — fewer pressure levels = a much cheaper call
 WINDS_MIN_RENDER_NM   = 40         # draw barbs at 40/80/160 nm; hide below (coarse grid → empty)
+WINDS_ZOOMS_NM        = [40, 80, 160]  # the WND page keeps its OWN zoom, limited to these
 WINDS_GFS_MODEL       = "gfs025"   # pressure levels require an explicit GFS model
 WINDS_DISK_MAX_AGE_S  = 3600       # a zone is "stale" after 1 h — only then re-pull
                                    # (when connected); within the hour we read disk.
