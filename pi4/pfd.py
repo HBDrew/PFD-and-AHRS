@@ -10446,9 +10446,13 @@ def _nav_gc_interp(la1, lo1, la2, lo2, f):
 
 
 def _nav_lookup_ident(ident: str):
-    """Return (ident, lat, lon, elev_ft) for the first matching airport,
-    or None.  Shared between the activate path and the confirmation
-    modal (which validates before showing the prompt)."""
+    """Return (ident, lat, lon, elev_ft, name, region) for the first
+    matching airport, or None.  Shared between the activate path, the
+    confirmation modal, and the FPL append path — the latter stores the
+    name/region so the flight-plan row shows the airport name rather than
+    falling back to bare lat/lon.  Callers that only need position read
+    [1]/[2]; the extra fields are appended, so a 4-tuple unpack must slice
+    hit[:4]."""
     if _airports is None or not ident:
         return None
     if hasattr(_airports, "dtype"):
@@ -10457,11 +10461,17 @@ def _nav_lookup_ident(ident: str):
         if len(rows) == 0:
             return None
         row = rows[0]
+        names = _airports.dtype.names or ()
+        name   = str(row["name"])   if "name"   in names else ""
+        region = str(row["region"]) if "region" in names else ""
         return (str(row["ident"]), float(row["lat"]),
-                float(row["lon"]), float(row["elev_ft"]))
+                float(row["lon"]), float(row["elev_ft"]), name, region)
     for rec in _airports:
         if rec[0] == ident:
-            return (rec[0], float(rec[2]), float(rec[3]), float(rec[4]))
+            name   = str(rec[5]) if len(rec) > 5 else ""
+            region = str(rec[6]) if len(rec) > 6 else ""
+            return (rec[0], float(rec[2]), float(rec[3]), float(rec[4]),
+                    name, region)
     return None
 
 
@@ -10472,7 +10482,7 @@ def _nav_set_by_ident(ident: str) -> bool:
         return False
     lat = disp.get("lat", 0.0)
     lon = disp.get("lon", 0.0)
-    ai, alat, alon, aelev = hit
+    ai, alat, alon, aelev = hit[:4]
     disp["nav"]["ident"]   = ai
     disp["nav"]["lat"]     = alat
     disp["nav"]["lon"]     = alon
