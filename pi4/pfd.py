@@ -12085,16 +12085,28 @@ def _winds_age_str(age_s):
 
 
 def _winds_status_text():
-    """e.g. 'WINDS 4/6 zones · 12m' — fill + oldest-zone age of the national
-    winds cache, with a trailing '…' while it's still loading zones."""
+    """e.g. 'WINDS 6/6 · 12m' all current, or 'WINDS 4/6 · 2 stale · 7h' when
+    some zones have aged out.  Reports how many zones still hold CURRENT data
+    (fresh) rather than how many are merely loaded — zones refresh in place and
+    never drop, so a loaded-count would read 6/6 forever and hide staleness.
+    A trailing '…' shows while it's still working toward a full fresh set."""
     if _winds_client is None:
         return "WINDS --"
-    loaded, total, age_s = _winds_client.status()
-    if loaded == 0:
-        return (f"WINDS 0/{total} loading…" if getattr(_winds_client, "enabled",
-                False) else f"WINDS 0/{total}")
-    txt = f"WINDS {loaded}/{total} · {_winds_age_str(age_s)}"
-    if loaded < total and getattr(_winds_client, "enabled", False):
+    fresh, total, age_s, stale, expired = _winds_client.status()
+    enabled = getattr(_winds_client, "enabled", False)
+    if fresh == 0 and stale == 0 and expired == 0:
+        return f"WINDS 0/{total} loading…" if enabled else f"WINDS 0/{total}"
+    txt = f"WINDS {fresh}/{total}"
+    if age_s is not None:
+        txt += f" · {_winds_age_str(age_s)}"
+    flags = []
+    if stale:
+        flags.append(f"{stale} stale")
+    if expired:
+        flags.append(f"{expired} expired")
+    if flags:
+        txt += " · " + " ".join(flags)
+    if fresh < total and enabled:
         txt += " …"
     return txt
 
@@ -12854,8 +12866,8 @@ def _mfd_draw_source_status(surf):
     # Winds-cache fill + age — only on the WND page (informational).
     if ds.get("map_show_winds") and _winds_client is not None:
         txt = _winds_status_text()
-        loaded, total, _age = _winds_client.status()
-        col = (60, 220, 90) if loaded >= total and loaded > 0 else (220, 160, 60)
+        fresh, total, _age, _stale, _exp = _winds_client.status()
+        col = (60, 220, 90) if fresh >= total and fresh > 0 else (220, 160, 60)
         _text(surf, txt, pt, col, bold=True, x=x, y=y)
         _mfd_winds_status_rect = (x - 4, y - 3, f.size(txt)[0] + 8, pt + 8)
         y += pt + 8

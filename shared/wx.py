@@ -696,7 +696,7 @@ class WindsUSCache(threading.Thread):
                  hour_offset_fn=None, model="gfs025", max_alt_ft=18000,
                  max_age_s=6 * 3600, slice_s=20.0, publish_fn=None,
                  peer_grace_s=360.0, startup_grace_s=45.0,
-                 fetch_jitter_s=180.0):
+                 fetch_jitter_s=180.0, expire_s=24 * 3600):
         super().__init__(daemon=True, name="WindsUSCache")
         self.zones = conus_zones(bbox, rows, cols)
         self.spacing_nm = spacing_nm
@@ -706,6 +706,12 @@ class WindsUSCache(threading.Thread):
         self.model = model
         self.max_alt_ft = max_alt_ft
         self.max_age_s = max_age_s
+        # Hard expiry: a GFS winds-aloft forecast is refreshed on a 6 h cycle, so
+        # past max_age_s (6 h) a zone is "stale" — still a usable fallback while
+        # we re-pull.  But once it's a full day old it's no forecast at all any
+        # more; data this old is worse than nothing, so we stop SERVING it
+        # (columns()/barbs drop it) and treat it as missing everywhere.
+        self.expire_s = max(expire_s, max_age_s)
         self.slice_s = slice_s
         # LAN sharing: publish_fn(packed_zone_dict) broadcasts a zone to peer
         # screens; when a peer is feeding us (a winds packet arrived within
@@ -742,26 +748,59 @@ class WindsUSCache(threading.Thread):
         self._stop.set()
 
     def columns(self):
-        """All cached winds columns, merged across zones."""
+        """All cached winds columns, merged across zones — EXCLUDING any zone
+        past ``expire_s`` (a day-old forecast is no longer valid, so we don't
+        draw it even as a fallback; that zone reads blank until it re-pulls)."""
+        now = time.time()
         with self._lock:
             out = []
             for rec in self._data.values():
+                if now - rec.get("fetched", 0.0) >= self.expire_s:
+                    continue
                 out.extend(rec["cols"])
             return out
 
     def count(self):
-        with self._lock:
-            return sum(len(rec["cols"]) for rec in self._data.values())
-
-    def status(self):
-        """``(zones_loaded, zones_total, age_s)`` for a status readout — ``age_s``
-        is the OLDEST loaded zone's age (None when nothing is loaded yet)."""
         now = time.time()
         with self._lock:
-            loaded = len(self._data)
+            return sum(len(rec["cols"]) for rec in self._data.values()
+                       if now - rec.get("fetched", 0.0) < self.expire_s)
+
+    def status(self):
+        """``(fresh, total, age_s, stale, expired)`` for a status readout.
+
+        Three bands by age: ``fresh`` (< ``max_age_s``, current),
+        ``stale`` (``max_age_s``..``expire_s``, past the forecast cycle but still
+        drawn as a fallback while we re-pull), and ``expired`` (>= ``expire_s``,
+        a day old — no longer drawn at all).  ``age_s`` is the oldest STILL-VALID
+        (non-expired) zone's age, so it matches what's actually on screen (None
+        when nothing valid is loaded).
+
+        Zones are refreshed in place and never dropped, so a plain loaded-count
+        sits at ``total/total`` forever and tells you nothing once primed — what
+        matters is how many zones still hold current data, which is what this
+        reports."""
+        now = time.time()
+        total = len(self.zones)
+        with self._lock:
             ages = [now - rec["fetched"] for rec in self._data.values()
                     if rec.get("fetched")]
-        return loaded, len(self.zones), (max(ages) if ages else None)
+        fresh = sum(1 for a in ages if a < self.max_age_s)
+        stale = sum(1 for a in ages if self.max_age_s <= a < self.expire_s)
+        expired = sum(1 for a in ages if a >= self.expire_s)
+        valid = [a for a in ages if a < self.expire_s]
+        return fresh, total, (max(valid) if valid else None), stale, expired
+
+    def stale_zones(self):
+        """Indices of zones with no CURRENT data — sorted.  A zone counts unless
+        it's loaded and within ``max_age_s`` (so this includes stale, expired and
+        never-loaded zones alike), letting a status line name *which* are off."""
+        now = time.time()
+        total = len(self.zones)
+        with self._lock:
+            ok = {i for i, rec in self._data.items()
+                  if rec.get("fetched") and (now - rec["fetched"]) < self.max_age_s}
+        return [i for i in range(total) if i not in ok]
 
     def force_refresh(self):
         """Mark every zone stale (e.g. when the forecast time changes)."""

@@ -106,6 +106,48 @@ def test_peer_feed_is_per_zone():
     check(due != 0, "the zone a peer just fed is not re-fetched, but others are")
 
 
+def test_status_bands_fresh_stale_expired():
+    # status() must split zones into fresh (<6h), stale (6h..24h, still drawn)
+    # and expired (>=24h, dropped).  age_s reports the oldest STILL-VALID zone.
+    c = _cache()
+    now = time.time()
+    c._data[0] = {"cols": [{}], "fetched": now - 1 * 3600}    # fresh
+    c._data[1] = {"cols": [{}], "fetched": now - 8 * 3600}    # stale
+    c._data[2] = {"cols": [{}], "fetched": now - 30 * 3600}   # expired
+    fresh, total, age_s, stale, expired = c.status()
+    check(fresh == 1, "one fresh zone counted")
+    check(stale == 1, "one stale zone counted")
+    check(expired == 1, "one expired zone counted")
+    check(total == len(c.zones), "total is the zone count")
+    # oldest VALID zone is the 8 h stale one (the 30 h expired one is excluded).
+    check(7.5 * 3600 < age_s < 8.5 * 3600, "age_s is oldest non-expired zone")
+
+
+def test_expired_zone_not_served():
+    # A day-old forecast is worse than nothing — columns()/count() must drop it.
+    c = _cache()
+    now = time.time()
+    c._data[0] = {"cols": [{"a": 1}], "fetched": now - 2 * 3600}    # valid
+    c._data[1] = {"cols": [{"b": 2}], "fetched": now - 26 * 3600}   # expired
+    check(len(c.columns()) == 1, "expired zone's columns are not served")
+    check(c.count() == 1, "expired zone is not counted")
+
+
+def test_stale_zones_lists_off_indices():
+    # stale_zones() names every zone without CURRENT data (stale/expired/unloaded).
+    c = _cache()
+    now = time.time()
+    c._data[0] = {"cols": [], "fetched": now - 1 * 3600}     # fresh -> not listed
+    c._data[1] = {"cols": [], "fetched": now - 8 * 3600}     # stale -> listed
+    c._data[2] = {"cols": [], "fetched": now - 30 * 3600}    # expired -> listed
+    # zones 3..n are never loaded -> listed
+    off = c.stale_zones()
+    check(0 not in off, "fresh zone is not flagged")
+    check(1 in off and 2 in off, "stale and expired zones are flagged")
+    check(all(i in off for i in range(3, len(c.zones))),
+          "never-loaded zones are flagged too")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
