@@ -179,7 +179,7 @@ courtesy to the free aggregators.
 - **Overlay quick-cycle** (`shared/mapoverlay.py`, unit-tested). Traffic
   stays on always (safety); a single on-map control cycles the heavy
   overlays one-at-a-time to keep the map readable and CPU low:
-  **Airspace → Traffic → METAR → NEXRAD** (labels ASP / TFC / MET / NEX).
+  **Airspace → Traffic → METAR → Winds → NEXRAD** (labels ASP / TFC / MET / WND / NEX).
   "Traffic" (TFC) is the traffic-only state — no heavy overlay added;
   traffic + your base map still show. On the Pi Zero MFD it's the button
   under the RNG label; on the Pi 4 inset it's the **bottom-left corner**
@@ -196,10 +196,30 @@ courtesy to the free aggregators.
   semi-transparent under the symbols. The scaled/dimmed surface is cached, so
   the per-frame cost is one blit; it's re-decoded only when a new image
   arrives (~5 min) or the zoom changes.
-- **Weather declutters the base map.** While METAR or NEXRAD is the active
-  overlay, the terrain tint and obstacle/tower symbols are suppressed —
+- **Weather declutters the base map.** While METAR, NEXRAD, or winds is the
+  active overlay, the terrain tint and obstacle/tower symbols are suppressed —
   cleaner weather picture, and skipping the tint build is the biggest CPU
   saving the inset has.
+- **Weather — TAF / AIRMET / SIGMET / NOTAM readouts.** Tapping a station on
+  the MET page opens a picker with **METAR / TAF / AIRMET / SIGMET / NOTAM**
+  tabs (scrollable, nearest-first, ON-ROUTE flags). TAFs + AIRMET/SIGMET come
+  from aviationweather.gov (AWC); graphical AIRMET/SIGMET hazard polygons are
+  shaded and tappable. NOTAMs come from the FAA NOTAM API
+  (`external-api.faa.gov`) — needs a free `client_id`/`client_secret` entered
+  on the Connectivity screen; absent a key the NOTAM fetch is a harmless no-op.
+- **Weather — winds aloft (WND).** GFS pressure-level winds from Open-Meteo
+  (`gfs025`, free, no key), capped at 18,000 ft. Cached as a national grid
+  split into 6 zones, fetched on the ground one zone at a time, written to disk
+  (`data/winds/conus_winds.json`), and re-pulled only when a zone is > 3 h
+  stale. Rendered as standard wind barbs + temperature at a selectable altitude
+  (3k–18k) and forecast time (NOW/+Nh). **Shared between displays** over the
+  screen-sync UDP link (`KIND_WINDS`): one display with internet feeds the
+  whole panel so the others make zero Open-Meteo calls (per-IP rate-limit fix).
+- **Traffic status + collision alert.** On-screen `ADS-B <mode> R<n> I<n>` and
+  `WX <mode> R<n> I<n> <age>` status lines (tap to cycle RADIO/AUTO/INET); a
+  flashing red **TRAFFIC** banner and (Pi 4) a **"Traffic, Traffic"** voice
+  callout when a new target enters the alert envelope (≤ 3 NM and ≤ 600 ft),
+  edge-triggered, rate-limited. Pi Zero is visual-only.
 
 ### FIS-B (978 UAT) weather — radio-primary, internet-bonus
 
@@ -243,11 +263,12 @@ as 1090, no extra decoder.
 **Planned:**
 - Optional track-up rotation for the NEXRAD raster (cached per heading) if
   the north-up-in-track-up mismatch proves distracting.
-- FIS-B Stages 2–3: winds aloft / AIRMET-SIGMET / NOTAM text, then the FIS-B
-  NEXRAD block raster into the existing nexrad surface.
-- METAR detail readout (tap a station → raw METAR / wind / ceiling / vis).
-- On-screen TFC status / count + audible/visual traffic alert ("TRAFFIC")
-  driven by `disp["traffic"]["alert"]`.
+- FIS-B **radio** NEXRAD block raster decoded into the existing nexrad surface
+  (the internet NEXRAD path is done; the over-the-air block decode is next).
 - Connectivity-screen ADS-B LINK row (diagnostics are already plumbed in
   `cs["adsb_*"]`).
 - Direct 978 UAT path in the bridge (currently folded via the SBS feed).
+
+(Winds aloft, AIRMET/SIGMET, NOTAM text, the METAR/TAF readout picker, and the
+on-screen traffic status + collision alert — all previously listed here — are
+now **implemented**; see the list above.)

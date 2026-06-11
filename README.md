@@ -503,10 +503,13 @@ Shared work (firmware, `shared/` modules, docs touched by both) is generally app
 | ✅ V5.1 | AHRS PCB rev A — single-board Pico W + WT901 + NEO-6M + BME280 + SDP33-1500Pa; full pitot-static air-data set (IAS / TAS / density alt / wind triangle) on the SSE / USB stream |
 | ✅ V5.2 | EGPWS-style voice callouts (TERRAIN / OBSTACLE / SINK RATE / PULL UP / BANK ANGLE), unusual-attitude recovery cues, look-ahead TAWS, ±25° forward-wedge obstacle filter |
 | ✅ V5.3 | Flight-plan SAVE / LOAD — named, persistent plans recallable on the MFD FPL page |
-| 🚧 V5.4 | ADS-B IN traffic — GDL90/UDP decoder + UDP listener, TCAS-style diamonds on both moving maps, Nooelec NESDR Nano 2 dual-band receiver via dump1090/dump978 + GDL90 bridge. Next: FIS-B graphical weather (NEXRAD), on-screen TFC status/alert |
+| ✅ V5.4 | ADS-B IN traffic — GDL90/UDP decoder + UDP listener, TCAS-style diamonds on both moving maps, Nooelec NESDR Nano 2 dual-band receiver via dump1090/dump978 + GDL90 bridge; on-screen traffic status + flashing TRAFFIC banner + "Traffic, Traffic" callout (pi4) |
+| ✅ V5.5 | Internet + FIS-B weather suite — METARs (category dots), TAF / AIRMET / SIGMET / NOTAM readouts, graphical AIRMET/SIGMET, NEXRAD, RADIO/AUTO/INET source toggle; full-screen MFD with the OVLY overlay cycle |
+| ✅ V5.6 | Winds aloft (WND) — cached national GFS grid (Open-Meteo), barbs + temps at selectable altitude/forecast-time, disk-cached + shared between displays over the LAN |
+| ✅ V5.7 | Flight-path vector (velocity-vector marker) on the AI — pi4 + iPhone |
 | V6 | TruTrak Vizion RS-232 autopilot interface |
 | V7 | Moving map / MFD (separate dedicated hardware unit) |
-| V8 | Flight path vector, highway-in-the-sky waypoint tunnel |
+| V8 | Highway-in-the-sky waypoint tunnel; IFR procedures (approaches / holds / airways) |
 | V9 | Time-of-day sun position, texture-mapped terrain |
 | V10 | Setup-screen vertical scrolling for compact display profiles |
 
