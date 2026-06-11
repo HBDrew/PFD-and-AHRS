@@ -432,7 +432,23 @@ def _ssync_kinds_from_cs(direction):
     if cs.get("sync_fpl_enabled", True):
         out.add(_ssync_mod.KIND_FPL)
         out.add(_ssync_mod.KIND_FPLLIB)
+    # Winds-aloft zones always sync both ways when screen-sync is on — a screen
+    # with internet feeds the others so they don't each hit Open-Meteo's
+    # shared-per-IP rate limit.
+    out.add(_ssync_mod.KIND_WINDS)
     return out
+
+
+def _ssync_apply_winds(data):
+    """Screen-sync KIND_WINDS callback — adopt a peer's winds zone."""
+    if _winds_client is not None:
+        _winds_client.ingest_packed(data)
+
+
+def _winds_publish(packed):
+    """publish_fn for WindsUSCache — broadcast a zone to peer screens."""
+    if _screen_sync is not None:
+        _screen_sync.publish(_ssync_mod.KIND_WINDS, packed)
 
 
 def _ssync_refresh_kinds():
@@ -13023,6 +13039,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_FPLLIB, _ssync_apply_fpl_lib)
     _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
     _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
+    _screen_sync.on(_ssync_mod.KIND_WINDS, _ssync_apply_winds)
     _screen_sync.start()
     print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
           f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
@@ -13437,7 +13454,7 @@ def main():
                                float(disp.get("lon", DEMO_LON))),
             hour_offset_fn=lambda: int(disp["ds"].get("winds_time_offset_h", 0)),
             model=WINDS_GFS_MODEL, max_alt_ft=WINDS_MAX_ALT_FT,
-            max_age_s=WINDS_DISK_MAX_AGE_S)
+            max_age_s=WINDS_DISK_MAX_AGE_S, publish_fn=_winds_publish)
         _winds_client.start()
         print("[PFD] TAF + AIRMET/SIGMET + winds pollers started (internet)")
         # Always start the NOTAM poller; its fetch reads the FAA key live from

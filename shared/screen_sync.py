@@ -50,10 +50,14 @@ KIND_GPS   = "gps"    # lat, lon, alt, speed, track
 KIND_FPL   = "fpl"    # full flight-plan waypoint list + active_idx
 KIND_FPLLIB = "fpllib"  # saved-plan + user-waypoint LIBRARY (merged, peer-to
                         # -peer; lets any screen load a plan stored on any other)
+KIND_WINDS = "winds"  # one national winds-aloft ZONE (compact) — lets a screen
+                      # with internet feed the cached winds to its peers so they
+                      # never have to hit Open-Meteo themselves (shared per-IP
+                      # rate limit).  Payload is one zone per packet.
 KIND_HELLO = "hello"  # heartbeat, no payload — keeps peer-status live
 
 ALL_KINDS = (KIND_BUGS, KIND_BARO, KIND_NAV, KIND_AHRS, KIND_GPS, KIND_FPL,
-             KIND_FPLLIB)
+             KIND_FPLLIB, KIND_WINDS)
 
 # Transport selectors.  "auto" sends on every usable interface (USB
 # and network alike); "usb" / "net" restrict sends to one category.
@@ -308,7 +312,9 @@ class ScreenSync:
     def _listen_loop(self):
         while self._running:
             try:
-                data, addr = self._sock.recvfrom(8192)
+                # 64 KB so a whole winds zone (compact, ~15-20 KB) arrives in
+                # one datagram; the small state packets are unaffected.
+                data, addr = self._sock.recvfrom(65536)
             except socket.timeout:
                 continue
             except OSError:
@@ -340,15 +346,16 @@ class ScreenSync:
                 continue
             ts  = float(msg.get("ts", 0.0))
             seq = int(msg.get("seq", 0))
-            # LWW: only accept if (ts, seq, src) is newer than what we
-            # have on file for this kind.  This makes a remote screen's
-            # most-recent edit stick across reconnects.
-            with self._lock:
-                last = self._last_accepted.get(kind)
-                if last is not None:
-                    if (ts, seq, src) <= last:
-                        continue
-                self._last_accepted[kind] = (ts, seq, src)
+            # LWW: only accept if (ts, seq, src) is newer than what we have on
+            # file for this kind.  Winds is EXEMPT — each packet is a different
+            # zone under the one kind, so LWW would drop all but the latest.
+            if kind != KIND_WINDS:
+                with self._lock:
+                    last = self._last_accepted.get(kind)
+                    if last is not None:
+                        if (ts, seq, src) <= last:
+                            continue
+                    self._last_accepted[kind] = (ts, seq, src)
             cb = self._callbacks.get(kind)
             if cb is None:
                 continue

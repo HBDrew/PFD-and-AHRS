@@ -632,6 +632,51 @@ def conus_zones(bbox, rows, cols):
             for r in range(rows) for c in range(cols)]
 
 
+def pack_winds_zone(idx, fetched_ts, cols):
+    """Compact a zone for LAN sharing: ``{z, t, c}`` where each column is
+    ``[lat, lon, dir0, spd0, temp0, dir1, ...]`` with dir/spd/temp per standard
+    altitude (in WINDS_ALTS order).  ~10× smaller than the raw dicts so a zone
+    fits in one UDP datagram."""
+    from fisb import WINDS_ALTS
+    rows = []
+    for c in cols:
+        by_alt = {lv.get("alt_ft"): lv for lv in c.get("levels", [])}
+        row = [round(float(c["lat"]), 3), round(float(c["lon"]), 3)]
+        for a in WINDS_ALTS:
+            lv = by_alt.get(a)
+            if lv:
+                row += [lv.get("dir"), lv.get("spd"), lv.get("temp")]
+            else:
+                row += [None, None, None]
+        rows.append(row)
+    return {"z": int(idx), "t": round(float(fetched_ts), 1), "c": rows}
+
+
+def unpack_winds_zone(data):
+    """Inverse of ``pack_winds_zone`` → ``(idx, fetched_ts, cols)``."""
+    from fisb import WINDS_ALTS
+    idx = int(data["z"])
+    ts = float(data["t"])
+    cols = []
+    for row in data.get("c", []):
+        if len(row) < 2:
+            continue
+        lat, lon = row[0], row[1]
+        levels = []
+        for k, a in enumerate(WINDS_ALTS):
+            base = 2 + k * 3
+            if base + 2 >= len(row):
+                break
+            d, s, t = row[base], row[base + 1], row[base + 2]
+            if s is not None:
+                levels.append({"alt_ft": a, "dir": d, "spd": s,
+                               "temp": t, "lv": False})
+        cols.append({"station": f"{lat:.2f},{lon:.2f}", "lat": lat,
+                     "lon": lon, "levels": levels, "src": "INET",
+                     "hour_offset": 0})
+    return idx, ts, cols
+
+
 class WindsUSCache(threading.Thread):
     """National winds-aloft cache, split into zones and fetched lazily.
 
@@ -648,7 +693,8 @@ class WindsUSCache(threading.Thread):
 
     def __init__(self, bbox, rows, cols, spacing_nm, disk_path, locate_fn,
                  hour_offset_fn=None, model="gfs025", max_alt_ft=18000,
-                 max_age_s=6 * 3600, slice_s=20.0):
+                 max_age_s=6 * 3600, slice_s=20.0, publish_fn=None,
+                 peer_grace_s=360.0, startup_grace_s=45.0):
         super().__init__(daemon=True, name="WindsUSCache")
         self.zones = conus_zones(bbox, rows, cols)
         self.spacing_nm = spacing_nm
@@ -659,6 +705,13 @@ class WindsUSCache(threading.Thread):
         self.max_alt_ft = max_alt_ft
         self.max_age_s = max_age_s
         self.slice_s = slice_s
+        # LAN sharing: publish_fn(packed_zone_dict) broadcasts a zone to peer
+        # screens; when a peer is feeding us (a winds packet arrived within
+        # peer_grace_s) we DON'T hit Open-Meteo ourselves.  startup_grace_s
+        # lets peer broadcasts arrive before we'd fetch on a cold boot.
+        self.publish_fn = publish_fn
+        self.peer_grace_s = peer_grace_s
+        self.startup_grace_s = startup_grace_s
         self.enabled = False
         self.updated_s = 0.0
         self.rx_count = 0
@@ -670,6 +723,9 @@ class WindsUSCache(threading.Thread):
         self._stop = threading.Event()
         self._backoff_until = 0.0       # monotonic; set after a failed fetch
         self._fail_streak = 0
+        self._last_peer_rx = 0.0        # monotonic of last adopted peer zone
+        self._started_at = time.monotonic()
+        self._bcast_idx = 0             # round-robin broadcast cursor
         self._load_disk()
 
     def stop(self):
@@ -702,6 +758,47 @@ class WindsUSCache(threading.Thread):
         with self._lock:
             self._data = {}
         self.updated_s = time.monotonic()
+
+    def _peer_active(self):
+        """True when a peer has fed us a zone within ``peer_grace_s`` — while a
+        peer is sharing we leave Open-Meteo alone and just adopt its data."""
+        return (self._last_peer_rx > 0.0
+                and (time.monotonic() - self._last_peer_rx) < self.peer_grace_s)
+
+    def ingest_packed(self, data):
+        """Adopt a zone shared by a peer screen (``pack_winds_zone`` form).  Used
+        as the screen-sync KIND_WINDS callback.  Adopts only if fresher than what
+        we hold, and marks a peer active so we stop fetching ourselves."""
+        try:
+            idx, ts, cols = unpack_winds_zone(data)
+        except Exception:                                        # noqa: BLE001
+            return
+        self._last_peer_rx = time.monotonic()
+        with self._lock:
+            cur = self._data.get(idx)
+            if cur is not None and ts <= cur.get("fetched", 0.0):
+                return                       # ours is as fresh or fresher
+            self._data[idx] = {"cols": cols, "fetched": ts}
+        self.updated_s = time.monotonic()
+        self._save_disk()
+        print(f"[WX:winds] adopted zone {idx} from peer ({len(cols)} cols)")
+
+    def _broadcast_one(self):
+        """Round-robin broadcast one held zone to peers (cheap, LAN-local)."""
+        if self.publish_fn is None:
+            return
+        with self._lock:
+            if not self._data:
+                return
+            keys = sorted(self._data.keys())
+            idx = keys[self._bcast_idx % len(keys)]
+            self._bcast_idx += 1
+            rec = self._data.get(idx)
+            cols, ts = list(rec["cols"]), rec["fetched"]
+        try:
+            self.publish_fn(pack_winds_zone(idx, ts, cols))
+        except Exception:                                        # noqa: BLE001
+            pass
 
     def _due_zone(self, lat, lon, now):
         """Index of the most-due zone — the aircraft's own zone first, then the
@@ -742,6 +839,13 @@ class WindsUSCache(threading.Thread):
             self._fail_streak = 0
             self._backoff_until = 0.0
             self._save_disk()
+            print(f"[WX:winds] fetched zone {idx} ({len(cols)} cols)")
+            # Share it with peer screens straight away so they don't re-fetch.
+            if self.publish_fn is not None:
+                try:
+                    self.publish_fn(pack_winds_zone(idx, now, cols))
+                except Exception:                                # noqa: BLE001
+                    pass
             return True
         except Exception as e:                                   # noqa: BLE001
             self.err_count += 1
@@ -757,7 +861,16 @@ class WindsUSCache(threading.Thread):
 
     def run(self):
         while not self._stop.is_set():
-            if self.enabled and time.monotonic() >= self._backoff_until:
+            now_m = time.monotonic()
+            # Always share what we have (feeds peers; a screen with internet
+            # thereby supplies the rest of the panel).
+            self._broadcast_one()
+            # Fetch from Open-Meteo only when enabled, not backing off, past the
+            # startup grace (give peers a chance to feed us first), and not
+            # currently being fed by a peer.
+            if (self.enabled and now_m >= self._backoff_until
+                    and (now_m - self._started_at) >= self.startup_grace_s
+                    and not self._peer_active()):
                 self.refresh_one()                # one zone per tick, paced
             slept = 0.0
             while slept < self.slice_s and not self._stop.is_set():
