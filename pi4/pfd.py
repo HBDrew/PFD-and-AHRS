@@ -50,6 +50,7 @@ import pygame.gfxdraw
 from config import *   # noqa: F403
 from sse_client import SSEClient
 import adsb as _adsb
+import fpllib as _fpllib
 import adsb_feed as _afeed
 import wx as _wx
 import fisb as _fisb
@@ -419,7 +420,8 @@ disp["fpl"] = {
 }
 # Saved named flight plans (persistent).  Same schema as pi_zero so a plan
 # saved on either screen loads on the other.
-disp["fpl_saved"] = {"plans": []}   # [{name, waypoints:[...]}]
+disp["fpl_saved"] = {"plans": [],   # [{name, waypoints:[...], ts}]
+                     "deleted": {}}  # tombstones {NAME_UPPER: deleted_ts}
 # User-waypoint library (persistent) — +LAT/LON entries auto-save here.
 disp["user_wpts"] = {"list": []}    # [{ident, lat, lon, elev_ft}, ...]
 # In-progress +LAT/LON user-waypoint entry (transient; cleared on save/cancel).
@@ -976,15 +978,20 @@ def _fpl_plan_save(name):
         return (False, "no waypoints to save")
     snapshot = [dict(w) for w in wps]
     plans = disp["fpl_saved"]["plans"]
+    now = time.time()
+    # Saving clears any tombstone for this name so a re-create wins back over
+    # a prior delete (its ts is newer than the tombstone).
+    disp["fpl_saved"].setdefault("deleted", {}).pop(name.upper(), None)
     for p in plans:
         if str(p.get("name", "")).upper() == name.upper():
             p["name"] = name
             p["waypoints"] = snapshot
+            p["ts"] = now
             _settings.mark_dirty()
             return (True, "")
     if len(plans) >= _FPL_SAVED_MAX:
         return (False, f"saved-plan limit ({_FPL_SAVED_MAX})")
-    plans.append({"name": name, "waypoints": snapshot})
+    plans.append({"name": name, "waypoints": snapshot, "ts": now})
     _settings.mark_dirty()
     return (True, "")
 
@@ -994,7 +1001,11 @@ def _fpl_plan_delete(name):
     disp["fpl_saved"]["plans"] = [
         p for p in disp["fpl_saved"]["plans"]
         if str(p.get("name", "")).upper() != name]
+    # Write a tombstone so the delete sticks across the panel (a peer that
+    # still holds the plan won't resurrect it; see _ssync_apply_fpl_lib).
+    disp["fpl_saved"].setdefault("deleted", {})[name] = time.time()
     _settings.mark_dirty()
+    _ssync_publish_fpl_lib(force=True)
 
 
 def _fpl_plan_load(name):
@@ -1079,26 +1090,32 @@ def _ssync_publish_fpl_lib(force=False):
     _ssync_fpllib_last = now
     _screen_sync.publish(_ssync_mod.KIND_FPLLIB, {
         "plans":     list(disp.get("fpl_saved", {}).get("plans", [])),
+        "deleted":   dict(disp.get("fpl_saved", {}).get("deleted", {})),
         "user_wpts": list(disp.get("user_wpts", {}).get("list", [])),
     })
 
 
 def _ssync_apply_fpl_lib(data):
-    """Merge a peer's library into ours (union) so any plan / user waypoint
-    stored on any screen is loadable everywhere."""
+    """Merge a peer's library into ours so any plan / user waypoint stored on
+    any screen is loadable everywhere.  Saved plans merge with **deletion
+    tombstones** (shared/fpllib) so a deleted plan doesn't resurrect from a
+    peer that still holds it; user waypoints stay a simple union for now."""
     changed = False
-    plans = disp.setdefault("fpl_saved", {}).setdefault("plans", [])
-    have = {str(p.get("name", "")).upper() for p in plans}
-    for p in data.get("plans", []):
-        if not isinstance(p, dict):
-            continue
-        nm = str(p.get("name", "")).strip()
-        if nm and nm.upper() not in have and len(plans) < _FPL_SAVED_MAX:
-            plans.append({"name": nm,
-                          "waypoints": [dict(w) for w in p.get("waypoints", [])
-                                        if isinstance(w, dict)]})
-            have.add(nm.upper())
-            changed = True
+    fs = disp.setdefault("fpl_saved", {})
+    plans = fs.setdefault("plans", [])
+    deleted = fs.setdefault("deleted", {})
+    before = ([(str(p.get("name", "")).upper(), p.get("ts")) for p in plans],
+              dict(deleted))
+    merged, new_deleted = _fpllib.merge_plan_lib(
+        plans, deleted,
+        [p for p in data.get("plans", []) if isinstance(p, dict)],
+        data.get("deleted", {}) if isinstance(data.get("deleted"), dict) else {},
+        now=time.time(), max_plans=_FPL_SAVED_MAX)
+    fs["plans"] = merged
+    fs["deleted"] = new_deleted
+    if before != ([(str(p.get("name", "")).upper(), p.get("ts")) for p in merged],
+                  new_deleted):
+        changed = True
     lib = disp.setdefault("user_wpts", {}).setdefault("list", [])
     have_w = {str(w.get("ident", "")).upper() for w in lib}
     for w in data.get("user_wpts", []):

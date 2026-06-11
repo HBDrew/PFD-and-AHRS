@@ -37,6 +37,7 @@ import pygame.gfxdraw
 from config import *   # noqa: F403
 from sse_client import SSEClient
 import adsb as _adsb
+import fpllib as _fpllib
 import adsb_feed as _afeed
 import wx as _wx
 import fisb as _fisb
@@ -329,7 +330,8 @@ disp["user_wpts"] = {
 # Same _PERSIST_COMPLEX_SUBTREES path as fpl / user_wpts.  Names are unique
 # (case-insensitive) — saving over an existing name overwrites it.
 disp["fpl_saved"] = {
-    "plans": [],   # [{name, waypoints:[{ident,lat,lon,elev_ft,user,name,region}]}]
+    "plans": [],   # [{name, waypoints:[{ident,lat,lon,elev_ft,user,name,region}], ts}]
+    "deleted": {}, # deletion tombstones {NAME_UPPER: deleted_ts}
 }
 # Live ADS-B traffic — refreshed each frame from the GDL90/UDP listener
 # (or the demo generator).  "targets" are relativised (range/bearing/
@@ -724,28 +726,31 @@ def _ssync_publish_fpl_lib(force=False):
     _ssync_fpllib_last = now
     _screen_sync.publish(_ssync_mod.KIND_FPLLIB, {
         "plans":     list(disp.get("fpl_saved", {}).get("plans", [])),
+        "deleted":   dict(disp.get("fpl_saved", {}).get("deleted", {})),
         "user_wpts": list(disp.get("user_wpts", {}).get("list", [])),
     })
 
 
 def _ssync_apply_fpl_lib(data):
-    """Merge a peer's library into ours (union — add entries we don't have).
-    Lets every screen load any plan / user waypoint stored on any screen.
-    Union means a delete only sticks if done on every screen, which is the
-    safe default for shared storage."""
+    """Merge a peer's library into ours.  Saved plans merge with deletion
+    tombstones (shared/fpllib) so a deleted plan doesn't resurrect from a
+    peer that still holds it; user waypoints stay a simple union."""
     changed = False
-    plans = disp.setdefault("fpl_saved", {}).setdefault("plans", [])
-    have = {str(p.get("name", "")).upper() for p in plans}
-    for p in data.get("plans", []):
-        if not isinstance(p, dict):
-            continue
-        nm = str(p.get("name", "")).strip()
-        if nm and nm.upper() not in have and len(plans) < _FPL_SAVED_MAX:
-            plans.append({"name": nm,
-                          "waypoints": [dict(w) for w in p.get("waypoints", [])
-                                        if isinstance(w, dict)]})
-            have.add(nm.upper())
-            changed = True
+    fs = disp.setdefault("fpl_saved", {})
+    plans = fs.setdefault("plans", [])
+    deleted = fs.setdefault("deleted", {})
+    before = ([(str(p.get("name", "")).upper(), p.get("ts")) for p in plans],
+              dict(deleted))
+    merged, new_deleted = _fpllib.merge_plan_lib(
+        plans, deleted,
+        [p for p in data.get("plans", []) if isinstance(p, dict)],
+        data.get("deleted", {}) if isinstance(data.get("deleted"), dict) else {},
+        now=time.time(), max_plans=_FPL_SAVED_MAX)
+    fs["plans"] = merged
+    fs["deleted"] = new_deleted
+    if before != ([(str(p.get("name", "")).upper(), p.get("ts")) for p in merged],
+                  new_deleted):
+        changed = True
     lib = disp.setdefault("user_wpts", {}).setdefault("list", [])
     have_w = {str(w.get("ident", "")).upper() for w in lib}
     for w in data.get("user_wpts", []):
@@ -5893,27 +5898,33 @@ def _fpl_plan_save(name):
         return (False, "no waypoints to save")
     snapshot = [dict(w) for w in wps]
     plans = disp["fpl_saved"]["plans"]
+    now = time.time()
+    disp["fpl_saved"].setdefault("deleted", {}).pop(name.upper(), None)
     for p in plans:
         if str(p.get("name", "")).upper() == name.upper():
             p["name"] = name
             p["waypoints"] = snapshot
+            p["ts"] = now
             _settings.mark_dirty()
             return (True, "")
     if len(plans) >= _FPL_SAVED_MAX:
         return (False, f"saved-plan limit ({_FPL_SAVED_MAX})")
-    plans.append({"name": name, "waypoints": snapshot})
+    plans.append({"name": name, "waypoints": snapshot, "ts": now})
     _settings.mark_dirty()
     return (True, "")
 
 
 def _fpl_plan_delete(name):
-    """Remove the saved plan called `name`.  Idempotent."""
+    """Remove the saved plan called `name`.  Idempotent.  Writes a deletion
+    tombstone + pushes it so the delete sticks across the panel."""
     name = str(name).upper()
     plans = disp["fpl_saved"]["plans"]
     disp["fpl_saved"]["plans"] = [
         p for p in plans if str(p.get("name", "")).upper() != name
     ]
+    disp["fpl_saved"].setdefault("deleted", {})[name] = time.time()
     _settings.mark_dirty()
+    _ssync_publish_fpl_lib(force=True)
 
 
 def _fpl_plan_load(name):
