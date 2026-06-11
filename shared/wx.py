@@ -1056,8 +1056,15 @@ class WindsUSCache(threading.Thread):
         due_age = self.max_age_s + self._fetch_jitter   # per-device stagger
         for i, z in enumerate(self.zones):
             rec = self._data.get(i)
-            age = (now - rec["fetched"]) if rec else 1e12
-            if age < due_age:
+            has_series = rec is not None and any(c.get("series")
+                                                 for c in rec["cols"])
+            # A zone with a fresh SERIES is not due — re-pull only on the ~6 h
+            # GFS cadence.  But a zone with NO series (a pre-series disk cache
+            # from before this feature, or a peer's single-hour snapshot) IS due
+            # regardless of age: we want our own forecast series so the +Nh
+            # time offset works AND so a fresh pull reconciles screens that are
+            # each sitting on a different stale snapshot.
+            if has_series and (now - rec["fetched"]) < due_age:
                 continue
             # A peer is actively keeping THIS zone fresh for us → leave it to
             # them.  Per-zone (not a global defer), so a feeder isn't blocked
@@ -1134,8 +1141,15 @@ class WindsUSCache(threading.Thread):
             # _due_zone — a global "a peer fed me" gate here stalled the refresh
             # for peer_grace_s after adopting a single zone, leaving other zones
             # stale (the 6-min-lurch you saw).
+            # The startup grace is staggered per-device by the fetch jitter so a
+            # synchronised event — every screen booting together, or all of them
+            # finding a pre-series cache due at once after a deploy — doesn't make
+            # them all hit Open-Meteo in the same instant (429 risk).  The
+            # lowest-jitter screen pulls first and feeds the rest, which adopt and
+            # defer before their own (later) gate opens.
             if (self.enabled and now_m >= self._backoff_until
-                    and (now_m - self._started_at) >= self.startup_grace_s):
+                    and (now_m - self._started_at)
+                    >= self.startup_grace_s + self._fetch_jitter):
                 self.refresh_one()                # one zone per tick, paced
             slept = 0.0
             while slept < self.slice_s and not self._stop.is_set():

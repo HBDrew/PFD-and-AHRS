@@ -74,13 +74,25 @@ call, so the series is free; we just stopped throwing all but one hour away.
   `_zone_packet`, `ingest_packed`, `WindsUSCache(series_h=30)`); `_winds_barbs`
   + `_draw_wx_winds` + `_mfd_cycle_winds_time` in both `pi4/pfd.py` and
   `pi_zero/pfd.py`.  Tests: `shared/test_wx_winds.py` (12 cases).
+- **Self-heal on deploy.** A pre-series `conus_winds.json` (from before this
+  change) has no series but looks "fresh" (< 6 h), so the cache would never
+  re-pull and the `+Nh` offset would do nothing on *any* screen (and screens
+  each sitting on a different stale snapshot would disagree).  `_due_zone` now
+  treats a series-less zone (old disk cache OR a peer's now-snapshot) as **due**
+  regardless of age, so a deploy re-pulls to populate the series and the LAN
+  share reconciles the panel.  The startup gate is staggered by the per-device
+  fetch jitter so a synchronised "everyone's cache is due" event doesn't hit
+  Open-Meteo all at once.
 - **DEFERRED — WINDS-SERIES-PEER-OFFSET (Phase 2):** a screen that ONLY ever
   adopts a zone (never fetches it) holds just the now-snapshot, so its WND-page
-  `+Nh` selector reads *now* for that zone until it fetches.  Full `+Nh` on
-  pure-adopters needs chunked/compressed series sharing in `screen_sync`
-  (reassembly across datagrams) — not built; feeding rotates across the 3 Pis,
-  so each holds series for most zones in practice.  The inset (now) is correct
-  everywhere regardless.
+  `+Nh` selector reads *now* for that zone — only the screen that fetched the
+  series can change the forecast time.  To make `+Nh` work on the adopters, the
+  feeder must SHARE the offsets.  Measured: the full 31 h series zlib-compresses
+  to ~145 KB (too big for one 64 KB UDP datagram), BUT the 7 discrete selector
+  offsets {0,3,6,9,12,18,24 h} compress to **~37 KB — fits one datagram**.  So
+  Phase 2 = feeder packs a 7-offset bundle (zlib+b64) per zone, adopters store
+  it offset-keyed and `_winds_barbs` picks the matching offset.  No chunking
+  needed.  Not built yet.  The inset (now) is correct everywhere regardless.
 
 ### WINDS-STALE-STATUS  "6/6 loaded" was uninformative; report stale/expired
 Status: **DONE** — zones refresh in place and never drop, so a loaded-count

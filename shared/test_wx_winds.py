@@ -76,8 +76,8 @@ def test_freshest_stale_screen_still_fetches():
 
 
 def test_fetch_jitter_staggers_due_time():
-    # Per-device stagger: when several screens hold equally-stale data, the
-    # lower-jitter one becomes "due" first (it fetches + feeds the rest); the
+    # Per-device stagger: when several screens hold equally-stale SERIES data,
+    # the lower-jitter one becomes "due" first (it fetches + feeds the rest); the
     # higher-jitter one waits, so they don't all hit Open-Meteo at once.
     now = time.time()
     a, b = _cache(), _cache()
@@ -85,12 +85,31 @@ def test_fetch_jitter_staggers_due_time():
     b._fetch_jitter = 120.0
     age_s = 6 * 3600 + 60          # 6 h 1 m — between the two thresholds
     for c in (a, b):
+        col, _ = _series_col(now - age_s)
         for i in range(len(c.zones)):
-            c._data[i] = {"cols": [], "fetched": now - age_s}
+            c._data[i] = {"cols": [col], "fetched": now - age_s}
     check(a._due_zone(34.0, -112.0, now) is not None,
           "low-jitter screen is due first (becomes the feeder)")
     check(b._due_zone(34.0, -112.0, now) is None,
           "high-jitter screen waits (adopts the feeder's data instead)")
+
+
+def test_seriesless_cache_is_due():
+    # A pre-series disk cache (or a peer snapshot) has no series — it must be
+    # treated as due regardless of age, so a deploy re-pulls to populate the
+    # series (and the +Nh offset starts working / screens reconcile).
+    c = _cache()
+    now = time.time()
+    for i in range(len(c.zones)):
+        c._data[i] = {"cols": [_snap_col(25)], "fetched": now}   # fresh, NO series
+    check(c._due_zone(34.0, -112.0, now) is not None,
+          "series-less data is due even when its timestamp looks fresh")
+    # But once it has a fresh series, it's not due (re-pull on the 6 h cadence).
+    col, _ = _series_col(now)
+    for i in range(len(c.zones)):
+        c._data[i] = {"cols": [col], "fetched": now}
+    check(c._due_zone(34.0, -112.0, now) is None,
+          "a fresh series is not due")
 
 
 def test_peer_feed_is_per_zone():
