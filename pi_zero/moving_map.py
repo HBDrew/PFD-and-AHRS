@@ -878,15 +878,14 @@ def _draw_wind_barb(surf, cx, cy, from_dir, speed_kt, rot_deg, col, scale=1.0):
         pos += step
 
 
-def _winds_decimate(barbs, project, rect):
-    """Pick at most one barb per screen cell so a wide/dense cache draws a
-    clean, evenly-spread set (~12-20) at ANY zoom.  Returns [(b, sx, sy)],
-    each the barb nearest its cell centre (stable as the map pans)."""
+def _winds_decimate(barbs, project, rect, range_nm):
+    """Pick ~one barb per WORLD cell (quantised lat/lon) — NOT per screen cell —
+    so the displayed set stays put as the map pans/rotates (the old
+    screen-anchored grid reshuffled which barb filled each cell on every move).
+    Cell size scales with the zoom; also dedupes the points adjacent zone grids
+    share on their seams.  Returns [(b, sx, sy)]."""
     x, y, w, h = rect
-    cell = max(40.0, min(w, h) / 3.5)
-    ncols = max(1, int(round(w / cell)))
-    nrows = max(1, int(round(h / cell)))
-    cw, ch = w / ncols, h / nrows
+    cell_deg = max(0.15, (range_nm / 5.0) / 60.0)
     best = {}
     for b in barbs:
         la, lo = b.get("lat"), b.get("lon")
@@ -895,20 +894,19 @@ def _winds_decimate(barbs, project, rect):
         sx, sy = project(la, lo)
         if not (x - 36 <= sx <= x + w + 36 and y - 36 <= sy <= y + h + 36):
             continue
-        ci = min(ncols - 1, max(0, int((sx - x) / cw)))
-        cj = min(nrows - 1, max(0, int((sy - y) / ch)))
-        ccx, ccy = x + (ci + 0.5) * cw, y + (cj + 0.5) * ch
-        d2 = (sx - ccx) ** 2 + (sy - ccy) ** 2
+        ci, cj = round(la / cell_deg), round(lo / cell_deg)
+        d2 = (la - ci * cell_deg) ** 2 + (lo - cj * cell_deg) ** 2
         cur = best.get((ci, cj))
         if cur is None or d2 < cur[0]:
             best[(ci, cj)] = (d2, b, sx, sy)
     return [(v[1], v[2], v[3]) for v in best.values()]
 
 
-def _draw_winds_barbs(surf, barbs, project, rot_deg, rect, font, scale=1.0):
+def _draw_winds_barbs(surf, barbs, project, rot_deg, rect, font, scale=1.0,
+                      range_nm=80.0):
     """Draw winds-aloft barbs (with a temperature tag), decimated to ~one per
-    screen cell so the spread stays clean and cheap at any zoom."""
-    for b, sx, sy in _winds_decimate(barbs, project, rect):
+    world cell so the spread stays clean, cheap, and steady under pan."""
+    for b, sx, sy in _winds_decimate(barbs, project, rect, range_nm):
         if b.get("lv"):
             pygame.draw.circle(surf, _WIND_BARB, (int(sx), int(sy)), 4, 1)
             if font is not None:
@@ -1536,7 +1534,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
                      sin_r, cos_r)
     if winds_barbs and settings.get("map_show_winds", False) and not fast:
-        _draw_winds_barbs(surf, winds_barbs, _project, rot_deg, rect, font)
+        _draw_winds_barbs(surf, winds_barbs, _project, rot_deg, rect, font,
+                          range_nm=range_nm)
 
     # ── ADS-B traffic ──────────────────────────────────────────────────────
     # Drawn above map features (incl. weather) but below the range ring +
