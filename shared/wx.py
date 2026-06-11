@@ -773,12 +773,19 @@ class WindsUSCache(threading.Thread):
             idx, ts, cols = unpack_winds_zone(data)
         except Exception:                                        # noqa: BLE001
             return
-        self._last_peer_rx = time.monotonic()
         with self._lock:
             cur = self._data.get(idx)
             if cur is not None and ts <= cur.get("fetched", 0.0):
                 return                       # ours is as fresh or fresher
             self._data[idx] = {"cols": cols, "fetched": ts}
+        # Mark a peer "active" (so we stop fetching) ONLY when it actually fed
+        # us FRESHER data.  Marking on every received packet — including a
+        # stale rebroadcast we just skipped — made every screen defer to every
+        # other while all held the same stale data, so nobody ever re-pulled
+        # ("everyone waits on someone else").  Now a stale peer can't suppress
+        # our fetch, so whichever screen has internet refreshes and feeds the
+        # rest; if none can, they fail over to fetching themselves.
+        self._last_peer_rx = time.monotonic()
         self.updated_s = time.monotonic()
         self._save_disk()
         print(f"[WX:winds] adopted zone {idx} from peer ({len(cols)} cols)")
