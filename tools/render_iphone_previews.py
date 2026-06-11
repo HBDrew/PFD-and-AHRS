@@ -123,6 +123,7 @@ SCENES = [
     ("preview_steep_bank_45.png",    3, 0.35, 0),
     ("preview_descent_valley.png",   4, 0.70, 0),
     ("preview_turbulence_slip.png",  5, 0.45, 0),
+    ("preview_flight_path_vector.png", 2, 0.55, 0),  # climb-left → FPV below the nose
     ("preview_taws_caution.png",     4, 0.60, 1),   # descent scenario + amber
     ("preview_taws_pullup.png",      4, 0.80, 2),   # descent scenario + red
 ]

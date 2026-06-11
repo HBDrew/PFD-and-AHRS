@@ -80,6 +80,10 @@ SCENES = [
     ("preview_low_altitude",      10,   0, 133, 4500, 95,     0,   0),
     ("preview_high_altitude",      0,   0, 133, 12000, 115,   0,   0),
     ("preview_climb_left",       -15,   8, 100, 6500, 95,   500, -0.10),
+    # Flight-path vector — wings ~level in a climb with a right crab so the
+    # cyan FPV sits BELOW the nose (by AOA) and to the RIGHT of it (drift),
+    # which is the whole point of the marker.  The crab is set in the hook.
+    ("preview_flight_path_vector", -3,   6, 120, 7500, 105,  600, 0.03),
     # Combined SVT + airport + obstacle: approaching Sedona (KSEZ) from NE at
     # pattern altitude with a tall tower in view and rising terrain all around.
     ("preview_svt_airports_obstacles", -4, -2, 226, 5500, 85, -300, 0),
@@ -319,7 +323,19 @@ def _setup_terrain_warning():
     _force_terrain_alert(2)
 
 
+def _setup_flight_path_vector():
+    """Set a right crab so the flight-path vector offsets from the nose: track
+    12° right of the 120° heading (drift), in a climb (the tuple's +600 fpm
+    puts it below the nose by the AOA)."""
+    snap = {"track": 132.0}
+    with pfd._state_lock:
+        pfd.state.update(snap)
+    pfd.disp.update(snap)
+    pfd.disp["ds"]["fpv_enabled"] = True
+
+
 SCENE_EXTRA_SETUP = {
+    "preview_flight_path_vector": _setup_flight_path_vector,
     "preview_direct_to_ksez":     _setup_direct_to_ksez,
     "preview_synthetic_approach": _setup_synthetic_approach,
     "preview_hits_boxes":         _setup_hits_boxes,

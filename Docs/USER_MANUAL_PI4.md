@@ -1,10 +1,10 @@
-# AHRS PFD — Pi 4 Pilot's User Manual
+# AHRS PFD — Pi 4 / Pi 5 Pilot's User Manual
 
-**Software version 0.5 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP33-1500Pa) · Display: ROADOM 7" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
+**Software version 0.5 · Hardware: AHRS PCB rev A (Pico W + WT901 + NEO-6M + BME280 + SDP33-1500Pa) · Display: ROADOM 7" or 10" HDMI 1024×600 (or Waveshare 3.5" DPI 640×480)**
 
 *Full SVT version — OpenGL vector graphics with 3D terrain rendering*
 
-> This manual covers the Pi 4 version with full SVT. For the Pi Zero 2W version (no SVT), see USER_MANUAL_ZERO.md.
+> This manual covers the **full-SVT build**, which runs on both the **Raspberry Pi 4** and the **Raspberry Pi 5** (same `pi4/` software — the Pi 5's extra headroom just gives more frame-rate margin). For the Pi Zero 2W version (no SVT), see USER_MANUAL_ZERO.md. Display hardware and resolution are set by a **display profile** — see §1.
 
 ---
 
@@ -44,15 +44,15 @@
 
 ## 1. Screen Overview
 
-The Pi 4 version supports two display options:
+This build runs on a **Raspberry Pi 4 or Pi 5** (identical software; the Pi 5 just renders with more headroom) and supports three display profiles:
 
-| Display | Resolution | Interface | Size |
-|---------|-----------|-----------|------|
-| ROADOM 7" HDMI (default) | 1024×600 | HDMI + USB touch | 7" IPS, 178° viewing |
-| ROADOM 10" HDMI | 1024×600 | HDMI + USB touch | 10" IPS, 178° viewing |
-| Waveshare 3.5" DPI | 640×480 | DPI GPIO + I2C touch | 3.5" IPS, panel mount |
+| Profile (`DISPLAY_PROFILE`) | Display | Resolution | Interface | Backlight |
+|---|---|---|---|---|
+| `roadom_7` (default) | ROADOM 7" HDMI | 1024×600 | HDMI + USB touch | none (panel button) |
+| `roadom_10` | ROADOM 10" HDMI | 1024×600 | HDMI + USB touch | none (panel button) |
+| `waveshare_35` | Waveshare 3.5" DPI | 640×480 | DPI GPIO + I2C touch | PWM on GPIO 18 |
 
-All layout elements scale automatically to the display resolution. To switch displays, edit `DISPLAY_PROFILE` in `pi4/config.py`.
+All layout elements scale automatically to the resolution. Pick your panel by setting **`DISPLAY_PROFILE`** in `pi4/config.py` (or override `DISPLAY_W`/`DISPLAY_H` in `config_local.py` for a custom panel). Both ROADOM panels are 1024×600 — the 7" and 10" differ only physically — so the layout is identical; the 10" just shows it bigger. The ROADOM panels have no software backlight control (use the panel's own button); the Waveshare is dimmed by the BRIGHTNESS slider over GPIO-18 PWM (§10).
 
 The display is divided into five fixed zones (sizes shown for 1024×600 default):
 
@@ -212,6 +212,8 @@ A cyan open circle with two short horizontal wings and a vertical stub marks the
 - In an extreme attitude (or large crab) where the vector would fall outside the AI, it's **clamped to the edge as a small arrow** pointing toward the true off-screen vector, so the cue never just vanishes.
 
 Toggle it on the DISPLAY setup screen — **FLIGHT PATH** (default **ON**). It draws over the synthetic-vision background and airport symbols, under the pitch ladder.
+
+![Flight-path vector — cyan circle/wings/stub sitting below and right of the nose in a climbing crab](../pi4/previews/pfd_gl/preview_flight_path_vector.png)
 
 ### Slip/skid indicator
 
@@ -883,6 +885,8 @@ Defaults for range and orientation are set in DISPLAY setup (`MAP RANGE`, `MAP I
 
 Wind barbs and temperatures aloft can be overlaid on the moving map (both the inset and the full-screen MFD). The data is the GFS pressure-level forecast, pulled from Open-Meteo over the internet — **US-only**, no key required.
 
+![WND page — wind barbs + temperatures across the moving map, with the altitude / forecast-time buttons and the WINDS n/6 status line](../pi4/previews/pfd_gl/preview_winds.png)
+
 ### Turning it on
 
 The map carries a cycle of weather/airspace overlays selected by the **OVLY** label (lower-left corner of the map). Cycle it to **WND** to show winds. The overlay choice persists.
@@ -967,6 +971,8 @@ The map shows **one** weather/airspace overlay at a time, selected by the **OVLY
 
 ### MET page — METARs and the readout picker
 
+![MET page — flight-category station dots and a decoded METAR readout](../pi4/previews/pfd_gl/preview_metar.png)
+
 On **MET**, each reporting station is a dot coloured by flight category: **green VFR · blue MVFR · red IFR · magenta LIFR**. Tap a dot (or an airport) and choose **Weather *ICAO*** to open the readout, which has tabs for:
 
 - **METAR** — wind, visibility, ceiling, altimeter, temp/dew, and the raw line, with the observation age.
@@ -989,6 +995,8 @@ On **NEX**, radar reflectivity is painted as coloured intensity cells. Two ages 
 Nearby aircraft are shown on the map (and feed the collision alert) from ADS-B IN — either a radio receiver (1090ES + 978 UAT over GDL90/UDP, port 4000) or the built-in internet feed, blended like weather. Tap the **ADS-B** status line to cycle the traffic source **AUTO / RADIO / INET** (`R`/`I` counts split the two).
 
 ### Reading a target
+
+![Traffic — diamonds with leader lines and relative-altitude tags, colour-coded by threat](../pi4/previews/pfd_gl/preview_traffic.png)
 
 Each target is a **diamond** with a short **leader line** in its direction of travel and a **data tag** showing relative altitude in hundreds of feet (`+05` above, `−12` below) plus `↑`/`↓` when climbing/descending faster than 200 fpm. Colour is the threat tier:
 
@@ -1020,6 +1028,8 @@ When a new target enters the alert envelope, a red **TRAFFIC** banner flashes at
 ## 16H. Full-Screen MFD
 
 The map overlays above (weather, traffic, winds, airspace) also live on a **full-screen multi-function display**. The lower-left **moving-map inset** (§16D) is always available on the PFD; the full-screen MFD trades the PFD instruments for a large map when you want the whole picture.
+
+![Full-screen MFD — large moving map with D2/FPL/OVLY chrome and the bottom data strip](../pi4/previews/pfd_gl/preview_mfd.png)
 
 ### Switching PFD ↔ MFD
 

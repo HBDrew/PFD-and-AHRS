@@ -123,6 +123,8 @@ A cyan open circle with two wings and a vertical stub shows the **flight-path ve
 
 Toggle it from the setup menu — **✈ FLIGHT PATH** (a check mark shows when it's on; default ON). It works on either data source: the Pico W AHRS feed or the phone's own GPS in standalone mode.
 
+![Flight-path vector on the iPhone AI](../iphone_display/previews/preview_flight_path_vector.png)
+
 ### Pitch ladder
 
 Short white bars at ±10°, ±20°, ±30°, scale matches the horizon projection so pitch bars, horizon, and zero-pitch line all line up at any attitude.

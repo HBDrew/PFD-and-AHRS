@@ -10,6 +10,49 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### TFC-RA-SENSITIVITY  Traffic collision alert (RA) fires too eagerly
+Status: **OPEN — small tuning change**
+Pilot report: the traffic "RA" (the `Traffic, Traffic` callout + flashing
+TRAFFIC banner) feels too sensitive — it triggers on traffic that isn't
+really a threat.  Today it's a pure static envelope: fires when a target
+is within **ADSB_ALERT_NM = 3.0** *and* **ADSB_ALERT_FT = 600**
+(`shared/config_base.py`), classified in `shared/adsb.py threat_level()`,
+edge-triggered in `pi4/pfd.py _update_traffic` (~line 1807).  Real TCAS/TAS
+RAs are **closure/time-based** (tau — time to closest approach), not a flat
+ring, which is why a flat 3 NM/600 ft ring nuisance-trips on parallel or
+diverging traffic.
+**Decision (pilot): do it properly — intercept/closure-based, not a
+distance ring.**  Real TAS/TCAS uses **tau** = time to closest point of
+approach: alert only when the target is actually *converging* and will be
+close *soon*.  Plan:
+  - Track each target's **range rate** (closure) frame-to-frame (Δrange /
+    Δt), and ideally vertical closure (Δrel_alt / Δt).
+  - **Alert when `tau = range / closure_rate` is below a threshold**
+    (~25–35 s is typical TAS) **AND** the projected miss distance / vertical
+    separation is inside a small protected volume — i.e. it's both closing
+    and going to be close.  Diverging or co-altitude-but-parallel traffic
+    never trips it.
+  - Keep a hard **floor** ring (e.g. anything inside ~1 NM/400 ft regardless
+    of closure) as a backstop, and keep the **proximate** (amber) tier as the
+    current static 6 NM/1200 ft advisory.
+  - Smooth the range-rate (a frame or two of EMA) so GPS/ADS-B jitter
+    doesn't produce phantom closure.
+Touches `shared/adsb.py` (add range-rate to the relativised target +
+a tau-based `threat_level`) and `pi4/pfd.py _update_traffic` (per-target
+previous-range memory).  `shared/config_base.py` gains `ADSB_TAU_S` etc.
+
+### SETUP-SCROLL-SHORT  Display setup page scroll stops before the bottom
+Status: **OPEN**
+The DISPLAY setup screen scrolls but **stops short of the last row(s)** —
+the bottom of the page can't be reached, so the final settings are
+clipped off-screen.  Likely the scroll clamp uses the wrong content
+height (doesn't account for the full row count after the new FLIGHT PATH
+/ winds / traffic rows were added, or an off-by-one on the max-scroll
+calc).  Target: the display-setup scroll/clamp logic in `pi4/pfd.py`
+(and `pi_zero/pfd.py` if it shares it) — find where max-scroll =
+content_height − viewport_height and confirm content_height counts every
+row (incl. the MAP LAYERS sub-rows) plus bottom padding.
+
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
 Today PFD picks the AHRS transport once at startup (USB if
