@@ -21,6 +21,7 @@ import calendar
 import json
 import math
 import os
+import random
 import threading
 import time
 import urllib.request
@@ -694,7 +695,8 @@ class WindsUSCache(threading.Thread):
     def __init__(self, bbox, rows, cols, spacing_nm, disk_path, locate_fn,
                  hour_offset_fn=None, model="gfs025", max_alt_ft=18000,
                  max_age_s=6 * 3600, slice_s=20.0, publish_fn=None,
-                 peer_grace_s=360.0, startup_grace_s=45.0):
+                 peer_grace_s=360.0, startup_grace_s=45.0,
+                 fetch_jitter_s=180.0):
         super().__init__(daemon=True, name="WindsUSCache")
         self.zones = conus_zones(bbox, rows, cols)
         self.spacing_nm = spacing_nm
@@ -725,6 +727,13 @@ class WindsUSCache(threading.Thread):
         self._fail_streak = 0
         self._last_peer_rx = 0.0        # monotonic of last adopted peer zone
         self._started_at = time.monotonic()
+        # Per-device fetch stagger: each screen treats a zone as "due" a
+        # different random amount past max_age_s, so when several screens hold
+        # equally-stale data they don't all hit Open-Meteo at the same instant
+        # (which would risk the per-IP 429 lockout the LAN-share exists to
+        # avoid).  The lowest-jitter screen fetches first and feeds the rest,
+        # which then adopt + defer before their own (later) threshold.
+        self._fetch_jitter = random.uniform(0.0, max(0.0, fetch_jitter_s))
         self._bcast_idx = 0             # round-robin broadcast cursor
         self._load_disk()
 
@@ -811,10 +820,11 @@ class WindsUSCache(threading.Thread):
         """Index of the most-due zone — the aircraft's own zone first, then the
         nearest other stale zone — or None when every zone is fresh."""
         cand = []
+        due_age = self.max_age_s + self._fetch_jitter   # per-device stagger
         for i, z in enumerate(self.zones):
             rec = self._data.get(i)
             age = (now - rec["fetched"]) if rec else 1e12
-            if age < self.max_age_s:
+            if age < due_age:
                 continue
             inside = (z[0] <= lat <= z[1] and z[2] <= lon <= z[3])
             cy, cx = (z[0] + z[1]) / 2.0, (z[2] + z[3]) / 2.0
