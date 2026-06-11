@@ -120,7 +120,9 @@ WINDS_MAX_ALT_FT      = 18000      # cap — fewer pressure levels = a much chea
 WINDS_MIN_RENDER_NM   = 40         # draw barbs at 40/80/160 nm; hide below (coarse grid → empty)
 WINDS_ZOOMS_NM        = [40, 80, 160]  # the WND page keeps its OWN zoom, limited to these
 WINDS_GFS_MODEL       = "gfs025"   # pressure levels require an explicit GFS model
-WINDS_DISK_MAX_AGE_S  = 3600       # a zone is "stale" after 1 h — only then re-pull
+WINDS_DISK_MAX_AGE_S  = 3 * 3600   # a zone is "stale" after 3 h — GFS only reissues
+                                   # every ~6 h, so this is plenty fresh and cuts
+                                   # the per-IP call volume (esp. with >1 display).
                                    # (when connected); within the hour we read disk.
 WINDS_ROUTE_WIDTH_NM  = 25         # (legacy) winds corridor half-width — unused by the national grid
 NOTAM_INTERVAL_S = 600    # NOTAM refresh cadence (FAA API; only polled with a key)
