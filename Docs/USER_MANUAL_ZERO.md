@@ -26,6 +26,9 @@
 14. [Terrain Data Download](#14-terrain-data-download)
 15. [Obstacle Data Download](#15-obstacle-data-download)
 16. [Airport Data Download](#16-airport-data-download)
+16A. [Full-Screen MFD](#16a-full-screen-mfd)
+16B. [Weather](#16b-weather)
+16C. [Traffic (ADS-B / FIS-B IN)](#16c-traffic-ads-b--fis-b-in)
 17. [Demo Mode](#17-demo-mode)
 18. [Flight Simulator](#18-flight-simulator)
 19. [AHRS PCB and Air-Data Hardware](#19-ahrs-pcb-and-air-data-hardware)
@@ -416,6 +419,9 @@ Default `http://192.168.4.1`. Tap to edit — the keyboard lets you enter URLs d
 ### WiFi SSID / PASSWORD
 Tap either box to edit. Tap **APPLY WIFI** to write the config and switch networks. The Wi-Fi password is intentionally **not** persisted in `settings.json` — it must be re-entered when joining a new network.
 
+### NOTAM CLIENT ID / SECRET
+Optional. Paste a free FAA NOTAM API key (**client_id** / **client_secret**, from **api.faa.gov**) to enable NOTAMs in the MET readout picker (§16B). The secret is masked; the poller reads them live (no reboot). Blank = NOTAMs off, rest of weather unaffected.
+
 ### STATUS row
 Two coloured badges:
 
@@ -577,6 +583,38 @@ Community-maintained, updated frequently. Local expiry: 60 days — then the `EX
 ### WiFi requirement
 
 The Pi Zero must be on an internet-reachable network to download. Switch to home Wi-Fi via Connectivity, download here, then switch back to Pico W AP for flight.
+
+---
+
+## 16A. Full-Screen MFD
+
+The Pi Zero has a full-screen moving-map MFD in addition to the PFD.
+
+- **Swap PFD ↔ MFD:** a **3-finger hold (~2 s)** (the 2-finger 0.8 s hold opens the setup menu — §8). The swap is gated by **ENABLE MFD** (§13); the unit boots to the PFD.
+- **Chrome:** **D→** (direct-to) top-left, **FPL** top-right, the **TRK↑/N↑** orientation label, **OVLY** overlay cycle, the **RNG** label, **−/+** zoom buttons, and a **CTR** recenter button that appears when the map is panned. Drag the map to pan; tap **CTR** (or the own-ship chevron) to recenter.
+- **Data strip:** a bottom row of **8 readout slots** (GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA by default); tap a slot to reassign it. Persists in `data/settings.json`.
+
+The map's **MAP LAYERS** (§10) and the **winds (WND)** overlay (§10) render here, plus the weather and traffic overlays below.
+
+## 16B. Weather
+
+The Pi Zero shows the same internet + FIS-B weather as the Pi 4 — METARs, TAFs, AIRMETs/SIGMETs, NEXRAD, NOTAMs, and winds aloft. **See Pi 4 manual §16F for the full description**; the Pi Zero behaves the same. In brief:
+
+- **Source toggle** — tap the **WX** status line to cycle **RADIO / AUTO / INET** (a parallel **ADS-B** line does the same for traffic). Status reads e.g. `WX AUTO R3 I12 2m` (mode · radio count · internet count · age; green = receiving, amber = none yet). Readouts are tagged `FIS-B` / `INET` with a data-age.
+- **OVLY cycle** — tap the **OVLY** label to step the single active overlay: **ASP → TFC → MET → WND → NEX**.
+- **MET page** — station dots coloured by category (**green VFR · blue MVFR · red IFR · magenta LIFR**); tap a dot for the **METAR / TAF / AIRMET / SIGMET / NOTAM** readout picker (nearest-first, scrollable, ON-ROUTE flags). Graphical AIRMET/SIGMET areas are tappable.
+- **NEX page** — NEXRAD reflectivity with receipt-age and **valid**-age badges (green < 10 min, amber < 20, red beyond).
+- **Winds (WND)** — see §10.
+
+NOTAMs need the free FAA key entered in Connectivity (§12).
+
+## 16C. Traffic (ADS-B / FIS-B IN)
+
+Nearby aircraft from ADS-B IN (radio GDL90/UDP or the built-in internet feed; tap the **ADS-B** status line to cycle the source). Behaviour matches Pi 4 §16G:
+
+- **Diamonds** with a heading leader and a relative-altitude tag; colour by threat — **red alert** (≤ 3 NM and ≤ 600 ft), **amber proximate** (≤ 6 NM and ≤ 1200 ft), **cyan** advisory.
+- On non-traffic pages traffic is clamped to nearby; the **TFC** page shows everything. **Alert-class is never hidden.** Tap a target for the detail card; declutter with **TFC ALT** / **TFC RANGE** (§10).
+- **Collision alert:** a flashing red **TRAFFIC** banner when a new target enters the alert envelope. **The Pi Zero is visual-only — there is no "Traffic, Traffic" voice callout** (no audio stack); the banner is the alert.
 
 ---
 
