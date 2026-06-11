@@ -1018,10 +1018,14 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     surf.set_clip(rect)
 
     # Weather overlay active → drop terrain tint + obstacle/tower symbols
-    # (declutters the weather picture and skips the costly tint build).
+    # (declutters the weather picture and skips the costly tint build).  The
+    # winds page counts too: its barbs read better over a plain background,
+    # and dropping the tint avoids the wide-zoom SRTM-tile storm (the 80 nm
+    # tint build can OOM/lock a Pi 4 — see the _TINT_RENDER_MAX_NM note below).
     wx_active = ((metars and settings.get("map_show_metar", False))
                  or (nexrad is not None
-                     and settings.get("map_show_nexrad", False)))
+                     and settings.get("map_show_nexrad", False))
+                 or (winds_barbs and settings.get("map_show_winds", False)))
 
     # ── Hypsometric terrain tint ─────────────────────────────────────────────
     # Water sampling is gated on the same map_show_water toggle the user

@@ -1874,12 +1874,9 @@ def _winds_fetch(lat, lon, range_nm):
     as the aircraft flies it; otherwise fall back to a grid filling the visible
     map around the ownship."""
     hour_offset = int(disp["ds"].get("winds_time_offset_h", 0))
-    route = _winds_route_points()
-    if route:
-        return _wx.fetch_winds_route(
-            route, width_nm=WINDS_ROUTE_WIDTH_NM, hour_offset=hour_offset)
-    return _wx.fetch_winds_grid(
+    return _wx.fetch_winds(
         lat, lon, range_nm, aspect=DISPLAY_W / max(1, DISPLAY_H),
+        route=_winds_route_points(), route_width_nm=WINDS_ROUTE_WIDTH_NM,
         hour_offset=hour_offset)
 
 
@@ -10316,16 +10313,16 @@ def draw_fpv_marker(surf, ai_rect, hdg_deg, pitch_deg, roll_deg,
     sy = cy + sxr * sin_r + syr * cos_r
 
     FPV_COL = (120, 220, 255)    # cyan — pilot-relevant, matches the bug set
-    margin  = 14
+    margin  = 26
 
     if (ax + margin <= sx <= ax + aw - margin
             and ay_r + margin <= sy <= ay_r + ah - margin):
         ix, iy = int(sx), int(sy)
         # Open circle + two horizontal wings + a short vertical stub.
-        pygame.draw.circle(surf, FPV_COL, (ix, iy), 6, 2)
-        pygame.draw.line(surf, FPV_COL, (ix - 12, iy), (ix - 6, iy), 2)
-        pygame.draw.line(surf, FPV_COL, (ix + 6, iy), (ix + 12, iy), 2)
-        pygame.draw.line(surf, FPV_COL, (ix, iy - 12), (ix, iy - 6), 2)
+        pygame.draw.circle(surf, FPV_COL, (ix, iy), 12, 3)
+        pygame.draw.line(surf, FPV_COL, (ix - 24, iy), (ix - 12, iy), 3)
+        pygame.draw.line(surf, FPV_COL, (ix + 12, iy), (ix + 24, iy), 3)
+        pygame.draw.line(surf, FPV_COL, (ix, iy - 24), (ix, iy - 12), 3)
     else:
         # Clamp to the AI edge, draw a small arrow pointing at the true,
         # off-screen velocity vector.
@@ -10336,13 +10333,13 @@ def draw_fpv_marker(surf, ai_rect, hdg_deg, pitch_deg, roll_deg,
             return
         ang = math.atan2(dy, dx)
         ca, sa = math.cos(ang), math.sin(ang)
-        tip  = (gx + 11 * ca,        gy + 11 * sa)
-        bl   = (gx - 5 * ca - 6 * sa, gy - 5 * sa + 6 * ca)
-        br   = (gx - 5 * ca + 6 * sa, gy - 5 * sa - 6 * ca)
+        tip  = (gx + 18 * ca,          gy + 18 * sa)
+        bl   = (gx - 8 * ca - 10 * sa, gy - 8 * sa + 10 * ca)
+        br   = (gx - 8 * ca + 10 * sa, gy - 8 * sa - 10 * ca)
         pygame.draw.polygon(surf, FPV_COL,
                             [(int(tip[0]), int(tip[1])),
                              (int(bl[0]),  int(bl[1])),
-                             (int(br[0]),  int(br[1]))], 1)
+                             (int(br[0]),  int(br[1]))], 2)
 
 
 # ── Direct-to navigation ─────────────────────────────────────────────────────

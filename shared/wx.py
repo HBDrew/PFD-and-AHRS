@@ -481,6 +481,39 @@ def fetch_winds_route(route, width_nm=25.0, alts=None, hour_offset=0,
     return _fetch_om_winds(pts, alts, hour_offset, timeout)
 
 
+def fetch_winds(lat, lon, range_nm, aspect=1.7, route=None,
+                route_width_nm=25.0, alts=None, hour_offset=0,
+                timeout=15, max_points=96):
+    """Winds/temps aloft for the visible map area, PLUS a corridor along an
+    active route when one is given — in a single batched request.
+
+    The visible-area grid always populates the page (so the winds picture
+    fills the screen at any zoom); the optional route corridor adds density
+    along the active D2/FPL course so the barbs cover the whole leg, not just
+    a patch around the aircraft.  Points are deduped on a coarse snap and the
+    combined set is capped at ``max_points`` (grid first so the page is always
+    populated, then as much of the corridor as fits) to keep the request and
+    the barb render bounded."""
+    from fisb import WINDS_ALTS
+    alts = alts if alts is not None else WINDS_ALTS
+    pts = list(_winds_grid_points(lat, lon, range_nm, aspect))
+    if route and len(route) >= 2:
+        pts += _route_winds_points(route, width_nm=route_width_nm,
+                                   max_points=max_points)
+    seen, uniq = set(), []
+    for p in pts:
+        k = (round(p[0], 1), round(p[1], 1))        # ~6 nm snap
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(p)
+        if len(uniq) >= max_points:
+            break
+    if not uniq:
+        return []
+    return _fetch_om_winds(uniq, alts, hour_offset, timeout)
+
+
 def _fetch_om_winds(pts, alts, hour_offset, timeout):
     """Issue one batched Open-Meteo pressure-level request for ``pts``
     (``[(lat, lon), ...]``) and parse the response onto ``alts``."""

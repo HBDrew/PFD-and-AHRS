@@ -1072,9 +1072,12 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # terrain tint + obstacle/tower symbols: they clutter the weather picture
     # and the tint build is the most expensive thing the inset does, so this
     # is also a real CPU saving while weather is up.
+    # Winds page drops the tint too — barbs read better on a plain
+    # background and it avoids the wide-zoom SRTM-tile storm.
     wx_active = ((metars and settings.get("map_show_metar", False))
                  or (nexrad is not None
-                     and settings.get("map_show_nexrad", False)))
+                     and settings.get("map_show_nexrad", False))
+                 or (winds_barbs and settings.get("map_show_winds", False)))
 
     # ── Hypsometric terrain tint ─────────────────────────────────────────────
     # Water sampling is gated on the same map_show_water toggle the user

@@ -655,6 +655,16 @@ spread; settle gate passes flight motion and rejects finger-drags;
 `test_wx.py` + `test_fisb.py` still pass. Remaining nicety (not blocking):
 `force_refresh()` on a D2/FPL change so the corridor switches instantly
 rather than on the next move/periodic tick.
+Field-test follow-ups (same session): (a) the corridor must *augment*,
+not replace, the visible-area grid — a D2 to a near waypoint shrank the
+winds page to ~3 clustered barbs. `fetch_winds()` now always builds the
+full visible grid and adds the route corridor on top (dedup + cap 96),
+so the page fills at any zoom. (b) The WND page now drops the
+hypsometric terrain tint like the METAR/NEXRAD pages (`wx_active` in
+`moving_map.py`) — on pi4 the 80 nm tint build pulls a huge SRTM-tile
+set that could OOM/lock the display; with the winds poller now active
+(no longer frozen) the contention tipped it over. pi_zero already caps
+the tint below 80 nm so this is parity-only there.
 Original diagnosis below for reference.
 Status (orig): **OPEN — diagnosed, fix not yet applied**
 Target: `shared/wx.py` (`WxClient.run` / `AwcPoller.run` settle gate),

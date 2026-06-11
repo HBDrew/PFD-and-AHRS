@@ -6075,12 +6075,9 @@ def _winds_fetch(lat, lon, range_nm):
     (±``WINDS_ROUTE_WIDTH_NM`` either side) so barbs cover the whole route as
     it's flown; otherwise an aspect-aware grid filling the visible map."""
     hour_offset = int(disp["ds"].get("winds_time_offset_h", 0))
-    route = _winds_route_points()
-    if route:
-        return _wx.fetch_winds_route(
-            route, width_nm=WINDS_ROUTE_WIDTH_NM, hour_offset=hour_offset)
-    return _wx.fetch_winds_grid(
+    return _wx.fetch_winds(
         lat, lon, range_nm, aspect=DISPLAY_W / max(1, DISPLAY_H),
+        route=_winds_route_points(), route_width_nm=WINDS_ROUTE_WIDTH_NM,
         hour_offset=hour_offset)
 
 

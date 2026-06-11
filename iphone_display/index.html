@@ -2375,18 +2375,18 @@ function drawFPV() {
   let sx = cx + fx * cr - fy * sr;
   let sy = tapeMidY + fx * sr + fy * cr;
 
-  const left = L.spdX + L.spdW + 14, right = L.altX - 14;
-  const top  = L.tapeTopY + 14,      bot   = L.tapeBotY - 14;
+  const left = L.spdX + L.spdW + 26, right = L.altX - 26;
+  const top  = L.tapeTopY + 26,      bot   = L.tapeBotY - 26;
   const COL  = '#78dcff';                            // cyan, matches pi4
 
   ctx.save();
-  ctx.strokeStyle = COL; ctx.fillStyle = COL; ctx.lineWidth = 2;
+  ctx.strokeStyle = COL; ctx.fillStyle = COL; ctx.lineWidth = 3;
   if (sx >= left && sx <= right && sy >= top && sy <= bot) {
-    ctx.beginPath(); ctx.arc(sx, sy, 6, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(sx, sy, 12, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(sx - 12, sy); ctx.lineTo(sx - 6, sy);     // left wing
-    ctx.moveTo(sx + 6, sy);  ctx.lineTo(sx + 12, sy);    // right wing
-    ctx.moveTo(sx, sy - 12); ctx.lineTo(sx, sy - 6);     // vertical stub
+    ctx.moveTo(sx - 24, sy); ctx.lineTo(sx - 12, sy);    // left wing
+    ctx.moveTo(sx + 12, sy); ctx.lineTo(sx + 24, sy);    // right wing
+    ctx.moveTo(sx, sy - 24); ctx.lineTo(sx, sy - 12);    // vertical stub
     ctx.stroke();
   } else {
     // Clamp to the AI edge, point a small arrow at the off-screen vector.
@@ -2395,9 +2395,9 @@ function drawFPV() {
     const ang = Math.atan2(sy - gy, sx - gx);
     const ca = Math.cos(ang), sa = Math.sin(ang);
     ctx.beginPath();
-    ctx.moveTo(gx + 11 * ca, gy + 11 * sa);
-    ctx.lineTo(gx - 5 * ca - 6 * sa, gy - 5 * sa + 6 * ca);
-    ctx.lineTo(gx - 5 * ca + 6 * sa, gy - 5 * sa - 6 * ca);
+    ctx.moveTo(gx + 18 * ca, gy + 18 * sa);
+    ctx.lineTo(gx - 8 * ca - 10 * sa, gy - 8 * sa + 10 * ca);
+    ctx.lineTo(gx - 8 * ca + 10 * sa, gy - 8 * sa - 10 * ca);
     ctx.closePath(); ctx.stroke();
   }
   ctx.restore();
