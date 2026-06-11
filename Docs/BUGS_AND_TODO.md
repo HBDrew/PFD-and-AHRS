@@ -88,23 +88,45 @@ be render-verified here (no GL), so each tab should be checked on hardware
 `pi4/pfd.py` and `pi_zero/pfd.py`.
 
 ### INSET-ORIENT-STUCK  Moving-map inset stuck north-up — TRK↑ toggle dead
+Status: **FIXED**
+The inset forced north-up whenever `_eff_range > 40`
+(`_eff_orient = "nrth" if _eff_range > 40 else _orient_pref`), which
+swallowed the pilot's TRK↑ choice on the WND page (winds zoom ≥40) and at
+wide manual zooms — the toggle and the setup pill both flipped `map_orient`
+but the render ignored it.  The reasons for the force (rotated-tint smear,
+per-heading rebuild) are gone now that tint registration is fixed and the
+cache key excludes rotation, so the inset honours the pilot's choice at
+every manual range; only AUTO stays north-up so the destination doesn't
+spin under the chevron.  (pi_zero already honoured `map_orient` directly.)
+
+### TINT-SHIMMER-PAN  Terrain tint shading shifts a bit on a pan + density bump
 Status: **OPEN**
-The PFD moving-map inset won't go track-up: tapping the **TRK↑ / N↑**
-label on the inset does nothing, and the **MAP INSET** orientation pill
-on the DISPLAY setup screen doesn't change it either — it stays N-up.
-Two suspects: (a) the inset **force-north-up-at-wide-zoom** rule
-(`_eff_orient = "nrth" if _eff_range > 40 else _orient_pref` in
-`pi4/pfd.py`) is firing when it shouldn't — e.g. on the WND page the
-inset uses the winds zoom (≥ 40 NM) so it's *always* past the 40 NM
-force threshold → always N-up; (b) the orient tap-hit-test / the
-`map_orient` write isn't actually toggling the setting (or the inset
-read ignores it).  Fix: confirm `map_orient` flips on both the inset
-label tap and the setup pill, and that the force-N-up threshold isn't
-swallowing the pilot's choice at the inset's normal zooms; consider
-raising/removing the force-N-up cap for the inset, or only forcing it
-when the *terrain tint* is on (the original reason was the rotated-tint
-smear).  Target: inset render + orient hit-test in `pi4/pfd.py`
-(and `pi_zero/pfd.py` if shared).
+After the tint registration fix (scale + projected-quantised-centre blit),
+the tint sits in the right place and no longer jumps several NM, but the
+hypsometric *shading* still "pops" a little at each cell crossing while
+panning.  Cause: the 48×48 sample grid (`_TINT_N`) is anchored to the
+aircraft's quantised centre, so each rebuild re-anchors the grid and the
+coarse shading re-samples onto shifted points (a peak sampled or not, a
+water edge moved by a sample).  Position is correct; it's the *sampling
+lattice* shifting per rebuild.
+Fix: **world-anchor the sample lattice** — snap the grid's top-left to a
+fixed multiple of the sample spacing (`dlat = span_lat/(n-1)`,
+`dlon = span_lon/(n-1)`) in `_build_tint_pixels` so the SAME absolute
+lat/lon points are sampled regardless of pan; consecutive (quantised)
+builds then sample identical points where the windows overlap, so panning
+slides a stable field with no pop.  The anchored grid centre differs from
+the quantised centre by up to half a sample, so thread the true centre
+(`a_lat, a_lon`) back through `_build_tint` / `_tint_async_worker` /
+`_tint_get` (cache value becomes `(surface, elev, a_lat, a_lon)`) and blit
+at `_project(a_lat, a_lon)` so registration stays exact.  Lat lattice is
+fully world-stable; lon spacing depends on `cos(lat)` so it's world-stable
+to within a hair over a few cells — fine.
+Density: also bump `_TINT_N` 48 → **64** on the Pi 5 (pilot's call) for
+crisper mountains/coastlines — the extra samples are cheap reads from
+already-loaded tiles, just more smoothscale per build.  Gate it by platform
+(keep 48 on the 2 GB Pi 4 unless confirmed it doesn't tax it; Pi 5 fine).
+Apply to both `pi4/moving_map.py` and `pi_zero/moving_map.py`.  Verify on
+the Pi 5 (a slow pan should show terrain sliding smoothly, no shading pop).
 
 ### WINDS-INSET-ALT-SELECT  No winds-altitude selector on the inset
 Status: **OPEN**
