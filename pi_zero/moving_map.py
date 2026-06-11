@@ -821,6 +821,22 @@ def _draw_ground_stations(surf, stations, project, font, rect):
 _WIND_BARB = (180, 220, 245)
 
 
+# Cached text glyphs for the winds layer — font.render() per barb per frame
+# was the dominant inset/MFD cost; distinct temp strings are few, so cache them.
+_wx_glyph_cache = {}
+
+
+def _wx_glyph(font, text, color):
+    key = (id(font), text, color)
+    g = _wx_glyph_cache.get(key)
+    if g is None:
+        if len(_wx_glyph_cache) > 512:
+            _wx_glyph_cache.clear()
+        g = font.render(text, True, color)
+        _wx_glyph_cache[key] = g
+    return g
+
+
 def _draw_wind_barb(surf, cx, cy, from_dir, speed_kt, rot_deg, col, scale=1.0):
     """Standard wind barb: shaft toward the source, 50/10/5 kt marks."""
     a = math.radians((from_dir - rot_deg) % 360.0)
@@ -862,9 +878,16 @@ def _draw_wind_barb(surf, cx, cy, from_dir, speed_kt, rot_deg, col, scale=1.0):
         pos += step
 
 
-def _draw_winds_barbs(surf, barbs, project, rot_deg, rect, font, scale=1.0):
-    """Draw winds-aloft barbs (with a temperature tag) at each station."""
+def _winds_decimate(barbs, project, rect):
+    """Pick at most one barb per screen cell so a wide/dense cache draws a
+    clean, evenly-spread set (~12-20) at ANY zoom.  Returns [(b, sx, sy)],
+    each the barb nearest its cell centre (stable as the map pans)."""
     x, y, w, h = rect
+    cell = max(40.0, min(w, h) / 3.5)
+    ncols = max(1, int(round(w / cell)))
+    nrows = max(1, int(round(h / cell)))
+    cw, ch = w / ncols, h / nrows
+    best = {}
     for b in barbs:
         la, lo = b.get("lat"), b.get("lon")
         if la is None or lo is None:
@@ -872,16 +895,30 @@ def _draw_winds_barbs(surf, barbs, project, rot_deg, rect, font, scale=1.0):
         sx, sy = project(la, lo)
         if not (x - 36 <= sx <= x + w + 36 and y - 36 <= sy <= y + h + 36):
             continue
+        ci = min(ncols - 1, max(0, int((sx - x) / cw)))
+        cj = min(nrows - 1, max(0, int((sy - y) / ch)))
+        ccx, ccy = x + (ci + 0.5) * cw, y + (cj + 0.5) * ch
+        d2 = (sx - ccx) ** 2 + (sy - ccy) ** 2
+        cur = best.get((ci, cj))
+        if cur is None or d2 < cur[0]:
+            best[(ci, cj)] = (d2, b, sx, sy)
+    return [(v[1], v[2], v[3]) for v in best.values()]
+
+
+def _draw_winds_barbs(surf, barbs, project, rot_deg, rect, font, scale=1.0):
+    """Draw winds-aloft barbs (with a temperature tag), decimated to ~one per
+    screen cell so the spread stays clean and cheap at any zoom."""
+    for b, sx, sy in _winds_decimate(barbs, project, rect):
         if b.get("lv"):
             pygame.draw.circle(surf, _WIND_BARB, (int(sx), int(sy)), 4, 1)
             if font is not None:
-                surf.blit(font.render("LV", True, _WIND_BARB),
+                surf.blit(_wx_glyph(font, "LV", _WIND_BARB),
                           (int(sx) + 6, int(sy) - 7))
         else:
             _draw_wind_barb(surf, sx, sy, b.get("dir", 0), b.get("spd", 0),
                             rot_deg, _WIND_BARB, scale)
         if font is not None and b.get("temp") is not None:
-            surf.blit(font.render(f"{b['temp']:+d}°", True, (200, 210, 225)),
+            surf.blit(_wx_glyph(font, f"{b['temp']:+d}°", (200, 210, 225)),
                       (int(sx) + 6, int(sy) + 5))
 
 

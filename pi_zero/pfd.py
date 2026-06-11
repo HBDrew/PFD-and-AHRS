@@ -6035,11 +6035,11 @@ def _wx_view():
 
 
 def _winds_view():
-    """(center, range_nm) for the winds grid — the actual map range (not the
-    inflated query radius) so the barb grid fills the visible screen."""
+    """(center, range_nm) the winds poller follows.  Range is the FIXED wide
+    cache half-extent (not the zoom): fetch one big area, cull to the view on
+    draw, so zoom + small pans need no refetch."""
     clat, clon = _mfd_effective_center()
-    rng = int(disp["ds"].get("map_zoom_nm", 10)) or 10
-    return float(clat), float(clon), float(rng)
+    return float(clat), float(clon), float(WINDS_CACHE_RANGE_NM)
 
 
 def _winds_route_points():
@@ -6071,12 +6071,12 @@ def _winds_route_points():
 
 
 def _winds_fetch(lat, lon, range_nm):
-    """Poller shim: a winds corridor spanning an active D2/FPL course
-    (±``WINDS_ROUTE_WIDTH_NM`` either side) so barbs cover the whole route as
-    it's flown; otherwise an aspect-aware grid filling the visible map."""
+    """Poller shim: one WIDE winds grid (fixed ``WINDS_GRID_SPACING_NM`` barb
+    spacing) the renderer culls to the view, plus a corridor along an active
+    D2/FPL course beyond the cached area."""
     hour_offset = int(disp["ds"].get("winds_time_offset_h", 0))
     return _wx.fetch_winds(
-        lat, lon, range_nm, aspect=DISPLAY_W / max(1, DISPLAY_H),
+        lat, lon, range_nm, aspect=1.0, spacing_nm=WINDS_GRID_SPACING_NM,
         route=_winds_route_points(), route_width_nm=WINDS_ROUTE_WIDTH_NM,
         hour_offset=hour_offset)
 
@@ -13401,6 +13401,7 @@ def main():
         _winds_client = _wx.AwcPoller(view_fn=_winds_view,
                                       fetch_fn=_winds_fetch,
                                       interval_s=WINDS_INET_INTERVAL_S,
+                                      move_refetch_frac=0.5,
                                       name="WindsPoller")
         _winds_client.start()
         print("[PFD] TAF + AIRMET/SIGMET + winds pollers started (internet)")

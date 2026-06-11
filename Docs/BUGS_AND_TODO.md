@@ -665,6 +665,31 @@ hypsometric terrain tint like the METAR/NEXRAD pages (`wx_active` in
 set that could OOM/lock the display; with the winds poller now active
 (no longer frozen) the contention tipped it over. pi_zero already caps
 the tint below 80 nm so this is parity-only there.
+Performance redesign (field-test round 2): the fetch-per-view model
+hammered Open-Meteo (stalls of seconds–minutes on every pan/zoom) and
+the draw re-rendered a `font.render()` temp tag per barb per frame
+(~0.5–1 ms each — the real "barb draws are slow" cause). Reworked around
+"cache wide, draw the subset":
+  - **Wide cached grid.** `_winds_view` now returns a FIXED wide range
+    (`WINDS_CACHE_RANGE_NM` = 110) instead of the zoom, with a constant
+    `WINDS_GRID_SPACING_NM` (20 nm) barb spacing; `fetch_winds` builds
+    that square grid (+ corridor beyond the cache for long routes). The
+    poller only re-pulls on a big centre drift (½ the cache) or the
+    periodic timer — so zoom and small pans need NO network.
+  - **Decimate on draw.** `_winds_decimate` keeps at most one barb per
+    screen cell (~one per `min(w,h)/3.5`), so any zoom shows a clean
+    ~12–20 evenly-spread set — fixes the inset's wide-zoom pile-up and
+    the short-D2 centre stack, and slashes draw cost.
+  - **Glyph cache.** `_wx_glyph` memoises rendered temp/LV text, turning
+    the per-frame `font.render` storm into blits.
+  - Zoom-in refetch bug (strict `<0.5×`) made moot by the fixed cache
+    range, but the symmetric `1.4×/0.7×` threshold is kept for the
+    other view-driven pollers.
+Net: winds follow the aircraft, pan/zoom is instant, draw is cheap, and
+the data covers a wide area + the route. Open items: at very tight zoom
+(≤20 nm) the fixed-spacing cache is naturally sparse (winds are smooth,
+so acceptable); tune `WINDS_GRID_SPACING_NM` / `WINDS_CACHE_RANGE_NM` if
+denser close-in barbs are wanted.
 Original diagnosis below for reference.
 Status (orig): **OPEN — diagnosed, fix not yet applied**
 Target: `shared/wx.py` (`WxClient.run` / `AwcPoller.run` settle gate),

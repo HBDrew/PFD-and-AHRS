@@ -382,15 +382,22 @@ def _nearest_hour_index(times, now):
     return best_i
 
 
-def _winds_grid_points(lat, lon, range_nm, aspect=1.0, cols=5, rows=4):
+def _winds_grid_points(lat, lon, range_nm, aspect=1.0, cols=5, rows=4,
+                       spacing_nm=None):
     """A lat/lon grid that fills the *visible* map, for batched winds barbs.
 
     ``range_nm`` is the map's shorter-axis half-extent (its vertical half-height
     in landscape); ``aspect`` = screen width/height widens the grid horizontally
     so barbs reach the left/right edges instead of bunching in a centre column.
-    The 0.82 inset keeps the edge barbs (and their temp tags) on screen."""
+    The 0.82 inset keeps the edge barbs (and their temp tags) on screen.
+    ``spacing_nm`` (when given) sizes the grid to roughly that barb spacing
+    instead of the fixed cols×rows — used for the wide cached area so the
+    barb density stays constant regardless of how big the cache is."""
     span_lat = range_nm * 0.82
     span_lon = range_nm * 0.82 * max(1.0, aspect)
+    if spacing_nm:
+        rows = max(2, min(13, int(round(2 * span_lat / spacing_nm)) + 1))
+        cols = max(2, min(15, int(round(2 * span_lon / spacing_nm)) + 1))
     dlat = span_lat / _NM_PER_DEG
     dlon = span_lon / (_NM_PER_DEG * max(0.05, math.cos(math.radians(lat))))
     pts = []
@@ -481,22 +488,23 @@ def fetch_winds_route(route, width_nm=25.0, alts=None, hour_offset=0,
     return _fetch_om_winds(pts, alts, hour_offset, timeout)
 
 
-def fetch_winds(lat, lon, range_nm, aspect=1.7, route=None,
-                route_width_nm=25.0, alts=None, hour_offset=0,
+def fetch_winds(lat, lon, range_nm, aspect=1.0, route=None,
+                route_width_nm=25.0, spacing_nm=None, alts=None, hour_offset=0,
                 timeout=15, max_points=96):
-    """Winds/temps aloft for the visible map area, PLUS a corridor along an
+    """Winds/temps aloft for a WIDE cached area, PLUS a corridor along an
     active route when one is given — in a single batched request.
 
-    The visible-area grid always populates the page (so the winds picture
-    fills the screen at any zoom); the optional route corridor adds density
-    along the active D2/FPL course so the barbs cover the whole leg, not just
-    a patch around the aircraft.  Points are deduped on a coarse snap and the
-    combined set is capped at ``max_points`` (grid first so the page is always
-    populated, then as much of the corridor as fits) to keep the request and
-    the barb render bounded."""
+    ``range_nm`` here is the cache half-extent (much wider than any one zoom);
+    the renderer culls to the current view, so zoom and small pans need no
+    refetch.  ``spacing_nm`` keeps the barb density constant across the cache.
+    The optional route corridor adds points along the off-screen part of an
+    active D2/FPL course.  Points are deduped on a fine snap (true duplicates
+    only) and capped at ``max_points`` (grid first, then as much corridor as
+    fits) to keep the request and the barb render bounded."""
     from fisb import WINDS_ALTS
     alts = alts if alts is not None else WINDS_ALTS
-    pts = list(_winds_grid_points(lat, lon, range_nm, aspect))
+    pts = list(_winds_grid_points(lat, lon, range_nm, aspect,
+                                  spacing_nm=spacing_nm))
     if route and len(route) >= 2:
         # The visible-area grid already owns the on-screen picture.  Keep only
         # the corridor points that fall OUTSIDE the visible window so a short
