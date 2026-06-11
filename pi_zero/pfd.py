@@ -4569,7 +4569,7 @@ _ss_drag = None
 _SS_DRAG_THRESHOLD = 8     # px before tap becomes drag
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         7,
-    "display_setup":      9,    # 7 standard rows + tall MAP LAYERS row
+    "display_setup":      11,   # 8 standard rows + tall MAP LAYERS row (~1.65 slots)
                                 # (counted as ≈2 row-slots tall for
                                 # scroll math — see _DSP_LAYERS_ROW_H)
     "system_setup":       9,
@@ -4720,6 +4720,8 @@ _DSP_ROWS = [
      None, None, None),
     ("night_mode", "NIGHT MODE",   "Dim red cockpit lighting",
      [False, True],      ["OFF","ON"],        100),
+    ("winds_alt_ft", "WINDS ALT",   "Winds-aloft level for the WND overlay",
+     [3000, 6000, 9000, 12000, 18000], ["3k","6k","9k","12k","18k"], 48),
     ("traffic_alt_band", "TFC ALT",  "Hide traffic beyond ± band",
      [0, 2000, 5000, 10000], ["ALL","±2k","±5k","±10k"], 56),
     ("traffic_range_nm", "TFC RANGE", "Hide traffic beyond range (nm)",
