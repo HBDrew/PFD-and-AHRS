@@ -115,6 +115,20 @@ def set_resolution_preference(pref: str):
     _PREFER_RESOLUTION = pref
 
 
+def set_tile_cache_max(n: int):
+    """Raise (or lower) the LRU tile-cache cap.  The default 16 is sized
+    for the Pi Zero's 512 MB, but a Pi 4/5 80 NM moving-map tint in TRK-UP
+    spans ~25 one-degree tiles — more than 16 — so the cache thrashes and
+    the tint re-reads every tile each build (the "BUILDING…" hang).  The
+    Pi 4/5 calls this at startup with a larger cap so a full wide-zoom
+    footprint stays resident.  Decimated (SRTM3) tint tiles are ~2.8 MB
+    each, so even 48 entries is ~135 MB."""
+    global _TILE_CACHE_MAX
+    _TILE_CACHE_MAX = max(8, int(n))
+    while len(_tile_cache) > _TILE_CACHE_MAX:
+        _tile_cache.popitem(last=False)
+
+
 def _tile_key(lat_int: int, lon_int: int) -> str:
     ns = 'N' if lat_int >= 0 else 'S'
     ew = 'E' if lon_int >= 0 else 'W'
@@ -131,19 +145,31 @@ def _cache_put(key, value):
         _tile_cache.popitem(last=False)
 
 
-def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
+def load_tile(srtm_dir: str, lat_int: int, lon_int: int, prefer: str = None):
     """
     Load (or return cached) SRTM tile.
     Returns (data, n_samples) where data is a numpy array or flat list,
     or None if the tile is not found.
     Auto-detects SRTM1 (3601×3601, Mapzen/AWS) vs SRTM3 (1201×1201).
+
+    ``prefer`` overrides the global resolution preference for this call
+    only: ``"srtm3"`` forces SRTM1 files to be decimated to SRTM3 on load
+    (1/9th the bytes — plenty for the coarse moving-map tint, which only
+    samples a 48×48 grid), while the PFD's SVT 3D scene keeps calling with
+    the default to get full SRTM1.  The decimated and native variants are
+    cached under separate keys so the two consumers don't evict or degrade
+    each other.
     """
-    key = _tile_key(lat_int, lon_int)
+    want_d3 = (prefer == "srtm3") or (_PREFER_RESOLUTION == "srtm3")
+    fname = _tile_key(lat_int, lon_int)
+    # Resolution-aware cache key: a tile requested decimated (tint) and the
+    # same tile requested native (SVT) are distinct entries.
+    key = fname + ("|d3" if want_d3 else "|nat")
     if key in _tile_cache:
         _tile_cache.move_to_end(key)   # mark as most-recently-used
         return _tile_cache[key]
 
-    path = os.path.join(srtm_dir, key)
+    path = os.path.join(srtm_dir, fname)
     if not os.path.exists(path):
         _cache_put(key, None)
         return None
@@ -151,12 +177,12 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int):
     # Detect resolution from file size (2 bytes per sample)
     file_bytes = os.path.getsize(path)
     is_srtm1 = (file_bytes == SRTM1_SAMPLES * SRTM1_SAMPLES * 2)
-    # When the caller has asked for srtm3 but the file on disk is the
-    # 25 MB SRTM1 variant, downsample to SRTM3 resolution on load (every
-    # third sample, no interpolation — SRTM1's 30 m → SRTM3's 90 m).
-    # The cached array is SRTM3-sized so the per-tile RAM cost drops
-    # ~9× to ~5.8 MB.  Brief ~25 MB int16 peak during the read.
-    decimate_to_srtm3 = is_srtm1 and (_PREFER_RESOLUTION == "srtm3")
+    # When the caller (or the global preference) has asked for srtm3 but the
+    # file on disk is the 25 MB SRTM1 variant, downsample to SRTM3 resolution
+    # on load (every third sample, no interpolation — SRTM1's 30 m → SRTM3's
+    # 90 m).  The cached array is SRTM3-sized so the per-tile RAM cost drops
+    # ~9× to ~2.8 MB.  Brief ~25 MB int16 peak during the read.
+    decimate_to_srtm3 = is_srtm1 and want_d3
     if is_srtm1 and not decimate_to_srtm3:
         n_samples = SRTM1_SAMPLES
     else:

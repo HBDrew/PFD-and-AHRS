@@ -266,7 +266,11 @@ def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
         if not mask.any():
             continue
 
-        sres = load_tile(srtm_dir, tla, tlo)
+        # The tint only samples a 48×48 grid, so SRTM3 (90 m) resolution is
+        # indistinguishable from SRTM1 (30 m) here — request decimated tiles
+        # (~2.8 MB vs ~26 MB) so the wide-zoom build isn't an I/O storm.  The
+        # PFD SVT 3D scene keeps its own full-SRTM1 tiles (separate cache key).
+        sres = load_tile(srtm_dir, tla, tlo, prefer="srtm3")
         if sres is not None:
             sarr, sn = sres
             sstep = 1.0 / (sn - 1)

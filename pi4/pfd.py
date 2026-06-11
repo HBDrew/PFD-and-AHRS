@@ -56,8 +56,17 @@ import fisb as _fisb
 import nexrad as _nexrad
 import mapoverlay as _ovl
 import perf as _perf_mod
-from terrain import get_elevation_ft
+from terrain import get_elevation_ft, set_tile_cache_max as _set_tile_cache_max
 from svt_renderer import render_svt as render_svt_pygame
+
+# The Pi 4/5 has the RAM (and needs it): an 80 NM moving-map tint in TRK-UP
+# spans ~25-30 one-degree tiles, well past the default 16-tile cache sized
+# for the Pi Zero.  Without headroom the tint re-reads every tile each build
+# (the "BUILDING…" hang) and thrashes against the TAWS/AGL terrain reads.
+# Decimated SRTM3 tint tiles are ~2.8 MB, so the extra entries are cheap;
+# 64 holds a full TRK-UP footprint plus cell-transition hysteresis and the
+# SVT scene's ~12 full-SRTM1 tiles.
+_set_tile_cache_max(64)
 
 # Try to load the OpenGL SVT renderer.  Falls back to pygame on failure.
 # NOTE: GL SVT is disabled while we resolve EGL/KMS device contention on
