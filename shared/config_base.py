@@ -82,6 +82,9 @@ ADSB_ALERT_FT  = 600      # alert vertical protected band (RA only fires when
 ADSB_TAU_S         = 30.0  # alert when time-to-zero-range (range/closure) ≤ this
 ADSB_ALERT_FLOOR_NM = 1.0  # hard backstop ring — alert inside this regardless
 ADSB_ALERT_FLOOR_FT = 400  #   of closure (something right on top of us)
+# RA hysteresis (stops boundary chatter / audio re-trigger on borderline traffic)
+ADSB_RA_ARM_S  = 0.7       # raw alert must persist this long before the RA fires
+ADSB_RA_HOLD_S = 8.0       # once fired, latch the red cue this long so it stays up
 
 # Always-on "safety" traffic clamp.  Traffic is drawn on every map page for
 # situational awareness — but on the non-traffic overlays (airspace / METAR /

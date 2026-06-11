@@ -242,6 +242,84 @@ def threat_level(rel, proximate_nm=6.0, proximate_ft=1200,
     return "other"
 
 
+def track_threat(hist, rel, now, *, tau_s=30.0, floor_nm=1.0, floor_ft=400,
+                 alert_ft=600, proximate_nm=6.0, proximate_ft=1200,
+                 arm_s=0.7, hold_s=8.0, min_dr_nm=0.003, min_dt_s=0.3,
+                 ema=0.4, stale_s=5.0):
+    """Stateful threat classification with stable closure + RA hysteresis.
+
+    ``hist`` is a per-target dict (one per ICAO) that persists across calls —
+    pass ``{}`` on first sight; it's mutated in place.  ``rel`` is a
+    relativised target (from relative()); ``now`` is monotonic seconds.
+
+    Two fixes over calling threat_level() raw each frame:
+      • **Closure over real update intervals.** ADS-B refreshes ~1 Hz but the
+        render loop runs every frame, so differencing range against an
+        unchanged snapshot gives 0 closure for ~29 frames then a spike — which
+        makes tau (and the alert) chatter.  Recompute closure only when the
+        range actually moved (> ``min_dr_nm`` over ≥ ``min_dt_s``), EMA-smooth
+        it, and carry it forward between updates.
+      • **Arming + latch hysteresis.** The raw alert must persist for
+        ``arm_s`` before it fires (filters a borderline one-frame flicker),
+        then latches for ``hold_s`` so the red cue stays up and the
+        "Traffic, Traffic" callout (edge-triggered on a new alert) fires once
+        instead of re-firing as the target flickers across the threshold.
+    Returns the (latched) threat level string.
+    """
+    now = float(now)
+    hist["seen"] = now
+    rng = rel.get("range_nm")
+    if rng is not None:
+        if "range_nm" not in hist:
+            hist["range_nm"] = rng
+            hist["t"] = now
+            hist.setdefault("closure_kt", None)
+        else:
+            dr = hist["range_nm"] - rng          # +ve = closing
+            dt = now - hist["t"]
+            if abs(dr) > min_dr_nm and dt >= min_dt_s:
+                raw_cl = dr / (dt / 3600.0)       # nm/hr (kt)
+                pc = hist.get("closure_kt")
+                hist["closure_kt"] = (raw_cl if pc is None
+                                      else ema * raw_cl + (1.0 - ema) * pc)
+                hist["range_nm"] = rng
+                hist["t"] = now
+        # Staleness: if the range hasn't moved for a while the target isn't
+        # closing any more — expire the carried-forward closure so it stops
+        # alerting (a target that closed then levelled off).
+        if (now - hist["t"]) > stale_s:
+            hist["closure_kt"] = 0.0
+        rel["closure_kt"] = hist.get("closure_kt")
+
+    raw = threat_level(rel, proximate_nm=proximate_nm, proximate_ft=proximate_ft,
+                       alert_ft=alert_ft, tau_s=tau_s, floor_nm=floor_nm,
+                       floor_ft=floor_ft)
+
+    # The hard floor backstop (something right on top) fires immediately; a
+    # tau-based alert must arm (persist arm_s) first.  Either way it then
+    # latches for hold_s so the cue stays up and the callout fires once.
+    ra = rel.get("rel_alt_ft")
+    ra_abs = abs(ra) if ra is not None else 1e9
+    floor_hit = (rng is not None and rng <= floor_nm and ra_abs <= floor_ft)
+    if raw == "alert":
+        if floor_hit:
+            hist["alert_since"] = now
+            hist["alert_until"] = now + hold_s
+        else:
+            if hist.get("alert_since") is None:
+                hist["alert_since"] = now
+            if now - hist["alert_since"] >= arm_s:
+                hist["alert_until"] = now + hold_s
+    else:
+        hist["alert_since"] = None
+
+    if hist.get("alert_until", 0.0) > now:
+        return "alert"
+    # A raw alert that hasn't armed yet shows as proximate (amber), not a red
+    # flash — this is the debounce that kills the borderline chatter.
+    return "proximate" if raw == "alert" else raw
+
+
 def filter_targets(targets, alt_band_ft=0, range_nm=0, keep_alert=True):
     """Declutter a relativised+classified target list.
 

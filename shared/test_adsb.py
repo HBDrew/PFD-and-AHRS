@@ -102,6 +102,57 @@ def test_threat_tau():
     check(adsb.threat_level(ontop) == "alert", "inside floor → alert")
 
 
+def test_track_threat_hysteresis():
+    own = (34.0, -111.0, 8000)
+
+    def rel_at(rng_nm, alt=8100):
+        return adsb.relative({"lat": 34.0 + rng_nm / 60.0, "lon": -111.0,
+                              "alt_ft": alt}, *own)
+
+    K = dict(arm_s=0.7, hold_s=8.0)
+
+    # (A) Genuinely converging ~360 kt (0.1 NM per 1 Hz update) from 2.8 NM:
+    # tau = rng/0.1, so alert once rng ≤ 3 — confirm it ARMS then alerts.
+    h, levels, t, rng = {}, [], 0.0, 2.8
+    for _ in range(6):
+        levels.append(adsb.track_threat(h, rel_at(rng), t, **K))
+        rng -= 0.1
+        t += 1.0
+    check(levels[0] != "alert", "no RA before closure is known / armed")
+    check(levels[-1] == "alert", "sustained converging target → alert")
+
+    # (B) Debounce: qualifies for one update (< arm_s) then diverges → the red
+    # cue must never come up; it stays proximate.
+    h, fired, t = {}, False, 0.0
+    for rng in (2.5, 2.4, 2.7, 2.9):      # close once, then open back up
+        if adsb.track_threat(h, rel_at(rng), t, **K) == "alert":
+            fired = True
+        t += 1.0
+    check(not fired, "brief-then-diverging target never trips the RA")
+
+    # (C) Floor backstop fires immediately, no arming delay.
+    check(adsb.track_threat({}, rel_at(0.5), 0.0, **K) == "alert",
+          "inside floor → immediate alert")
+
+    # (D) Latch: after arming, a diverging frame still reads alert (held up).
+    h, t, rng = {}, 0.0, 2.8
+    for _ in range(3):                    # arm over real closure
+        adsb.track_threat(h, rel_at(rng), t, **K)
+        rng -= 0.1
+        t += 1.0
+    held = adsb.track_threat(h, rel_at(3.2), t, **K)   # suddenly diverging
+    check(held == "alert", "latch holds the alert through a diverging frame")
+
+    # (E) Staleness: a target that closed then sits at constant range for
+    # > stale_s stops alerting (carried-forward closure expires).
+    h, t = {}, 0.0
+    for rng in (2.5, 2.4, 2.3):           # arm
+        adsb.track_threat(h, rel_at(rng), t, **K)
+        t += 1.0
+    stale = adsb.track_threat(h, rel_at(2.3), t + 12.0, **K)  # 12 s later, no movement
+    check(stale != "alert", "stale (level-off) target stops alerting")
+
+
 def test_filter_targets():
     own = (34.0, -111.0, 8000)
     near_alert = adsb.relative({"lat": 34.0 + 1.0 / 60.0, "lon": -111.0,
