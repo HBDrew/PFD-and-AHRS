@@ -117,7 +117,7 @@ WINDS_US_BBOX         = (24.0, 50.0, -125.0, -66.0)  # min/max lat, min/max lon 
 WINDS_US_SPACING_NM   = 60         # coarse grid spacing — ~16-24 barbs at the 160 nm view
 WINDS_INET_INTERVAL_S = 6 * 3600   # GFS reissues every ~6 h — refresh no faster
 WINDS_MAX_ALT_FT      = 18000      # cap — fewer pressure levels = a much cheaper call
-WINDS_MIN_RENDER_NM   = 120        # only draw barbs when the map range is >= this (160 nm view)
+WINDS_MIN_RENDER_NM   = 40         # draw barbs at 40/80/160 nm; hide below (coarse grid → empty)
 WINDS_GFS_MODEL       = "gfs025"   # pressure levels require an explicit GFS model
 WINDS_DISK_MAX_AGE_S  = 3600       # a zone is "stale" after 1 h — only then re-pull
                                    # (when connected); within the hour we read disk.
