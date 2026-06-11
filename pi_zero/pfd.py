@@ -10192,9 +10192,10 @@ def _mfd_overlay_btn_hit(x, y):
 
 
 def _mfd_get_range_label():
-    """Default-range label is the numeric NM value; AUTO mode reserved
+    """Range label — the numeric NM value the map is actually drawn at, which
+    on the WND overlay is its own limited zoom, not map_zoom_nm; AUTO reserved
     for the future flight-plan-aware fit-to-route."""
-    nm = disp["ds"].get("map_zoom_nm", 10)
+    nm = _mfd_zoom_nm()
     return f"{nm} NM" if nm > 0 else "AUTO"
 
 
