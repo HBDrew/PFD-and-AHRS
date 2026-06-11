@@ -67,6 +67,41 @@ def test_threat_levels():
     check(adsb.threat_level(flagged) == "alert", "source alert flag honoured")
 
 
+def test_threat_tau():
+    own = (34.0, -111.0, 8000)
+    # Converging fast, vertically close, outside the 1 NM floor → tau alert.
+    # 4 NM closing at 600 kt → tau = 4 / (600/3600) ≈ 24 s (< 30).
+    closing = adsb.relative({"lat": 34.0 + 4.0 / 60.0, "lon": -111.0,
+                             "alt_ft": 8200}, *own)
+    closing["closure_kt"] = 600.0
+    check(adsb.threat_level(closing) == "alert", "closing, tau<30s → alert")
+    # Same geometry but diverging → NOT an alert, just proximate.
+    diverging = dict(closing)
+    diverging["closure_kt"] = -600.0
+    check(adsb.threat_level(diverging) == "proximate",
+          "diverging → proximate, not alert")
+    # No closure data (unknown) → no tau alert (proximate), not a false RA.
+    nodata = dict(closing)
+    nodata["closure_kt"] = None
+    check(adsb.threat_level(nodata) == "proximate",
+          "unknown closure → proximate, not alert")
+    # Closing but vertically outside the protected band (+800 ft) → proximate.
+    high = adsb.relative({"lat": 34.0 + 4.0 / 60.0, "lon": -111.0,
+                          "alt_ft": 8800}, *own)
+    high["closure_kt"] = 600.0
+    check(adsb.threat_level(high) == "proximate",
+          "closing but +800 ft → proximate, not alert")
+    # Closing slowly so tau is large (5 NM / 60 kt = 300 s) → proximate.
+    slow = adsb.relative({"lat": 34.0 + 5.0 / 60.0, "lon": -111.0,
+                          "alt_ft": 8100}, *own)
+    slow["closure_kt"] = 60.0
+    check(adsb.threat_level(slow) == "proximate", "slow closure → proximate")
+    # Hard floor backstop: right on top (0.5 NM / 100 ft), no closure → alert.
+    ontop = adsb.relative({"lat": 34.0 + 0.5 / 60.0, "lon": -111.0,
+                           "alt_ft": 8100}, *own)
+    check(adsb.threat_level(ontop) == "alert", "inside floor → alert")
+
+
 def test_filter_targets():
     own = (34.0, -111.0, 8000)
     near_alert = adsb.relative({"lat": 34.0 + 1.0 / 60.0, "lon": -111.0,

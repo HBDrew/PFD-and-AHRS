@@ -199,12 +199,26 @@ def relative(target, own_lat, own_lon, own_alt_ft):
 
 
 def threat_level(rel, proximate_nm=6.0, proximate_ft=1200,
-                 alert_nm=3.0, alert_ft=600):
-    """Classify a relativised target for symbol colouring, TCAS-style:
-        "alert"      — close in range AND altitude, or source flagged it
-        "proximate"  — within the proximate envelope
+                 alert_nm=3.0, alert_ft=600,
+                 tau_s=30.0, floor_nm=1.0, floor_ft=400):
+    """Classify a relativised target for symbol colouring + RA, TCAS-style:
+        "alert"      — a real resolution threat (see below)
+        "proximate"  — within the static proximate envelope (amber advisory)
         "other"      — everything else with a position
-    `rel` is a dict from relative()."""
+    `rel` is a dict from relative(), optionally carrying ``closure_kt``
+    (range-rate, +ve = closing) for the time-based alert.
+
+    The "alert" (red / "Traffic, Traffic") tier is **closure/time-based**,
+    not a flat ring, so parallel, diverging, or co-altitude-but-not-closing
+    traffic no longer nuisance-trips it:
+      • Hard floor backstop — anything inside ``floor_nm`` / ``floor_ft``
+        alerts regardless of closure (something right on top of us).
+      • Tau alert — the target is actually converging (``closure_kt`` > 0)
+        AND time-to-zero-range ``tau = range / closure`` is ≤ ``tau_s``
+        AND it's within the vertical protected band (``alert_ft``) and the
+        advisory range.  Diverging / non-closing traffic never trips this.
+    ``alert_nm`` is retained for signature compatibility (the old static
+    range ring) but no longer gates the alert tier."""
     if rel.get("alert"):
         return "alert"
     rng = rel.get("range_nm")
@@ -212,8 +226,17 @@ def threat_level(rel, proximate_nm=6.0, proximate_ft=1200,
         return "other"
     ra = rel.get("rel_alt_ft")
     ra_abs = abs(ra) if ra is not None else 1e9
-    if rng <= alert_nm and ra_abs <= alert_ft:
+    # Hard floor backstop — close in both range and altitude.
+    if rng <= floor_nm and ra_abs <= floor_ft:
         return "alert"
+    # Tau-based RA — converging, soon, and vertically close.
+    closure_kt = rel.get("closure_kt")
+    if (closure_kt is not None and closure_kt > 0.0
+            and ra_abs <= alert_ft and rng <= proximate_nm):
+        tau = rng / (closure_kt / 3600.0)   # seconds to zero range
+        if tau <= tau_s:
+            return "alert"
+    # Proximate (amber) advisory — static envelope, unchanged.
     if rng <= proximate_nm and ra_abs <= proximate_ft:
         return "proximate"
     return "other"

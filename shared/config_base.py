@@ -72,8 +72,16 @@ ADSB_UDP_PORT  = 4000     # conventional GDL90 broadcast port
 ADSB_STALE_S   = 60       # drop a target after this long with no update
 ADSB_PROX_NM   = 6.0      # proximate-traffic range envelope (amber)
 ADSB_PROX_FT   = 1200     # proximate-traffic altitude envelope
-ADSB_ALERT_NM  = 3.0      # alert (resolution) range envelope (red)
-ADSB_ALERT_FT  = 600      # alert altitude envelope
+ADSB_ALERT_NM  = 3.0      # (legacy) static alert range ring — no longer gates
+                          #   the RA tier; kept for signature compatibility
+ADSB_ALERT_FT  = 600      # alert vertical protected band (RA only fires when
+                          #   the target is within this rel-alt and closing)
+# Closure/time-based RA (replaces the old flat 3 NM/600 ft ring, which
+# nuisance-tripped on parallel / diverging traffic).  Fire "Traffic, Traffic"
+# only when a target is actually converging and will be close soon.
+ADSB_TAU_S         = 30.0  # alert when time-to-zero-range (range/closure) ≤ this
+ADSB_ALERT_FLOOR_NM = 1.0  # hard backstop ring — alert inside this regardless
+ADSB_ALERT_FLOOR_FT = 400  #   of closure (something right on top of us)
 
 # Always-on "safety" traffic clamp.  Traffic is drawn on every map page for
 # situational awareness — but on the non-traffic overlays (airspace / METAR /

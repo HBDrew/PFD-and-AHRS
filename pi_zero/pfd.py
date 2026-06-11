@@ -5943,6 +5943,11 @@ def _fpl_open_save_keyboard():
 
 
 # ── ADS-B traffic refresh ──────────────────────────────────────────────────
+# Per-target previous range/time + smoothed closure (ICAO-keyed) for the
+# tau-based threat tier; pruned of stale targets each frame.
+_traffic_range_hist: dict = {}
+
+
 def _update_traffic(demo_mode):
     """Refresh disp["traffic"] once per frame from the live GDL90 listener
     (or the synthetic generator in demo mode).  Each target is relativised
@@ -6001,16 +6006,37 @@ def _update_traffic(demo_mode):
 
     rel = []
     any_alert = False
+    _now_mono = time.monotonic()
     for t in raw:
         r = _adsb.relative(t, own_lat, own_lon, own_alt)
+        # Per-target range-rate (closure, +ve = closing), EMA-smoothed, so the
+        # tau-based RA only colours red when traffic is actually converging.
+        tid = t.get("icao")
+        rng = r.get("range_nm")
+        if tid is not None and rng is not None:
+            prev = _traffic_range_hist.get(tid)
+            closure_kt = None
+            if prev is not None:
+                dt = _now_mono - prev["t"]
+                if 0.05 <= dt <= 10.0:
+                    raw_cl = (prev["range_nm"] - rng) / (dt / 3600.0)
+                    pc = prev.get("closure_kt")
+                    closure_kt = raw_cl if pc is None else 0.5 * pc + 0.5 * raw_cl
+            _traffic_range_hist[tid] = {"range_nm": rng, "t": _now_mono,
+                                        "closure_kt": closure_kt}
+            r["closure_kt"] = closure_kt
         thr = _adsb.threat_level(r, proximate_nm=ADSB_PROX_NM,
                                  proximate_ft=ADSB_PROX_FT,
-                                 alert_nm=ADSB_ALERT_NM,
-                                 alert_ft=ADSB_ALERT_FT)
+                                 alert_ft=ADSB_ALERT_FT, tau_s=ADSB_TAU_S,
+                                 floor_nm=ADSB_ALERT_FLOOR_NM,
+                                 floor_ft=ADSB_ALERT_FLOOR_FT)
         r["threat"] = thr
         if thr == "alert":
             any_alert = True
         rel.append(r)
+    for _tid in [k for k, v in _traffic_range_hist.items()
+                 if _now_mono - v["t"] > 10.0]:
+        _traffic_range_hist.pop(_tid, None)
     # Nearest-first; positionless targets sort to the end.
     rel.sort(key=lambda d: (d.get("range_nm") is None,
                             d.get("range_nm") or 1e9))

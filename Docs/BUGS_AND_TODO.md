@@ -11,7 +11,18 @@ notes with enough context to pick it up cold.
 ## Open
 
 ### TFC-RA-SENSITIVITY  Traffic collision alert (RA) fires too eagerly
-Status: **OPEN — small tuning change**
+Status: **FIXED** — closure/tau-based RA (replaces the flat ring)
+`threat_level` now fires the "alert" (red / "Traffic, Traffic") tier only
+when a target is **actually converging and will be close soon**: tau =
+range / closure ≤ `ADSB_TAU_S` (30 s) AND within the vertical protected band
+(`ADSB_ALERT_FT`) AND inside the advisory range — plus a hard floor backstop
+(`ADSB_ALERT_FLOOR_NM/FT` = 1 NM / 400 ft) for anything right on top of us
+regardless of closure.  Range-rate is tracked per ICAO frame-to-frame and
+EMA-smoothed in `_update_traffic` (both pi4 + pi_zero) so jitter can't fake
+convergence; diverging / parallel / non-closing traffic no longer trips it.
+Proximate (amber) advisory unchanged at the static 6 NM / 1200 ft envelope.
+Unit-tested in `shared/test_adsb.py` (`test_threat_tau`).  Original spec
+retained below for reference.
 Pilot report: the traffic "RA" (the `Traffic, Traffic` callout + flashing
 TRAFFIC banner) feels too sensitive — it triggers on traffic that isn't
 really a threat.  Today it's a pure static envelope: fires when a target
