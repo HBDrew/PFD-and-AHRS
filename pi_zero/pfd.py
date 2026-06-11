@@ -13297,13 +13297,46 @@ def main():
         _save("preview_winds.png")
         globals()["_winds_barbs"] = _winds_barbs_real
 
+        # ── Flight-plan editor + loader + data-field picker ───────────────────
+        # The preview plan from _enter_mfd is still loaded (KPRC→KSEZ→KFLG,
+        # KSEZ leg active), so the FLIGHT PLAN page shows a populated, active
+        # list.  Seed a couple of saved plans so the LOAD picker isn't empty.
+        disp["fpl_saved"]["plans"] = [
+            {"name": "SEDONA LOOP", "waypoints": [
+                {"ident": "KPRC", "lat": 34.6545, "lon": -112.4196,
+                 "elev_ft": 5045, "user": False},
+                {"ident": "KSEZ", "lat": 34.8486, "lon": -111.7884,
+                 "elev_ft": 4830, "user": False},
+                {"ident": "KFLG", "lat": 35.1385, "lon": -111.6713,
+                 "elev_ft": 7014, "user": False}]},
+            {"name": "RIM TOUR", "waypoints": [
+                {"ident": "KSEZ", "lat": 34.8486, "lon": -111.7884,
+                 "elev_ft": 4830, "user": False},
+                {"ident": "KGCN", "lat": 35.9524, "lon": -112.1469,
+                 "elev_ft": 6609, "user": False}]},
+        ]
+
+        disp["mode"] = "fpl"
+        _save("preview_fpl_editor.png")
+
+        disp["mode"] = "fpl_plan_picker"
+        _save("preview_fpl_load.png")
+
+        # Data-field picker (the MFD bottom-strip chooser).  Select the WPT
+        # slot so the magenta "needs D2" nav fields read clearly.
+        disp["mode"] = "mfd_strip_setup"
+        disp["mss_sel"] = 3
+        _save("preview_mfd_strip_setup.png")
+
         # Back to the PFD for the remaining scenes.  Drop the preview flight
         # plan so it doesn't bleed magenta course chrome into the PFD shots.
         disp["display_mode"] = "pfd"
+        disp["mode"] = "pfd"
         _ovl.apply(disp["ds"], "tfc")
         _fpl_deactivate()
         disp["fpl"]["waypoints"] = []
         disp["fpl"]["active_idx"] = -1
+        disp["fpl_saved"]["plans"] = []
 
         # ── Numpad overlays ───────────────────────────────────────────────────
         _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115)

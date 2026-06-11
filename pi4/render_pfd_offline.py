@@ -684,6 +684,52 @@ def main():
     print("  \u2192 preview_compass_cal_done.png")
     pfd.disp["ss"]["mag_cal_deltas"] = [0.0] * 4
 
+    # Flight-plan editor (active KPRC→KSEZ→KFLG plan, KSEZ leg active) so the
+    # FLIGHT PLAN page shows a populated, navigable list; the LOAD picker; and
+    # the MFD data-field picker (bottom-strip chooser).  These mirror the piZ
+    # offline batch so the two manuals stay visually consistent.
+    pfd.disp["fpl"]["waypoints"] = [
+        {"ident": "KPRC", "lat": 34.6545, "lon": -112.4196,
+         "elev_ft": 5045, "user": False},
+        {"ident": "KSEZ", "lat": 34.8486, "lon": -111.7884,
+         "elev_ft": 4830, "user": False},
+        {"ident": "KFLG", "lat": 35.1385, "lon": -111.6713,
+         "elev_ft": 7014, "user": False},
+    ]
+    pfd.disp["fpl"]["active_idx"] = 1
+    pfd.disp["lat"], pfd.disp["lon"] = 34.70, -111.95
+    pfd._fpl_apply_active()
+    pfd.disp["fpl_saved"]["plans"] = [
+        {"name": "SEDONA LOOP", "waypoints": list(pfd.disp["fpl"]["waypoints"])},
+        {"name": "RIM TOUR", "waypoints": [
+            {"ident": "KSEZ", "lat": 34.8486, "lon": -111.7884,
+             "elev_ft": 4830, "user": False},
+            {"ident": "KGCN", "lat": 35.9524, "lon": -112.1469,
+             "elev_ft": 6609, "user": False}]},
+    ]
+
+    pfd.disp["mode"] = "fpl"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_fpl_editor.png"))
+    print("  → preview_fpl_editor.png")
+
+    pfd.disp["mode"] = "fpl_plan_picker"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_fpl_load.png"))
+    print("  → preview_fpl_load.png")
+
+    pfd.disp["mss_sel"] = 3        # WPT slot selected
+    pfd.disp["mode"] = "mfd_strip_setup"
+    pfd.render(surf, demo_mode=False, connected=True, data_stale=False)
+    pygame.image.save(surf, os.path.join(setup_outdir, "preview_mfd_strip_setup.png"))
+    print("  → preview_mfd_strip_setup.png")
+
+    pfd._fpl_deactivate()
+    pfd.disp["fpl"]["waypoints"] = []
+    pfd.disp["fpl"]["active_idx"] = -1
+    pfd.disp["fpl_saved"]["plans"] = []
+    pfd.disp["mode"] = "pfd"
+
     # AGL readout - normal cruise frame (the box appears bottom-right of AI).
     seed_state(roll=0, pitch=2, hdg=133, alt=6800, speed=115, vspeed=0, ay=0)
     pfd.disp["mode"] = "pfd"

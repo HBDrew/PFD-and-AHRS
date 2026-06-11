@@ -798,6 +798,24 @@ The line on the bar shows tick marks at ±50 % and ±full-scale. The line itself
 
 When no waypoint is active the strip is still drawn but reads **"DIRECT  →"** as a tap target.
 
+### Flight plan (multi-waypoint)
+
+Tap **FPL** (top-right on the MFD, §16H) to open the flight-plan editor — an ordered list of waypoints where each leg is one ICAO ident. Tap a row to **activate that leg** as the direct-to (the active leg is highlighted green with an **● ACTIVE** badge and its waypoint turns magenta); auto-sequencing advances to the next leg as you pass each waypoint.
+
+![Flight-plan editor — KPRC → KSEZ → KFLG with the KSEZ leg active, +ICAO/+LAT-LON/+USER add buttons, SAVE / LOAD, and a DEACTIVATE button](../pi4/previews/preview_fpl_editor.png)
+
+- **+ ICAO** — add a waypoint by ident (opens the keyboard; unknown idents are rejected with a red hint).
+- **+ LAT/LON** — add a custom point by coordinates.
+- **+ USER** — pick from your saved user-waypoint library.
+- **↑ / ↓ / ✕** on each row — reorder or delete that waypoint.
+- **DEACTIVATE** — stop navigating the plan without deleting it.
+
+### Saving and loading plans
+
+**SAVE** stores the current waypoint list under a name you type; **LOAD (*n*)** opens the saved-plan picker. Each saved plan shows its leg count and first → last idents; tap **LOAD** to recall it into the editor or **DEL** to remove it. Saved plans (and the user-waypoint library) persist across power cycles and sync to the other displays when **SHARE FPL** is on (§12A).
+
+![Load-plan picker — saved plans (SEDONA LOOP, RIM TOUR) each with a leg count, first → last idents, and LOAD / DEL buttons](../pi4/previews/preview_fpl_load.png)
+
 ---
 
 ## 16B. AGL Readout
@@ -1130,6 +1148,10 @@ The full set of assignable fields:
 | Arrival (dest.) | **ETW** | Estimated arrival at the final waypoint, Zulu |
 
 The seven nav-derived fields (**WPT, BTW, DTK, DIST, DISW, XTE, ETE, ETEW, ETA, ETW**) render magenta and show `--` when there's no active Direct-To or flight-plan leg; once a waypoint is active they fill in live.
+
+**Tap any slot** to open the field picker. The eight current slots show as pills across the top (the selected one ringed cyan); tap a field in the grid below to assign it to the selected slot — the selection then auto-advances to the next slot so you can fill the whole row with successive taps. Nav-derived fields are tagged **needs D2** and render magenta.
+
+![MFD data-field picker — eight slot pills on top (WPT selected) over a grid of assignable fields; nav fields tagged "needs D2" in magenta](../pi4/previews/preview_mfd_strip_setup.png)
 
 ---
 
