@@ -265,6 +265,10 @@ disp["ds"] = {                      # display settings
     "map_show_winds":    False,  # winds-aloft barbs (off until WND selected)
     "winds_alt_ft":      9000,   # selected altitude for the winds barbs
     "winds_time_offset_h": 0,    # WND forecast time: hours ahead of now (0 = now)
+    # The WND overlay keeps its OWN zoom (winds don't need a close-in view, and
+    # this stops the winds page from clobbering the terrain-map zoom).  Limited
+    # to WINDS_ZOOMS_NM.
+    "winds_zoom_nm":     80,
     "map_show_nexrad":   False,  # NEXRAD reflectivity raster (off until selected)
     # Full-screen MFD: gate for the 3-finger PFD↔MFD swap.  Default on for
     # the larger HDMI screens (that's where a full-screen map earns its keep).
@@ -1824,30 +1828,64 @@ def _wx_view():
     return float(clat), float(clon), float(radius)
 
 
+def _winds_zoom():
+    """The winds page's own zoom (one of WINDS_ZOOMS_NM)."""
+    z = int(disp["ds"].get("winds_zoom_nm", 80))
+    return z if z in WINDS_ZOOMS_NM else min(
+        WINDS_ZOOMS_NM, key=lambda t: abs(t - z))
+
+
+def _winds_zoom_step(delta):
+    """Step the winds page's own zoom within WINDS_ZOOMS_NM (delta -1 = zoom in
+    to a smaller range, +1 = zoom out)."""
+    try:
+        i = WINDS_ZOOMS_NM.index(_winds_zoom())
+    except ValueError:
+        i = len(WINDS_ZOOMS_NM) // 2
+    i = max(0, min(len(WINDS_ZOOMS_NM) - 1, i + delta))
+    disp["ds"]["winds_zoom_nm"] = WINDS_ZOOMS_NM[i]
+
+
+def _winds_cache_range(zoom_nm):
+    """Cache half-extent for the winds grid: WINDS_CACHE_MARGIN × the zoom.
+    The cache (and its barb spacing) scale with the zoom, so the fetch stays a
+    bounded ~WINDS_GRID_AXIS_PTS² points however wide the cache gets, and the
+    poller only re-pulls on a zoom-tier change or a big pan."""
+    return float(zoom_nm) * WINDS_CACHE_MARGIN
+
+
 def _winds_view():
-    """(center, range_nm) the winds poller follows.  The range is the FIXED
-    wide cache half-extent (not the current zoom): we fetch one big area and
-    the renderer culls to the view, so zooming and small pans need no refetch.
-    The poller only re-pulls when the centre drifts a good fraction of the
-    cache or the periodic timer fires."""
+    """(center, cache_range) the winds poller follows.  Range scales with the
+    winds page's own zoom; the renderer culls the wide cache to the view, so
+    zoom and small pans need no refetch."""
     if disp.get("display_mode") == "mfd":
         clat, clon = _mfd_effective_center()
     else:
         clat = float(disp.get("lat", DEMO_LAT))
         clon = float(disp.get("lon", DEMO_LON))
-    return float(clat), float(clon), float(WINDS_CACHE_RANGE_NM)
+    return float(clat), float(clon), _winds_cache_range(_winds_zoom())
+
+
+def _ll_extend(la, lo, brg_rad, dist_nm):
+    """Point ``dist_nm`` from (la, lo) along bearing ``brg_rad`` (rad, 0=N)."""
+    dla = dist_nm * math.cos(brg_rad) / 60.0
+    dlo = dist_nm * math.sin(brg_rad) / (60.0 * max(0.05,
+                                                    math.cos(math.radians(la))))
+    return (la + dla, lo + dlo)
 
 
 def _winds_route_points():
     """The active course as a ``[(lat, lon), ...]`` polyline for the winds
     corridor: ownship first, then the remaining FPL legs (or the single
-    direct-to waypoint).  ``None`` when no course is active, in which case the
-    poller falls back to the local visible-area grid."""
+    direct-to waypoint), EXTENDED past the final waypoint along the inbound
+    course so the corridor wraps around the destination instead of stopping
+    dead at it.  ``None`` when no course is active."""
     try:
         olat = float(disp.get("lat", DEMO_LAT))
         olon = float(disp.get("lon", DEMO_LON))
     except (TypeError, ValueError):
         return None
+    pts = None
     if _fpl_is_active():
         wps = disp["fpl"]["waypoints"]
         idx = disp["fpl"]["active_idx"]
@@ -1857,23 +1895,33 @@ def _winds_route_points():
                 pts.append((float(wp["lat"]), float(wp["lon"])))
             except (KeyError, TypeError, ValueError):
                 continue
-        return pts if len(pts) >= 2 else None
-    nav = disp.get("nav", {})
-    if nav.get("ident"):
-        try:
-            return [(olat, olon), (float(nav["lat"]), float(nav["lon"]))]
-        except (TypeError, ValueError):
-            return None
-    return None
+        if len(pts) < 2:
+            pts = None
+    if pts is None:
+        nav = disp.get("nav", {})
+        if nav.get("ident"):
+            try:
+                pts = [(olat, olon), (float(nav["lat"]), float(nav["lon"]))]
+            except (TypeError, ValueError):
+                pts = None
+    if pts is None or len(pts) < 2:
+        return None
+    # Extend ~one course-width past the destination along the last leg bearing.
+    (la1, lo1), (la2, lo2) = pts[-2], pts[-1]
+    mlat = math.radians((la1 + la2) / 2.0)
+    brg = math.atan2((lo2 - lo1) * math.cos(mlat), (la2 - la1))
+    pts.append(_ll_extend(la2, lo2, brg, WINDS_ROUTE_WIDTH_NM + 5.0))
+    return pts
 
 
 def _winds_fetch(lat, lon, range_nm):
-    """Poller fetch shim: one WIDE winds grid (square coverage, fixed
-    ``WINDS_GRID_SPACING_NM`` barb spacing) the renderer culls to the view,
-    plus a corridor along an active D2/FPL course beyond the cached area."""
+    """Poller fetch shim: one winds grid sized to the cache (square coverage,
+    ~WINDS_GRID_AXIS_PTS points per axis) the renderer culls to the view, plus
+    a corridor along (and past) an active D2/FPL course."""
     hour_offset = int(disp["ds"].get("winds_time_offset_h", 0))
+    spacing = (2.0 * range_nm * 0.82) / max(1, WINDS_GRID_AXIS_PTS - 1)
     return _wx.fetch_winds(
-        lat, lon, range_nm, aspect=1.0, spacing_nm=WINDS_GRID_SPACING_NM,
+        lat, lon, range_nm, aspect=1.0, spacing_nm=spacing,
         route=_winds_route_points(), route_width_nm=WINDS_ROUTE_WIDTH_NM,
         hour_offset=hour_offset)
 
@@ -5074,14 +5122,20 @@ def handle_event(event, demo_mode):
             elif _mfd_is_panned() and _in(r["center"]):
                 _mfd_clear_pan()
             elif _in(r["zoom_in"]):
-                cur = int(disp["ds"].get("map_zoom_nm", 10))
-                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
+                if _map_overlay_state(disp["ds"]) == "wnd":
+                    _winds_zoom_step(-1)
+                else:
+                    cur = int(disp["ds"].get("map_zoom_nm", 10))
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_in(cur)
                 _settings.mark_dirty()
             elif _in(r["zoom_out"]):
-                cur = int(disp["ds"].get("map_zoom_nm", 10))
-                has_d2 = bool((disp.get("nav") or {}).get("ident"))
-                disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(cur,
-                                                              allow_auto=has_d2)
+                if _map_overlay_state(disp["ds"]) == "wnd":
+                    _winds_zoom_step(+1)
+                else:
+                    cur = int(disp["ds"].get("map_zoom_nm", 10))
+                    has_d2 = bool((disp.get("nav") or {}).get("ident"))
+                    disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(
+                        cur, allow_auto=has_d2)
                 _settings.mark_dirty()
             elif _in(r["d2"]):
                 # Direct-to entry — reuse the PFD's nav keyboard (NEAREST /
@@ -6007,6 +6061,10 @@ def handle_event(event, demo_mode):
                 if (x <= mrx + corner_w and y >= mry + mrh - corner_h):
                     nxt = _map_overlay_cycle(disp["ds"])
                     print(f"[inset] overlay → {nxt}")
+                    _settings.mark_dirty()
+                    return True
+                if _map_overlay_state(disp["ds"]) == "wnd":
+                    _winds_zoom_step(-1 if x >= mrx + mrw / 2 else +1)
                     _settings.mark_dirty()
                     return True
                 cur = int(disp["ds"].get("map_zoom_nm", 5))
@@ -12799,7 +12857,12 @@ def draw_mfd(surf, connected=True, data_stale=False):
     if _ad.get("show_other", False):
         types_vis.add("B")
 
-    zoom_pref = int(ds.get("map_zoom_nm", 10))
+    # The WND overlay carries its own (limited) zoom so it neither needs a
+    # close-in view nor disturbs the terrain-map zoom.
+    if _map_overlay_state(ds) == "wnd":
+        zoom_pref = _winds_zoom()
+    else:
+        zoom_pref = int(ds.get("map_zoom_nm", 10))
     if zoom_pref == _map_mod.ZOOM_AUTO:
         if d2.get("ident"):
             # Fit range to the leg from the AIRCRAFT to the waypoint — NOT the
@@ -14106,7 +14169,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         # direct-to and forces north-up so the destination doesn't spin
         # under the chevron. If no D2 is active the fallback is 80 nm —
         # the user can still pan around at the widest standard range.
-        _zoom_pref  = int(ds.get("map_zoom_nm", 5))
+        _zoom_pref  = (_winds_zoom() if _map_overlay_state(ds) == "wnd"
+                       else int(ds.get("map_zoom_nm", 5)))
         _orient_pref = ds.get("map_orient", "trk")
         if _zoom_pref == _map_mod.ZOOM_AUTO:
             _d2_dst = d2 if d2.get("ident") else None

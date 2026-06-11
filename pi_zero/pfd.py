@@ -6034,23 +6034,44 @@ def _wx_view():
     return float(clat), float(clon), float(radius)
 
 
+def _winds_cache_range(zoom_nm):
+    """Cache half-extent = WINDS_CACHE_MARGIN × the zoom.  The cache and its
+    barb spacing scale with the zoom, so the fetch stays a bounded
+    ~WINDS_GRID_AXIS_PTS² points however wide the cache gets, and density per
+    screen stays constant at every zoom."""
+    z = int(zoom_nm) if zoom_nm else 80
+    z = max(20, min(160, z))
+    return float(z) * WINDS_CACHE_MARGIN
+
+
 def _winds_view():
-    """(center, range_nm) the winds poller follows.  Range is the FIXED wide
-    cache half-extent (not the zoom): fetch one big area, cull to the view on
-    draw, so zoom + small pans need no refetch."""
+    """(center, cache_range) the winds poller follows.  Range scales with the
+    current zoom; the renderer culls the wide cache to the view, so zoom and
+    small pans need no refetch."""
     clat, clon = _mfd_effective_center()
-    return float(clat), float(clon), float(WINDS_CACHE_RANGE_NM)
+    return (float(clat), float(clon),
+            _winds_cache_range(int(disp["ds"].get("map_zoom_nm", 10))))
+
+
+def _ll_extend(la, lo, brg_rad, dist_nm):
+    """Point ``dist_nm`` from (la, lo) along bearing ``brg_rad`` (rad, 0=N)."""
+    dla = dist_nm * math.cos(brg_rad) / 60.0
+    dlo = dist_nm * math.sin(brg_rad) / (60.0 * max(0.05,
+                                                    math.cos(math.radians(la))))
+    return (la + dla, lo + dlo)
 
 
 def _winds_route_points():
-    """Active course as ``[(lat, lon), ...]`` (ownship first, then the
-    remaining FPL legs / the direct-to waypoint) for the winds corridor, or
-    ``None`` when no course is active."""
+    """Active course as ``[(lat, lon), ...]`` (ownship first, then remaining FPL
+    legs / the direct-to waypoint), EXTENDED past the final waypoint along the
+    inbound course so the corridor wraps the destination instead of stopping at
+    it.  ``None`` when no course is active."""
     try:
         olat = float(disp.get("lat", DEMO_LAT))
         olon = float(disp.get("lon", DEMO_LON))
     except (TypeError, ValueError):
         return None
+    pts = None
     if _fpl_is_active():
         wps = disp["fpl"]["waypoints"]
         idx = disp["fpl"]["active_idx"]
@@ -6060,23 +6081,32 @@ def _winds_route_points():
                 pts.append((float(wp["lat"]), float(wp["lon"])))
             except (KeyError, TypeError, ValueError):
                 continue
-        return pts if len(pts) >= 2 else None
-    nav = disp.get("nav", {})
-    if nav.get("ident"):
-        try:
-            return [(olat, olon), (float(nav["lat"]), float(nav["lon"]))]
-        except (TypeError, ValueError):
-            return None
-    return None
+        if len(pts) < 2:
+            pts = None
+    if pts is None:
+        nav = disp.get("nav", {})
+        if nav.get("ident"):
+            try:
+                pts = [(olat, olon), (float(nav["lat"]), float(nav["lon"]))]
+            except (TypeError, ValueError):
+                pts = None
+    if pts is None or len(pts) < 2:
+        return None
+    (la1, lo1), (la2, lo2) = pts[-2], pts[-1]
+    mlat = math.radians((la1 + la2) / 2.0)
+    brg = math.atan2((lo2 - lo1) * math.cos(mlat), (la2 - la1))
+    pts.append(_ll_extend(la2, lo2, brg, WINDS_ROUTE_WIDTH_NM + 5.0))
+    return pts
 
 
 def _winds_fetch(lat, lon, range_nm):
-    """Poller shim: one WIDE winds grid (fixed ``WINDS_GRID_SPACING_NM`` barb
-    spacing) the renderer culls to the view, plus a corridor along an active
-    D2/FPL course beyond the cached area."""
+    """Poller shim: one winds grid sized to the cache (~WINDS_GRID_AXIS_PTS pts
+    per axis) the renderer culls to the view, plus a corridor along (and past)
+    an active D2/FPL course."""
     hour_offset = int(disp["ds"].get("winds_time_offset_h", 0))
+    spacing = (2.0 * range_nm * 0.82) / max(1, WINDS_GRID_AXIS_PTS - 1)
     return _wx.fetch_winds(
-        lat, lon, range_nm, aspect=1.0, spacing_nm=WINDS_GRID_SPACING_NM,
+        lat, lon, range_nm, aspect=1.0, spacing_nm=spacing,
         route=_winds_route_points(), route_width_nm=WINDS_ROUTE_WIDTH_NM,
         hour_offset=hour_offset)
 
