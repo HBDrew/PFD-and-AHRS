@@ -500,9 +500,13 @@ def fetch_winds(lat, lon, range_nm, aspect=1.7, route=None,
     if route and len(route) >= 2:
         pts += _route_winds_points(route, width_nm=route_width_nm,
                                    max_points=max_points)
+    # Drop only true duplicates (~0.06 nm) — a coarse snap here would collapse
+    # the regular visible-area grid at close zoom (e.g. a 5 nm inset has ~2.7
+    # nm row spacing) and leave a handful of unevenly-placed barbs.  The
+    # corridor builder already thins its own points internally.
     seen, uniq = set(), []
     for p in pts:
-        k = (round(p[0], 1), round(p[1], 1))        # ~6 nm snap
+        k = (round(p[0], 3), round(p[1], 3))
         if k in seen:
             continue
         seen.add(k)
