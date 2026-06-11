@@ -10,6 +10,36 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### WX-SOURCE-DISPLAY-FILTER  Auto/Radio/Internet should filter what's drawn
+Status: **DONE for WND + NEX (pi4 + pi_zero); MET already correct; TFC + AIR/SIG
+carved out** — the weather-source pill (`wx_source`: auto | radio | internet)
+was only gating the *pollers*, so switching to RADIO left stale INTERNET data
+on screen until it aged out.  It's now a hard render-time filter:
+- **WND** — `_winds_barbs` filters columns by `src`.  There is **no FIS-B
+  winds-aloft**, so RADIO ⇒ no barbs (correct/honest), INTERNET/AUTO ⇒ the
+  Open-Meteo barbs.  (Winds is effectively internet-only; this was the reported
+  bug — INET barbs lingered in RADIO.)
+- **NEX** — `_nexrad_render_arg` returns None in RADIO (hide the downloaded
+  mosaic); `_fisb_nexrad_cells` returns [] in INTERNET (hide the FIS-B cells);
+  AUTO shows both.
+- **MET** — already filtered at the merge (`inet=[]` in radio, `rdr=[]` in
+  internet).  No change.
+- **TFC** — carve-out (separate `traffic_source` selector).  RADIO = radio
+  only, AUTO = radio+internet merged, **INTERNET still keeps radio** on purpose:
+  the local ADS-B receiver is the real see-and-avoid picture and must never be
+  hidden to honour a literal "internet only" (it'd suppress real, locally-sensed
+  targets — unlike weather, where source is just provenance of the same data).
+- **AIR/SIG — NOT filterable as-is (deferred).** The FIS-B store *dedupes*
+  AIRMET/SIGMET advisories by text and graphics by geometry and stores **no
+  source tag** (`add_advisory`/`add_graphic` in `shared/fisb.py`), so a radio
+  and internet copy of the same NWS bulletin collapse to one.  A hard
+  source-filter would need per-item source tagging + a rework of the cross-source
+  dedup.  Low value (the bulletins are identical across radio/internet — it's the
+  same product, so a lingering "internet" AIRMET in RADIO mode isn't *wrong*
+  data), so left for a follow-up if strict consistency is wanted.
+Files: `_winds_barbs`, `_nexrad_render_arg`, `_fisb_nexrad_cells` in both
+`pi4/pfd.py` and `pi_zero/pfd.py`.
+
 ### WINDS-FORECAST-SERIES  Winds roll forward to "now"; inset is always now
 Status: **DONE (pi4 + pi_zero)** — winds-aloft barbs are no longer a frozen
 fetch-time snapshot.  Each national-cache column now carries the forecast

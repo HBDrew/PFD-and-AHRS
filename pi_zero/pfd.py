@@ -6113,7 +6113,10 @@ def _fisb_locate(icao):
 
 
 def _fisb_nexrad_cells():
-    """FIS-B (radio) NEXRAD intensity cells for the map, or []."""
+    """FIS-B (radio) NEXRAD intensity cells for the map, or [].  Hidden when the
+    weather source is INTERNET-only."""
+    if disp["cs"].get("wx_source", "auto") == "internet":
+        return []
     store = _fisb_store()
     return store.nexrad_cells() if store is not None else []
 
@@ -6227,7 +6230,10 @@ def _update_nexrad():
 
 def _nexrad_render_arg():
     """(surface, bbox, seq) for moving_map.render, or None when the overlay
-    is off / nothing decoded yet."""
+    is off / nothing decoded yet.  The downloaded (internet) mosaic is hidden
+    when the weather source is RADIO-only."""
+    if disp["cs"].get("wx_source", "auto") == "radio":
+        return None
     if not disp["ds"].get("map_show_nexrad") or _nexrad_decoded["surf"] is None:
         return None
     return (_nexrad_decoded["surf"], _nexrad_decoded["bbox"],
@@ -10936,13 +10942,20 @@ def _winds_barbs(offset_h=None):
     alt = int(disp["ds"].get("winds_alt_ft", 9000))
     target = time.time() + offset_h * 3600.0
     hour_bucket = int((target + 1800.0) // 3600.0)
-    key = (alt, store.winds_count, offset_h, hour_bucket)
+    # Honour the weather-source selector: RADIO shows only RDR winds (there is no
+    # FIS-B winds-aloft, so RADIO is empty), INTERNET only INET, AUTO both.
+    wxsrc = disp["cs"].get("wx_source", "auto")
+    key = (alt, store.winds_count, offset_h, hour_bucket, wxsrc)
     if key == _winds_barbs_key:
         return _winds_barbs_cache
     out = []
     for sid in store.winds_stations():
         w = store.winds_for(sid)
         if not w:
+            continue
+        csrc = w.get("src") or "RDR"
+        if (wxsrc == "radio" and csrc != "RDR") or \
+           (wxsrc == "internet" and csrc != "INET"):
             continue
         pos = _winds_pos(sid, w)
         if pos is None:
