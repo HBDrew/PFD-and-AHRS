@@ -11,19 +11,23 @@ notes with enough context to pick it up cold.
 ## Open
 
 ### WX-SOURCE-DISPLAY-FILTER  Auto/Radio/Internet should filter what's drawn
-Status: **DONE for WND + NEX (pi4 + pi_zero); MET already correct; TFC + AIR/SIG
+Status: **DONE for NEX (pi4 + pi_zero); MET already correct; WND + TFC + AIR/SIG
 carved out** — the weather-source pill (`wx_source`: auto | radio | internet)
 was only gating the *pollers*, so switching to RADIO left stale INTERNET data
-on screen until it aged out.  It's now a hard render-time filter:
-- **WND** — `_winds_barbs` filters columns by `src`.  There is **no FIS-B
-  winds-aloft**, so RADIO ⇒ no barbs (correct/honest), INTERNET/AUTO ⇒ the
-  Open-Meteo barbs.  (Winds is effectively internet-only; this was the reported
-  bug — INET barbs lingered in RADIO.)
+on screen until it aged out.  It's now a hard render-time filter where the layer
+has two real sources:
 - **NEX** — `_nexrad_render_arg` returns None in RADIO (hide the downloaded
   mosaic); `_fisb_nexrad_cells` returns [] in INTERNET (hide the FIS-B cells);
   AUTO shows both.
 - **MET** — already filtered at the merge (`inet=[]` in radio, `rdr=[]` in
   internet).  No change.
+- **WND** — carve-out: winds aloft is **internet-only** (there is no FIS-B
+  winds), so it ALWAYS pre-loads and ALWAYS shows regardless of the pill — like
+  the traffic sensor below, hiding the only source just blanks the layer.
+  `_winds_client.enabled = True` unconditionally, and the `set_winds` store feed
+  is pulled out of the `not radio_only` gate so it feeds in every mode.  (The
+  first instinct was the opposite — RADIO ⇒ barbs gone — but that assumed FIS-B
+  carried winds; it doesn't, so "always visible" is the right version.)
 - **TFC** — carve-out (separate `traffic_source` selector).  RADIO = radio
   only, AUTO = radio+internet merged, **INTERNET still keeps radio** on purpose:
   the local ADS-B receiver is the real see-and-avoid picture and must never be
@@ -37,8 +41,8 @@ on screen until it aged out.  It's now a hard render-time filter:
   dedup.  Low value (the bulletins are identical across radio/internet — it's the
   same product, so a lingering "internet" AIRMET in RADIO mode isn't *wrong*
   data), so left for a follow-up if strict consistency is wanted.
-Files: `_winds_barbs`, `_nexrad_render_arg`, `_fisb_nexrad_cells` in both
-`pi4/pfd.py` and `pi_zero/pfd.py`.
+Files: `_nexrad_render_arg`, `_fisb_nexrad_cells`, and the winds enable/feed in
+`_update_weather` (always-on) in both `pi4/pfd.py` and `pi_zero/pfd.py`.
 
 ### WINDS-FORECAST-SERIES  Winds roll forward to "now"; inset is always now
 Status: **DONE (pi4 + pi_zero)** — winds-aloft barbs are no longer a frozen

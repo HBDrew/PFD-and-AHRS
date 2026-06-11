@@ -1981,13 +1981,15 @@ def _update_weather():
     radio_only = (src == "radio")
     inet_only  = (src == "internet")
     _wx_client.paused = radio_only
-    # Pre-load the WHOLE national winds grid whenever we have an internet path
-    # (i.e. not radio-only) — the pilot can pull the entire US on the ground and
-    # then fly with no connection.  The cache walks every stale zone (the
-    # aircraft's first), one per tick, then sits idle until the ~6 h GFS cadence
-    # makes a zone stale again.  It's disk-cached, so a restart re-loads for free.
+    # Winds aloft is an INTERNET-ONLY product (there is no FIS-B winds-aloft), so
+    # it always pre-loads and always shows regardless of the weather-source pill
+    # — the same carve-out as the local traffic sensor: RADIO suppresses the
+    # other internet weather, but winds has no radio alternative to fall back to,
+    # so hiding it would just blank the layer.  The cache walks every stale zone
+    # (the aircraft's first) one per tick, then idles until the ~6 h GFS cadence;
+    # it's disk-cached, so a restart re-loads for free.
     if _winds_client is not None:
-        _winds_client.enabled = not radio_only
+        _winds_client.enabled = True
     w = disp["weather"]
     inet = [] if radio_only else _wx_client.snapshot()
     rdr  = [] if inet_only  else _fisb_rdr_snapshot()
@@ -2003,22 +2005,25 @@ def _update_weather():
     # FIS-B ground stations we're hearing (radio reception cue + diagnostic),
     # and graphical hazard areas (G-AIRMET/SIGMET polygons for the MET overlay).
     _store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
+    global _taf_fed_at, _airsig_fed_at, _winds_fed_at, _notam_fed_at
+    # Winds always feeds the store — internet-only product, shown in every source
+    # mode (see the enable carve-out above), so it isn't gated on radio_only.
+    if (_store is not None and _winds_client is not None
+            and _winds_client.updated_s != _winds_fed_at):
+        _winds_fed_at = _winds_client.updated_s
+        _store.set_winds(_winds_client.columns(), "INET")
     # Internet TAF + AIRMET/SIGMET backfill: fold each poller's snapshot into the
     # same FIS-B store the readouts already read, but only when it actually
     # refreshed (updated_s changed) and we're not radio-only.  Radio wins per
     # item inside the store, so this purely backfills.  AIRMET/SIGMET carry
     # geometry, so this also populates the MET-page graphical overlay.
     if _store is not None and not radio_only:
-        global _taf_fed_at, _airsig_fed_at, _winds_fed_at, _notam_fed_at
         if _taf_client is not None and _taf_client.updated_s != _taf_fed_at:
             _taf_fed_at = _taf_client.updated_s
             _store.add_tafs(_taf_client.snapshot())
         if _airsig_client is not None and _airsig_client.updated_s != _airsig_fed_at:
             _airsig_fed_at = _airsig_client.updated_s
             _store.add_airsigmets(_airsig_client.snapshot())
-        if _winds_client is not None and _winds_client.updated_s != _winds_fed_at:
-            _winds_fed_at = _winds_client.updated_s
-            _store.set_winds(_winds_client.columns(), "INET")
         if _notam_client is not None and _notam_client.updated_s != _notam_fed_at:
             _notam_fed_at = _notam_client.updated_s
             _store.add_notams(_notam_client.snapshot())
@@ -12023,20 +12028,14 @@ def _winds_barbs(offset_h=None):
     alt = int(disp["ds"].get("winds_alt_ft", 9000))
     target = time.time() + offset_h * 3600.0
     hour_bucket = int((target + 1800.0) // 3600.0)
-    # Honour the weather-source selector: RADIO shows only RDR winds (there is no
-    # FIS-B winds-aloft, so RADIO is empty), INTERNET only INET, AUTO both.
-    wxsrc = disp["cs"].get("wx_source", "auto")
-    key = (alt, store.winds_count, offset_h, hour_bucket, wxsrc)
+    # Winds is internet-only and always shown (not filtered by the source pill).
+    key = (alt, store.winds_count, offset_h, hour_bucket)
     if key == _winds_barbs_key:
         return _winds_barbs_cache
     out = []
     for sid in store.winds_stations():
         w = store.winds_for(sid)
         if not w:
-            continue
-        csrc = w.get("src") or "RDR"
-        if (wxsrc == "radio" and csrc != "RDR") or \
-           (wxsrc == "internet" and csrc != "INET"):
             continue
         pos = _winds_pos(sid, w)        # own lat/lon (internet grid) or airport DB
         if pos is None:
