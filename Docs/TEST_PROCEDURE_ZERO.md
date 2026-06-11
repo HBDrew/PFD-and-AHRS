@@ -346,6 +346,24 @@ Run in demo mode (`pi_zero/pfd.py --demo`) or flight simulator (Setup → System
 
 ---
 
+## Phase 8 — Weather / Winds / Traffic / MFD / Screen Sync (piZ)
+
+Behaviour mirrors the Pi 4 — see **TEST_PROCEDURE_PI4 Phases 9–12** for the full steps; run them here too. Pi-Zero-specific checks:
+
+| # | Step | Expected | Pass | Notes |
+|---|------|----------|------|-------|
+| 8.1 | OVLY cycle ASP→TFC→MET→WND→NEX | Each overlay draws; status line shows source mode + age | | |
+| 8.2 | WND page: altitude/time buttons, 40/80/160 zoom, status line | Barbs update; only 40/80/160 offered; `WINDS n/N · age` shown | | |
+| 8.3 | Two displays (piZ + pi4/5), one with internet | piZ adopts winds zones over screen-sync, makes no Open-Meteo calls | | |
+| 8.4 | Traffic alert-envelope entry | Flashing TRAFFIC banner — **visual only, no voice callout** (piZ has no audio) | | |
+| 8.5 | 3-finger ~2 s hold (ENABLE MFD on) | Swaps PFD ↔ full-screen MFD; pan/CTR/data-strip work | | |
+| 8.6 | SCREEN SYNC: set a bug/D2/FPL on a peer | Mirrors here; PEER badge green; TX/RX honoured | | |
+| 8.7 | Copy SRTM1 tiles from a Pi 4/5, open Terrain screen, tap COMPACT | Tiles decimate to SRTM3 in place; ~8.7× smaller; progress shown | | |
+
+(The flight-path-vector marker is **not** on the Pi Zero yet — no test.)
+
+---
+
 ## Anomaly Log
 
 Use this table to record any unexpected behaviour for later investigation.

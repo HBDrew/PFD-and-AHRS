@@ -467,6 +467,82 @@ When the aircraft enters an extreme attitude, the PFD shall declutter to a minim
 
 ---
 
+## 14A. Display Hardware Profiles
+
+> **REQ-DISP-PI4-HW-001** The full-SVT build shall run unmodified on both the Raspberry Pi 4 and the Raspberry Pi 5.
+
+> **REQ-DISP-PI4-HW-002** A `DISPLAY_PROFILE` selector shall support `roadom_7` (1024×600 HDMI), `roadom_10` (1024×600 HDMI), and `waveshare_35` (640×480 DPI). All layout constants shall be derived from `DISPLAY_W`/`DISPLAY_H` so the PFD scales to the selected resolution.
+
+---
+
+## 14B. Flight-Path Vector
+
+> **REQ-DISP-PI4-FPV-001** The AI shall display a velocity-vector / flight-path marker computed from GPS track (azimuth) and flight-path angle (`atan2(vertical speed, groundspeed)`), projected into the same AI frame as the airport/terrain overlays.
+
+> **REQ-DISP-PI4-FPV-002** The marker shall be hidden below 5 kt groundspeed and shall clamp to an edge arrow when the vector falls outside the AI viewport.
+
+> **REQ-DISP-PI4-FPV-003** The marker shall be toggleable from DISPLAY setup (`FLIGHT PATH`, default ON) and persist in `data/settings.json`.
+
+---
+
+## 14C. Weather (internet + FIS-B)
+
+> **REQ-DISP-PI4-WX-001** The display shall present METAR, TAF, AIRMET/SIGMET, NEXRAD, and NOTAM weather from two blended sources — internet (aviationweather.gov, Open-Meteo, FAA NOTAM API) and FIS-B 978 UAT radio — selectable per product family via a RADIO / AUTO / INET toggle (AUTO: radio wins per station, internet backfills).
+
+> **REQ-DISP-PI4-WX-002** Each readout shall be tagged with its origin (FIS-B / INET) and a data-age, and the map status strip shall show source mode + per-source counts + age.
+
+> **REQ-DISP-PI4-WX-003** A single on-map overlay control (OVLY) shall cycle the heavy overlays one at a time: Airspace → Traffic → METAR → Winds → NEXRAD. Traffic shall render on every page regardless.
+
+> **REQ-DISP-PI4-WX-004** The MET page shall show flight-category station dots (VFR/MVFR/IFR/LIFR) and a tap-to-open readout with METAR/TAF/AIRMET/SIGMET/NOTAM tabs (nearest-first, scrollable, ON-ROUTE flagged), falling back to the nearest reporting station when the tapped field has none.
+
+> **REQ-DISP-PI4-WX-005** NEXRAD shall badge both the receipt age and the radar mosaic valid-age (green <10 min / amber <20 / red beyond).
+
+> **REQ-DISP-PI4-WX-006** NOTAMs shall require FAA NOTAM API credentials entered on the Connectivity screen; absent a key the NOTAM fetch shall be a no-op leaving the rest of the suite unaffected.
+
+---
+
+## 14D. Winds Aloft
+
+> **REQ-DISP-PI4-WND-001** Winds/temperatures aloft shall be displayed as standard wind barbs on the moving map at a pilot-selectable altitude (3,000–18,000 ft) and forecast time (now / +N h), from the GFS `gfs025` pressure-level forecast via Open-Meteo (US-only, no key).
+
+> **REQ-DISP-PI4-WND-002** Winds shall be cached as a national grid split into zones, fetched one zone at a time (the aircraft's zone first), persisted to disk, and re-pulled only when a zone exceeds a staleness threshold (≥ 1 h; GFS reissues ~6 h) — so the grid can be pre-loaded on the ground and used with no in-flight connection.
+
+> **REQ-DISP-PI4-WND-003** The WND page shall use its own limited zoom (40/80/160 NM), render barbs only at ≥40 NM, and show a grid-fill + age status line.
+
+> **REQ-DISP-PI4-WND-004** With multiple displays on the network, winds zones shall be shared over the screen-sync link so a display with internet feeds its peers, which shall make no Open-Meteo calls while a peer is supplying data (per-IP rate-limit mitigation).
+
+---
+
+## 14E. Traffic (ADS-B / FIS-B IN)
+
+> **REQ-DISP-PI4-TFC-001** ADS-B IN traffic (radio GDL90/UDP or built-in internet feed, source-selectable) shall render as diamonds with a heading leader and relative-altitude tag, colour-coded by threat tier (alert / proximate / other) per range+altitude envelopes.
+
+> **REQ-DISP-PI4-TFC-002** Traffic shall be drawn on every map page (clamped to nearby targets except on the dedicated TFC page); alert-class threats shall never be hidden by the clamp or the declutter filters (TFC ALT / TFC RANGE).
+
+> **REQ-DISP-PI4-TFC-003** A new target entering the alert envelope shall raise a flashing TRAFFIC banner and, on the Pi 4, a rate-limited "Traffic, Traffic" voice callout gated by the ALERT AUDIO master switch.
+
+---
+
+## 14F. Full-Screen MFD
+
+> **REQ-DISP-PI4-MFD-001** A 3-finger ~2 s hold shall swap between the PFD and a full-screen moving-map MFD, gated by an ENABLE MFD setting; the unit shall boot to the PFD.
+
+> **REQ-DISP-PI4-MFD-002** The MFD shall provide direct-to, flight-plan, overlay-cycle, orientation, range, zoom, and recenter controls, pan-by-drag, and a configurable 8-slot bottom data strip.
+
+---
+
+## 14G. Screen Sync (multi-display)
+
+> **REQ-DISP-PI4-SYNC-001** Displays on a shared network shall peer-sync (no master) over UDP broadcast, with per-category TX/RX control for bugs, baro, nav, AHRS, GPS, the flight plan/library, and winds-aloft zones, plus an AUTO/USB/NET transport selector and a live peer/links status.
+
+---
+
+## 14H. Hard-Iron (TUMBLE) Magnetometer Calibration
+
+> **REQ-DISP-PI4-MAG-001** In addition to the cardinal walk-through, the AHRS cal modal shall offer a TUMBLE hard-iron calibration: while active the firmware collects per-axis magnetometer min/max as the unit is rotated through all orientations, and on finish solves the hard-iron offset as the per-axis ellipsoid centre and persists it to AHRS flash. The modal shall show elapsed time and per-axis spread.
+
+---
+
 ## 15. Future Planned Features
 
 The following features are planned for future versions of the Pi 4 display and are not required for the initial release:

@@ -292,6 +292,26 @@ Demo mode provides a self-contained, scripted demonstration of the PFD that can 
 
 ---
 
+## 14A. Weather, Winds, Traffic, MFD, Screen Sync
+
+The Pi Zero implements the same weather suite, winds aloft, traffic, full-screen MFD, and screen-sync features as the Pi 4 — see **REQUIREMENTS_DISPLAY_PI4 §14C–14G** for the detailed requirements; they apply equally here. Pi-Zero-specific points:
+
+> **REQ-DISP-ZERO-WX-001** The Pi Zero shall present the same internet + FIS-B weather products, OVLY overlay cycle, RADIO/AUTO/INET source toggle, MET readout picker, NEXRAD, and NOTAM key entry as the Pi 4.
+
+> **REQ-DISP-ZERO-WND-001** The Pi Zero shall display winds aloft (national disk-cached GFS grid, altitude/forecast-time selectors, 40/80/160 zoom, status line) and shall share/adopt winds zones over the screen-sync link with peer displays.
+
+> **REQ-DISP-ZERO-TFC-001** The Pi Zero shall display ADS-B/FIS-B traffic with threat-coloured diamonds and the declutter filters, and shall raise a flashing TRAFFIC banner on an alert-envelope entry. The Pi Zero has **no audio stack**, so the traffic alert is **visual-only** (no voice callout).
+
+> **REQ-DISP-ZERO-MFD-001** The Pi Zero shall provide the full-screen MFD (3-finger swap, chrome, data strip, pan/recenter) and peer screen-sync (per-category TX/RX, transport selector).
+
+> **REQ-DISP-ZERO-MAG-001** The Pi Zero compass cal currently provides the cardinal walk-through only; the TUMBLE hard-iron flow (Pi 4 §14H) is a planned port.
+
+> **REQ-DISP-ZERO-FPV-001** The flight-path-vector marker (Pi 4 §14B) is **not yet implemented** on the Pi Zero (planned port).
+
+> **REQ-DISP-ZERO-SRTM-001** When full-resolution SRTM1 tiles are present (e.g. rsynced from a Pi 4/5), an on-screen **COMPACT** action shall decimate them in place to SRTM3 (~8.7× smaller) with atomic per-tile rewrites.
+
+---
+
 ## 15. Relationship to Pi 4 Variant and SVT Capability
 
 This section documents the deliberate architectural scope boundary between the Pi Zero 2W display variant and the full-capability Pi 4 variant, to prevent ambiguity in requirements tracing and software integration.

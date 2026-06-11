@@ -515,6 +515,70 @@ Requires the simulator running with a direct-to or synthetic approach active.
 
 ---
 
+## Phase 8 — Flight-Path Vector
+
+| # | Step | Expected | Pass | Notes |
+|---|------|----------|------|-------|
+| 8.1 | DISPLAY setup → FLIGHT PATH ON; sim a climbing crab (track ≠ heading) | Cyan circle/wings/stub appears below + offset from the nose | | |
+| 8.2 | Slow to < 5 kt GS (or park) | Marker hides | | |
+| 8.3 | Drive an extreme attitude / large crab so the vector leaves the AI | Marker clamps to an edge arrow | | |
+| 8.4 | Toggle FLIGHT PATH OFF | Marker gone; setting persists across reboot | | |
+
+## Phase 9 — Weather (sources, MET, NEXRAD, NOTAM)
+
+| # | Step | Expected | Pass | Notes |
+|---|------|----------|------|-------|
+| 9.1 | On the map, tap the WX status line | Cycles RADIO / AUTO / INET; status shows mode + R/I counts + age | | |
+| 9.2 | OVLY → MET (internet up) | Flight-category station dots (green/blue/red/magenta) appear | | |
+| 9.3 | Tap a station → Weather *ICAO* | Readout opens with METAR/TAF/AIRMET/SIGMET/NOTAM tabs; unavailable tabs greyed | | |
+| 9.4 | Tap a field with no METAR | Falls back to nearest station, labelled with distance/bearing | | |
+| 9.5 | OVLY → NEX | NEXRAD raster draws; status shows receipt-age and `NEX RDR valid` age (green/amber/red) | | |
+| 9.6 | Enter FAA NOTAM key in Connectivity, open a NOTAM tab | NOTAMs list (nearest-first); blank key = no NOTAMs, rest of WX unaffected | | |
+
+## Phase 10 — Winds Aloft (WND)
+
+| # | Step | Expected | Pass | Notes |
+|---|------|----------|------|-------|
+| 10.1 | On the ground with internet, OVLY → WND | Status line counts zones up to N/N (green when full); barbs appear | | |
+| 10.2 | Tap the altitude button | Cycles 3k/6k/9k/12k/18k; barbs/temps update with no new fetch | | |
+| 10.3 | Tap the forecast-time button | Cycles NOW/+Nh; data re-resolves | | |
+| 10.4 | Zoom the WND page | Only 40/80/160 offered; barbs hidden below 40; label tracks the zoom | | |
+| 10.5 | Pan the map | Barbs stay put (world-anchored), don't reshuffle | | |
+| 10.6 | Disconnect internet, restart | Winds reload from disk cache (no fetch); journal shows `loaded … from disk` | | |
+| 10.7 | Two displays, one with internet | One logs `fetched zone N`, the other `adopted zone N from peer`; the peer makes no Open-Meteo calls | | |
+
+## Phase 11 — Traffic (ADS-B / FIS-B IN)
+
+| # | Step | Expected | Pass | Notes |
+|---|------|----------|------|-------|
+| 11.1 | Feed traffic (sim/replay/live); tap the ADS-B status line | Cycles RADIO/AUTO/INET with R/I counts | | |
+| 11.2 | Observe diamonds | Leader line + relative-alt tag; alert=red, proximate=amber, other=cyan | | |
+| 11.3 | On a weather page | Distant traffic clamped to nearby; alert-class still shown | | |
+| 11.4 | OVLY → TFC, tap a diamond | All traffic shown; detail card opens (callsign/alt/track/VS/range-bearing) | | |
+| 11.5 | Set TFC ALT / TFC RANGE filters | Distant/off-band targets hidden; alert-class survive | | |
+| 11.6 | New target into the alert envelope | Flashing TRAFFIC banner + "Traffic, Traffic" callout (ALERT AUDIO on) | | |
+
+## Phase 12 — Full-Screen MFD + Screen Sync
+
+| # | Step | Expected | Pass | Notes |
+|---|------|----------|------|-------|
+| 12.1 | 3-finger hold ~2 s (ENABLE MFD on) | Swaps PFD ↔ full-screen MFD | | |
+| 12.2 | Disable ENABLE MFD, retry | Swap is locked out | | |
+| 12.3 | On the MFD: pan-drag, then CTR | Map pans (heavy layers skipped during drag); CTR recenters | | |
+| 12.4 | Tap a data-strip slot | Picker opens; reassigned slot persists | | |
+| 12.5 | Two displays, SCREEN SYNC on; set a bug / D2 / FPL on one | Appears on the other; PEER badge green; per-category TX/RX honoured | | |
+| 12.6 | Toggle TRANSPORT USB / NET / AUTO | LINKS row shows eligible interfaces; peer still seen on an active link | | |
+
+## Phase 13 — Hard-Iron (TUMBLE) Compass Cal
+
+| # | Step | Expected | Pass | Notes |
+|---|------|----------|------|-------|
+| 13.1 | AHRS cal modal → TUMBLE; rotate the unit through all axes ~30 s | Elapsed timer runs; per-axis spread grows | | |
+| 13.2 | Tap STOP TUMBLE | Offsets solved + persisted to AHRS flash; heading improves | | |
+| 13.3 | Reboot the display (not the Pico) | Cal retained (lives on the AHRS) | | |
+
+---
+
 ## Anomaly Log
 
 Use this table to record any unexpected behaviour for later investigation.
