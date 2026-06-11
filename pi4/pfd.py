@@ -56,8 +56,17 @@ import fisb as _fisb
 import nexrad as _nexrad
 import mapoverlay as _ovl
 import perf as _perf_mod
-from terrain import get_elevation_ft, set_tile_cache_max as _set_tile_cache_max
+from terrain import (get_elevation_ft,
+                     set_tile_cache_max as _set_tile_cache_max,
+                     set_srtm3_cache_dir as _set_srtm3_cache_dir)
 from svt_renderer import render_svt as render_svt_pygame
+
+# Parallel on-disk SRTM3 cache for the moving-map tint: keep full SRTM1 in
+# data/srtm (the SVT 3D scene needs it) but read cheap pre-decimated ~2.8 MB
+# tiles from data/srtm3 for the tint/TAWS-overlay.  Fills on demand the first
+# time the tint touches a tile, so wide-zoom builds stop re-reading 26 MB
+# files — critical on the 2 GB Pi 4's SD card.
+_set_srtm3_cache_dir(os.path.join(os.path.dirname(SRTM_DIR), "srtm3"))
 
 # Size the SRTM tile cache to available RAM.  Now that the moving-map tint
 # cache key is stable (see _quantise_centre), the wide-zoom tint rebuilds

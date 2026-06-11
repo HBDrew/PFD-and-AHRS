@@ -139,6 +139,35 @@ def set_tile_cache_max(n: int):
         _tile_cache.popitem(last=False)
 
 
+# Optional parallel on-disk SRTM3 cache.  When set, decimated ("srtm3")
+# tile requests read a pre-decimated ~2.8 MB tile from here instead of
+# re-decimating the 26 MB SRTM1 file on every cold read.  The first miss
+# decimates from SRTM1 and persists the small tile.  The Pi 4 points this at
+# a sibling of SRTM_DIR so its full-SRTM1 tiles stay intact for the SVT 3D
+# scene while the moving-map tint reads cheap tiles.
+_srtm3_cache_dir = ""
+
+
+def set_srtm3_cache_dir(path: str):
+    """Directory for on-demand decimated SRTM3 tiles ("" disables)."""
+    global _srtm3_cache_dir
+    _srtm3_cache_dir = path or ""
+
+
+def _write_srtm3_cache(cache_dir: str, fname: str, data_raw):
+    """Persist a decimated tile (raw int16 big-endian metres, SRTM3 size) so
+    the next cold read is a direct ~2.8 MB read.  Atomic temp+rename;
+    failures (read-only FS, disk full, race) are non-fatal."""
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        dst = os.path.join(cache_dir, fname)
+        tmp = f"{dst}.tmp{os.getpid()}"
+        data_raw.astype('>i2').tofile(tmp)   # force big-endian on disk
+        os.replace(tmp, dst)
+    except Exception:
+        pass
+
+
 def _tile_key(lat_int: int, lon_int: int) -> str:
     ns = 'N' if lat_int >= 0 else 'S'
     ew = 'E' if lon_int >= 0 else 'W'
@@ -179,7 +208,20 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int, prefer: str = None):
         _tile_cache.move_to_end(key)   # mark as most-recently-used
         return _tile_cache[key]
 
-    path = os.path.join(srtm_dir, fname)
+    # When a decimated tile is wanted and a parallel SRTM3 cache dir is
+    # configured, prefer a pre-decimated tile there over decimating the
+    # 26 MB SRTM1 file again.  First miss decimates from SRTM1 (below) and
+    # writes the small tile for next time.
+    src_dir = srtm_dir
+    write_d3 = False
+    if want_d3 and _srtm3_cache_dir:
+        c3 = os.path.join(_srtm3_cache_dir, fname)
+        if os.path.exists(c3) and os.path.getsize(c3) == SRTM3_SAMPLES * SRTM3_SAMPLES * 2:
+            src_dir = _srtm3_cache_dir       # cheap direct read of cached SRTM3
+        elif os.path.exists(os.path.join(srtm_dir, fname)):
+            write_d3 = True                  # decimate from SRTM1, then cache
+
+    path = os.path.join(src_dir, fname)
     if not os.path.exists(path):
         _cache_put(key, None)
         return None
@@ -214,6 +256,8 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int, prefer: str = None):
                            shape=(SRTM1_SAMPLES, SRTM1_SAMPLES))
             data_raw = np.array(mm[::3, ::3])
             del mm
+            if write_d3:
+                _write_srtm3_cache(_srtm3_cache_dir, fname, data_raw)
         else:
             data_raw = np.fromfile(path, dtype='>i2').reshape((n_samples, n_samples))
         # metres → feet, replace voids, then store as int16 to halve the
