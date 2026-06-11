@@ -36,6 +36,12 @@ and the internet feeds up, switch to the page you want (OVLY → WND / MET / TFC
 or 3-finger-swap to the MFD), then save a framebuffer grab to the matching
 filename, e.g.:
 
+> **Load an active flight plan first** (or a Direct-To) before grabbing
+> `preview_mfd.png` — otherwise the WPT / BTW / DIST / ETE / ETA slots on the
+> bottom data strip dash out and the magenta course line is absent. The piZ
+> offline batch seeds a KPRC → KSEZ → KFLG plan for this; match it on the pi4
+> capture so the two manuals stay consistent.
+
 ```bash
 # on the running pi4/pi5, capture the current framebuffer:
 fbgrab ~/PFD-and-AHRS/pi4/previews/pfd_gl/preview_winds.png    # WND page up

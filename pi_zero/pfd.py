@@ -13228,7 +13228,7 @@ def main():
         _winds_barbs_real = _winds_barbs
 
         def _enter_mfd(zoom_nm, overlay):
-            _seed(roll=0, pitch=0, hdg=360, alt=9500, speed=120, vspeed=0,
+            _seed(roll=0, pitch=0, hdg=40, alt=9500, speed=120, vspeed=0,
                   lat=_CLAT, lon=_CLON)
             disp["display_mode"] = "mfd"
             disp["ds"]["mfd_enabled"] = True
@@ -13241,6 +13241,20 @@ def main():
             _ovl.apply(disp["ds"], overlay)
             disp["traffic"] = {"targets": []}
             disp.setdefault("weather", {})["metars"] = []
+            # Seed an active flight plan (KPRC → KSEZ → KFLG, KSEZ leg active)
+            # so the magenta course line paints and the WPT/BTW/DIST/ETE/ETA
+            # data-strip slots show real values instead of dashing out.  The
+            # ownship sits just south of the KPRC→KSEZ leg, ~12 NM from KSEZ.
+            disp["fpl"]["waypoints"] = [
+                {"ident": "KPRC", "lat": 34.6545, "lon": -112.4196,
+                 "elev_ft": 5045, "user": False},
+                {"ident": "KSEZ", "lat": 34.8486, "lon": -111.7884,
+                 "elev_ft": 4830, "user": False},
+                {"ident": "KFLG", "lat": 35.1385, "lon": -111.6713,
+                 "elev_ft": 7014, "user": False},
+            ]
+            disp["fpl"]["active_idx"] = 1   # KPRC → KSEZ leg active
+            _fpl_apply_active()
 
         # Bare full-screen MFD chrome + map.
         _enter_mfd(40, "tfc")
@@ -13283,9 +13297,13 @@ def main():
         _save("preview_winds.png")
         globals()["_winds_barbs"] = _winds_barbs_real
 
-        # Back to the PFD for the remaining scenes.
+        # Back to the PFD for the remaining scenes.  Drop the preview flight
+        # plan so it doesn't bleed magenta course chrome into the PFD shots.
         disp["display_mode"] = "pfd"
         _ovl.apply(disp["ds"], "tfc")
+        _fpl_deactivate()
+        disp["fpl"]["waypoints"] = []
+        disp["fpl"]["active_idx"] = -1
 
         # ── Numpad overlays ───────────────────────────────────────────────────
         _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115)

@@ -1101,7 +1101,35 @@ Drag anywhere on the map (outside a button) to **pan**; heavy layers (terrain ti
 
 ### Bottom data strip
 
-A full-width strip along the bottom carries **8 readout slots**, each a cyan caption over a coloured value. **Tap any slot** to open the picker and reassign it. Available kinds include **GS** (groundspeed), **TRK** (track), **ALT** (altitude), **WPT** (active waypoint), **BTW** (bearing-to-waypoint), **DIST**, **ETE**, **ETA**. The default layout is GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA, and your choices persist in `data/settings.json`.
+A full-width strip along the bottom carries **8 readout slots**, each a cyan caption over a coloured value. **Tap any slot** to open the picker, then tap a field to assign it; the selection advances to the next slot so you can fill the row left-to-right with successive taps. The default layout is **GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA**, and your choices persist in `data/settings.json`.
+
+The full set of assignable fields:
+
+| Field | Caption | Shows |
+| --- | --- | --- |
+| Groundspeed | **GS** | GPS groundspeed, kt |
+| Airspeed | **AS** | Indicated airspeed, kt |
+| True airspeed | **TAS** | True airspeed, kt |
+| Track | **TRK** | GPS ground track, ° (dashes below ~3 kt) |
+| Heading | **HDG** | Magnetic/true heading, ° |
+| Altitude | **ALT** | Baro altitude, ft |
+| Above-ground | **AGL** | Height above terrain, ft (needs terrain data) |
+| Vertical speed | **VS** | Climb/descent, ft/min |
+| Time | **UTC** | Zulu clock, HH:MMZ |
+| Baro setting | **BARO** | Altimeter setting (inHg or hPa per units) |
+| Satellites | **SAT** | GPS satellites in solution |
+| Active waypoint | **WPT** | Ident of the active leg's destination |
+| Bearing-to | **BTW** | Bearing to the active waypoint, ° |
+| Desired track | **DTK** | Course of the active leg, ° |
+| Distance | **DIST** | Distance to the active waypoint, NM |
+| Distance (dest.) | **DISW** | Distance through all remaining legs, NM |
+| Cross-track | **XTE** | Cross-track error off the active leg, NM |
+| Time en route | **ETE** | Time to the active waypoint, MM:SS / H:MM |
+| ETE (dest.) | **ETEW** | Time through all remaining legs |
+| Arrival | **ETA** | Estimated arrival at the active waypoint, Zulu |
+| Arrival (dest.) | **ETW** | Estimated arrival at the final waypoint, Zulu |
+
+The seven nav-derived fields (**WPT, BTW, DTK, DIST, DISW, XTE, ETE, ETEW, ETA, ETW**) render magenta and show `--` when there's no active Direct-To or flight-plan leg; once a waypoint is active they fill in live.
 
 ---
 

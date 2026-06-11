@@ -601,7 +601,7 @@ The Pi Zero has a full-screen moving-map MFD in addition to the PFD.
 
 - **Swap PFD ↔ MFD:** a **3-finger hold (~2 s)** (the 2-finger 0.8 s hold opens the setup menu — §8). The swap is gated by **ENABLE MFD** (§13); the unit boots to the PFD.
 - **Chrome:** **D→** (direct-to) top-left, **FPL** top-right, the **TRK↑/N↑** orientation label, **OVLY** overlay cycle, the **RNG** label, **−/+** zoom buttons, and a **CTR** recenter button that appears when the map is panned. Drag the map to pan; tap **CTR** (or the own-ship chevron) to recenter.
-- **Data strip:** a bottom row of **8 readout slots** (GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA by default); tap a slot to reassign it. Persists in `data/settings.json`.
+- **Data strip:** a bottom row of **8 readout slots** (GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA by default). Tap a slot to open the picker, then tap a field to assign it — the selection advances to the next slot so you can fill the row with successive taps. Persists in `data/settings.json`. Assignable fields: **GS** (groundspeed), **AS** (indicated airspeed), **TAS**, **TRK** (track), **HDG**, **ALT**, **AGL** (above terrain), **VS**, **UTC**, **BARO**, **SAT**, and the nav-derived **WPT · BTW · DTK · DIST · DISW · XTE · ETE · ETEW · ETA · ETW**. The nav fields render magenta and show `--` until a Direct-To or flight-plan leg is active.
 
 The map's **MAP LAYERS** (§10) and the **winds (WND)** overlay (§10) render here, plus the weather and traffic overlays below.
 
