@@ -597,6 +597,8 @@ The Pi Zero must be on an internet-reachable network to download. Switch to home
 
 The Pi Zero has a full-screen moving-map MFD in addition to the PFD.
 
+![Full-screen MFD — moving map with D2/FPL/OVLY chrome and the bottom data strip](../pi_zero/previews/preview_mfd.png)
+
 - **Swap PFD ↔ MFD:** a **3-finger hold (~2 s)** (the 2-finger 0.8 s hold opens the setup menu — §8). The swap is gated by **ENABLE MFD** (§13); the unit boots to the PFD.
 - **Chrome:** **D→** (direct-to) top-left, **FPL** top-right, the **TRK↑/N↑** orientation label, **OVLY** overlay cycle, the **RNG** label, **−/+** zoom buttons, and a **CTR** recenter button that appears when the map is panned. Drag the map to pan; tap **CTR** (or the own-ship chevron) to recenter.
 - **Data strip:** a bottom row of **8 readout slots** (GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA by default); tap a slot to reassign it. Persists in `data/settings.json`.
@@ -610,6 +612,9 @@ The Pi Zero shows the same internet + FIS-B weather as the Pi 4 — METARs, TAFs
 - **Source toggle** — tap the **WX** status line to cycle **RADIO / AUTO / INET** (a parallel **ADS-B** line does the same for traffic). Status reads e.g. `WX AUTO R3 I12 2m` (mode · radio count · internet count · age; green = receiving, amber = none yet). Readouts are tagged `FIS-B` / `INET` with a data-age.
 - **OVLY cycle** — tap the **OVLY** label to step the single active overlay: **ASP → TFC → MET → WND → NEX**.
 - **MET page** — station dots coloured by category (**green VFR · blue MVFR · red IFR · magenta LIFR**); tap a dot for the **METAR / TAF / AIRMET / SIGMET / NOTAM** readout picker (nearest-first, scrollable, ON-ROUTE flags). Graphical AIRMET/SIGMET areas are tappable.
+
+![MET overlay — flight-category station dots on the MFD](../pi_zero/previews/preview_metar.png)
+![WND overlay — wind barbs + temperatures with the alt / time buttons](../pi_zero/previews/preview_winds.png)
 - **NEX page** — NEXRAD reflectivity with receipt-age and **valid**-age badges (green < 10 min, amber < 20, red beyond).
 - **Winds (WND)** — see §10.
 
@@ -618,6 +623,8 @@ NOTAMs need the free FAA key entered in Connectivity (§12).
 ## 16C. Traffic (ADS-B / FIS-B IN)
 
 Nearby aircraft from ADS-B IN (radio GDL90/UDP or the built-in internet feed; tap the **ADS-B** status line to cycle the source). Behaviour matches Pi 4 §16G:
+
+![Traffic — alert/proximate/advisory diamonds with relative-altitude tags](../pi_zero/previews/preview_traffic.png)
 
 - **Diamonds** with a heading leader and a relative-altitude tag; colour by threat — **red alert** (≤ 3 NM and ≤ 600 ft), **amber proximate** (≤ 6 NM and ≤ 1200 ft), **cyan** advisory.
 - On non-traffic pages traffic is clamped to nearby; the **TFC** page shows everything. **Alert-class is never hidden.** Tap a target for the detail card; declutter with **TFC ALT** / **TFC RANGE** (§10).

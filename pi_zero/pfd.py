@@ -13221,6 +13221,72 @@ def main():
         _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115)
         _save("pfd_preview.png")
 
+        # ── MFD overlay scenes (full-screen MFD: bare / traffic / METAR / winds) ─
+        # The offline batch has no live weather/traffic feeds, so synthesise a
+        # little data near KSEZ and render the full-screen MFD for the manual.
+        _CLAT, _CLON = 34.70, -111.95
+        _winds_barbs_real = _winds_barbs
+
+        def _enter_mfd(zoom_nm, overlay):
+            _seed(roll=0, pitch=0, hdg=360, alt=9500, speed=120, vspeed=0,
+                  lat=_CLAT, lon=_CLON)
+            disp["display_mode"] = "mfd"
+            disp["ds"]["mfd_enabled"] = True
+            disp["ds"]["map_zoom_nm"] = zoom_nm
+            disp["ds"]["winds_zoom_nm"] = zoom_nm if zoom_nm in (40, 80, 160) else 80
+            disp["ds"]["map_orient"] = "nrth"
+            # No SRTM tiles in the offline batch, so suppress the terrain tint
+            # (otherwise the bare-MFD / traffic shots show "BUILDING…").
+            disp["ds"]["map_show_terrain"] = False
+            _ovl.apply(disp["ds"], overlay)
+            disp["traffic"] = {"targets": []}
+            disp.setdefault("weather", {})["metars"] = []
+
+        # Bare full-screen MFD chrome + map.
+        _enter_mfd(40, "tfc")
+        _save("preview_mfd.png")
+
+        # Traffic — alert / proximate / advisory diamonds close in.
+        _enter_mfd(20, "tfc")
+        disp["traffic"] = {"targets": [
+            {"lat": _CLAT + 0.04, "lon": _CLON + 0.05, "track_deg": 215,
+             "threat": "alert",     "rel_alt_ft": -200, "vvel_fpm": -300},
+            {"lat": _CLAT - 0.07, "lon": _CLON + 0.10, "track_deg": 90,
+             "threat": "proximate", "rel_alt_ft":  900, "vvel_fpm": 0},
+            {"lat": _CLAT + 0.11, "lon": _CLON - 0.06, "track_deg": 305,
+             "threat": "other",     "rel_alt_ft": 1600, "vvel_fpm": 600},
+        ]}
+        _save("preview_traffic.png")
+        disp["traffic"] = {"targets": []}
+
+        # METAR — flight-category dots around the area.
+        _enter_mfd(80, "wx")
+        disp["weather"]["metars"] = [
+            {"lat": 34.85, "lon": -111.79, "fltcat": "VFR",  "icao": "KSEZ"},
+            {"lat": 35.14, "lon": -111.67, "fltcat": "MVFR", "icao": "KFLG"},
+            {"lat": 34.65, "lon": -112.42, "fltcat": "IFR",  "icao": "KPRC"},
+            {"lat": 33.43, "lon": -112.01, "fltcat": "LIFR", "icao": "KPHX"},
+        ]
+        _save("preview_metar.png")
+        disp["weather"]["metars"] = []
+
+        # Winds — a coarse barb grid (synthetic; real data comes from the feed).
+        _enter_mfd(80, "wnd")
+        disp["ds"]["winds_alt_ft"] = 9000
+        _fake_barbs = [
+            {"lat": _CLAT + i * 0.55, "lon": _CLON + j * 0.65,
+             "dir": (250 + i * 8) % 360, "spd": 15 + ((i + j) % 4) * 5,
+             "temp": -4 - i * 2, "lv": False}
+            for i in range(-3, 4) for j in range(-4, 5)
+        ]
+        globals()["_winds_barbs"] = lambda: _fake_barbs
+        _save("preview_winds.png")
+        globals()["_winds_barbs"] = _winds_barbs_real
+
+        # Back to the PFD for the remaining scenes.
+        disp["display_mode"] = "pfd"
+        _ovl.apply(disp["ds"], "tfc")
+
         # ── Numpad overlays ───────────────────────────────────────────────────
         _seed(roll=0, pitch=2, hdg=133, alt=8500, speed=115)
         disp["mode"] = "numpad"
