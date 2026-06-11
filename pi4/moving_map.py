@@ -40,6 +40,15 @@ import runways as _rwy_mod     # noqa: E402
 import obstacles as _obs_mod   # noqa: E402
 import water as _water_mod     # noqa: E402
 from terrain import load_tile  # noqa: E402
+import terrain as _terrain_mod  # noqa: E402  (for disk_reads() diagnostics)
+
+# Tint build diagnostics — ON by default (one line per async build: tile
+# count, cold disk reads, elapsed ms, plus a KICK line showing the cache key)
+# so a persistent "BUILDING…" can be diagnosed as cold-read cost vs a
+# re-kick/key thrash without editing the service.  Set PFD_TINT_DEBUG=0 to
+# silence once diagnosed.
+_TINT_DEBUG = os.environ.get("PFD_TINT_DEBUG", "1") != "0"
+_tint_build_seq = 0
 
 
 # Water tint — slightly darker than the SVT mid-distance water_color so
@@ -230,11 +239,11 @@ _TINT_READY_MAX = 6              # cap so stale finished builds don't pile up
 
 def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
     """Numpy-only pixel builder for the hypsometric tint. Returns
-    (rgb (n, n, 3) uint8, elevs (n, n) float32) — north-up — or
-    (None, None) when numpy isn't available. Safe to call from a
+    (rgb (n, n, 3) uint8, elevs (n, n) float32, n_tiles int) — north-up —
+    or (None, None, 0) when numpy isn't available. Safe to call from a
     background worker because it never touches a pygame surface."""
     if not HAS_NUMPY:
-        return None, None
+        return None, None, 0
     n = _TINT_N
     span_nm = 2.0 * range_nm * oversize
     span_lat = span_nm / _NM_PER_DEG_LAT
@@ -301,7 +310,7 @@ def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
     rgb = np.stack([rgb_r, rgb_g, rgb_b], axis=-1)
     if water.any():
         rgb[water] = _WATER_TINT_RGB
-    return rgb, elevs
+    return rgb, elevs, int(len(np.unique(enc)))
 
 
 def _finalize_tint_surface(rgb, target_px):
@@ -326,8 +335,8 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
         tile = pygame.Surface((n, n))
         tile.fill(_BG)
         return pygame.transform.smoothscale(tile, (target_px, target_px)), None
-    rgb, elevs = _build_tint_pixels(srtm_dir, water_dir,
-                                    c_lat, c_lon, range_nm, oversize)
+    rgb, elevs, _nt = _build_tint_pixels(srtm_dir, water_dir,
+                                         c_lat, c_lon, range_nm, oversize)
     return _finalize_tint_surface(rgb, target_px), elevs
 
 
@@ -336,8 +345,20 @@ def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
     """Worker thread: do the heavy numpy work, post the result for the
     main thread to convert into a pygame surface on the next render."""
     try:
-        rgb, elevs = _build_tint_pixels(srtm_dir, water_dir,
-                                        c_lat, c_lon, range_nm, oversize)
+        import time as _t
+        _t0 = _t.perf_counter()
+        _dr0 = _terrain_mod.disk_reads() if _terrain_mod is not None else 0
+        rgb, elevs, _ntiles = _build_tint_pixels(srtm_dir, water_dir,
+                                                  c_lat, c_lon, range_nm, oversize)
+        if _TINT_DEBUG:
+            _dr1 = _terrain_mod.disk_reads() if _terrain_mod is not None else 0
+            global _tint_build_seq
+            _tint_build_seq += 1
+            print(f"[tint] #{_tint_build_seq} R={range_nm:.0f} os={oversize:.2f} "
+                  f"tiles={_ntiles} cold={_dr1 - _dr0} "
+                  f"in={(_t.perf_counter() - _t0) * 1000:.0f}ms "
+                  f"cache={len(_tint_cache)} pend={len(_tint_pending)}",
+                  flush=True)
         with _tint_async_lock:
             _tint_ready[key] = (rgb, elevs)
             # Cap _tint_ready: when the aircraft moves faster than builds
@@ -349,7 +370,9 @@ def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
             while len(_tint_ready) > _TINT_READY_MAX:
                 _tint_ready.pop(next(iter(_tint_ready)))
     except Exception as e:
-        print(f"[moving_map] async tint build failed: {e}")
+        import traceback
+        print(f"[moving_map] async tint build FAILED: {e}", flush=True)
+        traceback.print_exc()
     finally:
         with _tint_async_lock:
             _tint_pending.discard(key)
@@ -438,6 +461,9 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
         in_flight = key in _tint_pending
         if not in_flight:
             _tint_pending.add(key)
+    if not in_flight and _TINT_DEBUG:
+        print(f"[tint] KICK key={key} (cache_keys={list(_tint_cache.keys())[:3]}"
+              f"{'…' if len(_tint_cache) > 3 else ''})", flush=True)
     if not in_flight:
         threading.Thread(
             target=_tint_async_worker,

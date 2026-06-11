@@ -97,6 +97,16 @@ import collections as _collections
 _TILE_CACHE_MAX = 16
 _tile_cache: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
 
+# Diagnostic: total .hgt files actually read from disk (cache misses that hit
+# a real file).  The moving-map tint instrumentation snapshots this around a
+# build to report cold-read count.  Cheap monotonic counter, never reset.
+_disk_reads = 0
+
+
+def disk_reads() -> int:
+    """Total SRTM tiles read from disk so far (diagnostic counter)."""
+    return _disk_reads
+
 # Optional resolution gate.  pi_zero/pfd.py calls
 # terrain.set_resolution_preference("srtm3") at startup so the tile
 # loader treats SRTM1 .hgt files as missing.  This avoids loading
@@ -188,6 +198,8 @@ def load_tile(srtm_dir: str, lat_int: int, lon_int: int, prefer: str = None):
     else:
         n_samples = SRTM3_SAMPLES  # output resolution after any decimation
 
+    global _disk_reads
+    _disk_reads += 1
     if HAS_NUMPY:
         if decimate_to_srtm3:
             # Read SRTM1 raw int16 (~25 MB), slice every third sample to
