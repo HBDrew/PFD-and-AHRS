@@ -1664,7 +1664,7 @@ def _apply_ahrs_source(src):
         except Exception:
             port = None
         if port:
-            _sse_client = SerialClient(port, state, _state_lock)
+            _sse_client = _SC(port, state, _state_lock)
             _sse_client.start()
             cs["ahrs_transport"] = "usb"; cs["ahrs_port"] = port
             print(f"[PFD] AHRS source → USB {port}")

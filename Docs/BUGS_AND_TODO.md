@@ -9,8 +9,10 @@ notes with enough context to pick it up cold.
 ## Open
 
 ### SENTRY-INTEGRATION  Use a uAvionix/ForeFlight Sentry as a GDL90 source
-Status: **PARTIAL — traffic + FIS-B already work; AHRS message now decoded;
-GPS wiring + AHRS source path remain**
+Status: **CODE-COMPLETE (pi4 + pi_zero) — needs on-hardware verification.**
+Traffic + FIS-B already work; AHRS decode, source selector, attitude + GPS
+ingest, and the mounting-zero LEVEL button are all in.  Only a live-Sentry
+bench check (and the heading true/mag bit + roll sign confirmation) remains.
 The Sentry (and Stratus / any ForeFlight-compatible portable) broadcasts
 **GDL90 over its own Wi-Fi AP**, which is exactly what the ADS-B stack
 already consumes.  State of play:
@@ -30,17 +32,29 @@ already consumes.  State of play:
     `encode_foreflight_ahrs` + tests in `shared/test_gdl90.py`.  **CAVEAT:**
     the heading true/mag bit polarity and roll/pitch sign are coded from the
     published spec — confirm against a live Sentry before trusting attitude.
+DONE (this session):
+  - **AHRS source selector.** `cs["ahrs_source"]` ∈ {auto,usb,wifi,sentry}
+    (persisted), a 4-pill on the AHRS setup screen (alongside HEADING /
+    AIRSPEED source).  `_apply_ahrs_source` stops the running Pico client and
+    brings up the chosen transport at runtime; main() honors the persisted
+    choice at boot.  Sentry runs no client — `_feed_sentry_state()` folds the
+    GDL90 attitude into `state` each frame so it flows through `smooth_state()`
+    like any source.  (Sentry = consumer MEMS / GPS-derived heading → use as a
+    **backup**, not primary; the WT901 + GPS-aided filter is better.)
+  - **GPS source.** Sentry ownship lat/lon/track/gs/alt feed the fix when
+    sentry is active (freshness-gated via `ADSBClient.ownship(max_age_s)`).
+  - **Mounting-zero LEVEL.** Portable units sit at any angle, so a SENTRY
+    LEVEL / RESET row captures raw pitch/roll as `ss["sentry_*_zero"]`
+    (persisted), subtracted on ingest — ForeFlight's "calibrate/level".
 Still open:
-  - **AHRS source path.** Wire `.ahrs()` into the PFD attitude state the way
-    `SerialClient`/`SSEClient` do, and surface "SENTRY" as a fourth option on
-    the AHRS source selector — fold into **AHRS-SRC-SELECTOR** (AUTO / USB /
-    WIFI / SENTRY).  Sentry AHRS is a consumer MEMS unit with GPS-derived
-    heading, so treat it as a **backup/redundant** source, not the primary
-    (the WT901 + GPS-aided filter is calibratable and better).
-  - **GPS source.** `ADSBClient.ownship()` already captures the Sentry's WAAS
-    position, but `pfd.py` doesn't consume it for its own fix (GPS comes from
-    the firmware today).  Add a small path to feed `ownship()` lat/lon/track/
-    gps_alt when Sentry is the active source.
+  - **On-hardware verification.** Bench against a real Sentry: confirm
+    traffic + FIS-B populate, then select SENTRY and verify attitude tracks
+    (LEVEL zeroes the mount) and GPS drives the map.  **Confirm the heading
+    true/mag bit polarity and roll sign** (coded from the spec) on the live
+    unit.
+  - **Geometric altitude.** Uses the ownship *pressure* altitude for gps_alt;
+    the geometric 0x0B (`ownship_geo`) report isn't stored yet — wire it for a
+    true GPS altitude if wanted.
   - **Wi-Fi topology (the real tradeoff, not a blocker).** The Sentry is an
     *access point* and a Pi has one radio, so joining it precludes the Pico W
     AHRS AP, the screen-sync LAN, and internet simultaneously.  This actually
@@ -49,7 +63,7 @@ Still open:
     internet "bonus" layer (AWC/Open-Meteo/NOTAM) unless a 2nd Wi-Fi adapter
     is added or the Pico runs over USB.  Document the recommended wiring.
 Touches: `shared/gdl90.py` (done), `shared/adsb.py` (done), `pi4/pfd.py` +
-`pi_zero/pfd.py` AHRS startup + GPS ingest, the Connectivity setup screen.
+`pi_zero/pfd.py` (done — source selector, feed, LEVEL).
 
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
