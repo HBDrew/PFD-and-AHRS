@@ -5550,6 +5550,14 @@ def handle_event(event, demo_mode):
                     disp["mode"] = "fpl_plan_picker"
             elif act == "deact":
                 _fpl_deactivate()
+            elif act == "load_appr":
+                # Synthetic approach to the FPL destination: point the active
+                # nav at the destination airport (so the picker + activation
+                # anchor on it), then open the existing runway picker.
+                dest = _fpl_dest_approach_ident()
+                if dest:
+                    _nav_set_by_ident(dest)
+                    disp["mode"] = "approach_select"
             elif act == "activate":
                 _fpl_activate(payload, reset_activation=True)
             elif act == "up" and payload > 0:
@@ -13672,6 +13680,31 @@ def _fpl_deact_btn_rect():
     return (ax, by, aw, _FPL_DEACT_H)
 
 
+def _fpl_dest_approach_ident():
+    """Final FPL waypoint's ident if it's an airport with runway data (so a
+    synthetic approach can be loaded to it), else ''."""
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    if not wps:
+        return ""
+    ident = (wps[-1].get("ident") or "").upper()
+    return ident if ident and _ident_has_runways(ident) else ""
+
+
+def _fpl_deact_row_rects():
+    """(load_appr_rect | None, deact_rect).  When the FPL destination can take
+    a synthetic approach, the bottom row splits into LOAD APPR | DEACTIVATE;
+    otherwise DEACTIVATE spans the full width."""
+    ax, ay, aw, _ = _fpl_actions_rect()
+    by = (ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+          + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP)
+    if _fpl_dest_approach_ident():
+        gap = _FPL_ACTIONS_GAP
+        bw = (aw - gap) // 2
+        return ((ax, by, bw, _FPL_DEACT_H),
+                (ax + bw + gap, by, aw - bw - gap, _FPL_DEACT_H))
+    return (None, (ax, by, aw, _FPL_DEACT_H))
+
+
 def _fpl_list_y0():
     return (_FPL_HEADER_H + 6 + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
             + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP + _FPL_DEACT_H + 8)
@@ -13752,7 +13785,9 @@ def draw_fpl(surf):
         _text(surf, "LOAD", 15, (80, 90, 110), bold=True,
               cx=lx + lw // 2, cy=ly + lh // 2)
 
-    dx, dy, dw, dh = _fpl_deact_btn_rect()
+    appr_r, (dx, dy, dw, dh) = _fpl_deact_row_rects()
+    if appr_r is not None:
+        _action_btn(surf, *appr_r, "LOAD APPR", "ok", r=6)
     if is_active:
         _action_btn(surf, dx, dy, dw, dh, "DEACTIVATE", "warn", r=6)
     else:
@@ -13842,7 +13877,12 @@ def fpl_hit(x, y):
         ax, ay, aw, ah = rect
         if ax <= x <= ax + aw and ay <= y <= ay + ah:
             return (kind, None)
-    dx, dy, dw, dh = _fpl_deact_btn_rect()
+    appr_r, deact_r = _fpl_deact_row_rects()
+    if appr_r is not None:
+        ax2, ay2, aw2, ah2 = appr_r
+        if ax2 <= x <= ax2 + aw2 and ay2 <= y <= ay2 + ah2:
+            return ("load_appr", None)
+    dx, dy, dw, dh = deact_r
     if dx <= x <= dx + dw and dy <= y <= dy + dh:
         return ("deact", None)
     wps = disp.get("fpl", {}).get("waypoints", [])
