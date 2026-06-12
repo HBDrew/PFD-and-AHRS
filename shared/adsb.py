@@ -57,6 +57,8 @@ class ADSBClient(threading.Thread):
         self._targets    = {}          # icao -> target dict (+ "last_s")
         self._ownship    = None        # last ownship report, if the source sends one
         self._heartbeat  = None
+        self._ahrs       = None        # last ForeFlight AHRS msg (Sentry etc.)
+        self._ff_id      = None        # last ForeFlight device-ID msg
         self._last_rx_s  = 0.0
         self._lock       = threading.Lock()
         self._stop_event = threading.Event()
@@ -118,6 +120,15 @@ class ADSBClient(threading.Thread):
             elif kind == "heartbeat":
                 with self._lock:
                     self._heartbeat = msg
+            elif kind == "ahrs":
+                # ForeFlight AHRS (Sentry / Stratus).  Captured here so a
+                # future AHRS-source selector can feed it into the PFD state
+                # the same way the USB/SSE clients do.
+                with self._lock:
+                    self._ahrs = msg
+            elif kind == "ff_id":
+                with self._lock:
+                    self._ff_id = msg
             elif kind == "uplink":
                 self.uplink_count += 1
                 # Fold any FIS-B text weather (METARs) into the store; the
@@ -158,6 +169,13 @@ class ADSBClient(threading.Thread):
     def ownship(self):
         with self._lock:
             return dict(self._ownship) if self._ownship else None
+
+    def ahrs(self):
+        """Last ForeFlight AHRS attitude (roll/pitch/heading/IAS/TAS) from a
+        Sentry-class source, or None.  Ready for an AHRS-source selector to
+        consume; not yet wired into the PFD attitude state."""
+        with self._lock:
+            return dict(self._ahrs) if self._ahrs else None
 
     def count(self):
         with self._lock:

@@ -20,6 +20,8 @@ Decoded message types:
     Ownship Geo Altitude   (0x0B)
     Traffic Report         (0x14)
     Uplink Data / FIS-B    (0x07)   — captured, payload left raw
+    ForeFlight extension   (0x65)   — sub-id 0 = device ID, 1 = AHRS
+                                      (Sentry / Stratus / ForeFlight sources)
 
 Each decoder returns a dict with a "kind" key; unknown / malformed
 messages are skipped.
@@ -38,6 +40,9 @@ MSG_UPLINK      = 0x07   # FIS-B uplink (weather)
 MSG_OWNSHIP     = 0x0A
 MSG_OWNSHIP_GEO = 0x0B
 MSG_TRAFFIC     = 0x14
+MSG_FOREFLIGHT  = 0x65   # ForeFlight GDL90 extension (Sentry AHRS / device ID)
+FF_SUBID_ID     = 0x00   #   sub-id 0: device identification
+FF_SUBID_AHRS   = 0x01   #   sub-id 1: AHRS (roll/pitch/heading/IAS/TAS)
 
 # Emitter category codes (subset commonly seen — others fall through to "").
 EMITTER_CATEGORIES = {
@@ -133,6 +138,16 @@ def iter_frames(buf):
 # ── Field decoders ────────────────────────────────────────────────────────────
 def _u24(b, off):
     return (b[off] << 16) | (b[off + 1] << 8) | b[off + 2]
+
+
+def _u16(b, off):
+    return (b[off] << 8) | b[off + 1]
+
+
+def _s16(b, off):
+    """16-bit big-endian two's-complement → signed int."""
+    v = _u16(b, off)
+    return v - 0x10000 if v & 0x8000 else v
 
 
 def _semicircle_to_deg(raw24):
@@ -235,6 +250,52 @@ def _decode_ownship_geo(b):
     }
 
 
+def _decode_foreflight(b):
+    """ForeFlight GDL90 extension message (0x65).  b[1] is a sub-id:
+      0x00 → device identification, 0x01 → AHRS.
+
+    AHRS body (after the id byte): sub-id(1) roll(2) pitch(2) heading(2)
+    ias(2) tas(2), big-endian.  Roll/pitch are signed 1/10°, sentinel
+    0x7FFF = invalid; airspeeds are unsigned knots, sentinel 0xFFFF.  The
+    heading word's top bit flags reference frame; the low 15 bits are 1/10°.
+
+    NOTE: the true-vs-magnetic polarity of the heading MSB and the roll/pitch
+    sign convention are coded from the published spec — confirm against a live
+    Sentry before trusting `heading_true` / the roll sign for attitude."""
+    if len(b) < 2:
+        return None
+    sub = b[1]
+    if sub == FF_SUBID_ID:
+        # version(1) serial(8) name(8) longname(16) capabilities(4)
+        d = {"kind": "ff_id"}
+        if len(b) >= 3:
+            d["version"] = b[2]
+        if len(b) >= 19:
+            d["name"] = b[11:19].split(b"\x00")[0].decode("ascii", "ignore").strip()
+        if len(b) >= 35:
+            d["long_name"] = b[19:35].split(b"\x00")[0].decode("ascii", "ignore").strip()
+        return d
+    if sub == FF_SUBID_AHRS and len(b) >= 12:
+        roll_raw = _u16(b, 2)
+        pitch_raw = _u16(b, 4)
+        hdg_raw = _u16(b, 6)
+        ias_raw = _u16(b, 8)
+        tas_raw = _u16(b, 10)
+        d = {"kind": "ahrs"}
+        d["roll"]  = None if roll_raw == 0x7FFF else _s16(b, 2) / 10.0
+        d["pitch"] = None if pitch_raw == 0x7FFF else _s16(b, 4) / 10.0
+        if hdg_raw == 0xFFFF:
+            d["heading"] = None
+            d["heading_true"] = None
+        else:
+            d["heading"] = (hdg_raw & 0x7FFF) / 10.0
+            d["heading_true"] = (hdg_raw & 0x8000) == 0
+        d["ias_kt"] = None if ias_raw == 0xFFFF else ias_raw
+        d["tas_kt"] = None if tas_raw == 0xFFFF else tas_raw
+        return d
+    return None
+
+
 def decode_message(payload):
     """Decode one deframed payload (message id at payload[0]).  Returns a
     dict with a "kind" field, or None for unknown / malformed messages."""
@@ -258,6 +319,8 @@ def decode_message(payload):
         # APDU (text weather, NEXRAD blocks) is a separate effort; for
         # now surface the raw payload so the listener can count it.
         return {"kind": "uplink", "len": len(payload), "raw": bytes(payload)}
+    if mid == MSG_FOREFLIGHT:
+        return _decode_foreflight(payload)
     return None
 
 
@@ -367,3 +430,27 @@ def encode_uplink(payload, tor=0):
                   tor & 0xFF, (tor >> 8) & 0xFF, (tor >> 16) & 0xFF]) \
         + bytes(payload)
     return frame_message(body)
+
+
+def encode_foreflight_ahrs(roll_deg=None, pitch_deg=None, heading_deg=None,
+                           heading_true=True, ias_kt=None, tas_kt=None):
+    """Build a ForeFlight AHRS (0x65 / sub-id 1) frame.  Inverse of
+    _decode_foreflight — used by tests and the sim to stand in for a Sentry.
+    None on any field encodes the spec's invalid sentinel."""
+    def _put(val, sentinel):
+        v = sentinel if val is None else int(round(val)) & 0xFFFF
+        return bytes([(v >> 8) & 0xFF, v & 0xFF])
+
+    b = bytearray([MSG_FOREFLIGHT, FF_SUBID_AHRS])
+    b += _put(None if roll_deg is None else roll_deg * 10, 0x7FFF)
+    b += _put(None if pitch_deg is None else pitch_deg * 10, 0x7FFF)
+    if heading_deg is None:
+        b += bytes([0xFF, 0xFF])
+    else:
+        h = int(round(heading_deg * 10)) & 0x7FFF
+        if not heading_true:
+            h |= 0x8000
+        b += bytes([(h >> 8) & 0xFF, h & 0xFF])
+    b += _put(ias_kt, 0xFFFF)
+    b += _put(tas_kt, 0xFFFF)
+    return frame_message(bytes(b))

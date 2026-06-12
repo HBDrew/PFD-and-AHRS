@@ -8,6 +8,49 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### SENTRY-INTEGRATION  Use a uAvionix/ForeFlight Sentry as a GDL90 source
+Status: **PARTIAL — traffic + FIS-B already work; AHRS message now decoded;
+GPS wiring + AHRS source path remain**
+The Sentry (and Stratus / any ForeFlight-compatible portable) broadcasts
+**GDL90 over its own Wi-Fi AP**, which is exactly what the ADS-B stack
+already consumes.  State of play:
+  - **Traffic + FIS-B weather (978) — already work, no code.** `ADSBClient`
+    binds `0.0.0.0:4000` with `SO_BROADCAST` (`shared/adsb.py`) and
+    `shared/gdl90.py` decodes heartbeat / ownship / traffic / FIS-B uplink;
+    the uplink feeds the `FisbWeather` store (METAR/TAF/AIRMET/SIGMET/winds/
+    NEXRAD).  Join the Pi to the Sentry's AP and the existing listener
+    receives its broadcast datagrams — the Sentry just replaces the
+    Nooelec+dump978 bridge as the GDL90 source.  *Field-verify the broadcast
+    addressing on a real unit.*
+  - **AHRS decode — DONE (this entry's first slice).** ForeFlight's
+    proprietary AHRS rides msg `0x65 / sub-id 1`; `gdl90._decode_foreflight`
+    now parses roll/pitch (signed 1/10°), heading (+ true/mag bit), IAS, TAS
+    (with invalid sentinels), and `0x65 / sub-id 0` device-ID.  `ADSBClient`
+    captures the latest as `self._ahrs`, exposed via `.ahrs()`.  Encode helper
+    `encode_foreflight_ahrs` + tests in `shared/test_gdl90.py`.  **CAVEAT:**
+    the heading true/mag bit polarity and roll/pitch sign are coded from the
+    published spec — confirm against a live Sentry before trusting attitude.
+Still open:
+  - **AHRS source path.** Wire `.ahrs()` into the PFD attitude state the way
+    `SerialClient`/`SSEClient` do, and surface "SENTRY" as a fourth option on
+    the AHRS source selector — fold into **AHRS-SRC-SELECTOR** (AUTO / USB /
+    WIFI / SENTRY).  Sentry AHRS is a consumer MEMS unit with GPS-derived
+    heading, so treat it as a **backup/redundant** source, not the primary
+    (the WT901 + GPS-aided filter is calibratable and better).
+  - **GPS source.** `ADSBClient.ownship()` already captures the Sentry's WAAS
+    position, but `pfd.py` doesn't consume it for its own fix (GPS comes from
+    the firmware today).  Add a small path to feed `ownship()` lat/lon/track/
+    gps_alt when Sentry is the active source.
+  - **Wi-Fi topology (the real tradeoff, not a blocker).** The Sentry is an
+    *access point* and a Pi has one radio, so joining it precludes the Pico W
+    AHRS AP, the screen-sync LAN, and internet simultaneously.  This actually
+    fits the radio-primary model: Sentry gives a fully self-contained
+    no-internet stack (GPS + traffic + FIS-B + AHRS) at the cost of the
+    internet "bonus" layer (AWC/Open-Meteo/NOTAM) unless a 2nd Wi-Fi adapter
+    is added or the Pico runs over USB.  Document the recommended wiring.
+Touches: `shared/gdl90.py` (done), `shared/adsb.py` (done), `pi4/pfd.py` +
+`pi_zero/pfd.py` AHRS startup + GPS ingest, the Connectivity setup screen.
+
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
 Today PFD picks the AHRS transport once at startup (USB if

@@ -166,6 +166,58 @@ def test_uplink_captured():
     check(msgs[0]["len"] == 41, "uplink length surfaced")
 
 
+def test_foreflight_ahrs_roundtrip():
+    # ForeFlight 0x65/sub-1 AHRS (a Sentry's attitude) must decode back to the
+    # encoded roll/pitch/heading/airspeeds.
+    frame = gdl90.encode_foreflight_ahrs(
+        roll_deg=-12.5, pitch_deg=4.2, heading_deg=271.3,
+        heading_true=False, ias_kt=118, tas_kt=131)
+    msgs = gdl90.decode_stream(frame)
+    check(len(msgs) == 1 and msgs[0]["kind"] == "ahrs", "one ahrs msg")
+    a = msgs[0]
+    check(approx(a["roll"], -12.5, 0.05), f"roll {a['roll']}")
+    check(approx(a["pitch"], 4.2, 0.05), f"pitch {a['pitch']}")
+    check(approx(a["heading"], 271.3, 0.05), f"heading {a['heading']}")
+    check(a["heading_true"] is False, "magnetic heading bit decoded")
+    check(a["ias_kt"] == 118, f"ias {a['ias_kt']}")
+    check(a["tas_kt"] == 131, f"tas {a['tas_kt']}")
+
+
+def test_foreflight_ahrs_invalid_sentinels():
+    # All-unavailable AHRS (sensor warming up) → every field None.
+    frame = gdl90.encode_foreflight_ahrs()
+    a = gdl90.decode_stream(frame)[0]
+    check(a["kind"] == "ahrs", "ahrs kind even when empty")
+    for k in ("roll", "pitch", "heading", "heading_true", "ias_kt", "tas_kt"):
+        check(a[k] is None, f"{k} sentinel decodes to None")
+
+
+def test_foreflight_ahrs_true_heading_bit():
+    frame = gdl90.encode_foreflight_ahrs(heading_deg=10.0, heading_true=True)
+    a = gdl90.decode_stream(frame)[0]
+    check(a["heading_true"] is True, "true-heading bit decoded")
+    check(approx(a["heading"], 10.0, 0.05), f"true heading {a['heading']}")
+
+
+def test_foreflight_id_message():
+    # Device-ID sub-message must decode as ff_id, not crash, and not be
+    # mistaken for AHRS.
+    body = bytearray([gdl90.MSG_FOREFLIGHT, gdl90.FF_SUBID_ID, 1])
+    body += b"\x00" * 8                       # serial
+    body += b"Sentry\x00\x00"                 # 8-byte name
+    body += b"Sentry Plus\x00\x00\x00\x00\x00"  # 16-byte long name
+    body += b"\x00\x00\x00\x01"               # capabilities
+    a = gdl90.decode_stream(gdl90.frame_message(bytes(body)))[0]
+    check(a["kind"] == "ff_id", "device-id message decodes as ff_id")
+    check(a["name"] == "Sentry", f"device name '{a.get('name')}'")
+
+
+def test_foreflight_unknown_subid_skipped():
+    # An unrecognised ForeFlight sub-id must be dropped, not raise.
+    frame = gdl90.frame_message(bytes([gdl90.MSG_FOREFLIGHT, 0x7F, 0, 0]))
+    check(gdl90.decode_stream(frame) == [], "unknown ForeFlight sub-id skipped")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
