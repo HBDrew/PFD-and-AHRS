@@ -557,17 +557,30 @@ edge-clamp ghost arrow. Add the `fpv_enabled` toggle to pi_zero's
 display-settings screen for parity.
 
 ### NAVDATA-FAA  IFR nav-data foundation — fixes, airways, navaids, procedures
-Status: **IN PROGRESS — runtime module + cache schema + query API DONE
-(`shared/navdata.py` + `shared/test_navdata.py`, 24 checks); FAA build tool
-(`tools/build_navdata_us.py`) + consumers next.**
-Done: `shared/navdata.py` — `NavData` holds lat-sorted fix/navaid structured
-arrays + airway/procedure/hold dicts + 28-day `cycle` stamp; queries
-`fix`/`navaid`/`waypoint`, `nearby_fixes`/`nearby_navaids` (searchsorted band,
-nearest-first), `airway`/`airway_between`, `procedures_for`/`procedure`,
-`hold`; `load()` degrades gracefully on a missing/partial cache.  Cache layout
-fixed (see the module docstring): `navdata_fixes.npy`, `navdata_navaids.npy`,
-`navdata.json`.  Still TODO: the FAA parser (NASR FIX/AWY/NAV + CIFP → that
-cache) — needs the real 28-day files to validate — and the UI consumers.
+Status: **IN PROGRESS — runtime module + cache schema + query API + FAA build
+tool DONE; UI consumers next.  Build tool needs a real 28-day NASR+CIFP run to
+confirm CIFP column offsets before shipping a cache.**
+Done:
+  - `shared/navdata.py` (+ `shared/test_navdata.py`, 24 checks) — `NavData`
+    holds lat-sorted fix/navaid structured arrays + airway/procedure/hold
+    dicts + 28-day `cycle` stamp; queries `fix`/`navaid`/`waypoint`,
+    `nearby_fixes`/`nearby_navaids` (searchsorted band, nearest-first),
+    `airway`/`airway_between`, `procedures_for`/`procedure`, `hold`; `load()`
+    degrades gracefully on a missing/partial cache.  Cache layout
+    (`navdata_fixes.npy`, `navdata_navaids.npy`, `navdata.json`) documented in
+    the module docstring.
+  - `tools/build_navdata_us.py` — FAA NASR CSV (FIX_BASE/NAV_BASE/AWY_SEG) +
+    CIFP (FAACIFP18 ARINC-424) → that cache.  NASR path resolves columns by
+    header name (cycle-tolerant); CIFP path parses approaches/SIDs/STARs +
+    enroute holds with named, tunable column offsets and a `--dump-cifp`
+    debug mode, resolving each leg's lat/lon from the NASR arrays at build
+    time.  `--verify` loads the result back through `shared/navdata.py`.
+    Smoke-tested end-to-end on synthetic NASR+CIFP; column offsets must be
+    confirmed against a real FAACIFP18 (run `--dump-cifp 20` and eyeball).
+  - `NAVDATA_DIR` wired into `pi4/config.py` + `pi_zero/config.py`
+    (`data/navdata/`).
+Still TODO: a real-data build to validate CIFP offsets, then the UI consumers
+(see NAV-FIXES-AIRWAYS-DISPLAY / FPL-APPROACHES / FPL-HOLDS below).
 Target: new `tools/build_navdata_us.py` (28-day converter, mirrors
 `tools/build_airspaces_us.py`), new `shared/navdata.py` parser + spatial
 query (mirrors `shared/airports.py`), runtime cache under

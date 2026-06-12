@@ -141,6 +141,12 @@ AIRPORT_DIR   = os.path.join(_HERE, "data", "airports")
 # convert FAA GeoJSON exports in-place on this Pi.
 AIRSPACE_DIR  = os.path.join(_HERE, "data", "airspaces")
 
+# ── IFR nav data (FAA NASR + CIFP: fixes/navaids/airways/procedures/holds) ────
+# Cache written by tools/build_navdata_us.py — see shared/navdata.py for the
+# schema.  Absent until built; the UI shows "NO NAVDATA" and IFR features that
+# need it stay disabled.
+NAVDATA_DIR   = os.path.join(_HERE, "data", "navdata")
+
 # ── User settings persistence ─────────────────────────────────────────────────
 # JSON file that stores V-speeds, units, brightness, AHRS trims, airport
 # filters and other user-configurable values across reboots.

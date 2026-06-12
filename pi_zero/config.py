@@ -76,6 +76,12 @@ AIRPORT_DIR   = os.path.join(_HERE, "data", "airports")
 # is on disk, so the render path is visually verifiable out of the box.
 AIRSPACE_DIR  = os.path.join(_HERE, "data", "airspaces")
 
+# ── IFR nav data (FAA NASR + CIFP: fixes/navaids/airways/procedures/holds) ────
+# Cache written by tools/build_navdata_us.py — see shared/navdata.py for the
+# schema.  Absent until built; the UI shows "NO NAVDATA" and IFR features that
+# need it stay disabled.
+NAVDATA_DIR   = os.path.join(_HERE, "data", "navdata")
+
 # ── User settings persistence ─────────────────────────────────────────────────
 SETTINGS_PATH = os.path.join(_HERE, "data", "settings.json")
 
