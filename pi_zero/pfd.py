@@ -360,6 +360,9 @@ disp["wx_popup"] = None
 # When set, holds a tapped airport + its (own or nearest) METAR so the pilot
 # picks Weather readout vs Direct-To.  None = no chooser.
 disp["mfd_pick"] = None
+# True while the quick MAP LAYERS panel is open on the MFD (tapping the layers
+# icon above the + zoom button) — toggle layers without entering setup.
+disp["mfd_layers"] = False
 # In-progress user-waypoint entry — populated by the +LAT/LON entry
 # screen (which pre-fills the lat/lon fields with the current aircraft
 # position so the same path also handles "mark a point HERE").
@@ -3980,6 +3983,11 @@ def handle_event(event, demo_mode):
             if disp.get("tfc_popup"):
                 disp["tfc_popup"] = None
                 return True
+            # The quick MAP LAYERS panel is up → route the tap to it (toggle a
+            # layer, or tap outside to close) and consume it.
+            if disp.get("mfd_layers"):
+                _mfd_layers_hit(x, y)
+                return True
             if _mfd_fpl_btn_hit(x, y):
                 # Open the flight-plan editor (placeholder until multi-
                 # waypoint plans + user waypoints land).  PFD ↔ MFD
@@ -4018,6 +4026,9 @@ def handle_event(event, demo_mode):
                     new = MFD_MAX_ZOOM_NM
                 disp["ds"]["map_zoom_nm"] = new
                 _settings.mark_dirty()
+                return True
+            if _mfd_layers_btn_hit(x, y):
+                disp["mfd_layers"] = True        # open the quick layers panel
                 return True
             if _mfd_center_btn_hit(x, y):
                 _mfd_clear_pan()
@@ -10674,6 +10685,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
     zi_x, zi_y, zi_w, zi_h = _mfd_zoom_in_rect()
     _action_btn(surf, zo_x, zo_y, zo_w, zo_h, "−", "normal", r=8)
     _action_btn(surf, zi_x, zi_y, zi_w, zi_h, "+", "normal", r=8)
+    _draw_mfd_layers_icon(surf)
 
     # No-link / stale-data badges
     if not connected or data_stale:
@@ -10691,6 +10703,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _draw_wx_winds(surf)
     _draw_wx_text(surf)
     _draw_tfc_popup(surf)
+    _draw_mfd_layers(surf)
 
 
 def _wrap_text(text, font, max_w):
@@ -12269,9 +12282,101 @@ def _mfd_chrome_hit(x, y):
     rx, ry, rw, rh = _mfd_rng_label_rect()
     if rx <= x <= rx + rw and ry <= y <= ry + rh:
         return True
+    if _mfd_layers_btn_hit(x, y):   return True
     if _mfd_strip_hit(x, y):
         return True
     return False
+
+
+# ── Quick MAP LAYERS panel (MFD) ──────────────────────────────────────────────
+# A layers icon sits just above the MFD "+" zoom button; tapping it opens this
+# panel so the pilot can flip map layers on/off in flight without diving into
+# the Display setup screen.  Reuses the same _DSP_MAP_LAYERS keys/labels.
+_MFD_LYR_COLS = 4
+_MFD_LYR_PW   = 96
+_MFD_LYR_PH   = 42
+_MFD_LYR_G    = 8
+
+
+def _mfd_layers_btn_rect():
+    """Layers icon — square, just above the zoom-in (+) button."""
+    zx, zy, zw, zh = _mfd_zoom_in_rect()
+    return (zx, zy - 6 - zh, zw, zh)
+
+
+def _mfd_layers_btn_hit(x, y):
+    bx, by, bw, bh = _mfd_layers_btn_rect()
+    return bx <= x <= bx + bw and by <= y <= by + bh
+
+
+def _mfd_layers_rects():
+    """Centred panel rect + a (key, label, pill_rect) list for each layer."""
+    n    = len(_DSP_MAP_LAYERS)
+    cols = _MFD_LYR_COLS
+    rows = (n + cols - 1) // cols
+    gw   = cols * _MFD_LYR_PW + (cols - 1) * _MFD_LYR_G
+    gh   = rows * _MFD_LYR_PH + (rows - 1) * _MFD_LYR_G
+    title_h, pad = 30, 14
+    pw = gw + 2 * pad
+    ph = gh + title_h + pad + 20
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    gx = px + pad
+    gy = py + title_h
+    cells = []
+    for i, (key, lbl) in enumerate(_DSP_MAP_LAYERS):
+        r_i, c_i = divmod(i, cols)
+        cx = gx + c_i * (_MFD_LYR_PW + _MFD_LYR_G)
+        cy = gy + r_i * (_MFD_LYR_PH + _MFD_LYR_G)
+        cells.append((key, lbl, (cx, cy, _MFD_LYR_PW, _MFD_LYR_PH)))
+    return (px, py, pw, ph), cells
+
+
+def _draw_mfd_layers_icon(surf):
+    """Stacked-layers glyph in a button-weight box (matches the zoom keys)."""
+    bx, by, bw, bh = _mfd_layers_btn_rect()
+    pygame.draw.rect(surf, (0, 10, 25), (bx, by, bw, bh), border_radius=8)
+    pygame.draw.rect(surf, (50, 68, 92), (bx, by, bw, bh), width=2,
+                     border_radius=8)
+    cx, cy = bx + bw // 2, by + bh // 2
+    hw, hh = 14, 5
+    for dy in (-10, 0, 10):
+        yy = cy + dy
+        pygame.draw.polygon(
+            surf, CYAN,
+            [(cx - hw, yy), (cx, yy - hh), (cx + hw, yy), (cx, yy + hh)], width=2)
+
+
+def _draw_mfd_layers(surf):
+    """Quick MAP LAYERS toggle panel, drawn on top when open."""
+    if not disp.get("mfd_layers"):
+        return
+    ds = disp["ds"]
+    (px, py, pw, ph), cells = _mfd_layers_rects()
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 140))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, "MAP LAYERS", 18, (210, 220, 230), bold=True,
+          cx=px + pw // 2, cy=py + 17)
+    for key, lbl, rc in cells:
+        _seg_btn(surf, rc[0], rc[1], rc[2], rc[3], lbl, bool(ds.get(key)))
+    _text(surf, "tap a layer to toggle  ·  tap outside to close", 12,
+          (140, 150, 160), cx=px + pw // 2, cy=py + ph - 13)
+
+
+def _mfd_layers_hit(x, y):
+    """Handle a tap while the quick MAP LAYERS panel is open."""
+    (px, py, pw, ph), cells = _mfd_layers_rects()
+    for key, _lbl, rc in cells:
+        if rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]:
+            disp["ds"][key] = not bool(disp["ds"].get(key))
+            _settings.mark_dirty()
+            return                              # stay open for more toggles
+    if not (px <= x <= px + pw and py <= y <= py + ph):
+        disp["mfd_layers"] = False              # tap outside closes
 
 
 def _mfd_find_metar(tap_x, tap_y, tap_px=28):
