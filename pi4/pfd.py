@@ -11569,6 +11569,10 @@ _MFD_STRIP_AVAILABLE = (
     ("alt",  "ALT",  False, "Pressure altitude, feet"),
     ("agl",  "AGL",  False, "Height above terrain, feet"),
     ("vs",   "VS",   False, "Vertical speed, feet per minute"),
+    ("oat",  "OAT",  False, "Outside air temperature (not yet wired)"),
+    ("da",   "DA",   False, "Density altitude (not yet wired)"),
+    ("pa",   "PA",   False, "Pressure altitude (not yet wired)"),
+    ("wind", "WIND", False, "Wind direction / speed (not yet wired)"),
     ("time", "UTC",  False, "Current Zulu (UTC) clock time"),
     ("baro", "BARO", False, "Altimeter setting"),
     ("sat",  "SAT",  False, "GPS satellites in use"),
@@ -11730,6 +11734,16 @@ def _mfd_strip_format(kind, ctx):
         return ("AGL", f"{int(round(v / 10.0) * 10):5d}", WHITE)
     if kind == "vs":
         return ("VS", f"{int(round(ctx['vs'])):+5d}", WHITE)
+    # OAT / DA / PA / WIND — placeholders (parity with pi_zero; no sensor wiring
+    # yet).  Shown dim so they read as "available but no data".
+    if kind == "oat":
+        return ("OAT", "--", (140, 140, 140))
+    if kind == "da":
+        return ("DA", "----", (140, 140, 140))
+    if kind == "pa":
+        return ("PA", "----", (140, 140, 140))
+    if kind == "wind":
+        return ("WIND", "---/--", (140, 140, 140))
     if kind == "time":
         return ("UTC", time.strftime("%H:%MZ", time.gmtime()), WHITE)
     if kind == "baro":
@@ -13342,8 +13356,11 @@ _MSS_SLOT_H    = 56
 _MSS_SLOT_GAP  = 4
 _MSS_GRID_GAP  = 6
 _MSS_GRID_COLS = 7          # 21 kinds → 3 rows of 7 on the wide screen
-# Description sentence + arrival-time toggle sit below the 3-row grid.
-_MSS_DESC_Y    = _MSS_HEADER_H + 10 + _MSS_SLOT_H + 20 + 3 * (64 + _MSS_GRID_GAP) + 8
+# Description sentence + arrival-time toggle sit below the grid (row count
+# derived from the kind list so it follows when options are added).
+_MSS_GRID_ROWS = (len(_MFD_STRIP_AVAILABLE) + _MSS_GRID_COLS - 1) // _MSS_GRID_COLS
+_MSS_DESC_Y    = (_MSS_HEADER_H + 10 + _MSS_SLOT_H + 20
+                  + _MSS_GRID_ROWS * (64 + _MSS_GRID_GAP) + 8)
 _MSS_TZ_Y      = _MSS_DESC_Y + 30
 
 
