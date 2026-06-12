@@ -6,166 +6,8 @@ When opening a new session, start here for context.
 Format: each item gets a short ID, a status, a one-line summary, and
 notes with enough context to pick it up cold.
 
----
 
 ## Open
-
-### WX-SOURCE-DISPLAY-FILTER  Auto/Radio/Internet should filter what's drawn
-Status: **DONE for NEX (pi4 + pi_zero); MET already correct; WND + TFC + AIR/SIG
-carved out** — the weather-source pill (`wx_source`: auto | radio | internet)
-was only gating the *pollers*, so switching to RADIO left stale INTERNET data
-on screen until it aged out.  It's now a hard render-time filter where the layer
-has two real sources:
-- **NEX** — `_nexrad_render_arg` returns None in RADIO (hide the downloaded
-  mosaic); `_fisb_nexrad_cells` returns [] in INTERNET (hide the FIS-B cells);
-  AUTO shows both.
-- **MET** — already filtered at the merge (`inet=[]` in radio, `rdr=[]` in
-  internet).  No change.
-- **WND** — carve-out: winds aloft is **internet-only** (there is no FIS-B
-  winds), so it ALWAYS pre-loads and ALWAYS shows regardless of the pill — like
-  the traffic sensor below, hiding the only source just blanks the layer.
-  `_winds_client.enabled = True` unconditionally, and the `set_winds` store feed
-  is pulled out of the `not radio_only` gate so it feeds in every mode.  (The
-  first instinct was the opposite — RADIO ⇒ barbs gone — but that assumed FIS-B
-  carried winds; it doesn't, so "always visible" is the right version.)
-- **TFC** — carve-out (separate `traffic_source` selector).  RADIO = radio
-  only, AUTO = radio+internet merged, **INTERNET still keeps radio** on purpose:
-  the local ADS-B receiver is the real see-and-avoid picture and must never be
-  hidden to honour a literal "internet only" (it'd suppress real, locally-sensed
-  targets — unlike weather, where source is just provenance of the same data).
-- **AIR/SIG — NOT filterable as-is (deferred).** The FIS-B store *dedupes*
-  AIRMET/SIGMET advisories by text and graphics by geometry and stores **no
-  source tag** (`add_advisory`/`add_graphic` in `shared/fisb.py`), so a radio
-  and internet copy of the same NWS bulletin collapse to one.  A hard
-  source-filter would need per-item source tagging + a rework of the cross-source
-  dedup.  Low value (the bulletins are identical across radio/internet — it's the
-  same product, so a lingering "internet" AIRMET in RADIO mode isn't *wrong*
-  data), so left for a follow-up if strict consistency is wanted.
-Files: `_nexrad_render_arg`, `_fisb_nexrad_cells`, and the winds enable/feed in
-`_update_weather` (always-on) in both `pi4/pfd.py` and `pi_zero/pfd.py`.
-
-### WINDS-FORECAST-SERIES  Winds roll forward to "now"; inset is always now
-Status: **DONE (pi4 + pi_zero)** — winds-aloft barbs are no longer a frozen
-fetch-time snapshot.  Each national-cache column now carries the forecast
-**series** (per-hour `[dir,spd,temp]` flat rows out to ~30 h, stored in
-`t0`/`step_s`/`series`/`alts`).  Open-Meteo already returns a 48 h forecast per
-call, so the series is free; we just stopped throwing all but one hour away.
-- **Retarget at draw time.** `_winds_barbs(offset_h)` and the barb-tap table
-  pick the hour for `now + offset_h` via `wx.winds_levels_at()`.  The PFD inset
-  passes `offset_h=0` → it is ALWAYS *now*, independent of the WND-page
-  forecast-time selector.  The page passes its `winds_time_offset_h`.  A target
-  outside the held window draws blank (no wrong-time forecast).
-- **Re-pull on the 6 h GFS run** (`max_age_s`), not to chase "now" — the series
-  advances on its own between fetches.  Changing the page offset no longer
-  forces a re-fetch (instant, zero API calls); `force_refresh()` removed from
-  `_mfd_cycle_winds_time`.
-- **LAN sharing stays compact.** The full series is ~30× too big for one UDP
-  datagram, so a feeder broadcasts a single-hour *now*-snapshot (existing
-  packet format) re-derived each tick and stamped `st=now`; adopters roll
-  forward as `st` advances (`ingest_packed` adopts a newer run OR a newer
-  snapshot of the same run).  A relayed/frozen snapshot carries an
-  un-advancing `st`, so a dead feeder can't pin the panel — deferral lapses and
-  someone re-pulls.  A screen holding its own series ignores peer snapshots
-  (never downgrades).
-- Memory: series kept as flat int rows (~7.5 MB national, shared by reference
-  into the FIS-B store), not dicts (~90 MB).  Disk persists the series.
-- Files: `shared/wx.py` (`parse_open_meteo_winds(series_h=…)`,
-  `_build_winds_series`, `winds_levels_at`, `_winds_cols_snapshot`,
-  `_zone_packet`, `ingest_packed`, `WindsUSCache(series_h=30)`); `_winds_barbs`
-  + `_draw_wx_winds` + `_mfd_cycle_winds_time` in both `pi4/pfd.py` and
-  `pi_zero/pfd.py`.  Tests: `shared/test_wx_winds.py` (12 cases).
-- **Self-heal on deploy.** A pre-series `conus_winds.json` (from before this
-  change) has no series but looks "fresh" (< 6 h), so the cache would never
-  re-pull and the `+Nh` offset would do nothing on *any* screen (and screens
-  each sitting on a different stale snapshot would disagree).  `_due_zone` now
-  treats a series-less zone (old disk cache OR a peer's now-snapshot) as **due**
-  regardless of age, so a deploy re-pulls to populate the series and the LAN
-  share reconciles the panel.  The startup gate is staggered by the per-device
-  fetch jitter so a synchronised "everyone's cache is due" event doesn't hit
-  Open-Meteo all at once.
-- **One feeder, not three (429 fix).** Field test showed all three screens each
-  fetching the same zones (the aircraft's zone first) → repeated 429s, because
-  every screen wants its OWN series so its `+Nh` works.  `_due_zone` now has a
-  global gate: a screen holding NONE of its own fetched series, while a peer is
-  actively sharing, **stays a pure adopter and does not fetch**.  The first
-  screen to pull (lowest jitter) becomes the sole feeder; the rest adopt its
-  now-snapshots.  `peer_grace_s` 360→600 s so an occasional dropped broadcast
-  doesn't expire coverage and trigger a redundant pull.  Consequence: `+Nh`
-  works on the feeder only — the adopters need the offsets SHARED (Phase 2).
-  NOTE: to elect cleanly on already-split hardware, delete `conus_winds.json` on
-  every Pi and restart them together (otherwise each keeps the zones it already
-  fetched).
-- **DEFERRED — WINDS-SERIES-PEER-OFFSET (Phase 2):** to make `+Nh` work on the
-  adopters too, the feeder must SHARE the offsets.  Measured: the full 31 h
-  series zlib-compresses to ~145 KB (too big for one 64 KB UDP datagram), BUT
-  the 7 discrete selector offsets {0,3,6,9,12,18,24 h} compress to **~37 KB —
-  fits one datagram** (b64 in JSON ~50 KB, still under 64 KB).  Phase 2 = feeder
-  packs a 7-offset bundle (zlib+b64) per zone, adopters store it offset-keyed
-  and `_winds_barbs` picks the matching offset.  No chunking needed.  CAVEAT: a
-  field log showed a ~7 min gap where a ~20 KB winds broadcast wasn't reaching a
-  peer — the LAN may be dropping fragmented broadcasts; the bigger Phase-2
-  packets would be dropped more (survivable via the 20 s re-broadcast, but check
-  `screen_sync` rx/tx counters first).  The inset (now) is correct everywhere
-  regardless.
-
-### WINDS-STALE-STATUS  "6/6 loaded" was uninformative; report stale/expired
-Status: **DONE** — zones refresh in place and never drop, so a loaded-count
-sat at `6/6` forever.  `status()` now returns `(fresh, total, age_s, stale,
-expired)`: fresh `< max_age_s` (6 h), stale `6–24 h` (drawn as a fallback),
-expired `≥ expire_s` (24 h — `columns()`/`count()` stop SERVING it, drawn
-blank).  Status line reads e.g. `WINDS 4/6 · 7h · 2 stale`.  `stale_zones()`
-lists which.  `shared/wx.py`, status line in both `pfd.py`.
-
-### TFC-RA-SENSITIVITY  Traffic collision alert (RA) fires too eagerly
-Status: **FIXED** — closure/tau-based RA (replaces the flat ring)
-`threat_level` now fires the "alert" (red / "Traffic, Traffic") tier only
-when a target is **actually converging and will be close soon**: tau =
-range / closure ≤ `ADSB_TAU_S` (30 s) AND within the vertical protected band
-(`ADSB_ALERT_FT`) AND inside the advisory range — plus a hard floor backstop
-(`ADSB_ALERT_FLOOR_NM/FT` = 1 NM / 400 ft) for anything right on top of us
-regardless of closure.  Range-rate is tracked per ICAO frame-to-frame and
-EMA-smoothed in `_update_traffic` (both pi4 + pi_zero) so jitter can't fake
-convergence; diverging / parallel / non-closing traffic no longer trips it.
-Proximate (amber) advisory unchanged at the static 6 NM / 1200 ft envelope.
-Unit-tested in `shared/test_adsb.py` (`test_threat_tau`).  Original spec
-retained below for reference.
-Pilot report: the traffic "RA" (the `Traffic, Traffic` callout + flashing
-TRAFFIC banner) feels too sensitive — it triggers on traffic that isn't
-really a threat.  Today it's a pure static envelope: fires when a target
-is within **ADSB_ALERT_NM = 3.0** *and* **ADSB_ALERT_FT = 600**
-(`shared/config_base.py`), classified in `shared/adsb.py threat_level()`,
-edge-triggered in `pi4/pfd.py _update_traffic` (~line 1807).  Real TCAS/TAS
-RAs are **closure/time-based** (tau — time to closest approach), not a flat
-ring, which is why a flat 3 NM/600 ft ring nuisance-trips on parallel or
-diverging traffic.
-**Decision (pilot): do it properly — intercept/closure-based, not a
-distance ring.**  Real TAS/TCAS uses **tau** = time to closest point of
-approach: alert only when the target is actually *converging* and will be
-close *soon*.  Plan:
-  - Track each target's **range rate** (closure) frame-to-frame (Δrange /
-    Δt), and ideally vertical closure (Δrel_alt / Δt).
-  - **Alert when `tau = range / closure_rate` is below a threshold**
-    (~25–35 s is typical TAS) **AND** the projected miss distance / vertical
-    separation is inside a small protected volume — i.e. it's both closing
-    and going to be close.  Diverging or co-altitude-but-parallel traffic
-    never trips it.
-  - Keep a hard **floor** ring (e.g. anything inside ~1 NM/400 ft regardless
-    of closure) as a backstop, and keep the **proximate** (amber) tier as the
-    current static 6 NM/1200 ft advisory.
-  - Smooth the range-rate (a frame or two of EMA) so GPS/ADS-B jitter
-    doesn't produce phantom closure.
-Touches `shared/adsb.py` (add range-rate to the relativised target +
-a tau-based `threat_level`) and `pi4/pfd.py _update_traffic` (per-target
-previous-range memory).  `shared/config_base.py` gains `ADSB_TAU_S` etc.
-
-### SETUP-SCROLL-SHORT  Display setup page scroll stops before the bottom
-Status: **FIXED (band-aid)** — superseded by DISPLAY-SETUP-SPLIT
-`_DSP_ROWS` had grown to 12 rows (FLIGHT PATH / TFC ALT / TFC RANGE) but the
-scroll clamp still assumed 11 + a 2-row approximation of the taller MAP
-LAYERS row, so it stopped ~56 px short.  Fixed on pi4 by `_dsp_max_scroll()`
-computing the real content height (standard rows + `_DSP_LAYERS_ROW_H` +
-padding).  pi_zero was already correct (7 rows, clamp 9).  Proper long-term
-fix is the page split below.
 
 ### DISPLAY-SETUP-SPLIT  Break the DISPLAY setup screen into 3 tabbed pages
 Status: **OPEN** — design agreed
@@ -204,18 +46,6 @@ be render-verified here (no GL), so each tab should be checked on hardware
 `draw_display_setup` + `display_setup_hit` + the `_DSP_*` row tables in
 `pi4/pfd.py` and `pi_zero/pfd.py`.
 
-### INSET-ORIENT-STUCK  Moving-map inset stuck north-up — TRK↑ toggle dead
-Status: **FIXED**
-The inset forced north-up whenever `_eff_range > 40`
-(`_eff_orient = "nrth" if _eff_range > 40 else _orient_pref`), which
-swallowed the pilot's TRK↑ choice on the WND page (winds zoom ≥40) and at
-wide manual zooms — the toggle and the setup pill both flipped `map_orient`
-but the render ignored it.  The reasons for the force (rotated-tint smear,
-per-heading rebuild) are gone now that tint registration is fixed and the
-cache key excludes rotation, so the inset honours the pilot's choice at
-every manual range; only AUTO stays north-up so the destination doesn't
-spin under the chevron.  (pi_zero already honoured `map_orient` directly.)
-
 ### TINT-SHIMMER-PAN  Terrain tint shading shifts a bit on a pan + density bump
 Status: **OPEN**
 After the tint registration fix (scale + projected-quantised-centre blit),
@@ -244,48 +74,6 @@ already-loaded tiles, just more smoothscale per build.  Gate it by platform
 (keep 48 on the 2 GB Pi 4 unless confirmed it doesn't tax it; Pi 5 fine).
 Apply to both `pi4/moving_map.py` and `pi_zero/moving_map.py`.  Verify on
 the Pi 5 (a slow pan should show terrain sliding smoothly, no shading pop).
-
-### WINDS-INSET-ALT-SELECT  No winds-altitude selector on the inset
-Status: **FIXED (verify position on hardware)**
-When the WND overlay is up on the PFD inset, a small **"9k ft"** readout
-now sits just under the range label and **cycles the level** (3k/6k/9k/12k/
-18k) on tap, reusing `_mfd_cycle_winds_alt` — so the inset can change winds
-altitude without the full-screen MFD.  Winds zoom stays on the L/R half
-taps.  The draw box + the hit-test box are kept in sync in `pi4/pfd.py`
-(inset overlay draw + the `_last_map_rect` tap handler); eyeball the exact
-position/size on the panel and nudge the two boxes if needed.  Forecast-time
-on the inset (`_mfd_cycle_winds_time`) was left for later — not requested.
-
-### FPLLIB-DELETE-RESURRECT  Deleted saved flight plans come back from peers
-Status: **OPEN**
-Deleting a saved flight plan (LOAD-plan picker → DEL) only removes it on
-the local display.  The saved-plan / user-waypoint library syncs between
-screens (`KIND_FPLLIB`, gated by SHARE FPL), and that sync is a pure
-**additive union merge** with no concept of deletion: `_ssync_apply_fpl_lib`
-adds any peer plan whose name we don't already have, and every display
-re-broadcasts its full plan list every ~5 s (`_ssync_publish_fpl_lib`).
-So a plan you delete on screen A is re-broadcast by screen B (which still
-has it) and re-added on A within ~5 s — it "resurrects" unless you race to
-delete it on every connected screen at once.  Same flaw applies to **user
-waypoint** deletes.  Repro: two+ displays with SHARE FPL on, DEL a plan on
-one → it reappears.
-Root cause: union merge can't express "this was deleted" — there is no
-tombstone or deletion propagation.
-Fix options:
-  - **Tombstones (preferred):** on delete, record `{name, deleted_ts}` and
-    include a `deleted` set in the `KIND_FPLLIB` payload.  Peers drop any
-    plan whose name has a tombstone newer than the plan's own
-    creation/update time, and don't re-add a tombstoned name.  Expire
-    tombstones after a window (e.g. 24 h) so the set stays small.  Needs a
-    creation/update timestamp per saved plan (currently plans carry only
-    `name` + `waypoints`).
-  - **Explicit delete event:** broadcast a one-shot `KIND_FPLLIB_DELETE`
-    `{name}` that peers apply immediately — simpler, but lost if a peer is
-    offline during the delete (it'll re-resurrect when that peer rejoins,
-    so tombstones are still the robust answer).
-Touches: `shared/screen_sync.py` (payload shape), `_ssync_apply_fpl_lib` /
-`_ssync_publish_fpl_lib` / `_fpl_plan_delete` (+ the user-waypoint delete
-path) in both `pi4/pfd.py` and `pi_zero/pfd.py`.
 
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
@@ -585,72 +373,6 @@ Pairs with SDP31-AIRDATA (the inputs come from there) and with
 AOA-PROBE (this entry retires when the probe lands, or stays as
 a redundant cross-check).
 
-### FPV  Velocity vector / flight-path marker on the AI
-Status: **pi4 + iPhone LANDED — pi_zero port pending (tracked as FPV-PIZ)**
-Resolution (pi4 + iPhone): `draw_fpv_marker()` in `pi4/pfd.py` projects
-the velocity vector (NED azimuth = GPS track, elevation = flight-path
-angle `atan2(VS, GS)`) into the same `_full_ai` frame the airport /
-runway / obstacle overlays use (ah/48° px-per-deg, roll rotation), so
-it banks with the SVT horizon and aligns with the airport symbols.
-Open circle + two wings + vertical stub, cyan, self-hides below 5 kt
-GS, clamps to the AI box with a ghost arrow when the vector falls
-outside (drawn even in extreme attitudes, unlike the other overlays).
-Toggle `fpv_enabled` (default ON) on the Display setup screen ("FLIGHT
-PATH" row), persisted via the existing `ds` subtree. iPhone mirror:
-`drawFPV()` in `iphone_display/index.html` using the same focal /
-pitchOff / roll math `drawAI()` draws the horizon with, with a "✈
-FLIGHT PATH" toggle in the setup menu (localStorage `fpv_enabled`).
-Sign check (matches the cue we wanted): in a coordinated climb the FPV
-sits below the nose by the AOA. Still open: **pi_zero port** — its AI
-overlays use a rotate-the-whole-SRCALPHA-surface model rather than
-per-feature roll, so the upright-symbol behaviour needs a small
-adaptation; see FPV-PIZ below.
-Target: `pi4/pfd.py` (new draw routine inside the AI block), iPhone
-display equivalent.
-Context: a velocity-vector / flight-path-vector marker shows the
-pilot where the airplane is actually going through space, not where
-the nose is pointing.  Standard on every modern PFD (G3X, Dynon,
-Garrecht, mil HUDs).  Indispensable on approach — pilot flies the
-FPV onto the runway numbers and lands there, whatever the crab
-angle and AOA are doing.  Inputs we already have:
-  - **GPS track** (`gps.track_deg`) — azimuthal direction the
-    airplane is moving over the ground.
-  - **GPS GS + VS** — flight-path angle = `atan2(VS_fps, GS_fps)`.
-    GS from `gps.speed_kt`, VS from `gps.vspeed_fpm` (already
-    smoothed in the firmware).
-  - **AHRS attitude** (yaw/pitch/roll from WT901) — needed to
-    project the FPV onto the AI viewport, since the AI is
-    drawn in body-frame.
-Math: the FPV's screen position is the projection of the velocity
-vector into the camera frame the AI is rendered with.  The same
-projection chain `draw_airport_symbols` already uses (yaw / pitch
-/ roll, focal length, screen centre) takes a unit vector in the
-NED frame and returns AI pixel coordinates.  Build a NED unit
-vector from track + flight-path-angle, run it through the existing
-projection, draw a small open circle with two horizontal "wings"
-and a short vertical stub (the conventional FPV symbol).
-Work items:
-  - Compute FPV NED unit vector from GPS track + GS + VS each
-    frame.  Skip when GS < 5 kt (parked / taxi noise) — hide the
-    symbol below that gate.
-  - Reuse the airport projection helper to land it on the AI.
-    Clamp to the AI rectangle so it never escapes the viewport
-    in extreme attitudes; show a "ghost" arrow at the edge in
-    that case (G3X convention).
-  - Symbol: 12 px circle, 6 px wings either side, 6 px vertical
-    stub.  Cyan, no fill.  Same colour as the heading-bug bug
-    set (pilot-relevant, not alert).
-  - Display setup gains an FPV ON/OFF toggle (default ON when
-    GPS is healthy).  Persist with the rest of the display
-    settings.
-  - Sanity check: on the ground rolling forward, the FPV should
-    sit in front of the nose (track ≈ heading, FPA ≈ 0).  In a
-    coordinated climb-out, the FPV sits below the nose by the
-    AOA (a free cross-check against AOA-CALC once it lands).
-Pairs with AOA-CALC (the vertical offset between aircraft symbol
-and FPV is exactly AOA when the wind is along the flight path —
-a free in-flight calibration target for the airframe constants).
-
 ### AOA-PROBE  Add a second differential-pressure transducer for AOA
 Status: **OPEN — bundled into the rev B board spin alongside the
 MS4525DO airspeed swap**
@@ -774,7 +496,6 @@ Work items:
     Probably opt-in for the global set, auto for the
     home-airport-region.
 
-
 ---
 
 ### MAGCAL-PIZ-TUMBLE  Port pi4's hard-iron tumble mag-cal flow to pi_zero
@@ -873,15 +594,6 @@ docs (architectural/QA, not pilot-facing) and **regenerating the actual
 preview PNGs** on a Pi (the cloud box has no display/GL — run
 `tools/regen_previews.sh` + the live `fbgrab` captures).
 
-### PI4-ETE-LATENCY  pi4 inset ETE takes a beat to populate
-Status: **OPEN — investigate**
-PiZ data-strip ETE updates instantly when a D2 is activated; pi4's
-inset ETE shows `--:--` for a noticeable interval before catching up.
-Both code paths now use great-circle distance (per PR #8 ETE fix),
-so it's not a math thing — likely a stale-cache or projector-recompute
-in the inset draw path on pi4.  Check whether pi4's inset uses a
-quantised render cycle that delays first-frame ETE pickup.
-
 ### SYNC-CACHES-PI4-TO-PIZ  Push water + state-line caches pi4 → piZ
 Status: **OPEN — covered by DEPLOY-RSYNC but worth tracking**
 On users who have both displays, pi4 already does the heavy lift
@@ -892,149 +604,6 @@ the work or even install pyshp on pi_zero.  Subset of the
 DEPLOY-RSYNC story; included here as a standalone item in case it
 gets implemented as an in-app "Sync from pi4" button instead of a
 bare rsync.
-
-### MAP-POLYLINE-WIDE-ZOOM  Inset/MFD still not snappy at 160 nm
-Status: **OPEN — acceptable for now, revisit if it bites**
-After 2bbb7fe (vectorised polyline projection in `_draw_polylines`,
-both `pi4/moving_map.py` and `pi_zero/moving_map.py`), zoom levels
-20–80 nm are snappy and 160 nm is "better, not amazing".  Bench
-note: at 160 nm the AI was previously laggy across all three axes
-because the polyline layer was dropping the render loop below 30 FPS;
-that's gone now, but 160 nm still has visible cost from the surviving
-admin_1 and admin_0 vertex counts inside the cull window.
-
-Next lever (one-line change, no quality loss at extreme zoom because
-inset is ~1.5 px/nm there → vertices closer than ~3 nm are sub-pixel):
-add stride decimation inside the `for idx in visible_idx:` loop,
-between the `ring = points[s:e]` line and the vectorised projection:
-  ```python
-  stride = 1 if range_nm < 80 else (2 if range_nm < 160 else 4)
-  if stride > 1:
-      ring = ring[::stride]
-  ```
-Keep the threshold conservative — at 80 nm the inset is still ~3 px/nm
-so stride=1 is right there.  Only kick in at ≥80 nm.
-
-If even that isn't enough, the *next* lever would be moving the
-per-polyline draw call into a single `pygame.draw.lines` flush over
-all visible rings (with `None`-terminated breaks) — but pygame doesn't
-expose that primitive, so it'd mean dropping to `pygame.gfxdraw` or
-keeping the per-ring call.  Don't go there until stride decimation
-has been tried and proven insufficient.
-
-LOD caches were considered and explicitly rejected — see commit
-message on 2bbb7fe and the design discussion in chat: the rasterised
-water-mask pipeline already covers the "huge vertex count, fill
-rendering" case (lakes + ocean via `tools/build_water_tiles.py` +
-`pi4/svt_renderer_gl.py`'s fragment shader sample), so the only
-remaining vector-line layer (state + country borders) doesn't have
-enough vertex count to justify a build-time LOD pipeline once
-vectorisation removes the Python per-vertex overhead.
-
-### WINDS-INET-REFETCH  Internet winds aloft freeze at startup, don't follow the route
-Status: **FIXED — settle gate corrected + route-corridor winds added (pi4 + pi_zero)**
-Resolution: (1) Both `WxClient.run` and `AwcPoller.run` replaced the
-exact-equality `settled` test with a pan-DRAG debounce — a slice is
-treated as a drag only when the view jumped more than
-`max(move_frac·radius, 2 nm)`; ownship motion (even a ~30× time-
-compressed sim, ~0.9 nm/slice) stays under that, and the periodic
-`interval_s` refresh is always allowed through regardless. So
-view-driven products (winds, TAF, AIRMET/SIGMET, NOTAM) now follow the
-aircraft instead of freezing at the departure field. (2) New
-`fetch_winds_route` / `_route_winds_points` in `shared/wx.py` build a
-corridor along an active direct-to / flight-plan course — samples down
-the polyline (ownship first, then remaining legs) with ±`WINDS_ROUTE_
-WIDTH_NM` (=25 nm, `shared/config_base.py`) lateral offsets, deduped and
-capped at 96 points so the batched Open-Meteo request stays bounded.
-`_winds_fetch` (pi4 + pi_zero) uses the corridor when a course is active
-and falls back to the visible-area grid otherwise. Verified: PHX→ABQ
-(~285 nm) yields 60 corridor points covering both ends with lateral
-spread; settle gate passes flight motion and rejects finger-drags;
-`test_wx.py` + `test_fisb.py` still pass. Remaining nicety (not blocking):
-`force_refresh()` on a D2/FPL change so the corridor switches instantly
-rather than on the next move/periodic tick.
-Field-test follow-ups (same session): (a) the corridor must *augment*,
-not replace, the visible-area grid — a D2 to a near waypoint shrank the
-winds page to ~3 clustered barbs. `fetch_winds()` now always builds the
-full visible grid and adds the route corridor on top (dedup + cap 96),
-so the page fills at any zoom. (b) The WND page now drops the
-hypsometric terrain tint like the METAR/NEXRAD pages (`wx_active` in
-`moving_map.py`) — on pi4 the 80 nm tint build pulls a huge SRTM-tile
-set that could OOM/lock the display; with the winds poller now active
-(no longer frozen) the contention tipped it over. pi_zero already caps
-the tint below 80 nm so this is parity-only there.
-Performance redesign (field-test round 2): the fetch-per-view model
-hammered Open-Meteo (stalls of seconds–minutes on every pan/zoom) and
-the draw re-rendered a `font.render()` temp tag per barb per frame
-(~0.5–1 ms each — the real "barb draws are slow" cause). Reworked around
-"cache wide, draw the subset":
-  - **Wide cached grid.** `_winds_view` now returns a FIXED wide range
-    (`WINDS_CACHE_RANGE_NM` = 110) instead of the zoom, with a constant
-    `WINDS_GRID_SPACING_NM` (20 nm) barb spacing; `fetch_winds` builds
-    that square grid (+ corridor beyond the cache for long routes). The
-    poller only re-pulls on a big centre drift (½ the cache) or the
-    periodic timer — so zoom and small pans need NO network.
-  - **Decimate on draw.** `_winds_decimate` keeps at most one barb per
-    screen cell (~one per `min(w,h)/3.5`), so any zoom shows a clean
-    ~12–20 evenly-spread set — fixes the inset's wide-zoom pile-up and
-    the short-D2 centre stack, and slashes draw cost.
-  - **Glyph cache.** `_wx_glyph` memoises rendered temp/LV text, turning
-    the per-frame `font.render` storm into blits.
-  - Zoom-in refetch bug (strict `<0.5×`) made moot by the fixed cache
-    range, but the symmetric `1.4×/0.7×` threshold is kept for the
-    other view-driven pollers.
-Net: winds follow the aircraft, pan/zoom is instant, draw is cheap, and
-the data covers a wide area + the route. Open items: at very tight zoom
-(≤20 nm) the fixed-spacing cache is naturally sparse (winds are smooth,
-so acceptable); tune `WINDS_GRID_SPACING_NM` / `WINDS_CACHE_RANGE_NM` if
-denser close-in barbs are wanted.
-Original diagnosis below for reference.
-Status (orig): **OPEN — diagnosed, fix not yet applied**
-Target: `shared/wx.py` (`WxClient.run` / `AwcPoller.run` settle gate),
-`pi4/pfd.py` `_winds_view` / `_winds_fetch`, `shared/fisb.py`
-`set_winds` (replace-vs-accumulate).
-Symptom (reported from an all-night sim run out of PHX): the INET winds
-barbs loaded once for the local area around the departure field and
-never updated as the aircraft flew — no winds along the route, no new
-columns appearing en route.
-Diagnosis — two separate problems:
-  1. **Settle-debounce starves a moving aircraft of refetches.** Both
-     `WxClient.run` and `AwcPoller.run` only fetch when the view has
-     "settled": `settled = (cur == prev_view)` where
-     `cur = (round(lat,2), round(lon,2), round(radius))`, compared
-     between consecutive ~0.7 s poll slices. round(,2) is ~0.01° ≈ 0.6
-     nm. A continuously-moving ownship (and especially a
-     time-compressed overnight sim) changes that rounded tuple on most
-     slices, so `settled` is rarely/never true — and BOTH the
-     move-based AND the periodic (`interval_s`) refetch are gated
-     behind it. Result: the only fetch that fired was the one on the
-     ground at PHX where the view genuinely sat still. The debounce was
-     meant to avoid a burst of fetches mid pan-drag, but it wrongly
-     also suppresses ownship motion. Affects winds, TAF, AIRMET/SIGMET,
-     NOTAM, NEXRAD — every view-driven poller shares this pattern.
-  2. **Replace-not-accumulate + tiny grid = no route picture.**
-     `set_winds()` deletes all prior INET columns each poll
-     (`shared/fisb.py:1197`), and `_winds_view` requests only a
-     `map_zoom_nm`-sized grid (default 5 nm in PFD mode) centred on the
-     ownship. So even with refetch working you'd only ever hold a ~4 nm
-     patch around the aircraft — never the whole route.
-Fix sketch:
-  - Replace the exact-equality settle test with a tolerance + dwell:
-    treat the view as settled when it hasn't moved more than a small
-    fraction of the radius for ~1–2 s (debounce drags) but never let
-    that gate block the periodic `interval_s` refresh or a large
-    ownship move. Cleanest: compute `settled` from a distance
-    threshold against the last *evaluated* view, and always allow the
-    periodic timer through regardless of settle.
-  - For route coverage, decide between (a) widening the winds grid to a
-    forward-biased corridor along the active FPL/track, or (b) keeping
-    the local grid but bumping the grid extent so barbs read for the
-    visible MFD range. (a) is the real fix; (b) is the quick one.
-  - Add a one-line "[WX] winds refetch @lat,lon" debug print behind a
-    flag so the next sim run can confirm the poller is following.
-Bench/sim repro: start at PHX, fly a long leg (time-compressed if
-possible), watch whether the winds barbs re-centre. Pre-fix they stay
-at PHX; post-fix they should track the ownship.
 
 ### FPV-PIZ  Port the flight-path-vector marker to pi_zero
 Status: **OPEN — pi4 + iPhone done (see FPV), pi_zero pending**
@@ -1183,9 +752,446 @@ Work items:
     "EXIT HOLD" (then resume the next leg). This is the one place the
     existing distance-gated sequencer needs a real state change.
 
----
 
 ## Completed
+
+### WX-SOURCE-DISPLAY-FILTER  Auto/Radio/Internet should filter what's drawn
+Status: **DONE for NEX (pi4 + pi_zero); MET already correct; WND + TFC + AIR/SIG
+carved out** — the weather-source pill (`wx_source`: auto | radio | internet)
+was only gating the *pollers*, so switching to RADIO left stale INTERNET data
+on screen until it aged out.  It's now a hard render-time filter where the layer
+has two real sources:
+- **NEX** — `_nexrad_render_arg` returns None in RADIO (hide the downloaded
+  mosaic); `_fisb_nexrad_cells` returns [] in INTERNET (hide the FIS-B cells);
+  AUTO shows both.
+- **MET** — already filtered at the merge (`inet=[]` in radio, `rdr=[]` in
+  internet).  No change.
+- **WND** — carve-out: winds aloft is **internet-only** (there is no FIS-B
+  winds), so it ALWAYS pre-loads and ALWAYS shows regardless of the pill — like
+  the traffic sensor below, hiding the only source just blanks the layer.
+  `_winds_client.enabled = True` unconditionally, and the `set_winds` store feed
+  is pulled out of the `not radio_only` gate so it feeds in every mode.  (The
+  first instinct was the opposite — RADIO ⇒ barbs gone — but that assumed FIS-B
+  carried winds; it doesn't, so "always visible" is the right version.)
+- **TFC** — carve-out (separate `traffic_source` selector).  RADIO = radio
+  only, AUTO = radio+internet merged, **INTERNET still keeps radio** on purpose:
+  the local ADS-B receiver is the real see-and-avoid picture and must never be
+  hidden to honour a literal "internet only" (it'd suppress real, locally-sensed
+  targets — unlike weather, where source is just provenance of the same data).
+- **AIR/SIG — NOT filterable as-is (deferred).** The FIS-B store *dedupes*
+  AIRMET/SIGMET advisories by text and graphics by geometry and stores **no
+  source tag** (`add_advisory`/`add_graphic` in `shared/fisb.py`), so a radio
+  and internet copy of the same NWS bulletin collapse to one.  A hard
+  source-filter would need per-item source tagging + a rework of the cross-source
+  dedup.  Low value (the bulletins are identical across radio/internet — it's the
+  same product, so a lingering "internet" AIRMET in RADIO mode isn't *wrong*
+  data), so left for a follow-up if strict consistency is wanted.
+Files: `_nexrad_render_arg`, `_fisb_nexrad_cells`, and the winds enable/feed in
+`_update_weather` (always-on) in both `pi4/pfd.py` and `pi_zero/pfd.py`.
+
+### WINDS-FORECAST-SERIES  Winds roll forward to "now"; inset is always now
+Status: **DONE (pi4 + pi_zero)** — winds-aloft barbs are no longer a frozen
+fetch-time snapshot.  Each national-cache column now carries the forecast
+**series** (per-hour `[dir,spd,temp]` flat rows out to ~30 h, stored in
+`t0`/`step_s`/`series`/`alts`).  Open-Meteo already returns a 48 h forecast per
+call, so the series is free; we just stopped throwing all but one hour away.
+- **Retarget at draw time.** `_winds_barbs(offset_h)` and the barb-tap table
+  pick the hour for `now + offset_h` via `wx.winds_levels_at()`.  The PFD inset
+  passes `offset_h=0` → it is ALWAYS *now*, independent of the WND-page
+  forecast-time selector.  The page passes its `winds_time_offset_h`.  A target
+  outside the held window draws blank (no wrong-time forecast).
+- **Re-pull on the 6 h GFS run** (`max_age_s`), not to chase "now" — the series
+  advances on its own between fetches.  Changing the page offset no longer
+  forces a re-fetch (instant, zero API calls); `force_refresh()` removed from
+  `_mfd_cycle_winds_time`.
+- **LAN sharing stays compact.** The full series is ~30× too big for one UDP
+  datagram, so a feeder broadcasts a single-hour *now*-snapshot (existing
+  packet format) re-derived each tick and stamped `st=now`; adopters roll
+  forward as `st` advances (`ingest_packed` adopts a newer run OR a newer
+  snapshot of the same run).  A relayed/frozen snapshot carries an
+  un-advancing `st`, so a dead feeder can't pin the panel — deferral lapses and
+  someone re-pulls.  A screen holding its own series ignores peer snapshots
+  (never downgrades).
+- Memory: series kept as flat int rows (~7.5 MB national, shared by reference
+  into the FIS-B store), not dicts (~90 MB).  Disk persists the series.
+- Files: `shared/wx.py` (`parse_open_meteo_winds(series_h=…)`,
+  `_build_winds_series`, `winds_levels_at`, `_winds_cols_snapshot`,
+  `_zone_packet`, `ingest_packed`, `WindsUSCache(series_h=30)`); `_winds_barbs`
+  + `_draw_wx_winds` + `_mfd_cycle_winds_time` in both `pi4/pfd.py` and
+  `pi_zero/pfd.py`.  Tests: `shared/test_wx_winds.py` (12 cases).
+- **Self-heal on deploy.** A pre-series `conus_winds.json` (from before this
+  change) has no series but looks "fresh" (< 6 h), so the cache would never
+  re-pull and the `+Nh` offset would do nothing on *any* screen (and screens
+  each sitting on a different stale snapshot would disagree).  `_due_zone` now
+  treats a series-less zone (old disk cache OR a peer's now-snapshot) as **due**
+  regardless of age, so a deploy re-pulls to populate the series and the LAN
+  share reconciles the panel.  The startup gate is staggered by the per-device
+  fetch jitter so a synchronised "everyone's cache is due" event doesn't hit
+  Open-Meteo all at once.
+- **One feeder, not three (429 fix).** Field test showed all three screens each
+  fetching the same zones (the aircraft's zone first) → repeated 429s, because
+  every screen wants its OWN series so its `+Nh` works.  `_due_zone` now has a
+  global gate: a screen holding NONE of its own fetched series, while a peer is
+  actively sharing, **stays a pure adopter and does not fetch**.  The first
+  screen to pull (lowest jitter) becomes the sole feeder; the rest adopt its
+  now-snapshots.  `peer_grace_s` 360→600 s so an occasional dropped broadcast
+  doesn't expire coverage and trigger a redundant pull.  Consequence: `+Nh`
+  works on the feeder only — the adopters need the offsets SHARED (Phase 2).
+  NOTE: to elect cleanly on already-split hardware, delete `conus_winds.json` on
+  every Pi and restart them together (otherwise each keeps the zones it already
+  fetched).
+- **DEFERRED — WINDS-SERIES-PEER-OFFSET (Phase 2):** to make `+Nh` work on the
+  adopters too, the feeder must SHARE the offsets.  Measured: the full 31 h
+  series zlib-compresses to ~145 KB (too big for one 64 KB UDP datagram), BUT
+  the 7 discrete selector offsets {0,3,6,9,12,18,24 h} compress to **~37 KB —
+  fits one datagram** (b64 in JSON ~50 KB, still under 64 KB).  Phase 2 = feeder
+  packs a 7-offset bundle (zlib+b64) per zone, adopters store it offset-keyed
+  and `_winds_barbs` picks the matching offset.  No chunking needed.  CAVEAT: a
+  field log showed a ~7 min gap where a ~20 KB winds broadcast wasn't reaching a
+  peer — the LAN may be dropping fragmented broadcasts; the bigger Phase-2
+  packets would be dropped more (survivable via the 20 s re-broadcast, but check
+  `screen_sync` rx/tx counters first).  The inset (now) is correct everywhere
+  regardless.
+
+### WINDS-STALE-STATUS  "6/6 loaded" was uninformative; report stale/expired
+Status: **DONE** — zones refresh in place and never drop, so a loaded-count
+sat at `6/6` forever.  `status()` now returns `(fresh, total, age_s, stale,
+expired)`: fresh `< max_age_s` (6 h), stale `6–24 h` (drawn as a fallback),
+expired `≥ expire_s` (24 h — `columns()`/`count()` stop SERVING it, drawn
+blank).  Status line reads e.g. `WINDS 4/6 · 7h · 2 stale`.  `stale_zones()`
+lists which.  `shared/wx.py`, status line in both `pfd.py`.
+
+### TFC-RA-SENSITIVITY  Traffic collision alert (RA) fires too eagerly
+Status: **FIXED** — closure/tau-based RA (replaces the flat ring)
+`threat_level` now fires the "alert" (red / "Traffic, Traffic") tier only
+when a target is **actually converging and will be close soon**: tau =
+range / closure ≤ `ADSB_TAU_S` (30 s) AND within the vertical protected band
+(`ADSB_ALERT_FT`) AND inside the advisory range — plus a hard floor backstop
+(`ADSB_ALERT_FLOOR_NM/FT` = 1 NM / 400 ft) for anything right on top of us
+regardless of closure.  Range-rate is tracked per ICAO frame-to-frame and
+EMA-smoothed in `_update_traffic` (both pi4 + pi_zero) so jitter can't fake
+convergence; diverging / parallel / non-closing traffic no longer trips it.
+Proximate (amber) advisory unchanged at the static 6 NM / 1200 ft envelope.
+Unit-tested in `shared/test_adsb.py` (`test_threat_tau`).  Original spec
+retained below for reference.
+Pilot report: the traffic "RA" (the `Traffic, Traffic` callout + flashing
+TRAFFIC banner) feels too sensitive — it triggers on traffic that isn't
+really a threat.  Today it's a pure static envelope: fires when a target
+is within **ADSB_ALERT_NM = 3.0** *and* **ADSB_ALERT_FT = 600**
+(`shared/config_base.py`), classified in `shared/adsb.py threat_level()`,
+edge-triggered in `pi4/pfd.py _update_traffic` (~line 1807).  Real TCAS/TAS
+RAs are **closure/time-based** (tau — time to closest approach), not a flat
+ring, which is why a flat 3 NM/600 ft ring nuisance-trips on parallel or
+diverging traffic.
+**Decision (pilot): do it properly — intercept/closure-based, not a
+distance ring.**  Real TAS/TCAS uses **tau** = time to closest point of
+approach: alert only when the target is actually *converging* and will be
+close *soon*.  Plan:
+  - Track each target's **range rate** (closure) frame-to-frame (Δrange /
+    Δt), and ideally vertical closure (Δrel_alt / Δt).
+  - **Alert when `tau = range / closure_rate` is below a threshold**
+    (~25–35 s is typical TAS) **AND** the projected miss distance / vertical
+    separation is inside a small protected volume — i.e. it's both closing
+    and going to be close.  Diverging or co-altitude-but-parallel traffic
+    never trips it.
+  - Keep a hard **floor** ring (e.g. anything inside ~1 NM/400 ft regardless
+    of closure) as a backstop, and keep the **proximate** (amber) tier as the
+    current static 6 NM/1200 ft advisory.
+  - Smooth the range-rate (a frame or two of EMA) so GPS/ADS-B jitter
+    doesn't produce phantom closure.
+Touches `shared/adsb.py` (add range-rate to the relativised target +
+a tau-based `threat_level`) and `pi4/pfd.py _update_traffic` (per-target
+previous-range memory).  `shared/config_base.py` gains `ADSB_TAU_S` etc.
+
+### SETUP-SCROLL-SHORT  Display setup page scroll stops before the bottom
+Status: **FIXED (band-aid)** — superseded by DISPLAY-SETUP-SPLIT
+`_DSP_ROWS` had grown to 12 rows (FLIGHT PATH / TFC ALT / TFC RANGE) but the
+scroll clamp still assumed 11 + a 2-row approximation of the taller MAP
+LAYERS row, so it stopped ~56 px short.  Fixed on pi4 by `_dsp_max_scroll()`
+computing the real content height (standard rows + `_DSP_LAYERS_ROW_H` +
+padding).  pi_zero was already correct (7 rows, clamp 9).  Proper long-term
+fix is the page split below.
+
+### INSET-ORIENT-STUCK  Moving-map inset stuck north-up — TRK↑ toggle dead
+Status: **FIXED**
+The inset forced north-up whenever `_eff_range > 40`
+(`_eff_orient = "nrth" if _eff_range > 40 else _orient_pref`), which
+swallowed the pilot's TRK↑ choice on the WND page (winds zoom ≥40) and at
+wide manual zooms — the toggle and the setup pill both flipped `map_orient`
+but the render ignored it.  The reasons for the force (rotated-tint smear,
+per-heading rebuild) are gone now that tint registration is fixed and the
+cache key excludes rotation, so the inset honours the pilot's choice at
+every manual range; only AUTO stays north-up so the destination doesn't
+spin under the chevron.  (pi_zero already honoured `map_orient` directly.)
+
+### WINDS-INSET-ALT-SELECT  No winds-altitude selector on the inset
+Status: **FIXED (verify position on hardware)**
+When the WND overlay is up on the PFD inset, a small **"9k ft"** readout
+now sits just under the range label and **cycles the level** (3k/6k/9k/12k/
+18k) on tap, reusing `_mfd_cycle_winds_alt` — so the inset can change winds
+altitude without the full-screen MFD.  Winds zoom stays on the L/R half
+taps.  The draw box + the hit-test box are kept in sync in `pi4/pfd.py`
+(inset overlay draw + the `_last_map_rect` tap handler); eyeball the exact
+position/size on the panel and nudge the two boxes if needed.  Forecast-time
+on the inset (`_mfd_cycle_winds_time`) was left for later — not requested.
+
+### FPLLIB-DELETE-RESURRECT  Deleted saved flight plans come back from peers
+Status: **FIXED (tombstones)** — `shared/fpllib.py` `merge_plan_lib` is a
+tombstone-aware union: deleting a plan records `{NAME_UPPER: deleted_ts}` in
+`fpl_saved["deleted"]`, which rides the `KIND_FPLLIB` sync so peers drop the
+plan and won't re-add a tombstoned name (a re-save clears the tombstone so a
+re-create wins).  Same path covers user-waypoint deletes.  Wired in both
+`pi4/pfd.py` (`_fpl_plan_delete`, `_ssync_apply_fpl_lib`) and `pi_zero/pfd.py`;
+covered by `shared/test_fpllib.py`.  Original report below.
+Deleting a saved flight plan (LOAD-plan picker → DEL) only removes it on
+the local display.  The saved-plan / user-waypoint library syncs between
+screens (`KIND_FPLLIB`, gated by SHARE FPL), and that sync is a pure
+**additive union merge** with no concept of deletion: `_ssync_apply_fpl_lib`
+adds any peer plan whose name we don't already have, and every display
+re-broadcasts its full plan list every ~5 s (`_ssync_publish_fpl_lib`).
+So a plan you delete on screen A is re-broadcast by screen B (which still
+has it) and re-added on A within ~5 s — it "resurrects" unless you race to
+delete it on every connected screen at once.  Same flaw applies to **user
+waypoint** deletes.  Repro: two+ displays with SHARE FPL on, DEL a plan on
+one → it reappears.
+Root cause: union merge can't express "this was deleted" — there is no
+tombstone or deletion propagation.
+Fix options:
+  - **Tombstones (preferred):** on delete, record `{name, deleted_ts}` and
+    include a `deleted` set in the `KIND_FPLLIB` payload.  Peers drop any
+    plan whose name has a tombstone newer than the plan's own
+    creation/update time, and don't re-add a tombstoned name.  Expire
+    tombstones after a window (e.g. 24 h) so the set stays small.  Needs a
+    creation/update timestamp per saved plan (currently plans carry only
+    `name` + `waypoints`).
+  - **Explicit delete event:** broadcast a one-shot `KIND_FPLLIB_DELETE`
+    `{name}` that peers apply immediately — simpler, but lost if a peer is
+    offline during the delete (it'll re-resurrect when that peer rejoins,
+    so tombstones are still the robust answer).
+Touches: `shared/screen_sync.py` (payload shape), `_ssync_apply_fpl_lib` /
+`_ssync_publish_fpl_lib` / `_fpl_plan_delete` (+ the user-waypoint delete
+path) in both `pi4/pfd.py` and `pi_zero/pfd.py`.
+
+### FPV  Velocity vector / flight-path marker on the AI
+Status: **pi4 + iPhone LANDED — pi_zero port pending (tracked as FPV-PIZ)**
+Resolution (pi4 + iPhone): `draw_fpv_marker()` in `pi4/pfd.py` projects
+the velocity vector (NED azimuth = GPS track, elevation = flight-path
+angle `atan2(VS, GS)`) into the same `_full_ai` frame the airport /
+runway / obstacle overlays use (ah/48° px-per-deg, roll rotation), so
+it banks with the SVT horizon and aligns with the airport symbols.
+Open circle + two wings + vertical stub, cyan, self-hides below 5 kt
+GS, clamps to the AI box with a ghost arrow when the vector falls
+outside (drawn even in extreme attitudes, unlike the other overlays).
+Toggle `fpv_enabled` (default ON) on the Display setup screen ("FLIGHT
+PATH" row), persisted via the existing `ds` subtree. iPhone mirror:
+`drawFPV()` in `iphone_display/index.html` using the same focal /
+pitchOff / roll math `drawAI()` draws the horizon with, with a "✈
+FLIGHT PATH" toggle in the setup menu (localStorage `fpv_enabled`).
+Sign check (matches the cue we wanted): in a coordinated climb the FPV
+sits below the nose by the AOA. Still open: **pi_zero port** — its AI
+overlays use a rotate-the-whole-SRCALPHA-surface model rather than
+per-feature roll, so the upright-symbol behaviour needs a small
+adaptation; see FPV-PIZ below.
+Target: `pi4/pfd.py` (new draw routine inside the AI block), iPhone
+display equivalent.
+Context: a velocity-vector / flight-path-vector marker shows the
+pilot where the airplane is actually going through space, not where
+the nose is pointing.  Standard on every modern PFD (G3X, Dynon,
+Garrecht, mil HUDs).  Indispensable on approach — pilot flies the
+FPV onto the runway numbers and lands there, whatever the crab
+angle and AOA are doing.  Inputs we already have:
+  - **GPS track** (`gps.track_deg`) — azimuthal direction the
+    airplane is moving over the ground.
+  - **GPS GS + VS** — flight-path angle = `atan2(VS_fps, GS_fps)`.
+    GS from `gps.speed_kt`, VS from `gps.vspeed_fpm` (already
+    smoothed in the firmware).
+  - **AHRS attitude** (yaw/pitch/roll from WT901) — needed to
+    project the FPV onto the AI viewport, since the AI is
+    drawn in body-frame.
+Math: the FPV's screen position is the projection of the velocity
+vector into the camera frame the AI is rendered with.  The same
+projection chain `draw_airport_symbols` already uses (yaw / pitch
+/ roll, focal length, screen centre) takes a unit vector in the
+NED frame and returns AI pixel coordinates.  Build a NED unit
+vector from track + flight-path-angle, run it through the existing
+projection, draw a small open circle with two horizontal "wings"
+and a short vertical stub (the conventional FPV symbol).
+Work items:
+  - Compute FPV NED unit vector from GPS track + GS + VS each
+    frame.  Skip when GS < 5 kt (parked / taxi noise) — hide the
+    symbol below that gate.
+  - Reuse the airport projection helper to land it on the AI.
+    Clamp to the AI rectangle so it never escapes the viewport
+    in extreme attitudes; show a "ghost" arrow at the edge in
+    that case (G3X convention).
+  - Symbol: 12 px circle, 6 px wings either side, 6 px vertical
+    stub.  Cyan, no fill.  Same colour as the heading-bug bug
+    set (pilot-relevant, not alert).
+  - Display setup gains an FPV ON/OFF toggle (default ON when
+    GPS is healthy).  Persist with the rest of the display
+    settings.
+  - Sanity check: on the ground rolling forward, the FPV should
+    sit in front of the nose (track ≈ heading, FPA ≈ 0).  In a
+    coordinated climb-out, the FPV sits below the nose by the
+    AOA (a free cross-check against AOA-CALC once it lands).
+Pairs with AOA-CALC (the vertical offset between aircraft symbol
+and FPV is exactly AOA when the wind is along the flight path —
+a free in-flight calibration target for the airframe constants).
+
+### PI4-ETE-LATENCY  pi4 inset ETE takes a beat to populate
+Status: **FIXED** — pi4 inset ETE now populates immediately on D2 activation
+(confirmed on hardware).  Original report below.
+PiZ data-strip ETE updates instantly when a D2 is activated; pi4's
+inset ETE shows `--:--` for a noticeable interval before catching up.
+Both code paths now use great-circle distance (per PR #8 ETE fix),
+so it's not a math thing — likely a stale-cache or projector-recompute
+in the inset draw path on pi4.  Check whether pi4's inset uses a
+quantised render cycle that delays first-frame ETE pickup.
+
+### MAP-POLYLINE-WIDE-ZOOM  Inset/MFD still not snappy at 160 nm
+Status: **DONE** — 160 nm zoom is snappy now (confirmed by the pilot; the
+specific draw-path mechanism wasn't re-verified in this tidy).  Original
+notes below.
+After 2bbb7fe (vectorised polyline projection in `_draw_polylines`,
+both `pi4/moving_map.py` and `pi_zero/moving_map.py`), zoom levels
+20–80 nm are snappy and 160 nm is "better, not amazing".  Bench
+note: at 160 nm the AI was previously laggy across all three axes
+because the polyline layer was dropping the render loop below 30 FPS;
+that's gone now, but 160 nm still has visible cost from the surviving
+admin_1 and admin_0 vertex counts inside the cull window.
+
+Next lever (one-line change, no quality loss at extreme zoom because
+inset is ~1.5 px/nm there → vertices closer than ~3 nm are sub-pixel):
+add stride decimation inside the `for idx in visible_idx:` loop,
+between the `ring = points[s:e]` line and the vectorised projection:
+  ```python
+  stride = 1 if range_nm < 80 else (2 if range_nm < 160 else 4)
+  if stride > 1:
+      ring = ring[::stride]
+  ```
+Keep the threshold conservative — at 80 nm the inset is still ~3 px/nm
+so stride=1 is right there.  Only kick in at ≥80 nm.
+
+If even that isn't enough, the *next* lever would be moving the
+per-polyline draw call into a single `pygame.draw.lines` flush over
+all visible rings (with `None`-terminated breaks) — but pygame doesn't
+expose that primitive, so it'd mean dropping to `pygame.gfxdraw` or
+keeping the per-ring call.  Don't go there until stride decimation
+has been tried and proven insufficient.
+
+LOD caches were considered and explicitly rejected — see commit
+message on 2bbb7fe and the design discussion in chat: the rasterised
+water-mask pipeline already covers the "huge vertex count, fill
+rendering" case (lakes + ocean via `tools/build_water_tiles.py` +
+`pi4/svt_renderer_gl.py`'s fragment shader sample), so the only
+remaining vector-line layer (state + country borders) doesn't have
+enough vertex count to justify a build-time LOD pipeline once
+vectorisation removes the Python per-vertex overhead.
+
+### WINDS-INET-REFETCH  Internet winds aloft freeze at startup, don't follow the route
+Status: **FIXED — settle gate corrected + route-corridor winds added (pi4 + pi_zero)**
+Resolution: (1) Both `WxClient.run` and `AwcPoller.run` replaced the
+exact-equality `settled` test with a pan-DRAG debounce — a slice is
+treated as a drag only when the view jumped more than
+`max(move_frac·radius, 2 nm)`; ownship motion (even a ~30× time-
+compressed sim, ~0.9 nm/slice) stays under that, and the periodic
+`interval_s` refresh is always allowed through regardless. So
+view-driven products (winds, TAF, AIRMET/SIGMET, NOTAM) now follow the
+aircraft instead of freezing at the departure field. (2) New
+`fetch_winds_route` / `_route_winds_points` in `shared/wx.py` build a
+corridor along an active direct-to / flight-plan course — samples down
+the polyline (ownship first, then remaining legs) with ±`WINDS_ROUTE_
+WIDTH_NM` (=25 nm, `shared/config_base.py`) lateral offsets, deduped and
+capped at 96 points so the batched Open-Meteo request stays bounded.
+`_winds_fetch` (pi4 + pi_zero) uses the corridor when a course is active
+and falls back to the visible-area grid otherwise. Verified: PHX→ABQ
+(~285 nm) yields 60 corridor points covering both ends with lateral
+spread; settle gate passes flight motion and rejects finger-drags;
+`test_wx.py` + `test_fisb.py` still pass. Remaining nicety (not blocking):
+`force_refresh()` on a D2/FPL change so the corridor switches instantly
+rather than on the next move/periodic tick.
+Field-test follow-ups (same session): (a) the corridor must *augment*,
+not replace, the visible-area grid — a D2 to a near waypoint shrank the
+winds page to ~3 clustered barbs. `fetch_winds()` now always builds the
+full visible grid and adds the route corridor on top (dedup + cap 96),
+so the page fills at any zoom. (b) The WND page now drops the
+hypsometric terrain tint like the METAR/NEXRAD pages (`wx_active` in
+`moving_map.py`) — on pi4 the 80 nm tint build pulls a huge SRTM-tile
+set that could OOM/lock the display; with the winds poller now active
+(no longer frozen) the contention tipped it over. pi_zero already caps
+the tint below 80 nm so this is parity-only there.
+Performance redesign (field-test round 2): the fetch-per-view model
+hammered Open-Meteo (stalls of seconds–minutes on every pan/zoom) and
+the draw re-rendered a `font.render()` temp tag per barb per frame
+(~0.5–1 ms each — the real "barb draws are slow" cause). Reworked around
+"cache wide, draw the subset":
+  - **Wide cached grid.** `_winds_view` now returns a FIXED wide range
+    (`WINDS_CACHE_RANGE_NM` = 110) instead of the zoom, with a constant
+    `WINDS_GRID_SPACING_NM` (20 nm) barb spacing; `fetch_winds` builds
+    that square grid (+ corridor beyond the cache for long routes). The
+    poller only re-pulls on a big centre drift (½ the cache) or the
+    periodic timer — so zoom and small pans need NO network.
+  - **Decimate on draw.** `_winds_decimate` keeps at most one barb per
+    screen cell (~one per `min(w,h)/3.5`), so any zoom shows a clean
+    ~12–20 evenly-spread set — fixes the inset's wide-zoom pile-up and
+    the short-D2 centre stack, and slashes draw cost.
+  - **Glyph cache.** `_wx_glyph` memoises rendered temp/LV text, turning
+    the per-frame `font.render` storm into blits.
+  - Zoom-in refetch bug (strict `<0.5×`) made moot by the fixed cache
+    range, but the symmetric `1.4×/0.7×` threshold is kept for the
+    other view-driven pollers.
+Net: winds follow the aircraft, pan/zoom is instant, draw is cheap, and
+the data covers a wide area + the route. Open items: at very tight zoom
+(≤20 nm) the fixed-spacing cache is naturally sparse (winds are smooth,
+so acceptable); tune `WINDS_GRID_SPACING_NM` / `WINDS_CACHE_RANGE_NM` if
+denser close-in barbs are wanted.
+Original diagnosis below for reference.
+Status (orig): **OPEN — diagnosed, fix not yet applied**
+Target: `shared/wx.py` (`WxClient.run` / `AwcPoller.run` settle gate),
+`pi4/pfd.py` `_winds_view` / `_winds_fetch`, `shared/fisb.py`
+`set_winds` (replace-vs-accumulate).
+Symptom (reported from an all-night sim run out of PHX): the INET winds
+barbs loaded once for the local area around the departure field and
+never updated as the aircraft flew — no winds along the route, no new
+columns appearing en route.
+Diagnosis — two separate problems:
+  1. **Settle-debounce starves a moving aircraft of refetches.** Both
+     `WxClient.run` and `AwcPoller.run` only fetch when the view has
+     "settled": `settled = (cur == prev_view)` where
+     `cur = (round(lat,2), round(lon,2), round(radius))`, compared
+     between consecutive ~0.7 s poll slices. round(,2) is ~0.01° ≈ 0.6
+     nm. A continuously-moving ownship (and especially a
+     time-compressed overnight sim) changes that rounded tuple on most
+     slices, so `settled` is rarely/never true — and BOTH the
+     move-based AND the periodic (`interval_s`) refetch are gated
+     behind it. Result: the only fetch that fired was the one on the
+     ground at PHX where the view genuinely sat still. The debounce was
+     meant to avoid a burst of fetches mid pan-drag, but it wrongly
+     also suppresses ownship motion. Affects winds, TAF, AIRMET/SIGMET,
+     NOTAM, NEXRAD — every view-driven poller shares this pattern.
+  2. **Replace-not-accumulate + tiny grid = no route picture.**
+     `set_winds()` deletes all prior INET columns each poll
+     (`shared/fisb.py:1197`), and `_winds_view` requests only a
+     `map_zoom_nm`-sized grid (default 5 nm in PFD mode) centred on the
+     ownship. So even with refetch working you'd only ever hold a ~4 nm
+     patch around the aircraft — never the whole route.
+Fix sketch:
+  - Replace the exact-equality settle test with a tolerance + dwell:
+    treat the view as settled when it hasn't moved more than a small
+    fraction of the radius for ~1–2 s (debounce drags) but never let
+    that gate block the periodic `interval_s` refresh or a large
+    ownship move. Cleanest: compute `settled` from a distance
+    threshold against the last *evaluated* view, and always allow the
+    periodic timer through regardless of settle.
+  - For route coverage, decide between (a) widening the winds grid to a
+    forward-biased corridor along the active FPL/track, or (b) keeping
+    the local grid but bumping the grid extent so barbs read for the
+    visible MFD range. (a) is the real fix; (b) is the quick one.
+  - Add a one-line "[WX] winds refetch @lat,lon" debug print behind a
+    flag so the next sim run can confirm the poller is following.
+Bench/sim repro: start at PHX, fly a long leg (time-compressed if
+possible), watch whether the winds barbs re-centre. Pre-fix they stay
+at PHX; post-fix they should track the ownship.
 
 ### AHRS-ROLL-YAW-COUPLING  Pure bank input produces significant heading change — **FIXED**
 Target: `firmware/ahrs_filter.py`, `firmware/config.py`, `firmware/main.py`.
@@ -1806,7 +1812,6 @@ Fix: changed branch selection to `round(alt_inner)` so the 3-drum
 path activates at `alt_inner ≥ 99.5`, matching how `val_int` is
 already computed inside `_rolling_drum`. Applied to pi4 and pi_zero.
 
----
 
 ## Conventions
 
