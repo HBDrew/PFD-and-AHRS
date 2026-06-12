@@ -56,8 +56,10 @@ class ADSBClient(threading.Thread):
 
         self._targets    = {}          # icao -> target dict (+ "last_s")
         self._ownship    = None        # last ownship report, if the source sends one
+        self._ownship_rx_s = 0.0       # monotonic rx time of the ownship report
         self._heartbeat  = None
         self._ahrs       = None        # last ForeFlight AHRS msg (Sentry etc.)
+        self._ahrs_rx_s  = 0.0         # monotonic rx time of the AHRS msg
         self._ff_id      = None        # last ForeFlight device-ID msg
         self._last_rx_s  = 0.0
         self._lock       = threading.Lock()
@@ -117,15 +119,17 @@ class ADSBClient(threading.Thread):
             elif kind == "ownship":
                 with self._lock:
                     self._ownship = msg
+                    self._ownship_rx_s = now
             elif kind == "heartbeat":
                 with self._lock:
                     self._heartbeat = msg
             elif kind == "ahrs":
-                # ForeFlight AHRS (Sentry / Stratus).  Captured here so a
-                # future AHRS-source selector can feed it into the PFD state
-                # the same way the USB/SSE clients do.
+                # ForeFlight AHRS (Sentry / Stratus).  Captured here so the
+                # AHRS-source selector can feed it into the PFD state the
+                # same way the USB/SSE clients do.
                 with self._lock:
                     self._ahrs = msg
+                    self._ahrs_rx_s = now
             elif kind == "ff_id":
                 with self._lock:
                     self._ff_id = msg
@@ -166,16 +170,30 @@ class ADSBClient(threading.Thread):
         with self._lock:
             return [dict(v) for v in self._targets.values()]
 
-    def ownship(self):
+    def ownship(self, max_age_s=None):
+        """Last GDL90 ownship report (position/track/alt), or None.  Pass
+        `max_age_s` to reject a fix older than that many seconds (used when
+        the Sentry is the active GPS source so a dead receiver goes stale
+        instead of freezing the map)."""
         with self._lock:
-            return dict(self._ownship) if self._ownship else None
+            if not self._ownship:
+                return None
+            if (max_age_s is not None
+                    and time.monotonic() - self._ownship_rx_s > max_age_s):
+                return None
+            return dict(self._ownship)
 
-    def ahrs(self):
+    def ahrs(self, max_age_s=None):
         """Last ForeFlight AHRS attitude (roll/pitch/heading/IAS/TAS) from a
-        Sentry-class source, or None.  Ready for an AHRS-source selector to
-        consume; not yet wired into the PFD attitude state."""
+        Sentry-class source, or None.  Pass `max_age_s` to reject a stale
+        sample so the AI flags AHRS-down rather than freezing attitude."""
         with self._lock:
-            return dict(self._ahrs) if self._ahrs else None
+            if not self._ahrs:
+                return None
+            if (max_age_s is not None
+                    and time.monotonic() - self._ahrs_rx_s > max_age_s):
+                return None
+            return dict(self._ahrs)
 
     def count(self):
         with self._lock:
