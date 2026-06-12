@@ -308,6 +308,10 @@ disp["ds"] = {                      # display settings
     # clocks between local time and Zulu.
     "mfd_strip_kinds":  ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "etad"],
     "eta_local":        True,    # ETA/ETAD shown in local time (False = Zulu)
+    # PFD top readout ribbon — 5 slots in the band above the AI (tap it to
+    # configure).  Same readout kinds as the MFD strip; defaults to fields that
+    # complement the tapes rather than duplicate them.
+    "pfd_top_kinds":    ["agl", "tas", "oat", "wind", "etad"],
     "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_country_lines": True, # admin_0 boundaries at >= 20 nm
     "map_show_directto": True,
@@ -5189,6 +5193,7 @@ def handle_event(event, demo_mode):
             elif _map_overlay_state(disp["ds"]) == "wnd" and _in(r["wtime"]):
                 _mfd_cycle_winds_time()
             elif _mfd_strip_hit(x, y):
+                disp["mss_which"] = "mfd"
                 disp["mode"] = "mfd_strip_setup"
                 disp["mss_sel"] = 0
             elif _in(r["fpl"]):
@@ -5448,11 +5453,12 @@ def handle_event(event, demo_mode):
             elif act == "slot":
                 disp["mss_sel"] = int(payload)
             elif act == "kind":
-                kinds = _mfd_strip_kinds()
-                sel = int(disp.get("mss_sel", 0)) % _MFD_STRIP_SLOT_COUNT
+                _key, _def, _cnt, _t = _mss_cfg()
+                kinds = _mss_kinds()
+                sel = int(disp.get("mss_sel", 0)) % _cnt
                 kinds[sel] = payload
-                disp["ds"]["mfd_strip_kinds"] = kinds
-                disp["mss_sel"] = (sel + 1) % _MFD_STRIP_SLOT_COUNT
+                disp["ds"][_key] = kinds
+                disp["mss_sel"] = (sel + 1) % _cnt
                 _settings.mark_dirty()
             elif act == "eta_tz":
                 disp["ds"]["eta_local"] = bool(payload)
@@ -6121,6 +6127,15 @@ def handle_event(event, demo_mode):
                         cur, allow_auto=_has_d2)
                 _settings.mark_dirty()
                 return True
+
+        # Tap on the PFD top readout ribbon (band between the bug boxes) →
+        # configure its fields (its own picker, separate from the MFD strip).
+        _rx0, _rx1, _ry0, _ry1 = _pfd_top_band()
+        if _rx0 <= x <= _rx1 and _ry0 <= y <= _ry1:
+            disp["mss_which"] = "pfd"
+            disp["mode"] = "mfd_strip_setup"
+            disp["mss_sel"] = 0
+            return True
 
         # Tap on alt bug button (top of alt tape) — hit region extends to HDG_H
         # for easy touch even though the visual button only fills TAPE_TOP
@@ -11600,6 +11615,64 @@ _MFD_STRIP_MIGRATE  = {"disw": "distd", "etew": "eted",
 _D2_DIM = (110, 90, 110)
 _P4_MFD_ZOOM = 64          # zoom button square
 
+# PFD top readout ribbon (band above the AI) — its own 5 slots, same kinds.
+_PFD_TOP_SLOT_COUNT = 5
+_PFD_TOP_DEFAULT    = ["agl", "tas", "oat", "wind", "etad"]
+
+
+def _strip_kinds_for(key, default, count):
+    """Validated/padded kind list for a strip target (MFD strip or PFD top)."""
+    cur = list(disp["ds"].get(key, default))
+    out = []
+    for i in range(count):
+        k = cur[i] if i < len(cur) else default[i % len(default)]
+        if k not in _MFD_STRIP_KIND_IDS:
+            k = default[i % len(default)]
+        out.append(k)
+    return out
+
+
+def _pfd_top_kinds():
+    return _strip_kinds_for("pfd_top_kinds", _PFD_TOP_DEFAULT,
+                            _PFD_TOP_SLOT_COUNT)
+
+
+def _pfd_top_band():
+    """(x0, x1, y0, y1) of the tappable ribbon band between the bug boxes."""
+    return (SPD_W, ALT_X, 0, TAPE_TOP)
+
+
+def draw_pfd_top_strip(surf):
+    """Compact readout ribbon in the band above the AI (between the GS and ALT
+    bug boxes).  Drawn BEFORE the status badges / alert banners so any
+    annunciation paints over it — alerts always win.  Tap it to choose fields
+    (its own pfd_top_kinds, separate from the MFD strip)."""
+    kinds = _pfd_top_kinds()
+    nav = disp.get("nav") or {}
+    d2 = nav if nav.get("ident") else None
+    yaw = float(disp.get("yaw", 0.0))
+    ctx = _mfd_strip_ctx(float(disp.get("lat", DEMO_LAT)),
+                         float(disp.get("lon", DEMO_LON)),
+                         float(disp.get("alt", 0.0)), yaw,
+                         float(disp.get("track", yaw)),
+                         float(disp.get("speed", 0.0)), d2)
+    x0, x1, _y0, y1 = _pfd_top_band()
+    x0 += 6
+    x1 -= 6
+    n = max(1, len(kinds))
+    slot_w = (x1 - x0) / n
+    cy = y1 // 2
+    cap_f = _get_font(11, bold=True)
+    val_f = _get_font(15, bold=True)
+    for i, kind in enumerate(kinds):
+        cap, val, col = _mfd_strip_format(kind, ctx)
+        val = str(val)
+        cw = cap_f.size(cap)[0]
+        vw = val_f.size(val)[0]
+        sx = int(x0 + slot_w * (i + 0.5) - (cw + 4 + vw) / 2)
+        _text(surf, cap, 11, (150, 165, 190), bold=True, x=sx, cy=cy)
+        _text(surf, val, 15, col, bold=True, x=sx + cw + 4, cy=cy)
+
 
 def _fpl_total_remaining_nm(lat, lon):
     """Distance from the aircraft through the active + remaining legs."""
@@ -13371,9 +13444,25 @@ def _mss_tz_rects():
     return ((x0, _MSS_TZ_Y, bw_, bh_), (x0 + bw_ + g, _MSS_TZ_Y, bw_, bh_))
 
 
+def _mss_cfg():
+    """Which strip the picker is editing: the MFD bottom strip (default) or the
+    PFD top ribbon.  Returns (settings_key, default_kinds, slot_count, title)."""
+    if disp.get("mss_which") == "pfd":
+        return ("pfd_top_kinds", _PFD_TOP_DEFAULT, _PFD_TOP_SLOT_COUNT,
+                "PFD TOP ROW")
+    return ("mfd_strip_kinds", _MFD_STRIP_DEFAULT, _MFD_STRIP_SLOT_COUNT,
+            "MFD STRIP")
+
+
+def _mss_kinds():
+    """Current slot kinds for whichever strip the picker is editing (the MFD
+    path runs its one-time migration; the PFD top has none)."""
+    return _pfd_top_kinds() if disp.get("mss_which") == "pfd" else _mfd_strip_kinds()
+
+
 def _mss_slot_rects():
     pad = 8
-    n = _MFD_STRIP_SLOT_COUNT
+    n = _mss_cfg()[2]
     pw = (DISPLAY_W - 2 * pad - (n - 1) * _MSS_SLOT_GAP) // n
     y = _MSS_HEADER_H + 10
     return [(pad + i * (pw + _MSS_SLOT_GAP), y, pw, _MSS_SLOT_H)
@@ -13396,9 +13485,10 @@ def _mss_grid_rects():
 
 
 def draw_mfd_strip_setup(surf):
-    _screen_header(surf, "MFD STRIP")
-    sel = max(0, min(_MFD_STRIP_SLOT_COUNT - 1, int(disp.get("mss_sel", 0))))
-    kinds = _mfd_strip_kinds()
+    key, default, count, title = _mss_cfg()
+    _screen_header(surf, title)
+    sel = max(0, min(count - 1, int(disp.get("mss_sel", 0))))
+    kinds = _mss_kinds()
     for i, (rect, kind) in enumerate(zip(_mss_slot_rects(), kinds)):
         bx, by, bw, bh = rect
         is_sel = (i == sel)
@@ -14712,6 +14802,10 @@ def render(surf, demo_mode, connected, data_stale=False):
 
     # 8. Slip ball
     draw_slip_ball(surf, ay)
+
+    # 8b. PFD top readout ribbon — drawn BEFORE the badges/banners below so any
+    # annunciation (status badge, TERRAIN/PULL UP, traffic) paints over it.
+    draw_pfd_top_strip(surf)
 
     # 9. Status badges
     draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats, connected,
