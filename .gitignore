@@ -33,3 +33,8 @@ pi4/data/settings.json
 # Local config overrides
 config_local.py
 pi4/data/
+
+# Generated document exports (manuals are authored as Markdown; .docx/.pdf
+# are build artifacts — regenerate with pandoc rather than committing them)
+*.docx
+*.pdf
