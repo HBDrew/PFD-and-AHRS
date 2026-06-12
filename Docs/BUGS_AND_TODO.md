@@ -557,7 +557,17 @@ edge-clamp ghost arrow. Add the `fpv_enabled` toggle to pi_zero's
 display-settings screen for parity.
 
 ### NAVDATA-FAA  IFR nav-data foundation — fixes, airways, navaids, procedures
-Status: **OPEN — data access confirmed (US, free FAA sources); foundation for the IFR FPL items below**
+Status: **IN PROGRESS — runtime module + cache schema + query API DONE
+(`shared/navdata.py` + `shared/test_navdata.py`, 24 checks); FAA build tool
+(`tools/build_navdata_us.py`) + consumers next.**
+Done: `shared/navdata.py` — `NavData` holds lat-sorted fix/navaid structured
+arrays + airway/procedure/hold dicts + 28-day `cycle` stamp; queries
+`fix`/`navaid`/`waypoint`, `nearby_fixes`/`nearby_navaids` (searchsorted band,
+nearest-first), `airway`/`airway_between`, `procedures_for`/`procedure`,
+`hold`; `load()` degrades gracefully on a missing/partial cache.  Cache layout
+fixed (see the module docstring): `navdata_fixes.npy`, `navdata_navaids.npy`,
+`navdata.json`.  Still TODO: the FAA parser (NASR FIX/AWY/NAV + CIFP → that
+cache) — needs the real 28-day files to validate — and the UI consumers.
 Target: new `tools/build_navdata_us.py` (28-day converter, mirrors
 `tools/build_airspaces_us.py`), new `shared/navdata.py` parser + spatial
 query (mirrors `shared/airports.py`), runtime cache under
