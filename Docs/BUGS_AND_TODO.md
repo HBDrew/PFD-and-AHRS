@@ -1049,9 +1049,13 @@ in the inset draw path on pi4.  Check whether pi4's inset uses a
 quantised render cycle that delays first-frame ETE pickup.
 
 ### MAP-POLYLINE-WIDE-ZOOM  Inset/MFD still not snappy at 160 nm
-Status: **DONE** — 160 nm zoom is snappy now (confirmed by the pilot; the
-specific draw-path mechanism wasn't re-verified in this tidy).  Original
-notes below.
+Status: **DONE — no polyline change needed.**  The proposed stride
+decimation (below) was tried and **rejected: it looked horrible** at 160 nm.
+The actual cause of the wide-zoom lag turned out to be elsewhere (not the
+polyline projection), so once that was addressed the `_draw_polylines` path
+was left as-is and 160 nm is snappy.  Original investigation notes retained
+below for context, but the "next lever" decimation idea is a dead end —
+don't re-attempt it.
 After 2bbb7fe (vectorised polyline projection in `_draw_polylines`,
 both `pi4/moving_map.py` and `pi_zero/moving_map.py`), zoom levels
 20–80 nm are snappy and 160 nm is "better, not amazing".  Bench
