@@ -9,43 +9,6 @@ notes with enough context to pick it up cold.
 
 ## Open
 
-### DISPLAY-SETUP-SPLIT  Break the DISPLAY setup screen into 3 tabbed pages
-Status: **OPEN** — design agreed
-The DISPLAY setup screen has outgrown one page.  Split it into three tabbed
-sub-pages (tab bar across the top, no scrolling on any page).  Grouping
-(agreed with the pilot):
-  - **UNITS** — SPEED UNITS, ALTITUDE, PRESSURE
-  - **DISPLAY** — BRIGHTNESS, ALERT AUDIO, ALERT VOLUME, SUN POSITION,
-    FLIGHT PATH
-  - **MAP** — MAP INSET (+ TRK↑/N↑ orient pair), MAP RANGE, MAP LAYERS
-    (the tall multi-toggle), TFC ALT, TFC RANGE
-Navigation: a 3-segment tab bar (UNITS · DISPLAY · MAP) under the header,
-tapping a tab swaps the visible rows; `disp["dsp_tab"]` holds the current
-tab.  Each page fits without scrolling (MAP is the tallest: 4 rows + the
-112 px MAP LAYERS row + tab bar ≈ 476 px — fits 600 px pi4 and *just* fits
-480 px pi_zero, so verify the MAP tab on the Zero / consider trimming the
-tab-bar height there).
-Implementation notes:
-  - Replace single `_DSP_ROWS` with `_DSP_ROWS_UNITS/_AV/_MAP` + a
-    `_DSP_TAB_ROWS` dict; draw + hit-test iterate the *current* tab's rows
-    by LOCAL index via a shared `_dsp_row_y(local_i)` (offset below the tab
-    bar) and the existing `_dsp_rx()` so draw/hit can't diverge.  Pass the
-    local y to `_setting_row(..., _y_override=...)` (already supported).
-  - MAP LAYERS draws after the MAP tab's standard rows at
-    `_dsp_row_y(len(_DSP_ROWS_MAP))`; `_DSP_LAYERS_ROW_INDEX` becomes
-    `len(_DSP_ROWS_MAP)`.
-  - Add a `tab:<id>` action from `display_setup_hit` handled in the
-    `mode == "display_setup"` dispatcher; remove `"display_setup"` from
-    `_SS_DRAG_MODES` (no scroll) and drop `_dsp_max_scroll()`.
-  - Mirror to `pi_zero/pfd.py` (same structure, smaller constants), then
-    regenerate the piZ `preview_setup_display.png` (now 3 captures, e.g.
-    `_units` / `_av` / `_map`) and update the manual figures/§.
-Best done in a focused session: it's layout-precise and the pi4 half can't
-be render-verified here (no GL), so each tab should be checked on hardware
-(or via the piZ headless render, which shares the layout).  Target:
-`draw_display_setup` + `display_setup_hit` + the `_DSP_*` row tables in
-`pi4/pfd.py` and `pi_zero/pfd.py`.
-
 ### TINT-SHIMMER-PAN  Terrain tint shading shifts a bit on a pan + density bump
 Status: **OPEN**
 After the tint registration fix (scale + projected-quantised-centre blit),
@@ -754,6 +717,32 @@ Work items:
 
 
 ## Completed
+
+### DISPLAY-SETUP-SPLIT  Break the DISPLAY setup screen into 3 tabbed pages
+Status: **DONE (pi4 + pi_zero, headless-verified)** — the screen is now three
+tabbed sub-pages (UNITS / DISPLAY / MAP) with a 3-segment tab bar under the
+header; each page fits with no scrolling.  Grouping as agreed:
+  - **UNITS** — SPEED UNITS, ALTITUDE, PRESSURE
+  - **DISPLAY** — BRIGHTNESS, ALERT AUDIO, ALERT VOLUME, SUN POSITION,
+    FLIGHT PATH (pi_zero: BRIGHTNESS, NIGHT MODE)
+  - **MAP** — MAP INSET (+TRK↑/N↑), MAP RANGE, WINDS ALT, TFC ALT, TFC RANGE,
+    then the tall MAP LAYERS multi-toggle
+Implementation: `_DSP_ROWS` split into `_DSP_ROWS_UNITS/_DISPLAY/_MAP` +
+`_DSP_TAB_ROWS`; draw + hit iterate the current tab by LOCAL index via a
+shared `_dsp_row_y()` (offset below the tab bar, no scroll), `_dsp_tab_geom`/
+`_draw_dsp_tabs`/`_dsp_tab_hit` for the bar, `disp["dsp_tab"]` holds the tab
+(reset to 0 on entry, not persisted).  MAP LAYERS draws at
+`_dsp_row_y(_DSP_LAYERS_ROW_LOCAL_INDEX)` on the MAP tab only.  A `tab:<id>`
+action is handled in the `display_setup` dispatcher; `display_setup` removed
+from `_SS_DRAG_MODES` and `_dsp_max_scroll()` dropped.  Both `pi4/pfd.py` and
+`pi_zero/pfd.py`.
+Verification: rendered all three tabs headless for BOTH displays (the setup
+screen is pure pygame 2D — no GL — so the dummy-driver render is faithful to
+hardware; pi4's GL-only caveat does NOT apply here).  Hit-tests smoke-checked
+(tab taps → `tab:N`, row segments → `set:…`, layer pills → `set:map_show_*`,
+empty area → None).  Previews regenerated: `preview_setup_display.png` (UNITS)
++ `_units` / `_disp` / `_map` in `pi4/previews/` and `pi_zero/previews/`;
+manual §10 updated on both (tab description, figures, full row table).
 
 ### WX-SOURCE-DISPLAY-FILTER  Auto/Radio/Internet should filter what's drawn
 Status: **DONE for NEX (pi4 + pi_zero); MET already correct; WND + TFC + AIR/SIG

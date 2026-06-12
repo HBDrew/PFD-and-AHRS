@@ -5071,10 +5071,7 @@ def handle_event(event, demo_mode):
             _ss_drag["is_drag"] = True
         if _ss_drag["is_drag"]:
             mode = _ss_drag["mode"]
-            if mode == "display_setup":
-                max_s = _dsp_max_scroll()   # ends with the taller MAP LAYERS row
-            else:
-                max_s = _ss_max_scroll(_SS_DRAG_MODES.get(mode, 5))
+            max_s = _ss_max_scroll(_SS_DRAG_MODES.get(mode, 5))
             new_scroll = _ss_drag["scroll_at_down"] - dy
             _ss_scroll[mode] = max(0, min(max_s, new_scroll))
         _ss_drag["pos"] = (x, y)
@@ -5220,6 +5217,7 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "flight_profile"
             elif idx == 1:
                 _ss_reset_scroll("display_setup")
+                disp["dsp_tab"] = 0
                 disp["mode"] = "display_setup"
             elif idx == 2:
                 _ss_reset_scroll("ahrs_setup")
@@ -5243,6 +5241,8 @@ def handle_event(event, demo_mode):
             action = display_setup_hit(x, y, disp["ds"])
             if action == "back":
                 disp["mode"] = "setup"
+            elif action and action.startswith("tab:"):
+                disp["dsp_tab"] = int(action.split(":")[1])
             elif action and action.startswith("set:"):
                 _, key, val_str = action.split(":", 2)
                 # Coerce by token: True/False → bool, digits → int, else str.
@@ -6637,8 +6637,6 @@ _ss_drag = None
 _SS_DRAG_THRESHOLD = 8
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         10,
-    "display_setup":      13,    # 11 standard rows + taller MAP LAYERS row
-                                  # (two pill sub-rows ≈ 2 slots)
     "system_setup":       9,
     "connectivity_setup": 6,
     "flight_profile":     8,
@@ -6757,26 +6755,36 @@ _DSP_BTN_G = 6     # gap between buttons
 _DSP_SW    = 40    # stepper +/- button width
 _DSP_VW    = 70    # stepper value-display box width
 
-_DSP_ROWS = [
-    # (key, label, sub, opts_vals, opts_labels, btn_w)   None → stepper
+# Rows are grouped into three tabbed sub-pages (UNITS / DISPLAY / MAP) so
+# the screen fits without scrolling.  Each tab's rows are drawn by LOCAL
+# index via _dsp_row_y(); the MAP tab additionally carries the tall
+# MAP LAYERS multi-toggle after its standard rows.
+#   (key, label, sub, opts_vals, opts_labels, btn_w)   None -> stepper
+_DSP_ROWS_UNITS = [
     ("spd_unit",   "SPEED UNITS",  "Knots · Miles · Km/h",
      ["kt","mph","kph"], ["KT","MPH","KPH"], 80),
     ("alt_unit",   "ALTITUDE",     "Feet or Metres",
      ["ft","m"],         ["FT","M"],         100),
     ("baro_unit",  "PRESSURE",     "Inches Hg or hPa",
      ["inhg","hpa"],     ["inHg","hPa"],     100),
-    ("brightness", "BRIGHTNESS",   "Screen brightness 1\u201310",
+]
+_DSP_ROWS_DISPLAY = [
+    ("brightness", "BRIGHTNESS",   "Screen brightness 1–10",
      None, None, None),
     ("audio_enabled","ALERT AUDIO", "Voice callouts (TERRAIN / PULL UP / BANK)",
      [False, True],      ["OFF", "ON"],       80),
-    ("audio_volume","ALERT VOLUME", "Callout volume 1\u201310",
+    ("audio_volume","ALERT VOLUME", "Callout volume 1–10",
      None, None, None),
+    ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
+     [False, True],      ["FIXED", "REAL"],   80),
     ("fpv_enabled", "FLIGHT PATH", "Velocity vector / flight-path marker on AI",
      [False, True],      ["OFF", "ON"],       80),
+]
+_DSP_ROWS_MAP = [
     # MAP INSET row carries TWO segmented controls: enable + orientation.
     # Custom drawing/hit-test below handles the second pair.  Listed here
     # as a single key so it occupies one row in the standard loop.
-    ("map_enabled", "MAP INSET",    "Lower-left 2D moving map \u00b7 orient",
+    ("map_enabled", "MAP INSET",    "Lower-left 2D moving map · orient",
      [False, True],      ["OFF", "ON"],       80),
     ("map_zoom_nm", "MAP RANGE",    "Default radius (nm) · AUTO fits D2",
      [1, 2, 5, 10, 20, 40, 80, 160, 0],
@@ -6784,13 +6792,14 @@ _DSP_ROWS = [
     ("winds_alt_ft", "WINDS ALT",   "Winds-aloft level for the WND overlay",
      [3000, 6000, 9000, 12000, 18000],
      ["3k", "6k", "9k", "12k", "18k"], 56),
-    ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
-     [False, True],      ["FIXED", "REAL"],   80),
     ("traffic_alt_band", "TFC ALT",  "Hide traffic beyond ± band",
      [0, 2000, 5000, 10000], ["ALL", "±2k", "±5k", "±10k"], 64),
     ("traffic_range_nm", "TFC RANGE", "Hide traffic beyond range (nm)",
      [0, 5, 10, 20, 40], ["ALL", "5", "10", "20", "40"], 56),
 ]
+_DSP_TAB_LABELS = ["UNITS", "DISPLAY", "MAP"]
+_DSP_TAB_ROWS   = [_DSP_ROWS_UNITS, _DSP_ROWS_DISPLAY, _DSP_ROWS_MAP]
+_DSP_MAP_TAB_INDEX = 2          # MAP LAYERS appears only on this tab
 # Trailing controls for the MAP INSET row (orientation), drawn to the
 # left of the standard segmented control by hand.
 _DSP_MAP_ORIENT_OPTS  = ["trk", "nrth"]
@@ -6800,8 +6809,8 @@ _DSP_MAP_ORIENT_GAP   = 24    # gap between orient pair and on/off pair
 
 # Multi-toggle MAP LAYERS row \u2014 pills wrap to two sub-rows so the
 # right edge doesn't clobber the row label.  Same pattern piZ uses.
-# Drawn separately from _DSP_ROWS because the standard row schema is
-# one control per row.
+# Drawn separately from the MAP tab's standard rows because the standard
+# row schema is one control per row.
 _DSP_MAP_LAYERS = [
     ("map_show_terrain",      "TER"),
     ("map_show_water",        "WTR"),
@@ -6816,27 +6825,13 @@ _DSP_MAP_LAYERS = [
     ("map_show_airspaces",    "ASP"),
 ]
 _DSP_LAYERS_PER_SUBROW = 4
-_DSP_LAYERS_ROW_INDEX  = len(_DSP_ROWS)
+_DSP_LAYERS_ROW_LOCAL_INDEX = len(_DSP_ROWS_MAP)
 _DSP_LAYERS_BTN_W      = 84
 _DSP_LAYERS_BTN_G      = 8
 _DSP_LAYERS_BTN_H      = 44
 _DSP_LAYERS_SUB_GAP    = 8
 _DSP_LAYERS_ROW_H      = (2 * _DSP_LAYERS_BTN_H
                           + _DSP_LAYERS_SUB_GAP + 16)
-
-
-def _dsp_max_scroll():
-    """Max scroll for the DISPLAY setup screen.  The generic row-count clamp
-    (_ss_max_scroll) assumes every row is _SS_RH tall, but this screen ends
-    with the taller MAP LAYERS row (_DSP_LAYERS_ROW_H), so it under-counts the
-    content height and stops the scroll short of the bottom — worse now that
-    _DSP_ROWS grew (FLIGHT PATH / TFC ALT / TFC RANGE).  Compute the real
-    content bottom: the standard rows, then the MAP LAYERS row, plus a little
-    bottom padding."""
-    base = _SS_Y0 + _DSP_LAYERS_ROW_INDEX * (_SS_RH + _SS_GAP)  # MAP LAYERS top
-    content_h = base + _DSP_LAYERS_ROW_H + _SS_GAP
-    visible = DISPLAY_H - _SS_TITLE_BAR_H
-    return max(0, content_h - _SS_TITLE_BAR_H - visible)
 
 
 def _dsp_layers_subrow_count():
@@ -6879,17 +6874,58 @@ def _dsp_layers_geom(bx, bw, subrow_idx=0):
     return bx + bw - total - 14
 
 
+# -- Tabbed sub-pages (UNITS / DISPLAY / MAP) ---------------------------------
+_DSP_TAB_BAR_Y  = _SS_TITLE_BAR_H + 6      # just below the header rule
+_DSP_TAB_BAR_H  = 34
+_DSP_TAB_GAP    = 6
+_DSP_CONTENT_Y0 = _DSP_TAB_BAR_Y + _DSP_TAB_BAR_H + 8
+
+
+def _dsp_row_y(local_i):
+    """Top-of-row y for a row at LOCAL index within the active tab, offset
+    below the tab bar.  No scroll -- every tab fits on screen."""
+    return _DSP_CONTENT_Y0 + local_i * (_SS_RH + _SS_GAP)
+
+
+def _dsp_tab_geom(i):
+    n = len(_DSP_TAB_LABELS)
+    total_w = DISPLAY_W - 2 * _SS_MX
+    seg_w = (total_w - (n - 1) * _DSP_TAB_GAP) // n
+    return _SS_MX + i * (seg_w + _DSP_TAB_GAP), seg_w
+
+
+def _draw_dsp_tabs(surf, active):
+    for i, lbl in enumerate(_DSP_TAB_LABELS):
+        bx, seg_w = _dsp_tab_geom(i)
+        _seg_btn(surf, bx, _DSP_TAB_BAR_Y, seg_w, _DSP_TAB_BAR_H, lbl,
+                 i == active)
+
+
+def _dsp_tab_hit(x, y):
+    if not (_DSP_TAB_BAR_Y <= y <= _DSP_TAB_BAR_Y + _DSP_TAB_BAR_H):
+        return None
+    for i in range(len(_DSP_TAB_LABELS)):
+        bx, seg_w = _dsp_tab_geom(i)
+        if bx <= x <= bx + seg_w:
+            return i
+    return None
+
+
 def draw_display_setup(surf, ds):
     _screen_header(surf, "DISPLAY")
+    tab = disp.get("dsp_tab", 0)
+    _draw_dsp_tabs(surf, tab)
     _prev_clip = _ss_clip_to_content(surf)
-    for ri, row in enumerate(_DSP_ROWS):
+    rows = _DSP_TAB_ROWS[tab]
+    for li, row in enumerate(rows):
         key, label, sub, opts_v, opts_l, bw_each = row
-        bx, by, bw, bh = _setting_row(surf, ri, label, sub)
+        bx, by, bw, bh = _setting_row(surf, li, label, sub,
+                                      _y_override=_dsp_row_y(li))
         ry = by + (bh - _DSP_BTN_H) // 2
         rx = _dsp_rx(row, bx, bw)
-        if opts_v is None:                              # 1–10 stepper row
+        if opts_v is None:                              # 1-10 stepper row
             val = ds.get(key, 8)
-            _step_btn(surf, rx, ry, _DSP_SW, _DSP_BTN_H, "\u2212")
+            _step_btn(surf, rx, ry, _DSP_SW, _DSP_BTN_H, "−")
             vx = rx + _DSP_SW + _DSP_BTN_G
             pygame.draw.rect(surf, (0,18,38), (vx, ry, _DSP_VW, _DSP_BTN_H), border_radius=4)
             pygame.draw.rect(surf, (60,80,110), (vx, ry, _DSP_VW, _DSP_BTN_H), width=1, border_radius=4)
@@ -6911,38 +6947,38 @@ def draw_display_setup(surf, ds):
                              ry, _DSP_MAP_ORIENT_BW, _DSP_BTN_H,
                              lbl, v == cur_or)
 
-    # MAP LAYERS — packed multi-toggle row.  Pills wrap to two
-    # sub-rows so the right edge stays clear of the row label.
-    # Row is drawn manually with a custom (taller) height since
-    # _setting_row uses the standard _SS_RH.
-    bx = _SS_MX
-    bw = DISPLAY_W - 2 * _SS_MX
-    by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
-    bh = _DSP_LAYERS_ROW_H
-    pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=6)
-    gh = bh // 6
-    for i in range(gh):
-        t = 1.0 - i / gh
-        gc = (int(15 + t * 25), int(20 + t * 40), int(40 + t * 65))
-        pygame.draw.line(surf, gc, (bx + 6, by + 1 + i),
-                          (bx + bw - 6, by + 1 + i))
-    pygame.draw.rect(surf, (55, 75, 105), (bx, by, bw, bh),
-                     width=1, border_radius=6)
-    _text(surf, "MAP LAYERS", 14, WHITE, bold=True, x=bx + 14, y=by + 10)
-    _text(surf, "Per-layer visibility on the map inset",
-          10, (120, 135, 155), x=bx + 14, y=by + 32)
-    top_idx, bot_idx = _dsp_layers_subrow_split()
-    for sub, indices in enumerate((top_idx, bot_idx)):
-        if not indices:
-            continue
-        ry = _dsp_layers_subrow_y(by, sub)
-        rx = _dsp_layers_geom(bx, bw, sub)
-        for slot, i in enumerate(indices):
-            key, lbl = _DSP_MAP_LAYERS[i]
-            active = bool(ds.get(key, True))
-            _seg_btn(surf,
-                     rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
-                     ry, _DSP_LAYERS_BTN_W, _DSP_LAYERS_BTN_H, lbl, active)
+    # MAP LAYERS -- packed multi-toggle row, MAP tab only.  Pills wrap to
+    # two sub-rows so the right edge stays clear of the row label.  Drawn
+    # manually (not via _setting_row) since it needs the taller height.
+    if tab == _DSP_MAP_TAB_INDEX:
+        bx = _SS_MX
+        bw = DISPLAY_W - 2 * _SS_MX
+        by = _dsp_row_y(_DSP_LAYERS_ROW_LOCAL_INDEX)
+        bh = _DSP_LAYERS_ROW_H
+        pygame.draw.rect(surf, (0, 12, 32), (bx, by, bw, bh), border_radius=6)
+        gh = bh // 6
+        for i in range(gh):
+            t = 1.0 - i / gh
+            gc = (int(15 + t * 25), int(20 + t * 40), int(40 + t * 65))
+            pygame.draw.line(surf, gc, (bx + 6, by + 1 + i),
+                              (bx + bw - 6, by + 1 + i))
+        pygame.draw.rect(surf, (55, 75, 105), (bx, by, bw, bh),
+                         width=1, border_radius=6)
+        _text(surf, "MAP LAYERS", 14, WHITE, bold=True, x=bx + 14, y=by + 10)
+        _text(surf, "Per-layer visibility on the map inset",
+              10, (120, 135, 155), x=bx + 14, y=by + 32)
+        top_idx, bot_idx = _dsp_layers_subrow_split()
+        for sub, indices in enumerate((top_idx, bot_idx)):
+            if not indices:
+                continue
+            ry = _dsp_layers_subrow_y(by, sub)
+            rx = _dsp_layers_geom(bx, bw, sub)
+            for slot, i in enumerate(indices):
+                key, lbl = _DSP_MAP_LAYERS[i]
+                active = bool(ds.get(key, True))
+                _seg_btn(surf,
+                         rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
+                         ry, _DSP_LAYERS_BTN_W, _DSP_LAYERS_BTN_H, lbl, active)
     surf.set_clip(_prev_clip)
 
 
@@ -6950,9 +6986,14 @@ def display_setup_hit(x, y, ds):
     """Return action string or None."""
     if _back_hit(x, y):
         return "back"
-    for ri, row in enumerate(_DSP_ROWS):
+    t = _dsp_tab_hit(x, y)
+    if t is not None:
+        return f"tab:{t}"
+    tab = disp.get("dsp_tab", 0)
+    rows = _DSP_TAB_ROWS[tab]
+    for li, row in enumerate(rows):
         key, *_, opts_v, opts_l, bw_each = row
-        by = _ss_row_y(ri)
+        by = _dsp_row_y(li)
         if not (by <= y <= by+_SS_RH):
             continue
         bx = _SS_MX; bw = DISPLAY_W - 2*_SS_MX
@@ -6980,25 +7021,24 @@ def display_setup_hit(x, y, ds):
                     if bx_b <= x <= bx_b + _DSP_MAP_ORIENT_BW:
                         return f"set:map_orient:{v}"
 
-    # MAP LAYERS multi-toggle row — two sub-rows of pills inside the
-    # taller _DSP_LAYERS_ROW_H slot.
-    by = _ss_row_y(_DSP_LAYERS_ROW_INDEX)
-    if by <= y <= by + _DSP_LAYERS_ROW_H:
-        bx = _SS_MX; bw = DISPLAY_W - 2 * _SS_MX
-        top_idx, bot_idx = _dsp_layers_subrow_split()
-        for sub, indices in enumerate((top_idx, bot_idx)):
-            if not indices:
-                continue
-            ry = _dsp_layers_subrow_y(by, sub)
-            if not (ry <= y <= ry + _DSP_LAYERS_BTN_H):
-                continue
-            rx = _dsp_layers_geom(bx, bw, sub)
-            for slot, i in enumerate(indices):
-                key, _lbl = _DSP_MAP_LAYERS[i]
-                bx_b = rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
-                if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
-                    new_val = not bool(ds.get(key, True))
-                    return f"set:{key}:{new_val}"
+    if tab == _DSP_MAP_TAB_INDEX:
+        by = _dsp_row_y(_DSP_LAYERS_ROW_LOCAL_INDEX)
+        if by <= y <= by + _DSP_LAYERS_ROW_H:
+            bx = _SS_MX; bw = DISPLAY_W - 2 * _SS_MX
+            top_idx, bot_idx = _dsp_layers_subrow_split()
+            for sub, indices in enumerate((top_idx, bot_idx)):
+                if not indices:
+                    continue
+                ry = _dsp_layers_subrow_y(by, sub)
+                if not (ry <= y <= ry + _DSP_LAYERS_BTN_H):
+                    continue
+                rx = _dsp_layers_geom(bx, bw, sub)
+                for slot, i in enumerate(indices):
+                    key, _lbl = _DSP_MAP_LAYERS[i]
+                    bx_b = rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G)
+                    if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
+                        new_val = not bool(ds.get(key, True))
+                        return f"set:{key}:{new_val}"
     return None
 
 

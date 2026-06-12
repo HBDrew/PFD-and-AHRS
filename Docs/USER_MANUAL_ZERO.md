@@ -318,7 +318,19 @@ Action row: **CANCEL**, hyphen (`-`), **SPACE**, **DONE**. The period (`.`) and 
 
 ## 10. Display Settings
 
-![Display settings screen](../pi_zero/previews/preview_setup_display.png)
+The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and **MAP** — selected from the tab bar under the header. Tapping a tab swaps the visible rows; each page fits on screen with no scrolling. The screen always opens on the **UNITS** tab.
+
+**UNITS** — speed / altitude / pressure units:
+
+![Display settings — UNITS tab](../pi_zero/previews/preview_setup_display_units.png)
+
+**DISPLAY** — brightness and night mode:
+
+![Display settings — DISPLAY tab](../pi_zero/previews/preview_setup_display_disp.png)
+
+**MAP** — winds-aloft level, traffic filters, and the MAP LAYERS pills:
+
+![Display settings — MAP tab](../pi_zero/previews/preview_setup_display_map.png)
 
 ### Speed units
 **KT**, **MPH**, or **KPH**. All V-speed arcs and GS bug scale together.

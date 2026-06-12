@@ -395,21 +395,36 @@ The period and colon keys are useful for entering URLs (e.g. `http://192.168.4.1
 
 ## 10. Display Settings
 
-![Display settings screen](../pi4/previews/preview_setup_display.png)
+The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and **MAP** — selected from the tab bar under the header. Tapping a tab swaps the visible rows; each page fits without scrolling. The screen opens on **UNITS**. The current tab is not persisted — the screen always reopens on UNITS.
 
-| Row | Options | Default | Notes |
-|-----|---------|---------|-------|
-| **SPEED UNITS** | KT / MPH / KPH | KT | Speed tape + bug numpad units. |
-| **ALTITUDE** | FT / M | FT | Altitude tape, bug, AGL readout. |
-| **PRESSURE** | inHg / hPa | inHg | Baro setting; numpad title and entry mode follow this. |
-| **BRIGHTNESS** | 1 – 10 | 8 | Backlight level. Routed to the active backlight transport (see below). |
-| **ALERT AUDIO** | OFF / ON | ON | Master mute for the voice-callout pipeline. When OFF, terrain / obstacle / sink-rate / bank-angle callouts are suppressed and any in-flight clip is cut. The visual banners stay on regardless. |
-| **ALERT VOLUME** | 1 – 10 | 8 | Callout volume scale. 0 is effectively muted; 10 is unity. Applied live to the pygame mixer; takes effect on the next callout. |
-| **FLIGHT PATH** | OFF / ON | ON | Flight-path vector (velocity-vector) marker on the AI. See §4. |
-| **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §17. |
-| **MAP RANGE** | 1/2/5/10/20/40/80/160 NM · AUTO | 5 NM | Default inset radius; AUTO fits to the active direct-to. |
-| **MAP LAYERS** | TER · WTR · APT · OBS · STA · CTRY (independent pills) | all ON | Per-layer visibility for the moving-map inset. **TER** terrain tint; **WTR** ocean/lake water mask; **APT** airport / heliport / seaplane symbols; **OBS** FAA DOF obstacles; **STA** state / province boundary lines (Natural Earth admin_1, slate-blue, fades in at ≥ 20 NM); **CTRY** country boundary lines (Natural Earth admin_0, tan, also ≥ 20 NM). Toggles are independent and persist in `data/settings.json`. |
-| **SUN POSITION** | FIXED / REAL | REAL | SVT terrain lighting: FIXED uses a SE mid-morning sun; REAL pulls UTC + GPS lat/lon through the NOAA solar formulas. |
+**UNITS** — speed / altitude / pressure:
+
+![Display settings — UNITS tab](../pi4/previews/preview_setup_display_units.png)
+
+**DISPLAY** — brightness, alert audio/volume, sun position, flight path:
+
+![Display settings — DISPLAY tab](../pi4/previews/preview_setup_display_disp.png)
+
+**MAP** — inset enable/orient, range, winds level, traffic filters, MAP LAYERS:
+
+![Display settings — MAP tab](../pi4/previews/preview_setup_display_map.png)
+
+| Tab | Row | Options | Default | Notes |
+|-----|-----|---------|---------|-------|
+| UNITS | **SPEED UNITS** | KT / MPH / KPH | KT | Speed tape + bug numpad units. |
+| UNITS | **ALTITUDE** | FT / M | FT | Altitude tape, bug, AGL readout. |
+| UNITS | **PRESSURE** | inHg / hPa | inHg | Baro setting; numpad title and entry mode follow this. |
+| DISPLAY | **BRIGHTNESS** | 1 – 10 | 8 | Backlight level. Routed to the active backlight transport (see below). |
+| DISPLAY | **ALERT AUDIO** | OFF / ON | ON | Master mute for the voice-callout pipeline. When OFF, terrain / obstacle / sink-rate / bank-angle callouts are suppressed and any in-flight clip is cut. The visual banners stay on regardless. |
+| DISPLAY | **ALERT VOLUME** | 1 – 10 | 8 | Callout volume scale. 0 is effectively muted; 10 is unity. Applied live to the pygame mixer; takes effect on the next callout. |
+| DISPLAY | **SUN POSITION** | FIXED / REAL | REAL | SVT terrain lighting: FIXED uses a SE mid-morning sun; REAL pulls UTC + GPS lat/lon through the NOAA solar formulas. |
+| DISPLAY | **FLIGHT PATH** | OFF / ON | ON | Flight-path vector (velocity-vector) marker on the AI. See §4. |
+| MAP | **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §17. |
+| MAP | **MAP RANGE** | 1/2/5/10/20/40/80/160 NM · AUTO | 5 NM | Default inset radius; AUTO fits to the active direct-to. |
+| MAP | **WINDS ALT** | 3k / 6k / 9k / 12k / 18k ft | 9k | Winds-aloft level shown on the WND overlay. See §16. |
+| MAP | **TFC ALT** | ALL / ±2k / ±5k / ±10k ft | ALL | Hide traffic outside this relative-altitude band. See §16G. |
+| MAP | **TFC RANGE** | ALL / 5 / 10 / 20 / 40 NM | ALL | Hide traffic beyond this range. |
+| MAP | **MAP LAYERS** | TER · WTR · APT · RWY · OBS · TFC · MET · NEX · STA · CTRY · ASP (independent pills) | all ON | Per-layer visibility for the moving-map inset. **TER** terrain tint; **WTR** ocean/lake water mask; **APT** airport / heliport / seaplane symbols; **RWY** runway outlines; **OBS** FAA DOF obstacles; **TFC** traffic; **MET** METAR station dots; **NEX** NEXRAD; **STA** state / province boundary lines (Natural Earth admin_1, slate-blue, fades in at ≥ 20 NM); **CTRY** country boundary lines (Natural Earth admin_0, tan, also ≥ 20 NM); **ASP** airspace. Toggles are independent and persist in `data/settings.json`. |
 
 ### Backlight transports
 
