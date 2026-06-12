@@ -3777,11 +3777,11 @@ def handle_event(event, demo_mode):
                 target  = disp["kbd_target"]
                 _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80,
                            "notam_client_id": 80, "notam_client_secret": 80}
-                _FPL_MAX = {"fpl_ident": 6,
-                            "fpl_latlon_ident": 6,
+                _FPL_MAX = {"fpl_ident": 7,
+                            "fpl_latlon_ident": 10,
                             "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
                             "fpl_save_name": 16,
-                            "nav_ident": 6}
+                            "nav_ident": 7}
                 if target in _FPL_MAX:
                     max_len = _FPL_MAX[target]
                 elif disp.get("kbd_prev") == "connectivity_setup":
@@ -3859,7 +3859,7 @@ def handle_event(event, demo_mode):
                     if target == "fpl_latlon_ident":
                         # +LAT/LON ident field: store and return to the
                         # entry screen so the pilot can fill the rest.
-                        disp["fpl_new"]["ident"] = buf.upper()[:6]
+                        disp["fpl_new"]["ident"] = buf.upper()[:10]
                         disp["kbd_buf"]   = ""
                         disp["kbd_error"] = ""
                         disp["mode"] = "fpl_latlon_entry"
@@ -4531,8 +4531,9 @@ def _kb_key(surf, bx, by, bw, bh, label, style, r=6):
 
 
 def draw_keyboard(surf, title, current_val, entered="", transparent=False,
-                  error=""):
-    """Full-screen QWERTY keyboard for text entry."""
+                  error="", hint=""):
+    """Full-screen QWERTY keyboard for text entry.  `hint` (e.g. a resolved
+    airport name) shows green under the input when there's no error."""
     if not transparent:
         surf.fill((0,8,22))
     hdr = pygame.Surface((DISPLAY_W, 44), pygame.SRCALPHA)
@@ -4546,6 +4547,9 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
     _text(surf,disp_str,28,CYAN,bold=True,cx=DISPLAY_W//2,cy=75)
     if error:
         _text(surf, error, 12, (255, 90, 90), bold=True,
+              cx=DISPLAY_W//2, cy=104)
+    elif hint:
+        _text(surf, hint, 13, (90, 210, 130), bold=True,
               cx=DISPLAY_W//2, cy=104)
     else:
         _text(surf, f"Current: {current_val}", 10, (110, 120, 140),
@@ -6584,26 +6588,30 @@ def _nav_set_nearest() -> bool:
 
 
 def _nav_lookup_ident(ident: str):
-    """Return (ident, lat, lon, elev_ft, name, region) for the first
-    matching airport, or None.  `name` and `region` are empty strings
-    when the airport cache pre-dates those fields (graceful fallback
-    used by older Pi installs whose cache hasn't been rebuilt yet)."""
+    """Return (ident, lat, lon, elev_ft, name, region) for the airport whose
+    ICAO `ident` (KP14) OR FAA Local ID (P14) matches, or None — pilots type
+    either.  No automatic K add/strip (FLG the VOR must not become KFLG).
+    `name`/`region`/`local` are absent on caches that pre-date those fields."""
     if _airports is None or not ident:
         return None
+    ident = ident.strip().upper()
     if hasattr(_airports, "dtype"):
+        names = _airports.dtype.names or ()
         mask = _airports["ident"] == ident
+        if "local" in names:
+            mask = mask | (_airports["local"] == ident)
         rows = _airports[mask]
         if len(rows) == 0:
             return None
         row = rows[0]
-        has_name = "name" in (_airports.dtype.names or ())
+        has_name = "name" in names
         name   = str(row["name"])   if has_name else ""
         region = str(row["region"]) if has_name else ""
         return (str(row["ident"]), float(row["lat"]),
                 float(row["lon"]), float(row["elev_ft"]),
                 name, region)
     for rec in _airports:
-        if rec[0] == ident:
+        if rec[0] == ident or (len(rec) > 7 and rec[7] == ident):
             name = rec[5] if len(rec) > 5 else ""
             reg  = rec[6] if len(rec) > 6 else ""
             return (rec[0], float(rec[2]), float(rec[3]),
@@ -13056,8 +13064,14 @@ def _draw_modal_overlays(surf, airspeed_src):
         else:
             cur   = disp["fp"].get(target, "")
             title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
+        # Live airport-name label while typing an ident (D2 or FPL airport).
+        hint = ""
+        if disp.get("kbd_target") in ("nav_ident", "fpl_ident") and buf.strip():
+            h = _nav_lookup_ident(buf)
+            if h:
+                hint = f"{h[0]} — {h[4]}" if h[4] else h[0]
         draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True,
-                      error=disp.get("kbd_error", ""))
+                      error=disp.get("kbd_error", ""), hint=hint)
 
 
 def render(surf, demo_mode, connected, data_stale=False):

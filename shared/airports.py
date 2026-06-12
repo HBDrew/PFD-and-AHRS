@@ -92,6 +92,12 @@ def _parse_csv(csv_path: str):
                 ident = (row.get("ident") or "").strip().upper()
                 if not ident:
                     continue
+                # FAA Local ID (e.g. "P14") — what pilots type for US fields,
+                # distinct from the OurAirports ICAO `ident` ("KP14").  Stored
+                # so the lookup can match either.  "" when same as ident / none.
+                local = (row.get("local_code") or "").strip().upper()[:7]
+                if local == ident:
+                    local = ""
                 elev_s = (row.get("elevation_ft") or "").strip()
                 try:
                     elev = float(elev_s) if elev_s else 0.0
@@ -107,7 +113,7 @@ def _parse_csv(csv_path: str):
                     reg = reg.split("-", 1)[1]
                 reg = reg[:4]
                 records.append((ident, _TYPE_MAP[atype_full],
-                                lat, lon, elev, name, reg))
+                                lat, lon, elev, name, reg, local))
             except (ValueError, TypeError):
                 continue
     return records
@@ -119,7 +125,8 @@ _DTYPE_V2 = [("ident",   "U7"),
              ("lon",     "f4"),
              ("elev_ft", "f4"),
              ("name",    "U48"),
-             ("region",  "U4")]
+             ("region",  "U4"),
+             ("local",   "U7")]   # FAA Local ID (P14) — match alongside ident
 
 
 def _build_cache(csv_path: str, cache_path: str):
@@ -154,12 +161,13 @@ def load(data_dir: str):
                 os.path.getmtime(cache_path) >= os.path.getmtime(csv_path)):
             try:
                 arr = np.load(cache_path, allow_pickle=False)
-                if "name" not in (arr.dtype.names or ()):
-                    # Pre-name-field cache.  Rebuild if we can.
+                _names = arr.dtype.names or ()
+                if "name" not in _names or "local" not in _names:
+                    # Pre-name/-local-field cache.  Rebuild if we can.
                     if os.path.exists(csv_path):
                         return _build_cache(csv_path, cache_path)
-                    # No CSV — degrade gracefully, just keep using the
-                    # old cache (callers tolerate missing 'name').
+                    # No CSV — degrade gracefully, just keep using the old
+                    # cache (callers tolerate missing 'name'/'local').
                 if len(arr) > 1 and not (np.diff(arr["lat"]) >= 0).all():
                     arr = arr[np.argsort(arr["lat"], kind="stable")]
                 return arr

@@ -10719,22 +10719,27 @@ def _nav_gc_interp(la1, lo1, la2, lo2, f):
 
 
 def _airports_exact(ident: str):
-    """Exact-ident airport lookup → (ident, lat, lon, elev_ft, name, region)
-    or None."""
+    """Airport lookup matching the ICAO `ident` (KP14) OR the FAA Local ID
+    (P14) — pilots type either.  → (ident, lat, lon, elev_ft, name, region)
+    or None.  The returned ident is the canonical DB ident (what runway /
+    approach lookups key on)."""
     if _airports is None or not ident:
         return None
     if hasattr(_airports, "dtype"):
-        rows = _airports[_airports["ident"] == ident]
+        names = _airports.dtype.names or ()
+        mask = (_airports["ident"] == ident)
+        if "local" in names:
+            mask = mask | (_airports["local"] == ident)
+        rows = _airports[mask]
         if len(rows) == 0:
             return None
         row = rows[0]
-        names = _airports.dtype.names or ()
         name   = str(row["name"])   if "name"   in names else ""
         region = str(row["region"]) if "region" in names else ""
         return (str(row["ident"]), float(row["lat"]),
                 float(row["lon"]), float(row["elev_ft"]), name, region)
     for rec in _airports:
-        if rec[0] == ident:
+        if rec[0] == ident or (len(rec) > 7 and rec[7] == ident):
             name   = str(rec[5]) if len(rec) > 5 else ""
             region = str(rec[6]) if len(rec) > 6 else ""
             return (rec[0], float(rec[2]), float(rec[3]), float(rec[4]),
