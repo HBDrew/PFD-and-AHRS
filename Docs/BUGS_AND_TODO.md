@@ -579,7 +579,19 @@ Done:
     confirmed against a real FAACIFP18 (run `--dump-cifp 20` and eyeball).
   - `NAVDATA_DIR` wired into `pi4/config.py` + `pi_zero/config.py`
     (`data/navdata/`).
-Still TODO: a real-data build to validate CIFP offsets, then the UI consumers
+  - New **DATA & MAPS** setup page (`downloads_setup`, both renderers) — one
+    home for every downloadable dataset (TERRAIN / OBSTACLES / AIRPORTS /
+    AIRSPACE / NAV DATA), each a roomy tile routing to its existing management
+    subscreen.  Pulled the cramped 4-tile row out of SYSTEM (reclaimed space).
+    Added a **NAV DATA** subscreen (`navdata_data`) with a real download flow
+    (`_nd_load`/`_nd_start_download`, mirrors the airport/airspace fetch):
+    pulls the three cache files from `navdata.DOWNLOAD_BASE_URL` (configurable
+    in `config_local.py`; greyed "no source configured — copy to data/navdata/"
+    until set, since the cache is built off-aircraft).  `navdata.cache_stats()`
+    feeds the status line; cache loaded at startup + on entry.  Both renderers
+    verified headless (`--ss-mode`).
+Still TODO: host the prebuilt cache so DOWNLOAD has a default source; a
+real-data build to validate CIFP offsets; then the UI consumers
 (see NAV-FIXES-AIRWAYS-DISPLAY / FPL-APPROACHES / FPL-HOLDS below).
 Target: new `tools/build_navdata_us.py` (28-day converter, mirrors
 `tools/build_airspaces_us.py`), new `shared/navdata.py` parser + spatial

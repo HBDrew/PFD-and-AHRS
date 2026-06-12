@@ -61,6 +61,7 @@ _srtm_set_resolution_preference("srtm3")
 import obstacles as obs_mod
 import airports as apt_mod
 import airspaces as asp_mod
+import navdata as nd_mod
 import water as water_mod
 import settings as _settings
 import screen_sync as _ssync_mod
@@ -150,6 +151,25 @@ disp["od"] = {                      # obstacle download/parse state
 _obstacles = None           # loaded obstacle array (module-level)
 _airports  = None           # loaded airport array (module-level)
 _airspaces = None           # list of airspace records, or None until loaded
+_navdata   = None           # NavData (fixes/navaids/procedures), or None
+# disp["nd"] mirrors disp["ad"]: download/status fields surfaced on the
+# NAV DATA subscreen + the NAV tile on the DATA & MAPS page.
+disp["nd"] = {
+    "downloading": False,
+    "dl_status":   "",
+    "dl_cancel":   False,
+    "present":     False,
+    "cycle":       "",
+    "fixes":       0,
+    "navaids":     0,
+    "airways":     0,
+    "procedures":  0,
+    "holds":       0,
+    "mb":          0.0,
+    "date":        None,
+    "age_days":    0,
+    "expired":     False,
+}
 # disp["asp"] mirrors disp["ad"]/disp["td"]/disp["od"]: status fields
 # surfaced on the AIRSPACE DATA subscreen + the AIRSPACE tile on the
 # system-setup screen.  Not persisted (it's recomputed on load).
@@ -3204,8 +3224,12 @@ def handle_event(event, demo_mode):
         if mode == "setup":
             idx = setup_hit(x, y)
             # Indices follow _SETUP_ITEMS row-major order: 0 FLIGHT, 1 DISPLAY,
-            # 2 AHRS, 3 CONNECTIVITY, 4 SCREEN SYNC, 5 SYSTEM, 6 EXIT.
+            # 2 AHRS, 3 CONNECTIVITY, 4 SCREEN SYNC, 5 SYSTEM, 6 EXIT,
+            # 7 DATA & MAPS.
             if   idx == 6: disp["mode"] = "pfd"
+            elif idx == 7:
+                _ss_reset_scroll("downloads_setup")
+                disp["mode"] = "downloads_setup"
             elif idx == 0:
                 _ss_reset_scroll("flight_profile")
                 disp["mode"] = "flight_profile"
@@ -3654,10 +3678,33 @@ def handle_event(event, demo_mode):
             return True
 
         # ── Obstacle data screen taps ─────────────────────────────────────
+        # ── DATA & MAPS page taps ─────────────────────────────────────────
+        if mode == "downloads_setup":
+            act, payload = downloads_setup_hit(x, y)
+            if act == "back":
+                disp["mode"] = "setup"
+            elif act == "open":
+                if payload == "navdata_data":
+                    _nd_load()           # refresh stats on entry
+                disp["mode"] = payload
+            return True
+
+        # ── Nav-data screen taps ──────────────────────────────────────────
+        if mode == "navdata_data":
+            action = navdata_data_hit(x, y, disp["nd"])
+            if action == "back":
+                disp["mode"] = "downloads_setup"
+            elif action == "cancel":
+                disp["nd"]["dl_cancel"] = True
+            elif action == "download":
+                if not disp["nd"]["downloading"]:
+                    _nd_start_download()
+            return True
+
         if mode == "obstacle_data":
             action = obstacle_data_hit(x, y, disp["od"])
             if action == "back":
-                disp["mode"] = "system_setup"
+                disp["mode"] = "downloads_setup"
             elif action == "cancel":
                 disp["od"]["dl_cancel"] = True
             elif action == "download":
@@ -3669,7 +3716,7 @@ def handle_event(event, demo_mode):
         if mode == "airport_data":
             action = airport_data_hit(x, y, disp["ad"])
             if action == "back":
-                disp["mode"] = "system_setup"
+                disp["mode"] = "downloads_setup"
             elif action == "cancel":
                 disp["ad"]["dl_cancel"] = True
             elif action == "download":
@@ -3686,7 +3733,7 @@ def handle_event(event, demo_mode):
             action = airspace_data_hit(x, y)
             asp = disp["asp"]
             if action == "back":
-                disp["mode"] = "system_setup"
+                disp["mode"] = "downloads_setup"
             elif action == "download_static":
                 if asp.get("downloading"):
                     asp["dl_cancel"] = True
@@ -3719,7 +3766,7 @@ def handle_event(event, demo_mode):
         if mode == "terrain_data":
             action = terrain_data_hit(x, y, disp["td"])
             if action == "back":
-                disp["mode"] = "system_setup"
+                disp["mode"] = "downloads_setup"
             elif action == "cancel":
                 if disp["td"].get("downloading"):
                     disp["td"]["dl_cancel"] = True
@@ -4165,6 +4212,7 @@ _SETUP_ITEMS = [
     (0, 2, "SCREEN SYNC",     "Share bugs · baro · nav · AHRS"),
     (1, 2, "SYSTEM",          "Version · Diagnostics · Reset"),
     (0, 3, "EXIT",            "Return to PFD"),
+    (1, 3, "DATA & MAPS",     "Terrain · Obstacles · Airports · Nav"),
 ]
 _S_MX=15; _S_MY=50; _S_GX=10; _S_GY=10
 _S_BW = (DISPLAY_W - 2*_S_MX - _S_GX) // 2
@@ -4210,12 +4258,111 @@ def draw_setup_screen(surf):
 
 
 def setup_hit(x, y):
-    """Return index 0–5 of the tapped setup button, or None."""
+    """Return index of the tapped setup button (row-major), or None."""
     for idx, (col, row, *_) in enumerate(_SETUP_ITEMS):
         bx = _S_COLS[col]; by = _S_ROWS[row]
         if bx <= x <= bx+_S_BW and by <= y <= by+_S_BH:
             return idx
     return None
+
+
+# ── DATA & MAPS page — one home for every downloadable dataset ───────────────
+# Previously each dataset hung off a cramped 4-tile row at the bottom of the
+# SYSTEM screen.  With NAV DATA there are five; they live here as roomy tiles,
+# each routing to its existing management subscreen.
+_DL_MX = 15; _DL_MY = 52; _DL_GX = 10; _DL_GY = 10
+_DL_BW = (DISPLAY_W - 2*_DL_MX - _DL_GX) // 2
+_DL_BH = (DISPLAY_H - _DL_MY - 12 - 2*_DL_GY) // 3
+_DL_COLS = [_DL_MX, _DL_MX + _DL_BW + _DL_GX]
+_DL_ROWS = [_DL_MY, _DL_MY + _DL_BH + _DL_GY, _DL_MY + 2*(_DL_BH + _DL_GY)]
+# (col, row, label, subscreen-mode | None for BACK)
+_DL_ITEMS = [
+    (0, 0, "TERRAIN",   "terrain_data"),
+    (1, 0, "OBSTACLES", "obstacle_data"),
+    (0, 1, "AIRPORTS",  "airport_data"),
+    (1, 1, "AIRSPACE",  "airspace_data"),
+    (0, 2, "NAV DATA",  "navdata_data"),
+    (1, 2, "BACK",      None),
+]
+
+
+def _dl_status(key):
+    """(sub-line, colour) summarising a dataset's on-disk state for its tile."""
+    if key == "terrain_data":
+        n, mb = _td_disk_stats()
+        if n:
+            return (f"{n} tile{'s' if n != 1 else ''}  ·  {mb:.1f} MB", (60,210,90))
+        return ("Tap to download", YELLOW)
+    if key == "obstacle_data":
+        od = disp["od"]; c = od.get("records", 0)
+        if c:
+            if od.get("expired"):
+                return (f"{c:,} obstacles  ·  ⚠ EXP", (220,140,60))
+            return (f"{c:,} obstacles  ·  {od.get('used_mb',0.0):.1f} MB", (60,210,90))
+        return ("Tap to download", YELLOW)
+    if key == "airport_data":
+        ad = disp["ad"]; c = ad.get("records", 0)
+        if c:
+            if ad.get("expired"):
+                return (f"{c:,} airports  ·  ⚠ EXP", (220,140,60))
+            return (f"{c:,} airports", (60,210,90))
+        return ("Tap to download", YELLOW)
+    if key == "airspace_data":
+        c = disp.get("asp", {}).get("records", 0)
+        if c:
+            return (f"{c} polygons", (60,210,90))
+        return ("Tap to set up", YELLOW)
+    if key == "navdata_data":
+        nd = disp["nd"]
+        if nd.get("present"):
+            sub = (f"cycle {nd.get('cycle') or '—'}  ·  "
+                   f"{nd.get('procedures',0):,} appr")
+            return (sub, (220,140,60) if nd.get("expired") else (60,210,90))
+        return ("Tap to download", YELLOW)
+    return ("", (150,160,175))
+
+
+def _dl_tile(surf, bx, by, bw, bh, label, sub, sub_col, back=False):
+    for i in range(bh):
+        t = 1.0 - i / bh
+        c = ((int(40+t*30), int(8+t*10), int(8+t*10)) if back
+             else (int(t*10), int(14+t*22), int(30+t*42)))
+        pygame.draw.line(surf, c, (bx, by+i), (bx+bw, by+i))
+    oc = (200, 80, 80) if back else (60, 85, 120)
+    pygame.draw.rect(surf, oc, (bx, by, bw, bh), width=2, border_radius=8)
+    if back:
+        _text(surf, "BACK", 20, WHITE, bold=True, cx=bx+bw//2, cy=by+bh//2)
+        return
+    _text(surf, label, 20, WHITE, bold=True, x=bx+16, y=by+16)
+    _text(surf, sub, 13, sub_col, x=bx+16, y=by+bh-30)
+    _text(surf, "▶", 18, (70,95,130), x=bx+bw-28, y=by+bh//2-12)
+
+
+def draw_downloads_setup(surf):
+    """Full-screen DATA & MAPS menu — tiles for every downloadable dataset."""
+    surf.fill((0, 8, 22))
+    pygame.draw.rect(surf, (0, 18, 45), (0, 0, DISPLAY_W, 44))
+    pygame.draw.line(surf, WHITE, (0, 43), (DISPLAY_W-1, 43), 1)
+    _text(surf, "‹ SETUP", 16, (150,170,200), x=12, y=14)
+    _text(surf, "DATA & MAPS", 22, WHITE, bold=True, cx=DISPLAY_W//2, cy=22)
+    for col, row, label, mode in _DL_ITEMS:
+        bx = _DL_COLS[col]; by = _DL_ROWS[row]
+        if mode is None:
+            _dl_tile(surf, bx, by, _DL_BW, _DL_BH, label, "", WHITE, back=True)
+        else:
+            sub, sc = _dl_status(mode)
+            _dl_tile(surf, bx, by, _DL_BW, _DL_BH, label, sub, sc)
+
+
+def downloads_setup_hit(x, y):
+    """Return ('back', None) | ('open', subscreen-mode) | (None, None)."""
+    if y <= 44 and x <= 110:
+        return ("back", None)
+    for col, row, label, mode in _DL_ITEMS:
+        bx = _DL_COLS[col]; by = _DL_ROWS[row]
+        if bx <= x <= bx+_DL_BW and by <= y <= by+_DL_BH:
+            return ("back", None) if mode is None else ("open", mode)
+    return (None, None)
 
 
 # Numpad constants — shared between draw and hit-test
@@ -7291,9 +7438,10 @@ _SYS_INFO_LH = 28
 
 _SYS_N_LINES = 8
 _SYS_IH      = _SYS_N_LINES * _SYS_INFO_LH + 16
-_SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # DISPLAY MODE row top
-_SYS_TERRAIN_Y = _SYS_MODE_Y + _SS_RH + 8         # TERRAIN DATA row top
-_SYS_BTN_Y     = _SYS_TERRAIN_Y + _SS_RH + 8      # action buttons top
+_SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # ENABLE MFD row top
+# Data-download tiles moved to the DATA & MAPS page; action buttons follow the
+# ENABLE MFD row directly now.
+_SYS_BTN_Y     = _SYS_MODE_Y + _SS_RH + 8         # action buttons top
 _SYS_BTN_H     = 54
 
 
@@ -7356,7 +7504,6 @@ def draw_system_setup(surf):
     _sy = _ss_scroll.get("system_setup", 0)
     info_y    = _SYS_INFO_Y    - _sy
     mode_y    = _SYS_MODE_Y    - _sy
-    terrain_y = _SYS_TERRAIN_Y - _sy
     btn_y     = _SYS_BTN_Y     - _sy
     pygame.draw.rect(surf, (0,12,32), (bx, info_y, bw, _SYS_IH), border_radius=6)
     pygame.draw.rect(surf, (55,75,105), (bx, info_y, bw, _SYS_IH), width=1, border_radius=6)
@@ -7378,44 +7525,7 @@ def draw_system_setup(surf):
     _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "OFF", not enabled)
     _seg_btn(surf, rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m, "ON",  enabled)
 
-    # Data download tiles: TERRAIN | OBSTACLE | AIRPORT | AIRSPACE
-    # (four columns \u2014 narrower than before but still finger-sized).
-    quarter = (bw - 24) // 4
-    n_tiles, used_mb = _td_disk_stats()
-    _sys_data_tile(surf, bx,                       terrain_y, quarter, _SS_RH,
-                   "TERRAIN",
-                   f"{n_tiles} tile{'s' if n_tiles != 1 else ''}  \u00b7  {used_mb:.1f} MB",
-                   active=True)
-    od_cnt     = disp["od"].get("records", 0)
-    od_mb      = disp["od"].get("used_mb", 0.0)
-    od_expired = disp["od"].get("expired", False)
-    if od_cnt:
-        if od_expired:
-            od_sub = f"{od_cnt:,} obs  \u00b7  \u26a0 EXP"
-        else:
-            od_sub = f"{od_cnt:,} obs  \u00b7  {od_mb:.1f} MB"
-    else:
-        od_sub = "Tap to download"
-    _sys_data_tile(surf, bx + quarter + 8,         terrain_y, quarter, _SS_RH,
-                   "OBSTACLE", od_sub, active=True)
-    ad_cnt     = disp["ad"].get("records", 0)
-    ad_expired = disp["ad"].get("expired", False)
-    if ad_cnt:
-        if ad_expired:
-            ad_sub = f"{ad_cnt:,} apts  \u00b7  \u26a0 EXP"
-        else:
-            ad_sub = f"{ad_cnt:,} apts"
-    else:
-        ad_sub = "Tap to download"
-    _sys_data_tile(surf, bx + 2 * (quarter + 8),   terrain_y, quarter, _SS_RH,
-                   "AIRPORT", ad_sub, active=True)
-    # AIRSPACE tile \u2014 uses disp["asp"] for status (filled by the
-    # AIRSPACE DATA subscreen on load).
-    asp_cnt = disp.get("asp", {}).get("records", 0)
-    asp_sub = f"{asp_cnt} polygons" if asp_cnt else "Tap to set up"
-    _sys_data_tile(surf, bx + 3 * (quarter + 8),   terrain_y, quarter, _SS_RH,
-                   "AIRSPACE", asp_sub, active=True)
-
+    # (Data-download tiles moved to the DATA & MAPS setup page.)
     half_w = (bw - 10) // 2
     # Layout: AHRS FIRMWARE (full-width), SIMULATOR+RESET (half-width), QUIT
     sim_y  = btn_y + _SYS_BTN_H + 10
@@ -7443,16 +7553,6 @@ def system_setup_hit(x, y):
             return "set:mfd_enabled:off"
         if rx+btn_w_m+gap_m <= x <= rx+2*btn_w_m+gap_m:
             return "set:mfd_enabled:on"
-    if _SYS_TERRAIN_Y <= y <= _SYS_TERRAIN_Y+_SS_RH:
-        quarter = (bw - 24) // 4
-        if bx <= x <= bx + quarter:
-            return "terrain_data"
-        if bx + quarter + 8 <= x <= bx + 2 * quarter + 8:
-            return "obstacle_data"
-        if bx + 2 * (quarter + 8) <= x <= bx + 3 * quarter + 16:
-            return "airport_data"
-        if bx + 3 * (quarter + 8) <= x <= bx + 4 * quarter + 24:
-            return "airspace_data"
     half_w = (bw - 10) // 2
     sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
     quit_y = sim_y       + _SYS_BTN_H + 10
@@ -8883,6 +8983,178 @@ def _ad_start_download():
     t = threading.Thread(target=_ad_download_thread, daemon=True,
                          name="AirportDownload")
     t.start()
+
+
+# ── Nav-data (FAA NASR + CIFP) download / status ────────────────────────────
+_ND_MX = 12
+
+
+def _nd_load():
+    """(Re-)load the nav-data cache into _navdata + refresh disp["nd"] stats."""
+    global _navdata
+    os.makedirs(NAVDATA_DIR, exist_ok=True)
+    _navdata = nd_mod.load(NAVDATA_DIR)
+    st = nd_mod.cache_stats(NAVDATA_DIR)
+    disp["nd"].update({k: st[k] for k in (
+        "present", "cycle", "fixes", "navaids", "airways", "procedures",
+        "holds", "mb", "date", "age_days", "expired")})
+
+
+def _nd_download_thread():
+    nd = disp["nd"]
+    nd["downloading"] = True
+    nd["dl_cancel"]   = False
+    os.makedirs(NAVDATA_DIR, exist_ok=True)
+    if nd_mod.download_url(nd_mod.JSON_FILE) is None:
+        nd["dl_status"]   = "No download source configured"
+        nd["downloading"] = False
+        return
+
+    def _download_file(url, path, label):
+        nd["dl_status"] = f"Downloading {label}…"
+        req = urllib.request.Request(url, headers={"User-Agent": "PFD-AHRS/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            got = 0
+            with open(path + ".tmp", "wb") as out:
+                while True:
+                    if nd["dl_cancel"]:
+                        try: os.remove(path + ".tmp")
+                        except Exception: pass
+                        return False
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    got += len(chunk)
+                    if total:
+                        nd["dl_status"] = (f"{label}: {got*100//total}%  "
+                                           f"({got//1024} / {total//1024} KB)")
+                    else:
+                        nd["dl_status"] = f"{label}: {got//1024} KB"
+        os.replace(path + ".tmp", path)
+        return True
+
+    try:
+        for fname in nd_mod.DOWNLOAD_FILES:
+            url = nd_mod.download_url(fname)
+            if not _download_file(url, os.path.join(NAVDATA_DIR, fname), fname):
+                nd["dl_status"]   = "Cancelled"
+                nd["downloading"] = False
+                return
+        nd["dl_status"] = "Loading nav data…"
+        _nd_load()
+        nd["dl_status"] = f"Done ✓  cycle {disp['nd'].get('cycle') or '—'}"
+    except Exception as exc:
+        nd["dl_status"] = f"Error: {exc}"
+    finally:
+        nd["downloading"] = False
+
+
+def _nd_start_download():
+    t = threading.Thread(target=_nd_download_thread, daemon=True,
+                         name="NavDataDownload")
+    t.start()
+
+
+def draw_navdata_data(surf, nd):
+    """Full-screen IFR nav-data management screen (fixes/navaids/procedures)."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "NAV DATA")
+    bx = _ND_MX; bw = DISPLAY_W - 2*_ND_MX
+    present = nd.get("present", False)
+
+    pygame.draw.rect(surf, (0,12,32), (bx, 52, bw, 28), border_radius=4)
+    pygame.draw.rect(surf, (40,60,90), (bx, 52, bw, 28), width=1, border_radius=4)
+    if present:
+        age = nd.get("age_days", 0)
+        age_str = f"  ·  {age} day{'' if age == 1 else 's'} old"
+        if nd.get("expired"):
+            age_str += "  (expired)"
+            stat_col = (220, 130, 60)
+        else:
+            stat_col = (60, 220, 80)
+        stat_str = (f"cycle {nd.get('cycle') or '—'}  ·  "
+                    f"{nd.get('mb', 0.0):.1f} MB{age_str}")
+    else:
+        stat_str = "No nav data on disk"
+        stat_col = YELLOW
+    _text(surf, stat_str, 14, stat_col, bold=True, cx=DISPLAY_W//2, cy=66)
+
+    info_y = 92
+    info_h = 92
+    pygame.draw.rect(surf, (0,10,26), (bx, info_y, bw, info_h), border_radius=6)
+    pygame.draw.rect(surf, (40,55,80), (bx, info_y, bw, info_h), width=1, border_radius=6)
+    _text(surf, "FAA IFR Nav Data  (US · 28-day)", 15, WHITE, bold=True,
+          cx=DISPLAY_W//2, cy=info_y+14)
+    _text(surf, f"{nd.get('fixes',0):,} fixes  ·  {nd.get('navaids',0):,} "
+                f"navaids  ·  {nd.get('airways',0):,} airways",
+          10, (140,160,185), cx=DISPLAY_W//2, cy=info_y+32)
+    _text(surf, f"{nd.get('procedures',0):,} procedures  ·  "
+                f"{nd.get('holds',0):,} holds",
+          10, (140,160,185), cx=DISPLAY_W//2, cy=info_y+48)
+    _text(surf, "Built off-aircraft: tools/build_navdata_us.py (NASR + CIFP)",
+          9, (120,140,165), cx=DISPLAY_W//2, cy=info_y+66)
+    _text(surf, "Powers published approaches, airways & holds",
+          9, (120,140,165), cx=DISPLAY_W//2, cy=info_y+80)
+
+    have_src = nd_mod.download_url(nd_mod.JSON_FILE) is not None
+    downloading = nd.get("downloading", False)
+    btn_y = info_y + info_h + 10
+    btn_h = 48
+    if downloading:
+        bg = (0,20,10); oc = (40,140,60)
+    elif have_src:
+        bg = (0,18,45); oc = WHITE
+    else:
+        bg = (10,10,14); oc = (60,70,85)
+    pygame.draw.rect(surf, bg, (bx, btn_y, bw, btn_h), border_radius=6)
+    pygame.draw.rect(surf, oc, (bx, btn_y, bw, btn_h), width=2, border_radius=6)
+    btn_label = "UPDATE" if present else "DOWNLOAD"
+    tc = (70,80,90) if (downloading or not have_src) else WHITE
+    _text(surf, btn_label, 14, tc, bold=True, cx=DISPLAY_W//2, cy=btn_y+btn_h//2-6)
+    sub = ("from configured nav-data source" if have_src
+           else "no source configured — copy cache to data/navdata/")
+    _text(surf, sub, 9, (100,120,140) if have_src else (150,120,60),
+          cx=DISPLAY_W//2, cy=btn_y+btn_h//2+10)
+
+    prog_y = btn_y + btn_h + 8
+    prog_h = 40
+    pygame.draw.rect(surf, (0,10,24), (bx, prog_y, bw, prog_h), border_radius=6)
+    pygame.draw.rect(surf, (35,50,75), (bx, prog_y, bw, prog_h), width=1, border_radius=6)
+    status_msg = nd.get("dl_status", "")
+    if downloading:
+        pct = 0
+        try:
+            if "%" in status_msg:
+                pct = int(status_msg.split("%")[0].split()[-1])
+        except (ValueError, IndexError):
+            pct = 0
+        bar_w = int((bw - 20) * pct / 100)
+        pygame.draw.rect(surf, (0,22,12), (bx+10, prog_y+24, bw-20, 8), border_radius=3)
+        if bar_w > 0:
+            pygame.draw.rect(surf, (40,180,60), (bx+10, prog_y+24, bar_w, 8), border_radius=3)
+        _text(surf, status_msg, 9, (140,160,180), cx=DISPLAY_W//2, cy=prog_y+12)
+        _action_btn(surf, bw-70, prog_y+4, 62, 28, "CANCEL", "danger", r=5)
+    else:
+        col = (60,220,80) if status_msg.startswith("Done") else (160,160,170)
+        _text(surf, status_msg, 9, col, cx=DISPLAY_W//2, cy=prog_y+20)
+
+
+def navdata_data_hit(x, y, nd):
+    if 8 <= x <= 80 and 6 <= y <= 37:
+        return "back"
+    bx = _ND_MX; bw = DISPLAY_W - 2*_ND_MX
+    info_y = 92; info_h = 92
+    btn_y  = info_y + info_h + 10
+    btn_h  = 48
+    prog_y = btn_y + btn_h + 8
+    if nd.get("downloading"):
+        if bx+bw-70 <= x <= bx+bw and prog_y+4 <= y <= prog_y+32:
+            return "cancel"
+    if bx <= x <= bx+bw and btn_y <= y <= btn_y+btn_h:
+        return "download"
+    return None
 
 
 def draw_airport_data(surf, ad):
@@ -13085,6 +13357,10 @@ def render(surf, demo_mode, connected, data_stale=False):
     # ── Full-screen replacement screens (no PFD behind them) ─────────────────
     if mode == "setup":
         draw_setup_screen(surf); return
+    if mode == "downloads_setup":
+        draw_downloads_setup(surf); return
+    if mode == "navdata_data":
+        draw_navdata_data(surf, disp["nd"]); return
     if mode == "flight_profile":
         draw_flight_profile(surf, disp["fp"]); return
     if mode == "display_setup":
@@ -13432,6 +13708,17 @@ def _startup_load_airspaces():
     _airspaces = loaded
 
 
+def _startup_load_navdata():
+    """Background thread: load the IFR nav-data cache (fixes/navaids/proc)."""
+    _nd_load()
+    if _navdata is not None:
+        print(f"[PFD] Nav data: cycle {disp['nd'].get('cycle') or '—'}  "
+              f"{disp['nd'].get('fixes',0):,} fixes  "
+              f"{disp['nd'].get('procedures',0):,} procedures")
+    else:
+        print(f"[PFD] Nav data: no cache at {NAVDATA_DIR}")
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="PFD Display")
@@ -13460,6 +13747,8 @@ def main():
                         help="Screenshot groundspeed kt")
     parser.add_argument("--ss-vspeed", type=float, default=0.0,      metavar="FPM",
                         help="Screenshot vertical speed fpm")
+    parser.add_argument("--ss-mode",   default="", metavar="MODE",
+                        help="Screenshot a specific screen (e.g. downloads_setup)")
     args = parser.parse_args()
 
     if args.sim or not FULLSCREEN:
@@ -13527,6 +13816,8 @@ def main():
                      name="AirportLoad").start()
     threading.Thread(target=_startup_load_airspaces, daemon=True,
                      name="AirspaceLoad").start()
+    threading.Thread(target=_startup_load_navdata, daemon=True,
+                     name="NavDataLoad").start()
 
     # Disable vsync so display.flip() doesn't block waiting for the display's
     # vsync signal (which was taking ~82 ms at ~12 Hz on KMS/DRM, halving FPS).
@@ -13610,6 +13901,10 @@ def main():
         disp.update(snap)           # bypass IIR: seed disp directly from snap
         disp["hdg_bug"] = args.ss_hdg
         disp["alt_bug"] = args.ss_alt
+        if args.ss_mode:
+            disp["mode"] = args.ss_mode
+            if args.ss_mode == "navdata_data":
+                _nd_load()          # deterministic stats for the screenshot
         smooth_state()              # now a no-op (disp already matches state)
         render(surf, demo_mode=False, connected=True, data_stale=False)
         _flip()

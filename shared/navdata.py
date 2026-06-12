@@ -45,6 +45,7 @@ UI shows a "NO NAVDATA" badge (callers check available()); a present-but-partial
 cache (e.g. fixes but no procedures) still answers the queries it can.
 """
 
+import datetime
 import json
 import math
 import os
@@ -59,6 +60,22 @@ except ImportError:                       # pragma: no cover
 FIXES_FILE   = "navdata_fixes.npy"
 NAVAIDS_FILE = "navdata_navaids.npy"
 JSON_FILE    = "navdata.json"
+
+# Files the device fetches for a full cache, in download order.
+DOWNLOAD_FILES = (FIXES_FILE, NAVAIDS_FILE, JSON_FILE)
+
+# The nav-data cache is built off-aircraft by tools/build_navdata_us.py (the
+# raw FAA NASR + CIFP files are far too big to parse on a Pi).  Host the three
+# built cache files at a directory the device can reach and point
+# DOWNLOAD_BASE_URL at it (trailing slash); the renderer fetches each
+# DOWNLOAD_FILES entry from there.  Override in config_local.py:
+#     import navdata; navdata.DOWNLOAD_BASE_URL = "https://you.example/navdata/"
+# Left blank by default → the DATA screen shows "no download source configured"
+# and the pilot copies the cache onto data/navdata/ by hand instead.
+DOWNLOAD_BASE_URL = ""
+
+# Stale after this many days (one 28-day cycle + a few days' grace).
+EXPIRY_DAYS = 32
 
 _FIX_DTYPE = [("ident", "U5"), ("lat", "f4"), ("lon", "f4")]
 _NAV_DTYPE = [("ident", "U4"), ("ntype", "U4"), ("lat", "f4"), ("lon", "f4"),
@@ -244,3 +261,65 @@ def nearby_fixes(nd, lat, lon, radius_nm=40.0):
 def nearby_navaids(nd, lat, lon, radius_nm=80.0):
     """VOR/NDB/DME navaids within radius (structured rows, nearest first)."""
     return _nearby(nd.navaids, lat, lon, radius_nm) if nd is not None else None
+
+
+# ── on-disk status (for the DATA / DOWNLOADS screen) ───────────────────────────
+def download_date(data_dir):
+    """datetime.date the cache was last written (navdata.json mtime), or None."""
+    if not data_dir:
+        return None
+    jp = os.path.join(data_dir, JSON_FILE)
+    if not os.path.exists(jp):
+        return None
+    try:
+        return datetime.date.fromtimestamp(os.path.getmtime(jp))
+    except OSError:
+        return None
+
+
+def disk_bytes(data_dir):
+    """Total bytes the cache occupies on disk (0 when absent)."""
+    total = 0
+    for f in DOWNLOAD_FILES:
+        p = os.path.join(data_dir or "", f)
+        if os.path.exists(p):
+            try:
+                total += os.path.getsize(p)
+            except OSError:
+                pass
+    return total
+
+
+def cache_stats(data_dir):
+    """A light summary dict for the DATA screen — counts, size, cycle, age.
+    Loads the cache (cheap enough for a settings screen; not a hot path)."""
+    out = {"present": False, "cycle": "", "fixes": 0, "navaids": 0,
+           "airways": 0, "procedures": 0, "holds": 0, "mb": 0.0,
+           "date": None, "age_days": 0, "expired": False}
+    nd = load(data_dir)
+    if nd is None:
+        return out
+    out["present"]    = True
+    out["cycle"]      = nd.cycle
+    out["fixes"]      = len(nd.fixes) if nd.has_fixes() else 0
+    out["navaids"]    = len(nd.navaids) if nd.has_navaids() else 0
+    out["airways"]    = len(nd.airways)
+    out["procedures"] = sum(len(v) for v in nd.procedures.values())
+    out["holds"]      = len(nd.holds)
+    out["mb"]         = disk_bytes(data_dir) / (1024.0 * 1024.0)
+    d = download_date(data_dir)
+    if d is not None:
+        out["date"]     = d
+        out["age_days"] = (datetime.date.today() - d).days
+        out["expired"]  = out["age_days"] > EXPIRY_DAYS
+    return out
+
+
+def download_url(filename):
+    """Full URL for a cache file, or None when no source is configured."""
+    base = (DOWNLOAD_BASE_URL or "").strip()
+    if not base:
+        return None
+    if not base.endswith("/"):
+        base += "/"
+    return base + filename

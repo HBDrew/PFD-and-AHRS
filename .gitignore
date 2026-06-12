@@ -26,6 +26,11 @@ pi_zero/data/airports/
 pi4/data/airports/
 pi_display/data/airports/
 
+# IFR nav-data cache (built off-aircraft by tools/build_navdata_us.py)
+pi_zero/data/navdata/
+pi4/data/navdata/
+pi_display/data/navdata/
+
 # User settings persistence file (created at runtime, per-device)
 pi_zero/data/settings.json
 pi4/data/settings.json
