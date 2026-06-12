@@ -5896,9 +5896,9 @@ def handle_event(event, demo_mode):
                 target  = disp["kbd_target"]
                 _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80,
                            "notam_client_id": 80, "notam_client_secret": 80}
-                _FPL_KBD_MAX = {"fpl_ident": 6, "fpl_latlon_ident": 6,
+                _FPL_KBD_MAX = {"fpl_ident": 7, "fpl_latlon_ident": 10,
                                 "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
-                                "fpl_save_name": 16, "nav_ident": 6}
+                                "fpl_save_name": 16, "nav_ident": 7}
                 if target in _FPL_KBD_MAX:
                     max_len = _FPL_KBD_MAX[target]
                 elif disp.get("kbd_prev") == "connectivity_setup":
@@ -6031,7 +6031,7 @@ def handle_event(event, demo_mode):
                         disp["mode"] = "fpl"
                         return True
                     elif target == "fpl_latlon_ident":
-                        disp["fpl_new"]["ident"] = buf.upper()[:6]
+                        disp["fpl_new"]["ident"] = buf.upper()[:10]
                         disp["kbd_buf"] = ""; disp["kbd_error"] = ""
                         disp["mode"] = "fpl_latlon_entry"
                         return True
@@ -6649,8 +6649,9 @@ def _kb_key(surf, bx, by, bw, bh, label, style, r=6):
 
 
 def draw_keyboard(surf, title, current_val, entered="", transparent=False,
-                  error=""):
-    """Full-screen QWERTY keyboard for text entry."""
+                  error="", hint=""):
+    """Full-screen QWERTY keyboard for text entry.  `hint` (e.g. a resolved
+    airport name) shows green under the input when there's no error."""
     if not transparent:
         surf.fill((0,8,22))
     hdr = pygame.Surface((DISPLAY_W, 44), pygame.SRCALPHA)
@@ -6666,6 +6667,11 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
         # Error overrides the "Current:" hint so the pilot's eye lands on
         # the problem.  Cleared on the next keystroke or backspace.
         _text(surf, error, 12, (255, 90, 90), bold=True,
+              cx=DISPLAY_W//2, cy=104)
+    elif hint:
+        # Live resolved label (e.g. the airport name for a typed ident) so the
+        # pilot can confirm the field before ENTER.
+        _text(surf, hint, 13, (90, 210, 130), bold=True,
               cx=DISPLAY_W//2, cy=104)
     else:
         _text(surf, f"Current: {current_val}", 10, (110, 120, 140),
@@ -10712,19 +10718,13 @@ def _nav_gc_interp(la1, lo1, la2, lo2, f):
             math.degrees(math.atan2(y, x)))
 
 
-def _nav_lookup_ident(ident: str):
-    """Return (ident, lat, lon, elev_ft, name, region) for the first
-    matching airport, or None.  Shared between the activate path, the
-    confirmation modal, and the FPL append path — the latter stores the
-    name/region so the flight-plan row shows the airport name rather than
-    falling back to bare lat/lon.  Callers that only need position read
-    [1]/[2]; the extra fields are appended, so a 4-tuple unpack must slice
-    hit[:4]."""
+def _airports_exact(ident: str):
+    """Exact-ident airport lookup → (ident, lat, lon, elev_ft, name, region)
+    or None."""
     if _airports is None or not ident:
         return None
     if hasattr(_airports, "dtype"):
-        mask = _airports["ident"] == ident
-        rows = _airports[mask]
+        rows = _airports[_airports["ident"] == ident]
         if len(rows) == 0:
             return None
         row = rows[0]
@@ -10740,6 +10740,21 @@ def _nav_lookup_ident(ident: str):
             return (rec[0], float(rec[2]), float(rec[3]), float(rec[4]),
                     name, region)
     return None
+
+
+def _nav_lookup_ident(ident: str):
+    """Return (ident, lat, lon, elev_ft, name, region) for the airport with
+    this exact ident, or None.  Shared between the activate path, the
+    confirmation modal, and the FPL append path (which stores the name/region
+    for the flight-plan row).  Callers that only need position read [1]/[2].
+
+    Exact match only — idents are looked up as the DB stores them (P14, KSEZ,
+    0G6 …).  No automatic K add/strip: a VOR like FLG must never be silently
+    treated as the airport KFLG, and a field whose ident has no K (P14) must
+    not be forced to one."""
+    if _airports is None or not ident:
+        return None
+    return _airports_exact(ident.strip().upper())
 
 
 def _nav_set_by_ident(ident: str) -> bool:
@@ -14288,8 +14303,14 @@ def _draw_modal_overlays(surf, airspeed_src):
         else:
             cur   = disp["fp"].get(target, "")
             title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
+        # Live airport-name label while typing an ident (D2 or FPL airport).
+        hint = ""
+        if disp.get("kbd_target") in ("nav_ident", "fpl_ident") and buf.strip():
+            h = _nav_lookup_ident(buf)
+            if h:
+                hint = f"{h[0]} — {h[4]}" if h[4] else h[0]
         draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True,
-                      error=disp.get("kbd_error", ""))
+                      error=disp.get("kbd_error", ""), hint=hint)
 
 
 def render(surf, demo_mode, connected, data_stale=False):
