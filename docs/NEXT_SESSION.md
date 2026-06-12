@@ -181,10 +181,14 @@ Field names follow the FAA NOTAM API v1 geoJson schema — wants a live-pull che
 once a key is in place.
 
 Still open:
-- **NEXRAD radar (the big one):** decode the FIS-B regional/CONUS run-length
-  block raster into the existing NEXRAD render path; drive with synthetic
-  rasters from the sim.  Highest impact, hardest decode, wants real-frame
-  validation.
+- **NEXRAD radar — DONE (decode landed; wants real-frame validation).** The
+  FIS-B regional/CONUS run-length block raster is decoded in `shared/fisb.py`
+  (`decode_nexrad_block`, products 63/64, per DO-358 / Stratux
+  `extract_nexrad.c`), folded into the store as intensity cells
+  (`nexrad_cells()`) feeding the existing NEXRAD render path, with
+  encode helpers + `shared/test_fisb.py` coverage and synthetic rasters from
+  the sim.  Remaining: validate against real 978 frames (see "Real-frame
+  validation" below) — the decode itself is in and tested.
 - **Winds vertical profile / route cross-section (FMS-type, Option B):** a
   chart of altitude vs. position along the active route (wind/temp per level).
   Niche; needs a solid route.  Deferred — do after NEXRAD.
