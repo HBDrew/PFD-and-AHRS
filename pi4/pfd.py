@@ -4453,6 +4453,59 @@ def _nav_confirm_cancel():
     disp["mode"] = disp.get("nav_confirm_prev", "pfd")
 
 
+# ── Nav picker (tap the CDI → choose Direct-To or Flight Plan) ────────────────
+_NAVPICK_W      = 320
+_NAVPICK_H      = 188
+_NAVPICK_BTN_H  = 56
+
+
+def _navpick_geom():
+    bx = (DISPLAY_W - _NAVPICK_W) // 2
+    by = (DISPLAY_H - _NAVPICK_H) // 2
+    btn_y = by + 40
+    btn_w = _NAVPICK_W - 40
+    return bx, by, btn_y, btn_w
+
+
+def draw_nav_pick(surf):
+    """Two-choice modal shown when the CDI strip is tapped: Direct-To (opens
+    the D2 ident keyboard) or Flight Plan (opens the FPL editor)."""
+    bx, by, btn_y, btn_w = _navpick_geom()
+    _draw_veil(surf)
+    panel = pygame.Surface((_NAVPICK_W, _NAVPICK_H), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _NAVPICK_W, _NAVPICK_H),
+                     width=2, border_radius=10)
+    _text(surf, "NAVIGATE", 14, (160, 200, 230), bold=True,
+          cx=bx + _NAVPICK_W // 2, cy=by + 20)
+    _action_btn(surf, bx + 20, btn_y, btn_w, _NAVPICK_BTN_H,
+                "DIRECT-TO  →", "ok")
+    _action_btn(surf, bx + 20, btn_y + _NAVPICK_BTN_H + 10, btn_w,
+                _NAVPICK_BTN_H, "FLIGHT PLAN  →", "normal")
+    _text(surf, "tap outside to cancel", 11, (140, 150, 160),
+          cx=bx + _NAVPICK_W // 2, cy=by + _NAVPICK_H - 12)
+
+
+def nav_pick_hit(x, y):
+    """Return 'd2' / 'fpl' / 'cancel' / 'noop' for a tap on the nav picker."""
+    bx, by, btn_y, btn_w = _navpick_geom()
+    if not (bx <= x <= bx + _NAVPICK_W and by <= y <= by + _NAVPICK_H):
+        return "cancel"
+    bxl = bx + 20
+    if btn_y <= y <= btn_y + _NAVPICK_BTN_H and bxl <= x <= bxl + btn_w:
+        return "d2"
+    y2 = btn_y + _NAVPICK_BTN_H + 10
+    if y2 <= y <= y2 + _NAVPICK_BTN_H and bxl <= x <= bxl + btn_w:
+        return "fpl"
+    return "noop"
+
+
+def _nav_pick_open():
+    """Tap on the CDI → choose D2 or FPL."""
+    disp["mode"] = "nav_pick"
+
+
 def _nav_open_confirm(ident: str, prev_mode: str) -> bool:
     """Switch to the nav_confirm modal for `ident`.  Returns False if
     the ident is empty (caller should fall through to its no-op
@@ -5677,6 +5730,22 @@ def handle_event(event, demo_mode):
             # "noop" / None / outside-panel: consume to keep the modal up
             return True
 
+        # ── Nav picker (CDI tap → Direct-To / Flight Plan) ────────────────
+        if mode == "nav_pick":
+            action = nav_pick_hit(x, y)
+            if action == "d2":
+                disp["kbd_target"] = "nav_ident"
+                disp["kbd_prev"]   = "pfd"
+                disp["kbd_buf"]    = ""
+                disp["kbd_error"]  = ""
+                disp["mode"]       = "keyboard"
+            elif action == "fpl":
+                disp["mode"] = "fpl"        # the existing FPL editor
+            elif action == "cancel":
+                disp["mode"] = "pfd"
+            # "noop": keep the modal up
+            return True
+
         # ── Compass calibration wizard taps ──────────────────────────────
         if mode == "mag_cal":
             action = mag_cal_hit(x, y)
@@ -6072,14 +6141,8 @@ def handle_event(event, demo_mode):
             _cdi_t = _cdi_bar_y - 32
             _cdi_b = _cdi_bar_y + 12
             if _cdi_l <= x <= _cdi_r and _cdi_t <= y <= _cdi_b:
-                # Empty buf → first keystroke replaces the current ident
-                # (matches the heading/altitude/airspeed numpad behaviour).
-                # Existing ident still appears as the keyboard placeholder.
-                disp["kbd_target"] = "nav_ident"
-                disp["kbd_prev"]   = "pfd"
-                disp["kbd_buf"]    = ""
-                disp["kbd_error"]  = ""
-                disp["mode"]       = "keyboard"
+                # Tap the CDI → choose Direct-To or Flight Plan.
+                _nav_pick_open()
                 return True
 
         # Tap on the moving-map inset → cycle range one step.  Right
@@ -14100,6 +14163,8 @@ def _draw_modal_overlays(surf, airspeed_src):
 
     elif mode == "nav_confirm":
         draw_nav_confirm(surf)
+    elif mode == "nav_pick":
+        draw_nav_pick(surf)
 
     elif mode == "mag_cal":
         draw_mag_cal(surf)
@@ -14254,7 +14319,7 @@ def render(surf, demo_mode, connected, data_stale=False):
     # render, relighting the 3D terrain pass behind the veil every frame —
     # that's what made D2 entry crawl on the MFD (very slow on pi4).
     if (disp.get("display_mode", "pfd") == "mfd"
-            and mode in ("pfd", "keyboard", "numpad", "nav_confirm")):
+            and mode in ("pfd", "keyboard", "numpad", "nav_confirm", "nav_pick")):
         draw_mfd(surf, connected=connected, data_stale=data_stale)
         if mode != "pfd":
             surf.set_clip(None)     # MFD layers may leave a clip set

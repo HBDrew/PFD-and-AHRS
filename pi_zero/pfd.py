@@ -3298,6 +3298,17 @@ def handle_event(event, demo_mode):
                 _nav_confirm_cancel()
             return True
 
+        # ── Nav picker (CDI tap → Direct-To / Flight Plan) ────────────────
+        if mode == "nav_pick":
+            action = nav_pick_hit(x, y)
+            if action == "d2":
+                _mfd_open_d2_keyboard()
+            elif action == "fpl":
+                disp["mode"] = "fpl"        # the existing FPL editor
+            elif action == "cancel":
+                disp["mode"] = "pfd"
+            return True
+
         # ── Mag-cal modal taps ────────────────────────────────────────────
         if mode == "mag_cal":
             action = mag_cal_hit(x, y)
@@ -4096,7 +4107,7 @@ def handle_event(event, demo_mode):
                 and disp.get("display_mode", "pfd") == "pfd"
                 and disp.get("gps_ok", False)
                 and _cdi_hit(x, y)):
-            _mfd_open_d2_keyboard()
+            disp["mode"] = "nav_pick"   # CDI tap → choose D2 or FPL
             return True
 
         # Tap on SIM watermark → open sim controls overlay
@@ -6476,6 +6487,53 @@ def nav_confirm_hit(x, y):
             return "cancel"
         if bx_r <= x <= bx_r + btn_w:
             return "activate"
+    return "noop"
+
+
+# ── Nav picker (tap the CDI → choose Direct-To or Flight Plan) ────────────────
+_NAVPICK_W      = 320
+_NAVPICK_H      = 188
+_NAVPICK_BTN_H  = 56
+
+
+def _navpick_geom():
+    bx = (DISPLAY_W - _NAVPICK_W) // 2
+    by = (DISPLAY_H - _NAVPICK_H) // 2
+    btn_y = by + 40
+    btn_w = _NAVPICK_W - 40
+    return bx, by, btn_y, btn_w
+
+
+def draw_nav_pick(surf):
+    """Two-choice modal on a CDI tap: Direct-To (D2 ident keyboard) or
+    Flight Plan (the FPL editor)."""
+    bx, by, btn_y, btn_w = _navpick_geom()
+    _draw_veil(surf)
+    panel = pygame.Surface((_NAVPICK_W, _NAVPICK_H), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _NAVPICK_W, _NAVPICK_H),
+                     width=2, border_radius=10)
+    _text(surf, "NAVIGATE", 14, (170, 200, 230), bold=True,
+          cx=bx + _NAVPICK_W // 2, cy=by + 20)
+    _action_btn(surf, bx + 20, btn_y, btn_w, _NAVPICK_BTN_H,
+                "DIRECT-TO  →", "ok")
+    _action_btn(surf, bx + 20, btn_y + _NAVPICK_BTN_H + 10, btn_w,
+                _NAVPICK_BTN_H, "FLIGHT PLAN  →", "normal")
+    _text(surf, "tap outside to cancel", 11, (140, 150, 160),
+          cx=bx + _NAVPICK_W // 2, cy=by + _NAVPICK_H - 12)
+
+
+def nav_pick_hit(x, y):
+    bx, by, btn_y, btn_w = _navpick_geom()
+    if not (bx <= x <= bx + _NAVPICK_W and by <= y <= by + _NAVPICK_H):
+        return "cancel"
+    bxl = bx + 20
+    if btn_y <= y <= btn_y + _NAVPICK_BTN_H and bxl <= x <= bxl + btn_w:
+        return "d2"
+    y2 = btn_y + _NAVPICK_BTN_H + 10
+    if y2 <= y <= y2 + _NAVPICK_BTN_H and bxl <= x <= bxl + btn_w:
+        return "fpl"
     return "noop"
 
 
@@ -13028,6 +13086,12 @@ def render(surf, demo_mode, connected, data_stale=False):
             render(surf, demo_mode, connected, data_stale)
             disp["mode"] = "nav_confirm"
         draw_nav_confirm(surf); return
+    if mode == "nav_pick":
+        # Borderless modal — paint the PFD underneath, then the picker.
+        disp["mode"] = "pfd"
+        render(surf, demo_mode, connected, data_stale)
+        disp["mode"] = "nav_pick"
+        draw_nav_pick(surf); return
     if mode == "wifi_scan":
         draw_wifi_scan(surf, disp["cs"]); return
     if mode == "connectivity_setup":
