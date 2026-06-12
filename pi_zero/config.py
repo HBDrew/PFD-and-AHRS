@@ -44,8 +44,10 @@ TAPE_MID   = (TAPE_TOP + TAPE_BOT) // 2 # 229
 CX         = SPD_W + (DISPLAY_W - SPD_W - ALT_W) // 2  # 316 — centre of AI
 CY         = TAPE_MID                   # 229
 ROLL_R     = 148
-ROLL_CY    = ROLL_R + 26                # 174 — lowered (was +16) so the roll-arc
-                                        # apex clears the top data-ribbon band
+ROLL_CY    = ROLL_R + 34                # lowered (was +16) so the roll-arc apex
+                                        # AND its upper sky-pointer doghouse
+                                        # (~15px above the apex) clear the top
+                                        # data-ribbon band
 BALL_Y     = HDG_Y - 30                 # 406
 
 # AI (Attitude Indicator) region

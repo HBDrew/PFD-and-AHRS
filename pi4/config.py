@@ -93,8 +93,10 @@ CX         = SPD_W + (DISPLAY_W - SPD_W - ALT_W) // 2  # centre of AI region
 CY         = TAPE_MID
 _S_MIN     = min(DISPLAY_W / 640.0, _SY)  # shorter axis keeps arc circular
 ROLL_R     = int(148 * _S_MIN)
-ROLL_CY    = ROLL_R + int(26 * _S_MIN)   # lowered (was 16) so the roll-arc apex
-                                         # clears the top data-ribbon band
+ROLL_CY    = ROLL_R + int(30 * _S_MIN)   # lowered (was 16) so the roll-arc apex
+                                         # AND its upper sky-pointer doghouse
+                                         # (~15px above the apex) clear the top
+                                         # data-ribbon band
 BALL_Y     = HDG_Y - int(30 * _SY)
 
 # AI (Attitude Indicator) region
