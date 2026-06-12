@@ -835,7 +835,7 @@ class WindsUSCache(threading.Thread):
     def __init__(self, bbox, rows, cols, spacing_nm, disk_path, locate_fn,
                  hour_offset_fn=None, model="gfs025", max_alt_ft=18000,
                  max_age_s=6 * 3600, slice_s=20.0, publish_fn=None,
-                 peer_grace_s=360.0, startup_grace_s=45.0,
+                 peer_grace_s=600.0, startup_grace_s=45.0,
                  fetch_jitter_s=180.0, expire_s=24 * 3600, series_h=30):
         super().__init__(daemon=True, name="WindsUSCache")
         self.zones = conus_zones(bbox, rows, cols)
@@ -1056,8 +1056,21 @@ class WindsUSCache(threading.Thread):
     def _due_zone(self, lat, lon, now):
         """Index of the most-due zone — the aircraft's own zone first, then the
         nearest other stale zone — or None when every zone is fresh."""
-        cand = []
         now_m = time.monotonic()
+        # ONE feeder, not three.  If a peer is actively sharing winds and we hold
+        # NONE of our own fetched series, stay a pure adopter — don't fetch at
+        # all.  Otherwise every screen, each wanting its own series so its +Nh
+        # selector works, piles onto the same zones (the aircraft's zone first)
+        # and trips Open-Meteo's 429.  The first screen to pull (lowest startup
+        # jitter) becomes the feeder and supplies the panel via now-snapshots;
+        # the rest adopt.  If the feeder goes away, peer activity lapses and
+        # someone re-elects.  A screen that already holds its own series skips
+        # this gate (it IS a/the feeder) and keeps pulling its remaining zones.
+        have_own = any(any(c.get("series") for c in rec["cols"])
+                       for rec in self._data.values())
+        if not have_own and self._peer_active():
+            return None
+        cand = []
         due_age = self.max_age_s + self._fetch_jitter   # per-device stagger
         for i, z in enumerate(self.zones):
             rec = self._data.get(i)

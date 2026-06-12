@@ -83,16 +83,30 @@ call, so the series is free; we just stopped throwing all but one hour away.
   share reconciles the panel.  The startup gate is staggered by the per-device
   fetch jitter so a synchronised "everyone's cache is due" event doesn't hit
   Open-Meteo all at once.
-- **DEFERRED — WINDS-SERIES-PEER-OFFSET (Phase 2):** a screen that ONLY ever
-  adopts a zone (never fetches it) holds just the now-snapshot, so its WND-page
-  `+Nh` selector reads *now* for that zone — only the screen that fetched the
-  series can change the forecast time.  To make `+Nh` work on the adopters, the
-  feeder must SHARE the offsets.  Measured: the full 31 h series zlib-compresses
-  to ~145 KB (too big for one 64 KB UDP datagram), BUT the 7 discrete selector
-  offsets {0,3,6,9,12,18,24 h} compress to **~37 KB — fits one datagram**.  So
-  Phase 2 = feeder packs a 7-offset bundle (zlib+b64) per zone, adopters store
-  it offset-keyed and `_winds_barbs` picks the matching offset.  No chunking
-  needed.  Not built yet.  The inset (now) is correct everywhere regardless.
+- **One feeder, not three (429 fix).** Field test showed all three screens each
+  fetching the same zones (the aircraft's zone first) → repeated 429s, because
+  every screen wants its OWN series so its `+Nh` works.  `_due_zone` now has a
+  global gate: a screen holding NONE of its own fetched series, while a peer is
+  actively sharing, **stays a pure adopter and does not fetch**.  The first
+  screen to pull (lowest jitter) becomes the sole feeder; the rest adopt its
+  now-snapshots.  `peer_grace_s` 360→600 s so an occasional dropped broadcast
+  doesn't expire coverage and trigger a redundant pull.  Consequence: `+Nh`
+  works on the feeder only — the adopters need the offsets SHARED (Phase 2).
+  NOTE: to elect cleanly on already-split hardware, delete `conus_winds.json` on
+  every Pi and restart them together (otherwise each keeps the zones it already
+  fetched).
+- **DEFERRED — WINDS-SERIES-PEER-OFFSET (Phase 2):** to make `+Nh` work on the
+  adopters too, the feeder must SHARE the offsets.  Measured: the full 31 h
+  series zlib-compresses to ~145 KB (too big for one 64 KB UDP datagram), BUT
+  the 7 discrete selector offsets {0,3,6,9,12,18,24 h} compress to **~37 KB —
+  fits one datagram** (b64 in JSON ~50 KB, still under 64 KB).  Phase 2 = feeder
+  packs a 7-offset bundle (zlib+b64) per zone, adopters store it offset-keyed
+  and `_winds_barbs` picks the matching offset.  No chunking needed.  CAVEAT: a
+  field log showed a ~7 min gap where a ~20 KB winds broadcast wasn't reaching a
+  peer — the LAN may be dropping fragmented broadcasts; the bigger Phase-2
+  packets would be dropped more (survivable via the 20 s re-broadcast, but check
+  `screen_sync` rx/tx counters first).  The inset (now) is correct everywhere
+  regardless.
 
 ### WINDS-STALE-STATUS  "6/6 loaded" was uninformative; report stale/expired
 Status: **DONE** — zones refresh in place and never drop, so a loaded-count

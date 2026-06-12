@@ -112,17 +112,37 @@ def test_seriesless_cache_is_due():
           "a fresh series is not due")
 
 
-def test_peer_feed_is_per_zone():
-    # A peer feeding ONE zone must not stop us pulling other still-stale zones
-    # (the global defer stalled the refresh into 6-min lurches).
+def test_pure_adopter_defers_to_feeder():
+    # One feeder, not three: with a live feeder (peer active) and NO series of
+    # our own, we must not fetch at all — the rest adopt.  This is what stops the
+    # 3-way pile-onto-the-same-zone that tripped the 429.
     c = _cache()
     now = time.time()
     for i in range(len(c.zones)):
-        c._data[i] = {"cols": [], "fetched": now - 7 * 3600}   # all stale
-    c.ingest_packed(wx.pack_winds_zone(0, now, []))            # peer feeds zone 0
+        c._data[i] = {"cols": [_snap_col(20)], "fetched": now}   # snapshots, no series
+    c._last_peer_rx = time.monotonic()           # a feeder is actively sharing
+    check(c._due_zone(34.0, -112.0, now) is None,
+          "pure adopter defers entirely while a feeder is active")
+    c._last_peer_rx = 0.0                         # no feeder around
+    check(c._due_zone(34.0, -112.0, now) is not None,
+          "with no feeder, a series-less screen bootstraps (becomes the feeder)")
+
+
+def test_feeder_still_pulls_other_zones():
+    # A FEEDER (already holds its own series) isn't blocked from pulling other
+    # still-series-less zones just because a peer fed one of them.
+    c = _cache()
+    now = time.time()
+    own, _ = _series_col(now)
+    c._data[0] = {"cols": [own], "fetched": now}                 # our own fresh series
+    for i in range(1, len(c.zones)):
+        c._data[i] = {"cols": [_snap_col(20)], "fetched": now - 7 * 3600}  # stale, no series
+    p = wx.pack_winds_zone(1, now, [_snap_col(30)]); p["st"] = now
+    c.ingest_packed(p)                                           # a peer feeds zone 1
     due = c._due_zone(34.0, -112.0, now)
-    check(due is not None, "still has a due zone after a peer fed one")
-    check(due != 0, "the zone a peer just fed is not re-fetched, but others are")
+    check(due is not None, "feeder still has a due zone")
+    check(due not in (0, 1),
+          "not zone 0 (own fresh series) nor zone 1 (a peer just fed it)")
 
 
 def test_status_bands_fresh_stale_expired():
