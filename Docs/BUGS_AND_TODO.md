@@ -6,37 +6,7 @@ When opening a new session, start here for context.
 Format: each item gets a short ID, a status, a one-line summary, and
 notes with enough context to pick it up cold.
 
-
 ## Open
-
-### TINT-SHIMMER-PAN  Terrain tint shading shifts a bit on a pan + density bump
-Status: **OPEN**
-After the tint registration fix (scale + projected-quantised-centre blit),
-the tint sits in the right place and no longer jumps several NM, but the
-hypsometric *shading* still "pops" a little at each cell crossing while
-panning.  Cause: the 48×48 sample grid (`_TINT_N`) is anchored to the
-aircraft's quantised centre, so each rebuild re-anchors the grid and the
-coarse shading re-samples onto shifted points (a peak sampled or not, a
-water edge moved by a sample).  Position is correct; it's the *sampling
-lattice* shifting per rebuild.
-Fix: **world-anchor the sample lattice** — snap the grid's top-left to a
-fixed multiple of the sample spacing (`dlat = span_lat/(n-1)`,
-`dlon = span_lon/(n-1)`) in `_build_tint_pixels` so the SAME absolute
-lat/lon points are sampled regardless of pan; consecutive (quantised)
-builds then sample identical points where the windows overlap, so panning
-slides a stable field with no pop.  The anchored grid centre differs from
-the quantised centre by up to half a sample, so thread the true centre
-(`a_lat, a_lon`) back through `_build_tint` / `_tint_async_worker` /
-`_tint_get` (cache value becomes `(surface, elev, a_lat, a_lon)`) and blit
-at `_project(a_lat, a_lon)` so registration stays exact.  Lat lattice is
-fully world-stable; lon spacing depends on `cos(lat)` so it's world-stable
-to within a hair over a few cells — fine.
-Density: also bump `_TINT_N` 48 → **64** on the Pi 5 (pilot's call) for
-crisper mountains/coastlines — the extra samples are cheap reads from
-already-loaded tiles, just more smoothscale per build.  Gate it by platform
-(keep 48 on the 2 GB Pi 4 unless confirmed it doesn't tax it; Pi 5 fine).
-Apply to both `pi4/moving_map.py` and `pi_zero/moving_map.py`.  Verify on
-the Pi 5 (a slow pan should show terrain sliding smoothly, no shading pop).
 
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
@@ -715,8 +685,50 @@ Work items:
     "EXIT HOLD" (then resume the next leg). This is the one place the
     existing distance-gated sequencer needs a real state change.
 
-
 ## Completed
+
+### TINT-SHIMMER-PAN  Terrain tint shading shifts a bit on a pan + density bump
+Status: **DONE (pi4 + pi_zero) — verify the slow-pan on the Pi 5**
+Resolution: `_build_tint_pixels` now **world-anchors the sample lattice** —
+the grid's top-left corner snaps to a fixed global multiple of the per-sample
+spacing (`dlat = span_lat/(n-1)`, `dlon = span_lon/(n-1)`), so consecutive
+builds sample the SAME absolute lat/lon points wherever their windows overlap
+and a pan slides a stable field instead of re-sampling (numeric check: a pure
+E pan keeps all N lat samples identical and N−1/N lon samples, only the new
+edge column sliding in).  The anchored grid centre (`a_lat, a_lon`, up to half
+a sample off the aircraft) is threaded back through `_build_tint` /
+`_tint_async_worker` / `_tint_get` (cache value + `_tint_ready` entries are now
+`(surface, elev, a_lat, a_lon)`) and the inset blits at `_project(a_lat, a_lon)`
+so registration stays exact across a cell-boundary snap.  Density: `_TINT_N` is
+**64 on pi4 (Pi 5)** / **48 on pi_zero** as agreed.  Both files compile; the
+Pi-5 slow-pan visual check is the only thing left (no GL here).  Original
+report below.
+After the tint registration fix (scale + projected-quantised-centre blit),
+the tint sits in the right place and no longer jumps several NM, but the
+hypsometric *shading* still "pops" a little at each cell crossing while
+panning.  Cause: the 48×48 sample grid (`_TINT_N`) is anchored to the
+aircraft's quantised centre, so each rebuild re-anchors the grid and the
+coarse shading re-samples onto shifted points (a peak sampled or not, a
+water edge moved by a sample).  Position is correct; it's the *sampling
+lattice* shifting per rebuild.
+Fix: **world-anchor the sample lattice** — snap the grid's top-left to a
+fixed multiple of the sample spacing (`dlat = span_lat/(n-1)`,
+`dlon = span_lon/(n-1)`) in `_build_tint_pixels` so the SAME absolute
+lat/lon points are sampled regardless of pan; consecutive (quantised)
+builds then sample identical points where the windows overlap, so panning
+slides a stable field with no pop.  The anchored grid centre differs from
+the quantised centre by up to half a sample, so thread the true centre
+(`a_lat, a_lon`) back through `_build_tint` / `_tint_async_worker` /
+`_tint_get` (cache value becomes `(surface, elev, a_lat, a_lon)`) and blit
+at `_project(a_lat, a_lon)` so registration stays exact.  Lat lattice is
+fully world-stable; lon spacing depends on `cos(lat)` so it's world-stable
+to within a hair over a few cells — fine.
+Density: also bump `_TINT_N` 48 → **64** on the Pi 5 (pilot's call) for
+crisper mountains/coastlines — the extra samples are cheap reads from
+already-loaded tiles, just more smoothscale per build.  Gate it by platform
+(keep 48 on the 2 GB Pi 4 unless confirmed it doesn't tax it; Pi 5 fine).
+Apply to both `pi4/moving_map.py` and `pi_zero/moving_map.py`.  Verify on
+the Pi 5 (a slow pan should show terrain sliding smoothly, no shading pop).
 
 ### DISPLAY-SETUP-SPLIT  Break the DISPLAY setup screen into 3 tabbed pages
 Status: **DONE (pi4 + pi_zero, headless-verified)** — the screen is now three
@@ -1804,7 +1816,6 @@ the leading "1" column. Only crossing integer 10000 (actually
 Fix: changed branch selection to `round(alt_inner)` so the 3-drum
 path activates at `alt_inner ≥ 99.5`, matching how `val_int` is
 already computed inside `_rolling_drum`. Applied to pi4 and pi_zero.
-
 
 ## Conventions
 

@@ -247,21 +247,39 @@ _TINT_READY_MAX = 6              # cap so stale finished builds don't pile up
 
 def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
     """Numpy-only pixel builder for the hypsometric tint. Returns
-    (rgb (n, n, 3) uint8, elevs (n, n) float32, n_tiles int) — north-up —
-    or (None, None, 0) when numpy isn't available. Safe to call from a
-    background worker because it never touches a pygame surface."""
+    (rgb (n, n, 3) uint8, elevs (n, n) float32, a_lat, a_lon, n_tiles int) —
+    north-up — or (None, None, c_lat, c_lon, 0) when numpy isn't available.
+    `a_lat`/`a_lon` are the true centre of the world-anchored sample grid
+    (see below); the caller blits at _project(a_lat, a_lon) so registration
+    stays exact.  Safe to call from a background worker because it never
+    touches a pygame surface."""
     if not HAS_NUMPY:
-        return None, None, 0
+        return None, None, c_lat, c_lon, 0
     n = _TINT_N
     span_nm = 2.0 * range_nm * oversize
     span_lat = span_nm / _NM_PER_DEG_LAT
     cos_lat = max(0.05, math.cos(math.radians(c_lat)))
     span_lon = span_lat / cos_lat
 
-    lat_top = c_lat + span_lat * 0.5
-    lat_bot = c_lat - span_lat * 0.5
-    lon_lf  = c_lon - span_lon * 0.5
-    lon_rt  = c_lon + span_lon * 0.5
+    # World-anchor the sample lattice.  If the grid's top-left is pinned to
+    # the (quantised) centre, every rebuild re-anchors the n×n grid and the
+    # coarse hypsometric shading re-samples onto shifted absolute points — a
+    # visible "pop" at each cell crossing while panning.  Snapping the
+    # top-left corner to a fixed global multiple of the sample spacing makes
+    # consecutive builds sample the SAME absolute lat/lon points wherever
+    # their windows overlap, so a pan slides a stable field with no pop.
+    # (cos_lat uses the quantised c_lat, so dlon is stable within a cell;
+    # lon spacing is world-stable to within a hair over a few cells — fine.)
+    dlat = span_lat / (n - 1)
+    dlon = span_lon / (n - 1)
+    lat_top = round((c_lat + span_lat * 0.5) / dlat) * dlat
+    lon_lf  = round((c_lon - span_lon * 0.5) / dlon) * dlon
+    lat_bot = lat_top - span_lat
+    lon_rt  = lon_lf + span_lon
+    # The anchored grid's centre differs from c_lat/c_lon by up to half a
+    # sample; thread it back so the blit lands exactly under the aircraft.
+    a_lat = lat_top - span_lat * 0.5
+    a_lon = lon_lf + span_lon * 0.5
 
     rows_lat = np.linspace(lat_top, lat_bot, n, dtype=np.float64)
     cols_lon = np.linspace(lon_lf,  lon_rt,  n, dtype=np.float64)
@@ -318,7 +336,7 @@ def _build_tint_pixels(srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize):
     rgb = np.stack([rgb_r, rgb_g, rgb_b], axis=-1)
     if water.any():
         rgb[water] = _WATER_TINT_RGB
-    return rgb, elevs, int(len(np.unique(enc)))
+    return rgb, elevs, a_lat, a_lon, int(len(np.unique(enc)))
 
 
 def _finalize_tint_surface(rgb, target_px):
@@ -342,10 +360,11 @@ def _build_tint(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
         n = _TINT_N
         tile = pygame.Surface((n, n))
         tile.fill(_BG)
-        return pygame.transform.smoothscale(tile, (target_px, target_px)), None
-    rgb, elevs, _nt = _build_tint_pixels(srtm_dir, water_dir,
-                                         c_lat, c_lon, range_nm, oversize)
-    return _finalize_tint_surface(rgb, target_px), elevs
+        return (pygame.transform.smoothscale(tile, (target_px, target_px)),
+                None, c_lat, c_lon)
+    rgb, elevs, a_lat, a_lon, _nt = _build_tint_pixels(
+        srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize)
+    return _finalize_tint_surface(rgb, target_px), elevs, a_lat, a_lon
 
 
 def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
@@ -356,8 +375,8 @@ def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
         import time as _t
         _t0 = _t.perf_counter()
         _dr0 = _terrain_mod.disk_reads() if _terrain_mod is not None else 0
-        rgb, elevs, _ntiles = _build_tint_pixels(srtm_dir, water_dir,
-                                                  c_lat, c_lon, range_nm, oversize)
+        rgb, elevs, a_lat, a_lon, _ntiles = _build_tint_pixels(
+            srtm_dir, water_dir, c_lat, c_lon, range_nm, oversize)
         if _TINT_DEBUG:
             _dr1 = _terrain_mod.disk_reads() if _terrain_mod is not None else 0
             global _tint_build_seq
@@ -368,7 +387,7 @@ def _tint_async_worker(srtm_dir, water_dir, c_lat, c_lon,
                   f"cache={len(_tint_cache)} pend={len(_tint_pending)}",
                   flush=True)
         with _tint_async_lock:
-            _tint_ready[key] = (rgb, elevs)
+            _tint_ready[key] = (rgb, elevs, a_lat, a_lon)
             # Cap _tint_ready: when the aircraft moves faster than builds
             # finish (e.g. sim cruising across the country), completed results
             # for stale keys pile up and are never picked up by the main
@@ -426,7 +445,7 @@ def _build_alert_overlay(elev_grid, alt_ft, target_px):
 
 def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     if not srtm_dir:
-        return None, None
+        return None, None, c_lat, c_lon
     q_lat, q_lon = _quantise_centre(c_lat, c_lon, range_nm)
     # water_dir is part of the cache key so toggling water tiles on/off
     # invalidates stale tints.  Empty string == no water sampling.
@@ -445,8 +464,8 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
     with _tint_async_lock:
         ready = _tint_ready.pop(key, None)
     if ready is not None:
-        rgb, elevs = ready
-        entry = (_finalize_tint_surface(rgb, target_px), elevs)
+        rgb, elevs, a_lat, a_lon = ready
+        entry = (_finalize_tint_surface(rgb, target_px), elevs, a_lat, a_lon)
         _tint_cache[key] = entry
         while len(_tint_cache) > _TINT_CACHE_MAX:
             _tint_cache.pop(next(iter(_tint_cache)))
@@ -481,7 +500,7 @@ def _tint_get(srtm_dir, water_dir, c_lat, c_lon, range_nm, size_px, oversize):
             args=(srtm_dir, water_dir, q_lat, q_lon,
                   range_nm, oversize, key),
             daemon=True, name="MapTintBuild").start()
-    return None, None
+    return None, None, q_lat, q_lon
 
 
 def _draw_polylines(surf, lines, range_nm, lat, lon, cos_lat,
@@ -1147,10 +1166,14 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         cover_px *= 1.06   # margin for rotation + the snapped-centre offset
         oversize = cover_px / max(1.0, float(min(w, h)))
         _wd = water_dir if settings.get("map_show_water", True) else ""
-        tint, elev_grid = _tint_get(srtm_dir, _wd, lat, lon, range_nm,
-                                    min(w, h), oversize)
-        q_lat, q_lon = _quantise_centre(lat, lon, range_nm)
-        qx, qy = _project(q_lat, q_lon)
+        tint, elev_grid, a_lat, a_lon = _tint_get(
+            srtm_dir, _wd, lat, lon, range_nm, min(w, h), oversize)
+        # Blit at the *anchored grid centre* (a_lat/a_lon), not the screen
+        # centre — the world-anchored lattice snaps the grid corner to a
+        # global multiple of the sample spacing, so its centre differs from
+        # the aircraft by up to half a sample; projecting that exact point
+        # keeps the tint registered as the snap crosses a cell boundary.
+        qx, qy = _project(a_lat, a_lon)
         if tint is None and range_nm > _TINT_SYNC_MAX_NM and font is not None:
             # Async build in flight — breadcrumb at centre so the pilot sees
             # the map is still alive while the worker loads tiles.
