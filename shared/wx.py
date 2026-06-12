@@ -996,11 +996,16 @@ class WindsUSCache(threading.Thread):
                     return                   # older model run — ignore
                 if ts == cur_run and st <= cur_st:
                     return                   # same run, no newer snapshot
+            new_run = (cur is None) or (ts > cur.get("fetched", 0.0))
             self._data[idx] = {"cols": cols, "fetched": ts, "snap_ts": st}
         self._last_peer_rx = time.monotonic()
         self._zone_peer_rx[idx] = self._last_peer_rx   # per-zone: a peer owns this one
         self.updated_s = time.monotonic()
-        print(f"[WX:winds] adopted zone {idx} from peer ({len(cols)} cols)")
+        # Only log a genuinely newer model RUN — not every same-run snapshot the
+        # feeder re-broadcasts to roll the barbs forward (that fired every ~2 min
+        # per zone and flooded the journal with identical lines).
+        if new_run:
+            print(f"[WX:winds] adopted zone {idx} from peer ({len(cols)} cols)")
 
     def _zone_packet(self, idx):
         """Build the LAN packet for a held zone: a single-hour snapshot valid at
