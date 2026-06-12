@@ -407,6 +407,9 @@ disp["wx_popup"] = None
 # When set, holds a coincident airport+METAR tap so the pilot picks which
 # one they meant (Weather readout vs Direct-To).  None = no chooser.
 disp["mfd_pick"] = None
+# True while the quick MAP LAYERS panel is open on the MFD (tapping the
+# layers icon under the N↑/TRK↑ toggle) — toggle layers without entering setup.
+disp["mfd_layers"] = False
 # MFD pan offset.  lat/lon None = follow the aircraft; set = panned map.
 disp["mfd_pan"] = {"lat": None, "lon": None}
 # Mirror of the peer's flight plan (received over screen sync).  The
@@ -5127,6 +5130,11 @@ def handle_event(event, demo_mode):
             if disp.get("tfc_popup"):
                 disp["tfc_popup"] = None
                 return True
+            # The quick MAP LAYERS panel is up → route the tap to it (toggle a
+            # layer, or tap outside to close) and consume it.
+            if disp.get("mfd_layers"):
+                _mfd_layers_hit(x, y)
+                return True
             r = _p4_mfd_rects()
 
             def _in(rc):
@@ -5156,6 +5164,8 @@ def handle_event(event, demo_mode):
                     disp["ds"]["map_zoom_nm"] = _map_mod.zoom_out(
                         cur, allow_auto=has_d2)
                     _settings.mark_dirty()
+            elif _in(r["layers"]):
+                disp["mfd_layers"] = True        # open the quick layers panel
             elif _in(r["d2"]):
                 # Direct-to entry — reuse the PFD's nav keyboard (NEAREST /
                 # CANCEL FP / APPR / ENTER → nav_confirm).  kbd_prev="pfd"
@@ -12836,6 +12846,86 @@ def _mfd_pick_hit(x, y):
         disp["mfd_pick"] = None      # tap outside cancels
 
 
+# ── Quick MAP LAYERS panel (MFD) ──────────────────────────────────────────────
+# A layers icon sits just above the MFD "+" zoom button; tapping it opens this
+# panel so the pilot can flip map layers on/off in flight without diving into
+# the Display setup screen.  Reuses the same _DSP_MAP_LAYERS keys/labels.
+_MFD_LYR_COLS = 4
+_MFD_LYR_PW   = 112
+_MFD_LYR_PH   = 46
+_MFD_LYR_G    = 10
+
+
+def _mfd_layers_rects():
+    """Centred panel rect + a (key, label, pill_rect) list for each layer."""
+    n    = len(_DSP_MAP_LAYERS)
+    cols = _MFD_LYR_COLS
+    rows = (n + cols - 1) // cols
+    gw   = cols * _MFD_LYR_PW + (cols - 1) * _MFD_LYR_G
+    gh   = rows * _MFD_LYR_PH + (rows - 1) * _MFD_LYR_G
+    title_h, pad = 34, 18
+    pw = gw + 2 * pad
+    ph = gh + title_h + pad + 22          # +22 for the footer hint
+    px = (DISPLAY_W - pw) // 2
+    py = (DISPLAY_H - ph) // 2
+    gx = px + pad
+    gy = py + title_h
+    cells = []
+    for i, (key, lbl) in enumerate(_DSP_MAP_LAYERS):
+        r_i, c_i = divmod(i, cols)
+        cx = gx + c_i * (_MFD_LYR_PW + _MFD_LYR_G)
+        cy = gy + r_i * (_MFD_LYR_PH + _MFD_LYR_G)
+        cells.append((key, lbl, (cx, cy, _MFD_LYR_PW, _MFD_LYR_PH)))
+    return (px, py, pw, ph), cells
+
+
+def _draw_mfd_layers_icon(surf, rect):
+    """Stacked-layers glyph in a button-weight box (matches the zoom keys)."""
+    bx, by, bw, bh = rect
+    pygame.draw.rect(surf, (0, 10, 25), (bx, by, bw, bh), border_radius=8)
+    pygame.draw.rect(surf, (50, 68, 92), (bx, by, bw, bh), width=2,
+                     border_radius=8)
+    cx, cy = bx + bw // 2, by + bh // 2
+    hw, hh = 16, 6
+    for dy in (-12, 0, 12):
+        yy = cy + dy
+        pygame.draw.polygon(
+            surf, CYAN,
+            [(cx - hw, yy), (cx, yy - hh), (cx + hw, yy), (cx, yy + hh)], width=2)
+
+
+def _draw_mfd_layers(surf):
+    """Quick MAP LAYERS toggle panel, drawn on top when open."""
+    if not disp.get("mfd_layers"):
+        return
+    ds = disp["ds"]
+    (px, py, pw, ph), cells = _mfd_layers_rects()
+    dim = pygame.Surface((DISPLAY_W, DISPLAY_H), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 140))
+    surf.blit(dim, (0, 0))
+    pygame.draw.rect(surf, (10, 18, 34), (px, py, pw, ph), border_radius=10)
+    pygame.draw.rect(surf, (80, 110, 150), (px, py, pw, ph), width=2,
+                     border_radius=10)
+    _text(surf, "MAP LAYERS", 20, (210, 220, 230), bold=True,
+          cx=px + pw // 2, cy=py + 20)
+    for key, lbl, rc in cells:
+        _seg_btn(surf, rc[0], rc[1], rc[2], rc[3], lbl, bool(ds.get(key)))
+    _text(surf, "tap a layer to toggle  ·  tap outside to close", 14,
+          (140, 150, 160), cx=px + pw // 2, cy=py + ph - 15)
+
+
+def _mfd_layers_hit(x, y):
+    """Handle a tap while the quick MAP LAYERS panel is open."""
+    (px, py, pw, ph), cells = _mfd_layers_rects()
+    for key, _lbl, rc in cells:
+        if rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]:
+            disp["ds"][key] = not bool(disp["ds"].get(key))
+            _settings.mark_dirty()
+            return                              # stay open for more toggles
+    if not (px <= x <= px + pw and py <= y <= py + ph):
+        disp["mfd_layers"] = False              # tap outside closes
+
+
 def _p4_mfd_rects():
     """Chrome button rects for the full-screen MFD (keyed by name)."""
     W, H = DISPLAY_W, DISPLAY_H
@@ -12854,6 +12944,7 @@ def _p4_mfd_rects():
         "center":   (W - bw - p, p + 2 * (bh + p), bw, bh),  # CTR (when panned)
         "zoom_out": (p, zy, z, z),                        # above strip, left
         "zoom_in":  (W - z - p, zy, z, z),                # above strip, right
+        "layers":   (W - z - p, zy - p - z, z, z),        # just above the + button
     }
 
 
@@ -13138,6 +13229,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
         _action_btn(surf, *r["center"], "CTR", "ok", r=6)
     _action_btn(surf, *r["zoom_out"], "−", "normal", r=8)
     _action_btn(surf, *r["zoom_in"], "+", "normal", r=8)
+    _draw_mfd_layers_icon(surf, r["layers"])
 
     # Range / scale readout — lower-left corner, just above the zoom-out button.
     zx, zy, _zw, _zh = r["zoom_out"]
@@ -13157,6 +13249,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _draw_wx_winds(surf)
     _draw_wx_text(surf)
     _draw_tfc_popup(surf)
+    _draw_mfd_layers(surf)
 
 
 # ── MFD strip-slot chooser (tap the data strip) ───────────────────────────────
