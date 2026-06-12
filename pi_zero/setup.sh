@@ -54,6 +54,13 @@ if ! python3 -c "import shapefile" 2>/dev/null; then
 fi
 python3 -c "import shapefile; print(f'  → pyshp {shapefile.__version__}')" 2>/dev/null || true
 
+# timezonefinder: EXACT local time (timezone boundaries + Daylight Saving) for
+# the TAF / ETA readouts.  Optional — falls back to a longitude estimate
+# without it, so best-effort and never blocks setup.
+pip3 install --break-system-packages timezonefinder 2>/dev/null || \
+    sudo -u "$RUN_USER" pip3 install --break-system-packages --user timezonefinder 2>/dev/null || \
+    echo "  → timezonefinder not installed — local time will use a longitude estimate"
+
 echo "[4/8] Configuring Waveshare 3.5\" DPI LCD…"
 # Waveshare 3.5inch DPI LCD: 640×480, DPI parallel RGB interface, I2C touch
 # Requires DT overlays copied to /boot/overlays/ (see Waveshare wiki)

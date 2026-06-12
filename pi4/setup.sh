@@ -58,6 +58,13 @@ pip3 install --break-system-packages moderngl glcontext pyshp || {
     }
 }
 
+# timezonefinder: EXACT local time (timezone boundaries + Daylight Saving) for
+# the TAF / ETA readouts.  Optional — the display falls back to a longitude
+# estimate without it, so this is best-effort and never blocks setup.
+pip3 install --break-system-packages timezonefinder || \
+    sudo -u "$RUN_USER" pip3 install --break-system-packages --user timezonefinder || \
+    echo "  ⚠  timezonefinder not installed — local time will use a longitude estimate"
+
 echo "[5/9] Configuring display…"
 echo ""
 echo "  Supported displays:"

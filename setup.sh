@@ -38,6 +38,13 @@ echo "[3/9] Installing Python packages…"
 pip3 install --quiet --break-system-packages pygame numpy 2>/dev/null || \
 pip3 install --quiet pygame numpy
 
+# timezonefinder enables EXACT local time (timezone boundaries + Daylight
+# Saving) for the TAF / ETA readouts.  Optional: without it the display falls
+# back to a longitude estimate, so this is best-effort and never blocks setup.
+pip3 install --quiet --break-system-packages timezonefinder 2>/dev/null || \
+pip3 install --quiet timezonefinder 2>/dev/null || \
+echo "  ⚠  timezonefinder not installed — local time will use a longitude estimate"
+
 echo "[4/9] Configuring DSI display (KLAYERS 3.5\" 640×480)…"
 # Enable DSI, set framebuffer resolution
 if ! grep -q "dtoverlay=vc4-kms-v3d" /boot/firmware/config.txt 2>/dev/null; then

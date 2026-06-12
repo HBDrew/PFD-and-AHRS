@@ -380,6 +380,30 @@ def _hhz(ddhh):
     return f"{ddhh[2:4]}Z" if ddhh and len(ddhh) >= 4 else "?"
 
 
+def _lhh(ddhh, off):
+    """Local clock time (``HH`` or ``HH:MM``) from a TAF ``DDHH`` Zulu time
+    shifted by `off` hours (may be fractional for half-hour zones), or '??' if
+    unparseable.  Used to annotate Zulu TAF times with the local time."""
+    try:
+        tot = (int(ddhh[2:4]) * 60 + round(float(off) * 60)) % (24 * 60)
+        h, m = divmod(tot, 60)
+        return f"{h:02d}" if m == 0 else f"{h:02d}:{m:02d}"
+    except (TypeError, ValueError, IndexError):
+        return "??"
+
+
+def _lhhmm(ddhhmm, off):
+    """Local ``HH:MM`` from a TAF ``DDHHMM`` Zulu time (FM groups carry
+    minutes) shifted by `off` hours, or '??:??' if unparseable."""
+    try:
+        tot = (int(ddhhmm[2:4]) * 60 + int(ddhhmm[4:6])
+               + round(float(off) * 60)) % (24 * 60)
+        h, m = divmod(tot, 60)
+        return f"{h:02d}:{m:02d}"
+    except (TypeError, ValueError, IndexError):
+        return "??:??"
+
+
 def short_age(age_s):
     """Compact data-age annotation ('45m old' / '3.2h old'), or '' when the
     data is fresh (< ~90 s) or unknown.  Used to flag forecast staleness once
@@ -475,10 +499,13 @@ def _taf_summary(text):
     return ", ".join(parts) if parts else "—"
 
 
-def parse_taf(raw):
+def parse_taf(raw, local_offset_h=None):
     """Parse a raw TAF into ``{icao, issued, valid_from, valid_to, periods}``,
     where each period is ``{kind, label, summary, raw}`` (kind = INITIAL / FM /
-    BECMG / TEMPO / PROB).  Returns None if it doesn't look like a TAF."""
+    BECMG / TEMPO / PROB).  Returns None if it doesn't look like a TAF.
+
+    When `local_offset_h` (whole hours from UTC) is given, each period label
+    is annotated with the approximate local time alongside the Zulu time."""
     if not raw:
         return None
     s = re.sub(r"^\s*TAF\s+(AMD\s+|COR\s+)?", "", raw.strip().upper())
@@ -526,19 +553,30 @@ def parse_taf(raw):
     periods.append(cur)
 
     out = []
+    off = local_offset_h
     for g in periods:
         text = " ".join(g["toks"])
         if g["kind"] == "INITIAL":
             label = f"{_hhz(g['from'])}–{_hhz(g['to'])}"
+            if off is not None and g["from"] and g["to"]:
+                label += f"  ({_lhh(g['from'], off)}–{_lhh(g['to'], off)}L)"
         elif g["kind"] == "FM":
             f = g["from"]
             label = f"From {f[2:4]}:{f[4:6]}Z"
+            if off is not None and f:
+                label += f"  ({_lhhmm(f, off)}L)"
         elif g["kind"] == "BECMG":
             label = f"Becoming by {_hhz(g['to'])}"
+            if off is not None and g["to"]:
+                label += f"  (by {_lhh(g['to'], off)}L)"
         elif g["kind"] == "TEMPO":
             label = f"Temp {_hhz(g['from'])}–{_hhz(g['to'])}"
+            if off is not None and g["from"] and g["to"]:
+                label += f"  ({_lhh(g['from'], off)}–{_lhh(g['to'], off)}L)"
         else:  # PROB
             label = f"{g['prob']}% {_hhz(g['from'])}–{_hhz(g['to'])}"
+            if off is not None and g["from"] and g["to"]:
+                label += f"  ({_lhh(g['from'], off)}–{_lhh(g['to'], off)}L)"
         out.append({"kind": g["kind"], "label": label, "raw": text,
                     "wind": _taf_wind(text), "vis": _taf_vis(text),
                     "wx": _taf_wx(text), "sky": _taf_sky(text),

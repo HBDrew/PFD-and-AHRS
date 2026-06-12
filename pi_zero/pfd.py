@@ -41,6 +41,7 @@ import fpllib as _fpllib
 import adsb_feed as _afeed
 import wx as _wx
 import fisb as _fisb
+import localtime as _localtime
 import nexrad as _nexrad
 import mapoverlay as _ovl
 import perf as _perf_mod
@@ -11308,14 +11309,24 @@ def _draw_wx_taf(surf):
     store = _fisb_store()
     raw = store.taf_for(icao) if store else None
     src = store.taf_source(icao) if store else None
-    p = _fisb.parse_taf(raw) if raw else None
+    off = (_localtime.offset_hours(disp.get("lat"), disp.get("lon"))
+           if disp.get("gps_ok") else None)
+    p = _fisb.parse_taf(raw, local_offset_h=off) if raw else None
     pw = min(620, DISPLAY_W - 20)
     near_txt = (f" · nearest {near:.0f} nm {_compass8(brg)}".rstrip()
                 if near else "")
     src_txt = f"  [{'FIS-B' if src == 'RDR' else src}]" if src else ""
-    title = (f"TAF  {icao}" + src_txt + near_txt
-             + (f"   valid {_fisb._hhz(p['valid_from'])}–"
-                f"{_fisb._hhz(p['valid_to'])}" if p else ""))
+    if p:
+        vz = f"{_fisb._hhz(p['valid_from'])}–{_fisb._hhz(p['valid_to'])}"
+        if off is not None:
+            tzlab = _localtime.abbrev(disp.get("lat"), disp.get("lon")) or "L"
+            sep = " " if tzlab != "L" else ""
+            vz += (f"  ·  {_fisb._lhh(p['valid_from'], off)}–"
+                   f"{_fisb._lhh(p['valid_to'], off)}{sep}{tzlab}")
+        valid_txt = f"   valid {vz}"
+    else:
+        valid_txt = ""
+    title = f"TAF  {icao}{src_txt}{near_txt}{valid_txt}"
     items = []
     if p:
         for g in p["periods"]:
