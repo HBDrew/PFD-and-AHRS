@@ -11660,9 +11660,13 @@ def draw_pfd_top_strip(surf):
                          float(disp.get("alt", 0.0)), yaw,
                          float(disp.get("track", yaw)),
                          float(disp.get("speed", 0.0)), d2)
-    x0, x1, _y0, y1 = _pfd_top_band()
-    x0 += 6
-    x1 -= 6
+    bx0, bx1, _y0, y1 = _pfd_top_band()
+    # Dark backing so the readouts stay legible over sky / ground / terrain,
+    # and so the top reads as one bar continuous with the GS/ALT bug boxes.
+    pygame.draw.rect(surf, (6, 14, 24), (bx0, 0, bx1 - bx0, y1))
+    pygame.draw.line(surf, (55, 75, 105), (bx0, y1 - 1), (bx1, y1 - 1), 1)
+    x0 = bx0 + 6
+    x1 = bx1 - 6
     n = max(1, len(kinds))
     slot_w = (x1 - x0) / n
     cy = y1 // 2
