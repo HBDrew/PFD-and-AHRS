@@ -4542,18 +4542,19 @@ def draw_keyboard(surf, title, current_val, entered="", transparent=False,
     pygame.draw.line(surf,WHITE,(0,43),(DISPLAY_W-1,43),1)
     _text(surf,title,17,WHITE,bold=True,cx=DISPLAY_W//2,cy=22)
     disp_str = (entered if entered else str(current_val)) + "\u2502"
-    pygame.draw.rect(surf,(0,15,38),(10,50,DISPLAY_W-21,50),border_radius=6)
-    pygame.draw.rect(surf,WHITE,(10,50,DISPLAY_W-21,50),width=1,border_radius=6)
-    _text(surf,disp_str,28,CYAN,bold=True,cx=DISPLAY_W//2,cy=75)
+    # Input box shrunk a touch so the live resolved label below reads clearly.
+    pygame.draw.rect(surf,(0,15,38),(10,50,DISPLAY_W-21,42),border_radius=6)
+    pygame.draw.rect(surf,WHITE,(10,50,DISPLAY_W-21,42),width=1,border_radius=6)
+    _text(surf,disp_str,26,CYAN,bold=True,cx=DISPLAY_W//2,cy=71)
     if error:
-        _text(surf, error, 12, (255, 90, 90), bold=True,
-              cx=DISPLAY_W//2, cy=104)
+        _text(surf, error, 13, (255, 90, 90), bold=True,
+              cx=DISPLAY_W//2, cy=102)
     elif hint:
-        _text(surf, hint, 13, (90, 210, 130), bold=True,
-              cx=DISPLAY_W//2, cy=104)
+        _text(surf, hint, 17, (90, 220, 130), bold=True,
+              cx=DISPLAY_W//2, cy=102)
     else:
         _text(surf, f"Current: {current_val}", 10, (110, 120, 140),
-              cx=DISPLAY_W//2, cy=104)
+              cx=DISPLAY_W//2, cy=102)
     rh = _kb_row_h()
     y = _KB_Y0
     for row in _current_kb_rows():
@@ -6607,15 +6608,17 @@ def _nav_lookup_ident(ident: str):
         has_name = "name" in names
         name   = str(row["name"])   if has_name else ""
         region = str(row["region"]) if has_name else ""
+        local  = str(row["local"])  if "local" in names else ""
         return (str(row["ident"]), float(row["lat"]),
                 float(row["lon"]), float(row["elev_ft"]),
-                name, region)
+                name, region, local)
     for rec in _airports:
         if rec[0] == ident or (len(rec) > 7 and rec[7] == ident):
             name = rec[5] if len(rec) > 5 else ""
             reg  = rec[6] if len(rec) > 6 else ""
+            local = rec[7] if len(rec) > 7 else ""
             return (rec[0], float(rec[2]), float(rec[3]),
-                    float(rec[4]), name, reg)
+                    float(rec[4]), name, reg, local)
     return None
 
 
@@ -13064,12 +13067,14 @@ def _draw_modal_overlays(surf, airspeed_src):
         else:
             cur   = disp["fp"].get(target, "")
             title = next((f[1] for f in _FP_FIELDS if f[0]==target), "ENTER TEXT")
-        # Live airport-name label while typing an ident (D2 or FPL airport).
+        # Live airport label while typing an ident: FAA Local ID (P14) when the
+        # field has one, else the ICAO ident, plus the name.
         hint = ""
         if disp.get("kbd_target") in ("nav_ident", "fpl_ident") and buf.strip():
             h = _nav_lookup_ident(buf)
             if h:
-                hint = f"{h[0]} — {h[4]}" if h[4] else h[0]
+                disp_id = h[6] if (len(h) > 6 and h[6]) else h[0]
+                hint = f"{disp_id} — {h[4]}" if h[4] else disp_id
         draw_keyboard(surf, f"ENTER {title}", cur, buf, transparent=True,
                       error=disp.get("kbd_error", ""), hint=hint)
 
