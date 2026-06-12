@@ -8,63 +8,6 @@ notes with enough context to pick it up cold.
 
 ## Open
 
-### SENTRY-INTEGRATION  Use a uAvionix/ForeFlight Sentry as a GDL90 source
-Status: **CODE-COMPLETE (pi4 + pi_zero) — needs on-hardware verification.**
-Traffic + FIS-B already work; AHRS decode, source selector, attitude + GPS
-ingest, and the mounting-zero LEVEL button are all in.  Only a live-Sentry
-bench check (and the heading true/mag bit + roll sign confirmation) remains.
-The Sentry (and Stratus / any ForeFlight-compatible portable) broadcasts
-**GDL90 over its own Wi-Fi AP**, which is exactly what the ADS-B stack
-already consumes.  State of play:
-  - **Traffic + FIS-B weather (978) — already work, no code.** `ADSBClient`
-    binds `0.0.0.0:4000` with `SO_BROADCAST` (`shared/adsb.py`) and
-    `shared/gdl90.py` decodes heartbeat / ownship / traffic / FIS-B uplink;
-    the uplink feeds the `FisbWeather` store (METAR/TAF/AIRMET/SIGMET/winds/
-    NEXRAD).  Join the Pi to the Sentry's AP and the existing listener
-    receives its broadcast datagrams — the Sentry just replaces the
-    Nooelec+dump978 bridge as the GDL90 source.  *Field-verify the broadcast
-    addressing on a real unit.*
-  - **AHRS decode — DONE (this entry's first slice).** ForeFlight's
-    proprietary AHRS rides msg `0x65 / sub-id 1`; `gdl90._decode_foreflight`
-    now parses roll/pitch (signed 1/10°), heading (+ true/mag bit), IAS, TAS
-    (with invalid sentinels), and `0x65 / sub-id 0` device-ID.  `ADSBClient`
-    captures the latest as `self._ahrs`, exposed via `.ahrs()`.  Encode helper
-    `encode_foreflight_ahrs` + tests in `shared/test_gdl90.py`.  **CAVEAT:**
-    the heading true/mag bit polarity and roll/pitch sign are coded from the
-    published spec — confirm against a live Sentry before trusting attitude.
-DONE (this session):
-  - **AHRS source selector.** `cs["ahrs_source"]` ∈ {auto,usb,wifi,sentry}
-    (persisted), a 4-pill on the AHRS setup screen (alongside HEADING /
-    AIRSPEED source).  `_apply_ahrs_source` stops the running Pico client and
-    brings up the chosen transport at runtime; main() honors the persisted
-    choice at boot.  Sentry runs no client — `_feed_sentry_state()` folds the
-    GDL90 attitude into `state` each frame so it flows through `smooth_state()`
-    like any source.  (Sentry = consumer MEMS / GPS-derived heading → use as a
-    **backup**, not primary; the WT901 + GPS-aided filter is better.)
-  - **GPS source.** Sentry ownship lat/lon/track/gs/alt feed the fix when
-    sentry is active (freshness-gated via `ADSBClient.ownship(max_age_s)`).
-  - **Mounting-zero LEVEL.** Portable units sit at any angle, so a SENTRY
-    LEVEL / RESET row captures raw pitch/roll as `ss["sentry_*_zero"]`
-    (persisted), subtracted on ingest — ForeFlight's "calibrate/level".
-Still open:
-  - **On-hardware verification.** Bench against a real Sentry: confirm
-    traffic + FIS-B populate, then select SENTRY and verify attitude tracks
-    (LEVEL zeroes the mount) and GPS drives the map.  **Confirm the heading
-    true/mag bit polarity and roll sign** (coded from the spec) on the live
-    unit.
-  - **Geometric altitude.** Uses the ownship *pressure* altitude for gps_alt;
-    the geometric 0x0B (`ownship_geo`) report isn't stored yet — wire it for a
-    true GPS altitude if wanted.
-  - **Wi-Fi topology (the real tradeoff, not a blocker).** The Sentry is an
-    *access point* and a Pi has one radio, so joining it precludes the Pico W
-    AHRS AP, the screen-sync LAN, and internet simultaneously.  This actually
-    fits the radio-primary model: Sentry gives a fully self-contained
-    no-internet stack (GPS + traffic + FIS-B + AHRS) at the cost of the
-    internet "bonus" layer (AWC/Open-Meteo/NOTAM) unless a 2nd Wi-Fi adapter
-    is added or the Pico runs over USB.  Document the recommended wiring.
-Touches: `shared/gdl90.py` (done), `shared/adsb.py` (done), `pi4/pfd.py` +
-`pi_zero/pfd.py` (done — source selector, feed, LEVEL).
-
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
 Today PFD picks the AHRS transport once at startup (USB if
@@ -743,6 +686,33 @@ Work items:
     existing distance-gated sequencer needs a real state change.
 
 ## Completed
+
+### SENTRY-INTEGRATION  uAvionix/ForeFlight Sentry as a GDL90 source
+Status: **WON'T DO — investigated, dead end (encrypted), code reverted**
+A full Sentry was bench-tested.  It does broadcast GDL90 on UDP 4000 and the
+Pi receives it fine (~31 datagrams / 6 s, no handshake needed), BUT every
+frame is a **proprietary uAvionix/ForeFlight message** — IDs **0x25 (37)** and
+**0x26 (38)** — carrying **encrypted** payloads (high-entropy, variable
+length, multiplexing traffic/AHRS/GPS).  The Sentry config page
+(`http://192.168.4.1`) exposes only WiFi/LED/CO/power settings — **no toggle
+to disable encryption or emit standard GDL90**.  uAvionix and ForeFlight both
+**refuse to document** 0x25/0x26 (co-developed, proprietary); the public
+"Reversing the Scout" effort has **not** decoded them and there is no known
+decoder.  ForeFlight Connect is the *inbound* spec (device → ForeFlight on
+4000; ForeFlight announces on 63093) so the iPad can't be used as a bridge to
+re-emit the data either.  Net: **the Sentry cannot feed this (or any
+non-ForeFlight) display — it's a walled garden.**  Conclusion: use the WT901
+for AHRS (better anyway) and an *open* GDL90 receiver (Stratux / dump978) for
+radio traffic + weather.  The exploratory work — a ForeFlight `0x65` AHRS
+decoder, an AHRS source selector, and a Sentry attitude/GPS feed with a LEVEL
+button across pi4 + pi_zero — was correct against the public spec but useless
+against the encrypted stream, so it was reverted (commits b06bddc / b34a738 /
+7d659fc).  NOTE: the public ForeFlight `0x65` spec was captured here in case a
+future *open* ForeFlight-protocol source is added — roll: 1/10° positive =
+right-wing-down; pitch: 1/10° positive = nose-up; heading bit15 0=true/1=mag,
+1/10°; IAS/TAS knots; all 0x7fff/0xffff = invalid.  An **open-receiver**
+(Stratux / dump978) path is the supported way to get radio data — worth a new
+entry if pursued.
 
 ### TINT-SHIMMER-PAN  Terrain tint shading shifts a bit on a pan + density bump
 Status: **DONE (pi4 + pi_zero) — verify the slow-pan on the Pi 5**

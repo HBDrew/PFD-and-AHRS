@@ -247,33 +247,6 @@ def test_uplink_feeds_fisb_store():
           "store geolocates the METAR as a RDR station")
 
 
-def test_foreflight_ahrs_capture_and_freshness():
-    """A ForeFlight AHRS frame (a Sentry) must be captured by the client and
-    surfaced via .ahrs(), with optional staleness gating."""
-    c = adsb.ADSBClient(stale_s=5.0)
-    c._ingest(gdl90.encode_foreflight_ahrs(
-        roll_deg=-8.0, pitch_deg=3.0, heading_deg=120.0, ias_kt=95))
-    a = c.ahrs()
-    check(a is not None and approx(a["roll"], -8.0, 0.05), "AHRS captured")
-    check(c.ahrs(max_age_s=10.0) is not None, "fresh AHRS passes the age gate")
-    # Backdate the receive time → the gate must now reject it.
-    c._ahrs_rx_s -= 5.0
-    check(c.ahrs(max_age_s=2.0) is None, "stale AHRS rejected by age gate")
-    check(c.ahrs() is not None, "no gate → stale sample still returned")
-
-
-def test_foreflight_ownship_gps_capture():
-    """The Sentry's ownship report (position) is captured for the GPS path."""
-    c = adsb.ADSBClient(stale_s=5.0)
-    c._ingest(gdl90.encode_traffic(0x000000, 34.5, -111.9, 6000,
-                                   track_deg=270.0, gs_kt=110,
-                                   msg_id=gdl90.MSG_OWNSHIP))
-    own = c.ownship(max_age_s=10.0)
-    check(own is not None and approx(own["lat"], 34.5, 0.001), "ownship captured")
-    c._ownship_rx_s -= 10.0
-    check(c.ownship(max_age_s=5.0) is None, "stale ownship rejected by age gate")
-
-
 def test_udp_loopback():
     """End-to-end: bind the listener, send a real UDP datagram to it,
     and confirm the target shows up."""

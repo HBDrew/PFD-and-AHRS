@@ -322,11 +322,6 @@ disp["ds"] = {                      # display settings
 }
 disp["ss"] = {                      # AHRS / sensor settings
     "pitch_trim":    0.0, "roll_trim": 0.0,
-    # Sentry (portable GDL90 AHRS) mounting-zero offsets — captured by the
-    # LEVEL button on the AHRS setup screen in straight-and-level flight and
-    # subtracted from the Sentry's raw pitch/roll (the box can sit at any
-    # angle).  Only used when ahrs_source == "sentry".
-    "sentry_pitch_zero": 0.0, "sentry_roll_zero": 0.0,
     "mag_cal":       "idle", "mounting": "normal",
     # Axis alignment — degrees of compensation around the airframe
     # pitch and roll axes.  See firmware/_apply_axis_align.  Tunable on
@@ -358,13 +353,8 @@ disp["cs"] = {                      # connectivity settings
     "notam_client_id": "",  "notam_client_secret": "",
     "scan_state": "",   "scan_nets": [], "scan_scroll": 0, "scan_error": "",
     "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
-    # AHRS source selector (persisted).  "auto" = USB if a Pico is
-    # enumerated else WiFi SSE; "usb"/"wifi" force the Pico transport;
-    # "sentry" feeds attitude + GPS from a ForeFlight GDL90 source
-    # (uAvionix Sentry / Stratus) over the ADS-B listener.
-    "ahrs_source": "auto",  # "auto" | "usb" | "wifi" | "sentry"
     # AHRS link diagnostics (populated by the transport client thread)
-    "ahrs_transport": "",   # "usb" | "wifi" | "sentry" | ""
+    "ahrs_transport": "",   # "usb" | "wifi" | ""
     "ahrs_port":      "",   # /dev/ttyACM0 or the SSE URL
     "ahrs_rx":        0,    # count of $AHRS, lines parsed OK
     "ahrs_err":       0,    # count of parse / IO errors
@@ -1620,113 +1610,6 @@ def _restart_sse(url):
     disp["cs"]["ahrs_transport"] = "wifi"
     disp["cs"]["ahrs_port"]      = sse_url
     print(f"[PFD] SSE → {sse_url}")
-
-
-# ── AHRS source selector (Pico over USB/WiFi, or a ForeFlight Sentry) ─────────
-# Sentry attitude is a 5 Hz-ish GDL90 stream; a 2 s gate flags AHRS-down
-# quickly if it drops, and 5 s keeps the GPS fix from freezing the map.
-_SENTRY_AHRS_MAX_AGE_S = 2.0
-_SENTRY_GPS_MAX_AGE_S  = 5.0
-_ahrs_src_active = "auto"          # transport actually live now (resolved)
-
-
-def _apply_ahrs_source(src):
-    """Switch the live AHRS transport.  `src` ∈ {auto, usb, wifi, sentry}:
-      auto   → USB if a Pico serial port is enumerated, else WiFi SSE.
-      usb    → force the Pico over USB serial (no auto-fallback to WiFi).
-      wifi   → force the Pico over WiFi SSE.
-      sentry → stop the Pico client; feed attitude + GPS from a ForeFlight
-               GDL90 source (Sentry) via the shared ADS-B listener.
-    Stops whatever client was running before starting the new one, so the
-    pilot can flip sources at runtime without restarting PFD."""
-    global _sse_client, _ahrs_src_active
-    cs = disp["cs"]
-    if src == "auto":
-        try:
-            from serial_client import SerialClient as _SC
-            src = "usb" if _SC.find_port() else "wifi"
-        except Exception:
-            src = "wifi"
-
-    # Tear down any running Pico client (USB or WiFi).  The Sentry path runs
-    # no client of its own — it reads the shared _adsb_client each frame.
-    if _sse_client is not None:
-        try:
-            _sse_client.stop()
-        except Exception:
-            pass
-        _sse_client = None
-
-    if src == "usb":
-        try:
-            from serial_client import SerialClient as _SC
-            port = _SC.find_port()
-        except Exception:
-            port = None
-        if port:
-            _sse_client = _SC(port, state, _state_lock)
-            _sse_client.start()
-            cs["ahrs_transport"] = "usb"; cs["ahrs_port"] = port
-            print(f"[PFD] AHRS source → USB {port}")
-        else:
-            # Forced USB with nothing plugged in: leave no client (don't
-            # silently fall back to WiFi on an explicit choice).  A later
-            # re-apply picks the Pico up once it enumerates.
-            cs["ahrs_transport"] = "usb"; cs["ahrs_port"] = "(no /dev/ttyACM*)"
-            print("[PFD] AHRS source → USB selected but no serial port present")
-    elif src == "wifi":
-        _sse_client = SSEClient(SSE_URL, state, _state_lock)
-        _sse_client.start()
-        cs["ahrs_transport"] = "wifi"; cs["ahrs_port"] = SSE_URL
-        print(f"[PFD] AHRS source → WiFi {SSE_URL}")
-    elif src == "sentry":
-        cs["ahrs_transport"] = "sentry"
-        cs["ahrs_port"] = f"GDL90 UDP {cs.get('adsb_port', ADSB_UDP_PORT)}"
-        print("[PFD] AHRS source → Sentry (ForeFlight GDL90)")
-    _ahrs_src_active = src
-
-
-def _feed_sentry_state():
-    """When the Sentry is the active source, translate the latest GDL90
-    ForeFlight AHRS + ownship into `state` so smooth_state() consumes it
-    exactly like the Pico transports.  Subtracts the persisted mounting-zero
-    offsets from roll/pitch; a stale sample flips ahrs_ok / gps_ok off so the
-    AI shows the failure flags rather than freezing."""
-    if _adsb_client is None:
-        return
-    ss = disp["ss"]
-    a   = _adsb_client.ahrs(max_age_s=_SENTRY_AHRS_MAX_AGE_S)
-    own = _adsb_client.ownship(max_age_s=_SENTRY_GPS_MAX_AGE_S)
-    with _state_lock:
-        if (a is not None and a.get("roll") is not None
-                and a.get("pitch") is not None):
-            state["roll"]  = a["roll"]  - float(ss.get("sentry_roll_zero",  0.0))
-            state["pitch"] = a["pitch"] - float(ss.get("sentry_pitch_zero", 0.0))
-            if a.get("heading") is not None:
-                state["yaw"] = a["heading"] % 360.0
-            if a.get("ias_kt") is not None:
-                state["ias_kt"] = a["ias_kt"]
-            if a.get("tas_kt") is not None:
-                state["tas_kt"] = a["tas_kt"]
-            state["ahrs_ok"] = True
-        else:
-            state["ahrs_ok"] = False
-        if own is not None and own.get("lat") is not None:
-            state["lat"] = own["lat"]
-            state["lon"] = own["lon"]
-            if own.get("track_deg") is not None:
-                state["track"] = own["track_deg"] % 360.0
-            if own.get("gs_kt") is not None:
-                state["speed"] = own["gs_kt"]
-            # GDL90 ownship altitude is PRESSURE altitude; used here as the
-            # GPS-alt fallback (the geometric 0x0B report isn't stored yet).
-            if own.get("alt_ft") is not None:
-                state["gps_alt"] = own["alt_ft"]
-            state["gps_ok"]   = True
-            state["fix"]      = True
-            state["gps_comm"] = True
-        else:
-            state["gps_ok"] = False
 
 
 def _test_ahrs_connection(url):
@@ -5440,28 +5323,6 @@ def handle_event(event, demo_mode):
                     _push_orient_to_pico(
                         disp["ss"].get("orientation", "right"),
                         disp["ss"].get("mounting", "normal"))
-            elif action and action.startswith("ahrs_source:"):
-                # Switch the live AHRS transport and persist the choice.
-                src = action.split(":", 1)[1]
-                disp["cs"]["ahrs_source"] = src
-                _settings.mark_dirty()
-                _apply_ahrs_source(src)
-            elif action == "sentry_level":
-                # Capture the Sentry's current RAW attitude as the mounting
-                # zero (read straight from the receiver, before offsetting).
-                a = _adsb_client.ahrs(max_age_s=_SENTRY_AHRS_MAX_AGE_S) \
-                    if _adsb_client is not None else None
-                # On success the row's sub-line updates to show the captured
-                # P/R zero, so no separate confirmation is needed; a missing
-                # live sample leaves the offsets unchanged.
-                if a and a.get("pitch") is not None and a.get("roll") is not None:
-                    disp["ss"]["sentry_pitch_zero"] = round(a["pitch"], 2)
-                    disp["ss"]["sentry_roll_zero"]  = round(a["roll"], 2)
-                    _settings.mark_dirty()
-            elif action == "sentry_level_reset":
-                disp["ss"]["sentry_pitch_zero"] = 0.0
-                disp["ss"]["sentry_roll_zero"]  = 0.0
-                _settings.mark_dirty()
             return True
 
         # ── Connectivity taps ─────────────────────────────────────────────
@@ -6775,7 +6636,7 @@ _SS_TITLE_BAR_H = 44
 _ss_drag = None
 _SS_DRAG_THRESHOLD = 8
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
-    "ahrs_setup":         12,
+    "ahrs_setup":         10,
     "system_setup":       9,
     "connectivity_setup": 6,
     "flight_profile":     8,
@@ -7527,40 +7388,6 @@ def draw_ahrs_setup(surf, ss):
     bx, by, bw, bh = _setting_row(surf, 9, "ROLL ALIGN", ra_sub)
     _trim_stepper(surf, bx, by, bw, bh, sel_ra, "roll_align")
 
-    # Row 10: AHRS source — which sensor drives attitude + GPS.  AUTO picks
-    # the Pico (USB if plugged, else WiFi); SENTRY feeds a ForeFlight GDL90
-    # receiver (uAvionix Sentry) over the ADS-B link instead.
-    bx, by, bw, bh = _setting_row(
-        surf, 10, "AHRS SOURCE",
-        "AUTO=Pico (USB/WiFi)   USB/WIFI=force Pico   SENTRY=ForeFlight GDL90")
-    cur_asrc = disp["cs"].get("ahrs_source", "auto")
-    opts_asrc = [("auto", "AUTO"), ("usb", "USB"),
-                 ("wifi", "WIFI"), ("sentry", "SENTRY")]
-    seg_w = 92
-    total_asrc = 4 * seg_w + 3 * _DSP_BTN_G
-    rx = bx + bw - total_asrc - 14
-    ry = by + (bh - _DSP_BTN_H) // 2
-    for i, (v, lbl) in enumerate(opts_asrc):
-        _seg_btn(surf, rx + i * (seg_w + _DSP_BTN_G), ry, seg_w, _DSP_BTN_H,
-                 lbl, v == cur_asrc)
-
-    # Row 11: Sentry level / zero — a portable GDL90 unit sits at an arbitrary
-    # angle, so capture its mounting tilt as the zero reference (fly straight
-    # and level, tap LEVEL).  Only meaningful while AHRS SOURCE is SENTRY.
-    pz = float(ss.get("sentry_pitch_zero", 0.0))
-    rz = float(ss.get("sentry_roll_zero",  0.0))
-    if abs(pz) > 0.05 or abs(rz) > 0.05:
-        lvl_sub = (f"Sentry mount zero  P {pz:+.1f}°  R {rz:+.1f}°  "
-                   "— LEVEL re-captures, RESET clears")
-    else:
-        lvl_sub = "Zero the Sentry's mounting tilt — fly level, then tap LEVEL"
-    bx, by, bw, bh = _setting_row(surf, 11, "SENTRY LEVEL", lvl_sub)
-    lw = 130
-    ry = by + (bh - _DSP_BTN_H) // 2
-    _action_btn(surf, bx + bw - 2 * lw - _DSP_BTN_G - 14, ry, lw, _DSP_BTN_H,
-                "LEVEL", "ok")
-    _action_btn(surf, bx + bw - lw - 14, ry, lw, _DSP_BTN_H, "RESET", "normal")
-
     surf.set_clip(_prev_clip)
 
 
@@ -7570,7 +7397,7 @@ def ahrs_setup_hit(x, y, ss):
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(12):
+    for ri in range(10):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
@@ -7636,26 +7463,6 @@ def ahrs_setup_hit(x, y, ss):
             if (inh_bx <= x <= inh_bx + inh_w
                     and inh_by <= y <= inh_by + _DSP_BTN_H):
                 return "terrain_inhibit_toggle"
-        elif ri == 10:
-            seg_w = 92
-            total_asrc = 4 * seg_w + 3 * _DSP_BTN_G
-            rx = bx + bw - total_asrc - 14
-            ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            for i, v in enumerate(("auto", "usb", "wifi", "sentry")):
-                xi = rx + i * (seg_w + _DSP_BTN_G)
-                if xi <= x <= xi + seg_w and ry <= y <= ry + _DSP_BTN_H:
-                    return f"ahrs_source:{v}"
-        elif ri == 11:
-            lw = 130
-            ry = by + (_SS_RH - _DSP_BTN_H) // 2
-            if not (ry <= y <= ry + _DSP_BTN_H):
-                continue
-            lvl_x = _SS_MX + bw - 2 * lw - _DSP_BTN_G - 14
-            if lvl_x <= x <= lvl_x + lw:
-                return "sentry_level"
-            rst_x = _SS_MX + bw - lw - 14
-            if rst_x <= x <= rst_x + lw:
-                return "sentry_level_reset"
     return None
 
 
@@ -15576,11 +15383,24 @@ def main():
 
     if not demo_mode:
         global _sse_client
-        # Bring up the AHRS transport per the persisted source selector
-        # (auto = USB if a Pico is enumerated else WiFi; or a forced
-        # usb/wifi/sentry).  Sentry needs no client — it feeds off the
-        # ADS-B listener started just below.
-        _apply_ahrs_source(disp["cs"].get("ahrs_source", "auto"))
+        # Try USB serial first — direct connection, no WiFi needed
+        try:
+            from serial_client import SerialClient
+            _usb_port = SerialClient.find_port()
+        except ImportError:
+            _usb_port = None
+        if _usb_port:
+            _sse_client = SerialClient(_usb_port, state, _state_lock)
+            _sse_client.start()
+            disp["cs"]["ahrs_transport"] = "usb"
+            disp["cs"]["ahrs_port"]      = _usb_port
+            print(f"[PFD] AHRS via USB serial: {_usb_port}")
+        else:
+            _sse_client = SSEClient(SSE_URL, state, _state_lock)
+            _sse_client.start()
+            disp["cs"]["ahrs_transport"] = "wifi"
+            disp["cs"]["ahrs_port"]      = SSE_URL
+            print(f"[PFD] AHRS via WiFi SSE: {SSE_URL}")
         threading.Thread(target=_poll_wifi_status, daemon=True,
                          name="WiFiPoll").start()
         threading.Thread(target=_poll_ahrs_diag,  daemon=True,
@@ -15698,12 +15518,6 @@ def main():
         # taps, panels and the live UI still run normally.
         if _sim_state is not None and not disp["sim"].get("paused", False):
             _sim_state.tick()
-
-        # When the Sentry is the active AHRS source, fold its GDL90 attitude
-        # + GPS into `state` before smoothing so it flows through the same
-        # path as the Pico transports.
-        if _ahrs_src_active == "sentry":
-            _feed_sentry_state()
 
         # Smooth sensor values into display values
         smooth_state()
