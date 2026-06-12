@@ -3594,13 +3594,17 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats,
     """
     f10 = _get_font(10)
 
+    # Badges sit just BELOW the top readout ribbon (TAPE_TOP + 2) so they
+    # never overlap it — the ribbon owns the band, the badges sit on the AI.
+    _by = TAPE_TOP + 2
+
     # ── Left badges: problems only ──────────────────────────────────────────
     bx = AI_X + 4
     def badge_l(text, bg, fg=(255, 255, 255)):
         nonlocal bx
         w = f10.size(text)[0] + 10
-        pygame.draw.rect(surf, bg, (bx, 4, w, 15))
-        _text(surf, text, 10, fg, x=bx + 5, y=5)
+        pygame.draw.rect(surf, bg, (bx, _by, w, 15))
+        _text(surf, text, 10, fg, x=bx + 5, y=_by + 1)
         bx += w + 2
 
     if not ahrs_ok:
@@ -3649,8 +3653,8 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, gps_comm, baro_ok, baro_src, sats,
         nonlocal rx
         w = f10.size(text)[0] + 10
         rx -= w + 2
-        pygame.draw.rect(surf, bg, (rx, 4, w, 15))
-        _text(surf, text, 10, fg, x=rx + 5, y=5)
+        pygame.draw.rect(surf, bg, (rx, _by, w, 15))
+        _text(surf, text, 10, fg, x=rx + 5, y=_by + 1)
 
     # GPS-slaved heading mode indicator — magenta badge (matches track-pointer colour)
     if use_track and gps_ok:
