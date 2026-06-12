@@ -303,7 +303,11 @@ disp["ds"] = {                      # display settings
     # the larger HDMI screens (that's where a full-screen map earns its keep).
     "mfd_enabled":       True,
     # MFD bottom data strip — 8 user-selectable readout slots.
-    "mfd_strip_kinds":  ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "eta"],
+    # Convention: a bare nav label is to the ACTIVE WAYPOINT; the "…D" variant
+    # is to the FINAL DESTINATION (whole route).  eta_local flips ALL arrival
+    # clocks between local time and Zulu.
+    "mfd_strip_kinds":  ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "etad"],
+    "eta_local":        True,    # ETA/ETAD shown in local time (False = Zulu)
     "map_show_state_lines": True,   # admin_1 boundaries at >= 20 nm
     "map_show_country_lines": True, # admin_0 boundaries at >= 20 nm
     "map_show_directto": True,
@@ -5449,6 +5453,9 @@ def handle_event(event, demo_mode):
                 kinds[sel] = payload
                 disp["ds"]["mfd_strip_kinds"] = kinds
                 disp["mss_sel"] = (sel + 1) % _MFD_STRIP_SLOT_COUNT
+                _settings.mark_dirty()
+            elif act == "eta_tz":
+                disp["ds"]["eta_local"] = bool(payload)
                 _settings.mark_dirty()
             return True
 
@@ -11550,20 +11557,42 @@ _P4_MFD_PAD = 8
 # Bottom data strip — 8 configurable readout slots (mirrors pi_zero).
 _MFD_STRIP_H   = 56
 _MFD_STRIP_SLOT_COUNT = 8
+# Each entry: (id, caption, needs_D2, description).  Nav convention: a bare
+# label is to the ACTIVE WAYPOINT; the "…D" variant is to the FINAL
+# DESTINATION (whole remaining route).
 _MFD_STRIP_AVAILABLE = (
-    ("gs", "GS", False), ("as", "AS", False), ("tas", "TAS", False),
-    ("trk", "TRK", False), ("hdg", "HDG", False), ("alt", "ALT", False),
-    ("agl", "AGL", False), ("vs", "VS", False), ("time", "UTC", False),
-    ("baro", "BARO", False), ("sat", "SAT", False),
-    ("wpt", "WPT", True), ("btw", "BTW", True), ("dtk", "DTK", True),
-    ("dist", "DIST", True), ("disw", "DISW", True), ("xte", "XTE", True),
-    ("ete", "ETE", True), ("etew", "ETEW", True), ("eta", "ETA", True),
-    ("etw", "ETW", True),
+    ("gs",   "GS",   False, "Ground speed (GPS), knots"),
+    ("as",   "AS",   False, "Indicated airspeed, knots"),
+    ("tas",  "TAS",  False, "True airspeed, knots"),
+    ("trk",  "TRK",  False, "GPS ground track, degrees"),
+    ("hdg",  "HDG",  False, "Magnetic heading, degrees"),
+    ("alt",  "ALT",  False, "Pressure altitude, feet"),
+    ("agl",  "AGL",  False, "Height above terrain, feet"),
+    ("vs",   "VS",   False, "Vertical speed, feet per minute"),
+    ("time", "UTC",  False, "Current Zulu (UTC) clock time"),
+    ("baro", "BARO", False, "Altimeter setting"),
+    ("sat",  "SAT",  False, "GPS satellites in use"),
+    ("wpt",  "WPT",  True,  "Active waypoint identifier"),
+    ("btw",  "BTW",  True,  "Bearing to the active waypoint, degrees"),
+    ("dtk",  "DTK",  True,  "Desired track of the active leg, degrees"),
+    ("xte",  "XTE",  True,  "Cross-track error from the active leg, nm"),
+    ("dist", "DIST", True,  "Distance to the ACTIVE WAYPOINT, nm"),
+    ("distd", "DISTD", True, "Distance to the FINAL DESTINATION (whole route), nm"),
+    ("ete",  "ETE",  True,  "Time enroute to the ACTIVE WAYPOINT"),
+    ("eted", "ETED", True,  "Time enroute to the FINAL DESTINATION"),
+    ("eta",  "ETA",  True,  "Arrival clock at the ACTIVE WAYPOINT"),
+    ("etad", "ETAD", True,  "Arrival clock at the FINAL DESTINATION"),
 )
 _MFD_STRIP_KIND_IDS = tuple(k[0] for k in _MFD_STRIP_AVAILABLE)
 _MFD_STRIP_CAPTIONS = {k[0]: k[1] for k in _MFD_STRIP_AVAILABLE}
 _MFD_STRIP_NEEDS_D2 = {k[0]: k[2] for k in _MFD_STRIP_AVAILABLE}
-_MFD_STRIP_DEFAULT  = ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "eta"]
+_MFD_STRIP_DESC     = {k[0]: k[3] for k in _MFD_STRIP_AVAILABLE}
+_MFD_STRIP_DEFAULT  = ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "etad"]
+# One-time migration of the pre-convention IDs to the new scheme (schema v2):
+# old DIST/ETE were waypoint and DISW/ETEW were destination, but the ETA pair
+# was reversed (ETA=destination, ETW=waypoint).  Remap so bare=waypoint.
+_MFD_STRIP_MIGRATE  = {"disw": "distd", "etew": "eted",
+                       "eta": "etad", "etw": "eta"}
 _D2_DIM = (110, 90, 110)
 _P4_MFD_ZOOM = 64          # zoom button square
 
@@ -11592,7 +11621,15 @@ def _mfd_strip_hit(x, y):
 
 
 def _mfd_strip_kinds():
-    cur = list(disp["ds"].get("mfd_strip_kinds", _MFD_STRIP_DEFAULT))
+    ds = disp["ds"]
+    # One-time remap of the pre-convention IDs (see _MFD_STRIP_MIGRATE).
+    if ds.get("mfd_strip_ver", 1) < 2:
+        ds["mfd_strip_kinds"] = [
+            _MFD_STRIP_MIGRATE.get(k, k)
+            for k in ds.get("mfd_strip_kinds", _MFD_STRIP_DEFAULT)]
+        ds["mfd_strip_ver"] = 2
+        _settings.mark_dirty()
+    cur = list(ds.get("mfd_strip_kinds", _MFD_STRIP_DEFAULT))
     out = []
     for i in range(_MFD_STRIP_SLOT_COUNT):
         k = cur[i] if i < len(cur) else _MFD_STRIP_DEFAULT[i]
@@ -11616,11 +11653,28 @@ def _mfd_strip_ete_str(gs_kt, dist_nm):
     return "--:--"
 
 
-def _mfd_strip_eta_str(gs_kt, dist_nm):
+def _mfd_strip_eta_str(gs_kt, dist_nm, local=False, tz_lat=None, tz_lon=None):
+    """Arrival clock time.  Zulu (``18:34Z``) by default; local (``11:34``, no
+    Z) when `local` and the arrival-point position is known — using that point's
+    timezone + DST at the arrival instant (see shared/localtime.py)."""
     if gs_kt < 3.0 or dist_nm <= 0.0 or dist_nm / max(1e-6, gs_kt) >= 99.0:
         return "--:--"
     eta_t = time.time() + int(round(dist_nm / gs_kt * 3600))
+    if local:
+        from datetime import datetime, timezone
+        off = _localtime.offset_hours(
+            tz_lat, tz_lon, datetime.fromtimestamp(eta_t, timezone.utc))
+        if off is not None:
+            return time.strftime("%H:%M", time.gmtime(eta_t + int(off * 3600)))
     return time.strftime("%H:%MZ", time.gmtime(eta_t))
+
+
+def _fpl_dest_latlon():
+    """(lat, lon) of the active flight plan's final waypoint, or None."""
+    if not _fpl_is_active():
+        return None
+    wps = disp["fpl"]["waypoints"]
+    return (wps[-1]["lat"], wps[-1]["lon"]) if wps else None
 
 
 def _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2):
@@ -11695,24 +11749,35 @@ def _mfd_strip_format(kind, ctx):
         return (caption, f"{int(round(ctx['brg'])) % 360:03d}°", MAGENTA)
     if kind == "dtk":
         return (caption, f"{int(round(ctx['dtk'])) % 360:03d}°", MAGENTA)
+    # Nav convention: bare = to the ACTIVE WAYPOINT (ctx["dist_nm"]); the
+    # "…D" variant = to the FINAL DESTINATION (whole remaining route).
+    def _fmt_dist(d_nm):
+        return f"{int(round(d_nm)):d}" if d_nm >= 1000 else f"{d_nm:.1f}"
+
+    def _route_remaining():
+        return (_fpl_total_remaining_nm(ctx["lat"], ctx["lon"])
+                if _fpl_is_active() else ctx["dist_nm"])
+
+    local = bool(disp["ds"].get("eta_local", True))
     if kind == "dist":
-        d_nm = ctx["dist_nm"]
-        return (caption, f"{int(round(d_nm)):d}" if d_nm >= 1000 else f"{d_nm:.1f}", MAGENTA)
-    if kind == "disw":
-        d_nm = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"]) if _fpl_is_active() else ctx["dist_nm"]
-        return (caption, f"{int(round(d_nm)):d}" if d_nm >= 1000 else f"{d_nm:.1f}", MAGENTA)
+        return (caption, _fmt_dist(ctx["dist_nm"]), MAGENTA)
+    if kind == "distd":
+        return (caption, _fmt_dist(_route_remaining()), MAGENTA)
     if kind == "xte":
         return (caption, f"{ctx['xte_nm']:+.1f}", MAGENTA)
     if kind == "ete":
         return (caption, _mfd_strip_ete_str(gs_kt, ctx["dist_nm"]), MAGENTA)
-    if kind == "etew":
-        total = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"]) if _fpl_is_active() else ctx["dist_nm"]
-        return (caption, _mfd_strip_ete_str(gs_kt, total), MAGENTA)
-    if kind == "etw":
-        return (caption, _mfd_strip_eta_str(gs_kt, ctx["dist_nm"]), MAGENTA)
-    if kind == "eta":
-        total = _fpl_total_remaining_nm(ctx["lat"], ctx["lon"]) if _fpl_is_active() else ctx["dist_nm"]
-        return (caption, _mfd_strip_eta_str(gs_kt, total), MAGENTA)
+    if kind == "eted":
+        return (caption, _mfd_strip_ete_str(gs_kt, _route_remaining()), MAGENTA)
+    if kind == "eta":         # arrival at the active waypoint
+        return (caption, _mfd_strip_eta_str(
+            gs_kt, ctx["dist_nm"], local=local,
+            tz_lat=d2.get("lat"), tz_lon=d2.get("lon")), MAGENTA)
+    if kind == "etad":        # arrival at the final destination
+        dll = _fpl_dest_latlon() or (d2.get("lat"), d2.get("lon"))
+        return (caption, _mfd_strip_eta_str(
+            gs_kt, _route_remaining(), local=local,
+            tz_lat=dll[0], tz_lon=dll[1]), MAGENTA)
     return (caption, "--", _D2_DIM)
 
 
@@ -13277,6 +13342,16 @@ _MSS_SLOT_H    = 56
 _MSS_SLOT_GAP  = 4
 _MSS_GRID_GAP  = 6
 _MSS_GRID_COLS = 7          # 21 kinds → 3 rows of 7 on the wide screen
+# Description sentence + arrival-time toggle sit below the 3-row grid.
+_MSS_DESC_Y    = _MSS_HEADER_H + 10 + _MSS_SLOT_H + 20 + 3 * (64 + _MSS_GRID_GAP) + 8
+_MSS_TZ_Y      = _MSS_DESC_Y + 30
+
+
+def _mss_tz_rects():
+    """LOCAL / ZULU pills for the arrival-time mode (applies to all ETA/ETAD)."""
+    bw_, bh_, g = 110, 42, 8
+    x0 = (DISPLAY_W - (2 * bw_ + g)) // 2 + 70   # nudged right of the label
+    return ((x0, _MSS_TZ_Y, bw_, bh_), (x0 + bw_ + g, _MSS_TZ_Y, bw_, bh_))
 
 
 def _mss_slot_rects():
@@ -13322,8 +13397,8 @@ def draw_mfd_strip_setup(surf):
     _text(surf, "tap a slot, then a readout below — auto-advances", 12,
           (140, 150, 170), cx=DISPLAY_W // 2,
           y=_MSS_HEADER_H + 12 + _MSS_SLOT_H)
-    for (kind, cap, needs_d2), rect in zip(_MFD_STRIP_AVAILABLE,
-                                           _mss_grid_rects()):
+    for (kind, cap, needs_d2, _desc), rect in zip(_MFD_STRIP_AVAILABLE,
+                                                  _mss_grid_rects()):
         bx, by, bw, bh = rect
         in_use = (kinds[sel] == kind)
         pygame.draw.rect(surf, (0, 55, 65) if in_use else (0, 18, 38), rect,
@@ -13336,15 +13411,39 @@ def draw_mfd_strip_setup(surf):
             _text(surf, "needs D2", 10, (140, 100, 130),
                   cx=bx + bw // 2, y=by + bh - 16)
 
+    # Description of the readout in the SELECTED slot (a sentence, as requested).
+    sel_kind = kinds[sel]
+    local = bool(disp["ds"].get("eta_local", True))
+    desc = _MFD_STRIP_DESC.get(sel_kind, "")
+    if sel_kind in ("eta", "etad"):
+        desc += f"  ·  showing {'LOCAL time' if local else 'ZULU (UTC)'}"
+    _text(surf, f"{_MFD_STRIP_CAPTIONS.get(sel_kind, '?')}  —  {desc}", 16,
+          (190, 205, 225), bold=True, cx=DISPLAY_W // 2, y=_MSS_DESC_Y)
+
+    # Arrival-time mode toggle — flips every ETA / ETAD readout local ↔ Zulu.
+    loc_r, zul_r = _mss_tz_rects()
+    _text(surf, "ARRIVAL TIME", 14, (150, 165, 185), bold=True,
+          x=loc_r[0] - 135, y=loc_r[1] + 13)
+    _seg_btn(surf, *loc_r, "LOCAL", local)
+    _seg_btn(surf, *zul_r, "ZULU", not local)
+
 
 def mfd_strip_setup_hit(x, y):
     if _back_hit(x, y):
         return ("back", None)
+    loc_r, zul_r = _mss_tz_rects()
+
+    def _in(rc):
+        return rc[0] <= x <= rc[0] + rc[2] and rc[1] <= y <= rc[1] + rc[3]
+    if _in(loc_r):
+        return ("eta_tz", True)
+    if _in(zul_r):
+        return ("eta_tz", False)
     for i, rect in enumerate(_mss_slot_rects()):
         bx, by, bw, bh = rect
         if bx <= x <= bx + bw and by <= y <= by + bh:
             return ("slot", i)
-    for (kind, _c, _n), rect in zip(_MFD_STRIP_AVAILABLE, _mss_grid_rects()):
+    for (kind, _c, _n, _d), rect in zip(_MFD_STRIP_AVAILABLE, _mss_grid_rects()):
         bx, by, bw, bh = rect
         if bx <= x <= bx + bw and by <= y <= by + bh:
             return ("kind", kind)
