@@ -7617,7 +7617,7 @@ def _approach_load(ident, rwy_end, activate=False):
         "course_deg":      float(hdg),
     }
     if activate:
-        _approach_retarget_nav()
+        _approach_begin_guidance()
 
 
 # ── Published approaches (FAA CIFP, via shared/navdata) ─────────────────────────
@@ -7697,10 +7697,74 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
         "thresh_lon":      float(th_lon),
         "thresh_elev_ft":  float(th_alt or 0.0),
         "course_deg":      float(course or 0.0),
+        "leg_idx":         0,
     }
     if activate:
-        _approach_retarget_nav()
+        _approach_begin_guidance()
     return True
+
+
+def _approach_begin_guidance():
+    """Engage guidance for the now-active approach: leg-by-leg sequencing from
+    leg 0 for a published approach, or the runway centreline for a synthetic
+    one.  A published approach supersedes the flight plan, so drop the FPL's
+    active leg so the two don't fight for the CDI."""
+    ap = disp.get("approach") or {}
+    if ap.get("published") and (ap.get("legs") or []):
+        ap["leg_idx"] = 0
+        if _fpl_is_active():
+            disp["fpl"]["active_idx"] = -1
+            _ssync_publish_fpl()
+        _approach_apply_leg()
+    else:
+        _approach_retarget_nav()
+
+
+def _approach_apply_leg():
+    """Drive disp["nav"] from the active published-approach leg.  The final leg
+    targets the airport/threshold so draw_cdi switches to the runway-centreline
+    branch (HITS + VDI); earlier legs fly direct fix-to-fix."""
+    ap = disp.get("approach") or {}
+    legs = ap.get("legs") or []
+    if not legs:
+        return
+    idx = max(0, min(int(ap.get("leg_idx", 0)), len(legs) - 1))
+    ap["leg_idx"] = idx
+    la, lo, ident, _lt, _alt = legs[idx]
+    prev = legs[idx - 1] if idx > 0 else None
+    act_lat = float(prev[0]) if prev else float(disp.get("lat", la))
+    act_lon = float(prev[1]) if prev else float(disp.get("lon", lo))
+    if idx == len(legs) - 1:                 # final leg → threshold/centreline
+        disp["nav"] = {
+            "ident":   ap.get("airport", ""),
+            "lat":     float(ap.get("thresh_lat", la)),
+            "lon":     float(ap.get("thresh_lon", lo)),
+            "elev_ft": float(ap.get("thresh_elev_ft", 0.0)),
+            "act_lat": act_lat, "act_lon": act_lon,
+        }
+    else:
+        disp["nav"] = {
+            "ident": ident, "lat": float(la), "lon": float(lo), "elev_ft": 0.0,
+            "act_lat": act_lat, "act_lon": act_lon,
+        }
+
+
+def _approach_check_advance(lat, lon):
+    """Per-frame: sequence to the next approach leg when inside the advance
+    radius of the active leg's fix.  Holds on the final leg (the centreline
+    CDI + HITS/VDI fly it in)."""
+    ap = disp.get("approach") or {}
+    if not (ap.get("active") and ap.get("published") and not ap.get("missed")):
+        return
+    legs = ap.get("legs") or []
+    idx = int(ap.get("leg_idx", 0))
+    if idx >= len(legs) - 1:
+        return
+    la, lo, _ident, _lt, _alt = legs[idx]
+    dist_nm, _ = _nav_geo_dist_brg(lat, lon, la, lo)
+    if dist_nm < _FPL_ADVANCE_DIST_NM:
+        ap["leg_idx"] = idx + 1
+        _approach_apply_leg()
 
 
 def _approach_retarget_nav():
@@ -7721,14 +7785,15 @@ def _approach_retarget_nav():
 
 
 def _approach_engage():
-    """Pilot deliberately activates a loaded approach — engage threshold
-    guidance.  No-op if nothing is loaded."""
+    """Pilot deliberately activates a loaded approach — engage guidance (leg-by-
+    leg for a published approach, runway centreline for a synthetic one).  No-op
+    if nothing is loaded."""
     ap = disp.get("approach") or {}
     if not ap.get("loaded"):
         return
     ap["active"] = True
     ap["missed"] = False
-    _approach_retarget_nav()
+    _approach_begin_guidance()
 
 
 def _approach_go_missed():
@@ -15256,8 +15321,14 @@ def render(surf, demo_mode, connected, data_stale=False):
     # source); pi_zero has its own copy for the case where the GPS
     # lives on the MFD instead.  GPS-gated so a bad fix can't blip
     # us through the plan.
-    if gps_ok and _fpl_is_active():
-        _fpl_check_advance(lat, lon)
+    if gps_ok:
+        _ap_seq = disp.get("approach") or {}
+        if _ap_seq.get("active") and _ap_seq.get("published") \
+                and not _ap_seq.get("missed"):
+            _approach_check_advance(lat, lon)        # fly the published legs
+        elif not (_ap_seq.get("active") or _ap_seq.get("missed")) \
+                and _fpl_is_active():
+            _fpl_check_advance(lat, lon)             # no approach engaged → FPL
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground.
     # Shared-GL composite path renders sky+terrain directly into the default
