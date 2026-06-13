@@ -96,6 +96,64 @@ _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
 _D2_MAGENTA  = (220, 0, 220)
 _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
+_MISSED_AMBER = (255, 170, 60)      # missed-approach path / hold (dashed)
+
+
+def _dashed_polyline(surf, color, pts, dash=9, gap=6, width=2):
+    """Draw a dashed line through screen-space points (ints)."""
+    if not pts or len(pts) < 2:
+        return
+    for (x0, y0), (x1, y1) in zip(pts[:-1], pts[1:]):
+        seg = math.hypot(x1 - x0, y1 - y0)
+        if seg < 1:
+            continue
+        ux, uy = (x1 - x0) / seg, (y1 - y0) / seg
+        d = 0.0
+        while d < seg:
+            a = d
+            b = min(d + dash, seg)
+            pygame.draw.line(surf, color,
+                             (int(x0 + ux * a), int(y0 + uy * a)),
+                             (int(x0 + ux * b), int(y0 + uy * b)), width)
+            d += dash + gap
+
+
+def _hold_racetrack_pts(la, lo, course_deg, turn, leg_nm, cos_lat):
+    """Lat/lon points tracing a holding racetrack at (la, lo): inbound on
+    ``course_deg`` to the fix, ``turn`` ('R'/'L') onto the parallel outbound
+    leg, joined by 180° arcs.  Returned as a closed loop of (lat, lon)."""
+    c = math.radians(course_deg)
+    # Unit vectors in (East, North) nm.  u = inbound heading toward the fix.
+    ue, un = math.sin(c), math.cos(c)
+    if (turn or "R").upper().startswith("L"):       # left turns
+        se, sn = -math.cos(c), math.sin(c)
+    else:                                           # right turns (default)
+        se, sn = math.cos(c), -math.sin(c)
+    leg = max(1.0, float(leg_nm or 4.0))
+    r = max(0.5, leg * 0.32)                        # turn radius (visual)
+    # Fix F at origin; A = start of inbound leg; arcs centred r to the side.
+    en = []
+    N = 12
+    # inbound straight: A -> F
+    en.append((-leg * ue, -leg * un))
+    en.append((0.0, 0.0))
+    # turn 1 at the fix: F -> F2 (bulges forward, +u)
+    c1e, c1n = r * se, r * sn
+    for k in range(N + 1):
+        ph = math.pi * k / N
+        en.append((c1e + r * (-se * math.cos(ph) + ue * math.sin(ph)),
+                   c1n + r * (-sn * math.cos(ph) + un * math.sin(ph))))
+    # outbound straight F2 -> A2 is implicit (next arc start); turn 2 at A end
+    c2e, c2n = -leg * ue + r * se, -leg * un + r * sn
+    for k in range(N + 1):
+        ph = math.pi * k / N
+        en.append((c2e + r * (se * math.cos(ph) - ue * math.sin(ph)),
+                   c2n + r * (sn * math.cos(ph) - un * math.sin(ph))))
+    out = []
+    for e, n in en:
+        out.append((la + n / _NM_PER_DEG_LAT,
+                    lo + e / (_NM_PER_DEG_LAT * max(0.05, cos_lat))))
+    return out
 # ADS-B traffic symbol colours, TCAS-style: red resolution-class alert,
 # amber proximate, cyan everything else with a position.
 _TFC_ALERT     = (255, 60, 60)
@@ -1065,7 +1123,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            draw_corner_labels=True, own_lat=None, own_lon=None,
            symbol_scale=1.0, fast=False, ground_stations=None,
            wx_graphics=None, winds_barbs=None, nexrad_cells=None,
-           approach_path=None, runway_marker=None):
+           approach_path=None, runway_marker=None,
+           missed_path=None, hold=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1556,6 +1615,30 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         if rlabel and font is not None:
             surf.blit(font.render(rlabel, True, (210, 220, 235)),
                       (int(bx) + 8, int(by) - 6))   # far end — clear of the fixes
+
+    # ── Missed approach (dashed amber) + holding pattern ────────────────────
+    # missed_path: [(la, lo, ident), …] starting at the MAP/runway so the dashed
+    # line continues from where the approach ends.  hold: (la, lo, course, turn,
+    # leg_nm) draws a racetrack at the missed hold fix.
+    if missed_path is not None and len(missed_path) >= 2:
+        scr = [(_project(p[0], p[1])) for p in missed_path]
+        _dashed_polyline(surf, _MISSED_AMBER,
+                         [(int(sx), int(sy)) for sx, sy in scr], width=2)
+        d2 = 4
+        for (la_m, lo_m, ident), (sx, sy) in list(zip(missed_path, scr))[1:]:
+            px, py = int(sx), int(sy)
+            pygame.draw.polygon(surf, _MISSED_AMBER,
+                                [(px, py - d2), (px + d2, py),
+                                 (px, py + d2), (px - d2, py)], 1)
+            if ident and font is not None:
+                surf.blit(font.render(ident, True, _MISSED_AMBER),
+                          (px + d2 + 3, py - d2 - 2))
+    if hold is not None:
+        h_la, h_lo, h_crs, h_turn, h_leg = hold
+        loop = _hold_racetrack_pts(h_la, h_lo, h_crs, h_turn, h_leg, cos_lat)
+        _dashed_polyline(surf, _MISSED_AMBER,
+                         [(int(_project(a, b)[0]), int(_project(a, b)[1]))
+                          for a, b in loop], width=2)
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
     # The big MFD draws the flight-category dots on *every* page (we already

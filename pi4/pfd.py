@@ -935,6 +935,49 @@ def _approach_render_path():
     return [(la, lo, ident) for (la, lo, ident, _lt, _alt, _at) in legs]
 
 
+def _approach_render_missed():
+    """[(lat, lon, ident), ...] for the missed approach, prefixed with the
+    approach's final fix (the MAP/runway) so the dashed line continues from
+    where the solid approach ends.  None when there's nothing to draw."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return None
+    legs = ap.get("legs") or []
+    missed = ap.get("missed_legs") or []
+    if not missed or not legs:
+        return None
+    start = legs[-1]
+    pts = [(start[0], start[1], start[2])]
+    pts += [(la, lo, ident) for (la, lo, ident, _lt, _alt, _at) in missed]
+    return pts if len(pts) >= 2 else None
+
+
+def _approach_render_hold():
+    """(lat, lon, course, turn, leg_nm) for the holding pattern at the missed
+    hold fix, or None.  Pulls published hold params when available, else falls
+    back to a right-turn racetrack on the inbound course into the fix."""
+    ap = disp.get("approach") or {}
+    missed = ap.get("missed_legs") or []
+    if not missed:
+        return None
+    h_la, h_lo, h_id = missed[-1][0], missed[-1][1], missed[-1][2]
+    crs, turn, leg = None, "R", 4.0
+    if _navdata is not None and h_id:
+        hd = _navdata.hold(h_id)
+        if hd:
+            crs = hd.get("course")
+            turn = hd.get("turn") or "R"
+            leg = hd.get("leg_nm") or 4.0
+    if crs is None:
+        # Inbound course = bearing from the previous fix into the hold fix.
+        prev = missed[-2] if len(missed) >= 2 else ((ap.get("legs") or [None])[-1])
+        if prev:
+            _d, crs = _nav_geo_dist_brg(prev[0], prev[1], h_la, h_lo)
+        else:
+            crs = float(ap.get("course_deg", 0.0))
+    return (float(h_la), float(h_lo), float(crs or 0.0), turn, float(leg or 4.0))
+
+
 # ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
 _FPL_MAX_WAYPOINTS = 20     # matches pi_zero
 _FPL_SAVED_MAX     = 8
@@ -8399,6 +8442,14 @@ def _appr_preview_extent(rect):
     rwm = _appr_runway_marker(ap)
     if rwm is not None:
         pts.extend([rwm[0], rwm[1]])           # keep the runway in frame
+    # Keep the missed approach + hold racetrack in frame too.
+    pts += [(p[0], p[1]) for p in (_approach_render_missed() or [])]
+    hold = _approach_render_hold()
+    if hold is not None:
+        h_la, h_lo, h_crs, h_turn, h_leg = hold
+        pts += _map_mod._hold_racetrack_pts(
+            h_la, h_lo, h_crs, h_turn, h_leg,
+            math.cos(math.radians(h_la)))
     if not pts:
         return (float(disp.get("lat", DEMO_LAT)),
                 float(disp.get("lon", DEMO_LON)), 10.0)
@@ -8439,6 +8490,8 @@ def draw_appr_preview(surf):
                     state_lines=_state_lines, country_lines=_country_lines,
                     approach_path=_approach_render_path(),
                     runway_marker=_appr_runway_marker(ap),
+                    missed_path=_approach_render_missed(),
+                    hold=_approach_render_hold(),
                     draw_corner_labels=False)
     by = DISPLAY_H - _APRV_BTN_H - 12
     half = (DISPLAY_W - 24 - 12) // 2
@@ -14678,6 +14731,8 @@ def draw_mfd(surf, connected=True, data_stale=False):
         state_lines=_state_lines, country_lines=_country_lines,
         fpl_remaining=_fpl_render_remaining(),
         approach_path=_approach_render_path(),
+        missed_path=_approach_render_missed(),
+        hold=_approach_render_hold(),
         airspaces=_airspaces,
         traffic=_traffic_to_draw(),
         metars=disp.get("weather", {}).get("metars"),
@@ -16226,6 +16281,8 @@ def render(surf, demo_mode, connected, data_stale=False):
             # FPL sync set to RX on this side AND the MFD is TXing.
             fpl_remaining=_fpl_render_remaining(),
             approach_path=_approach_render_path(),
+            missed_path=_approach_render_missed(),
+            hold=_approach_render_hold(),
             # Airspace polygons (B/C/D/MOA/R).  Loaded in the
             # background at startup from AIRSPACE_DIR/airspaces.json;
             # per-class display gates live in disp["ds"]["map_show_airspace_*"].
