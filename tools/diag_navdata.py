@@ -89,21 +89,25 @@ def main(airports):
         for pid in pids:
             p = nav.procedure(ap, pid) or {}
             keep = _kept_by_picker(pid, p)
-            trans = list((p.get("transitions") or {}).keys())
+            transd = p.get("transitions") or {}
             fin = [_fmt(lg) for lg in (p.get("final") or [])]
             mis = [_fmt(lg) for lg in (p.get("missed") or [])]
             flag = "KEEP (approach list)" if keep else "drop"
             print(f"\n  {pid!r}")
             print(f"      type={p.get('type')!r}   picker={flag}")
-            print(f"      transitions={trans}")
+            for tname, tlegs in transd.items():
+                print(f"      trans[{tname}] ={[_fmt(lg) for lg in tlegs]}")
             print(f"      final ={fin}")
             print(f"      missed={mis}")
             # Any fix that will render a holding pattern (HM/HF/HA leg or a
-            # published hold entry) — this is what draws SEZCY/TAWNE holds.
+            # published hold entry) — scans transitions + final + missed, so a
+            # HILPT hiding in a transition (e.g. at SEZCY) shows up here too.
             holdy = []
-            for lg in (p.get("final") or []) + (p.get("missed") or []):
+            all_legs = [lg for tl in transd.values() for lg in tl]
+            all_legs += (p.get("final") or []) + (p.get("missed") or [])
+            for lg in all_legs:
                 fx = lg.get("fix")
-                if (lg.get("leg_type") or "").upper() in ("HM", "HF", "HA") \
+                if (lg.get("leg_type") or "").upper() in ("HM", "HF", "HA", "PI") \
                         or (fx and nav.hold(fx)):
                     holdy.append(f"{fx}({lg.get('leg_type')} crs={lg.get('course')} "
                                  f"turn={lg.get('turn')})")
