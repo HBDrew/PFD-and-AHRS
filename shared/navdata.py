@@ -65,14 +65,21 @@ JSON_FILE    = "navdata.json"
 DOWNLOAD_FILES = (FIXES_FILE, NAVAIDS_FILE, JSON_FILE)
 
 # The nav-data cache is built off-aircraft by tools/build_navdata_us.py (the
-# raw FAA NASR + CIFP files are far too big to parse on a Pi).  Host the three
-# built cache files at a directory the device can reach and point
-# DOWNLOAD_BASE_URL at it (trailing slash); the renderer fetches each
-# DOWNLOAD_FILES entry from there.  Override in config_local.py:
+# raw FAA NASR + CIFP files are far too big to parse on a Pi), then published
+# as assets on a GitHub release so the device can pull them on tap.
+#
+# Default host: a FIXED release tag ("navdata") on this repo — re-upload the
+# three assets to that tag each 28-day cycle (tools/publish_navdata.sh) and the
+# URL below never changes.  A fixed tag is used (not /releases/latest/...) so a
+# future app-version release can't steal "latest" and 404 the nav-data fetch.
+#
+# The DOWNLOAD button is live whenever this is set; until the first release is
+# published, a tap simply reports the host's 404.  Point it elsewhere (S3, a
+# personal server, …) in config_local.py for a custom host:
 #     import navdata; navdata.DOWNLOAD_BASE_URL = "https://you.example/navdata/"
-# Left blank by default → the DATA screen shows "no download source configured"
-# and the pilot copies the cache onto data/navdata/ by hand instead.
-DOWNLOAD_BASE_URL = ""
+# Set to "" to disable the button and copy the cache to data/navdata/ by hand.
+DOWNLOAD_BASE_URL = \
+    "https://github.com/HBDrew/PFD-and-AHRS/releases/download/navdata/"
 
 # Stale after this many days (one 28-day cycle + a few days' grace).
 EXPIRY_DAYS = 32
