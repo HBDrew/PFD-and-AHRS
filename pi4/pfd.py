@@ -4539,7 +4539,7 @@ def draw_nav_pick(surf):
                   "missed": "MISSED"}.get(phase, "")
         col = {"armed": (225, 185, 80), "active": (60, 220, 100),
                "missed": (240, 140, 60)}.get(phase, (200, 200, 200))
-        _text(surf, f"APPR  {ap.get('airport','')} RWY {ap.get('runway','')}  ·  "
+        _text(surf, f"{ap.get('airport','')}  {_approach_label()}  ·  "
                     + plabel, 12, col, bold=True,
               cx=bx + _NAVPICK_W // 2, cy=by + 40)
     for (_act, lbl, style), (_a, rect) in zip(opts, rects):
@@ -5412,6 +5412,19 @@ def handle_event(event, demo_mode):
                 _settings.mark_dirty()
             return True
 
+        # ── Published-approach procedure picker taps ──────────────────────
+        if mode == "appr_proc_select":
+            act, payload = appr_proc_select_hit(x, y)
+            if act == "back":
+                disp["mode"] = "pfd"
+            elif act == "pick":
+                airport = (disp.get("approach") or {}).get("airport", "")
+                from_fpl = bool(disp.get("approach", {}).get("arm_from_fpl"))
+                if _approach_load_published(airport, payload, transition="",
+                                            activate=not from_fpl):
+                    disp["mode"] = "pfd"
+            return True
+
         # ── Approach selection taps ───────────────────────────────────────
         if mode == "approach_select":
             action = approach_select_hit(x, y)
@@ -5633,7 +5646,9 @@ def handle_event(event, demo_mode):
                     if dest:
                         disp["approach"]["airport"] = dest
                         disp["approach"]["arm_from_fpl"] = True
-                        disp["mode"] = "approach_select"
+                        disp["mode"] = ("appr_proc_select"
+                                        if _appr_published(dest)
+                                        else "approach_select")
             elif act == "activate":
                 _fpl_activate(payload, reset_activation=True)
             elif act == "up" and payload > 0:
@@ -6056,8 +6071,9 @@ def handle_event(event, demo_mode):
                         disp["kbd_error"] = "ENTER AIRPORT FIRST"
                     elif buf and not _nav_lookup_ident(buf):
                         disp["kbd_error"] = f"UNKNOWN WAYPOINT  {buf}"
-                    elif not _ident_has_runways(target_ident):
-                        disp["kbd_error"] = f"NO RUNWAYS  {target_ident}"
+                    elif not (_appr_published(target_ident)
+                              or _ident_has_runways(target_ident)):
+                        disp["kbd_error"] = f"NO APPROACHES  {target_ident}"
                     else:
                         # If the typed buf is a fresh airport, activate
                         # the D2 first so the picker sees it as the
@@ -6068,7 +6084,9 @@ def handle_event(event, demo_mode):
                         disp["approach"]["arm_from_fpl"] = False  # plain D2
                         disp["kbd_buf"] = ""
                         disp["kbd_error"] = ""
-                        disp["mode"] = "approach_select"
+                        disp["mode"] = ("appr_proc_select"
+                                        if _appr_published(target_ident)
+                                        else "approach_select")
                 elif sty == 'ok':             # ENTER
                     buf = disp["kbd_buf"].strip()
                     if target == "nav_ident":
@@ -7708,6 +7726,16 @@ def _approach_phase():
     return "armed"
 
 
+def _approach_label():
+    """Short human label for the loaded approach — the published procedure name
+    ('RNAV (GPS) RWY 03'), or 'RWY <id>' for a synthetic approach."""
+    ap = disp.get("approach") or {}
+    if ap.get("published") and ap.get("procedure"):
+        return ap["procedure"]
+    rwy = ap.get("runway", "")
+    return f"RWY {rwy}" if rwy else "APPR"
+
+
 def _approach_cancel():
     """Clear the loaded/active/missed approach.  If a flight plan is still
     active, restore the CDI to its active leg; otherwise leave the direct-to
@@ -7719,6 +7747,58 @@ def _approach_cancel():
         ap["missed"] = False
     if _fpl_is_active():
         _fpl_apply_active()
+
+
+# ── Published-approach procedure picker (CIFP) ─────────────────────────────────
+_PRC_TOP   = 100
+_PRC_MX    = 14
+_PRC_ROW_H = 52
+_PRC_GY    = 8
+
+
+def _prc_row_rect(i):
+    by = _PRC_TOP + i * (_PRC_ROW_H + _PRC_GY)
+    return pygame.Rect(_PRC_MX, by, DISPLAY_W - 2 * _PRC_MX, _PRC_ROW_H)
+
+
+def _prc_visible_count():
+    return max(1, (DISPLAY_H - _PRC_TOP - 10) // (_PRC_ROW_H + _PRC_GY))
+
+
+def draw_appr_proc_select(surf):
+    """List the published approaches for disp["approach"]["airport"]; tap to load."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "SELECT APPROACH")
+    airport = (disp.get("approach") or {}).get("airport", "")
+    _text(surf, airport or "—", 20, WHITE, bold=True, cx=DISPLAY_W // 2, cy=72)
+    procs = _appr_published(airport)
+    if not procs:
+        _text(surf, f"No published approaches for {airport}", 15, YELLOW,
+              cx=DISPLAY_W // 2, cy=_PRC_TOP + 30)
+        return
+    nvis = _prc_visible_count()
+    for i, pid in enumerate(procs[:nvis]):
+        rect = _prc_row_rect(i)
+        for j in range(rect.height):
+            t = 1.0 - j / rect.height
+            pygame.draw.line(surf, (int(t * 10), int(14 + t * 22), int(30 + t * 42)),
+                             (rect.x, rect.y + j), (rect.right, rect.y + j))
+        pygame.draw.rect(surf, (60, 90, 130), rect, width=1, border_radius=6)
+        _text(surf, pid, 19, WHITE, bold=True, x=rect.x + 16, cy=rect.centery)
+        _text(surf, "▶", 18, (70, 100, 140), x=rect.right - 30, cy=rect.centery)
+    if len(procs) > nvis:
+        _text(surf, f"+{len(procs) - nvis} more", 11, (130, 145, 170),
+              cx=DISPLAY_W // 2, cy=DISPLAY_H - 16)
+
+
+def appr_proc_select_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    procs = _appr_published((disp.get("approach") or {}).get("airport", ""))
+    for i in range(min(len(procs), _prc_visible_count())):
+        if _prc_row_rect(i).collidepoint(x, y):
+            return ("pick", procs[i])
+    return (None, None)
 
 
 def draw_ahrs_setup(surf, ss):
@@ -14204,13 +14284,16 @@ def _fpl_deact_btn_rect():
 
 
 def _fpl_dest_approach_ident():
-    """Final FPL waypoint's ident if it's an airport with runway data (so a
-    synthetic approach can be loaded to it), else ''."""
+    """Final FPL waypoint's ident if an approach can be loaded to it — either a
+    published CIFP approach (preferred) or runway data for a synthetic one —
+    else ''."""
     wps = disp.get("fpl", {}).get("waypoints", [])
     if not wps:
         return ""
     ident = (wps[-1].get("ident") or "").upper()
-    return ident if ident and _ident_has_runways(ident) else ""
+    if ident and (_appr_published(ident) or _ident_has_runways(ident)):
+        return ident
+    return ""
 
 
 def _fpl_deact_row_rects():
@@ -14401,7 +14484,7 @@ def draw_fpl(surf):
                              border_radius=5)
             pygame.draw.rect(surf, col, (lbx + 40, py, lbw - 40, ph), width=1,
                              border_radius=5)
-            _text(surf, f"↳  APPR RWY {_ap.get('runway', '')}", 17, col,
+            _text(surf, f"↳  {_approach_label()}", 17, col,
                   bold=True, x=lbx + 58, cy=py + ph // 2)
             _text(surf, tag, 14, col, x=lbx + lbw - 230, cy=py + ph // 2)
 
@@ -14880,6 +14963,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_flight_profile(surf, disp["fp"]); return
     if mode == "display_setup":
         draw_display_setup(surf, disp["ds"]); return
+    if mode == "appr_proc_select":
+        draw_appr_proc_select(surf); return
     if mode == "approach_select":
         draw_approach_select(surf); return
     if mode == "ahrs_setup":
@@ -16085,6 +16170,9 @@ def main():
             disp["mode"] = args.ss_mode
             if args.ss_mode == "navdata_data":
                 _nd_load()          # deterministic stats for the screenshot
+            if args.ss_mode == "appr_proc_select":
+                _nd_load()          # load _navdata so procedures resolve
+                disp["approach"] = {"airport": "KFLG", "arm_from_fpl": True}
             if args.ss_mode in ("fpl", "nav_pick"):
                 # Demo plan + a loaded (armed) approach, for layout checks.
                 disp["fpl"]["waypoints"] = [
