@@ -8196,6 +8196,7 @@ def _approach_check_advance(lat, lon):
     if dist_nm < _FPL_ADVANCE_DIST_NM:
         ap["leg_idx"] = idx + 1
         _approach_apply_leg()
+        _ssync_publish_approach()    # propagate the sequenced leg to peers
 
 
 def _approach_goto_leg(idx, from_present=False):
@@ -16252,7 +16253,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         # extra magenta line clutters the corridor.
         _gl_polylines = []
         _ap = disp.get("approach") or {}
-        if not _ap.get("active"):
+        # Show the magenta direct-to trace UNLESS we're flying the final
+        # centreline (where the HITS boxes carry the path).  On an
+        # intermediate/activated approach leg the boxes sit at the runway, so
+        # without this the leg to the active fix had no magenta AND no boxes.
+        if not _approach_centerline_active():
             _trace_verts = build_direct_to_trace_vertices()
             if _trace_verts is not None and len(_trace_verts) >= 2:
                 _gl_polylines.append((
@@ -16260,11 +16265,9 @@ def render(surf, demo_mode, connected, data_stale=False):
                     (220 / 255.0, 0.0, 220 / 255.0, 1.0),
                     3.0,
                 ))
-        # HITS boxes — cyan rectangles along the extended centreline
-        # at 3° glideslope when a synthetic approach is active.  The
-        # boxes feed the same depth-tested polyline path as the D2
-        # trace, so terrain occludes them naturally where ridges
-        # block the corridor.
+        # HITS boxes — cyan rectangles along the extended centreline at 3°
+        # glideslope whenever an approach is active (any leg), so the corridor
+        # into the runway is visible ahead while you fly the feeder legs too.
         if _ap.get("active"):
             _gl_polylines.extend(_hits_mod.build_box_polylines(
                 _ap["thresh_lat"], _ap["thresh_lon"],
@@ -16293,7 +16296,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         # live Pi 4; this branch covers everything else.
         _gl_polylines = []
         _ap = disp.get("approach") or {}
-        if not _ap.get("active"):
+        if not _approach_centerline_active():
             _trace_verts = build_direct_to_trace_vertices()
             if _trace_verts is not None and len(_trace_verts) >= 2:
                 _gl_polylines.append((

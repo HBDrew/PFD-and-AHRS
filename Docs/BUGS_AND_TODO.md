@@ -720,6 +720,24 @@ Work items:
     "EXIT HOLD" (then resume the next leg). This is the one place the
     existing distance-gated sequencer needs a real state change.
 
+### PIZ-APPROACHES  Published approaches on pi_zero (parity with pi4)
+Status: **OPEN — pi4 + pi5 (pi4 code) have approaches; pi_zero does not**
+Context: the published-approach work (LOAD APPR picker, transition/IAF picker,
+preview, leg sequencing, missed + holds, HITS/VDI) lives in `pi4/pfd.py`.  A
+pi_zero MFD on the same network now RECEIVES the approach over screen sync
+(KIND_APPR is in shared/screen_sync.py) but `pi_zero/pfd.py` has no consumer or
+renderer for it, so the approach (path, missed, holds, active leg) doesn't draw
+on piZ and can't be loaded/flown from piZ.  To reach parity:
+  - Add `_ssync_apply_approach` (mirror pi4) + register KIND_APPR on piZ, store
+    into `disp["approach"]`.
+  - Teach `pi_zero/moving_map.py` to draw `approach_path` / `missed_path` /
+    `holds` / `runway_marker` (port the pi4 moving_map additions — they're 2D
+    and renderer-agnostic, so mostly a copy).
+  - (Stretch) the LOAD APPR flow itself on piZ so an approach can be selected
+    there, not just received.  Holds re-derive from piZ's own nav-data.
+Lower priority than the build-data cleanup; the pi4/pi5 PFD is the approach
+display and piZ is a secondary map.
+
 ### NAVDATA-BUILD-CLEANUP  Fix approach legs in the build, not at runtime
 Status: **OPEN — runtime works around a dirty cache; clean the cache instead**
 Context: the CIFP cache has artifacts the runtime currently papers over every
