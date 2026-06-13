@@ -884,32 +884,10 @@ def _fpl_check_advance(lat, lon):
     if fpl["active_idx"] < len(fpl["waypoints"]) - 1:
         _fpl_activate(fpl["active_idx"] + 1, reset_activation=False)
     else:
-        # Reached the destination.  If an approach was armed from this plan,
-        # engage it now: hand the CDI to the runway threshold instead of
-        # blanking the nav.
-        ap = disp.get("approach") or {}
-        if ap.get("active") and ap.get("from_fpl"):
-            fpl["active_idx"] = -1
-            _ssync_publish_fpl()
-            _approach_engage_threshold(ap)
-        else:
-            _fpl_deactivate()
-
-
-def _approach_engage_threshold(ap):
-    """Hand the direct-to / CDI to an armed approach's runway threshold — called
-    when the flight plan sequences to its destination with the approach armed."""
-    th_lat = float(ap.get("thresh_lat", 0.0))
-    th_lon = float(ap.get("thresh_lon", 0.0))
-    disp["nav"] = {
-        "ident":   ap.get("airport", ""),
-        "lat":     th_lat,
-        "lon":     th_lon,
-        "elev_ft": float(ap.get("thresh_elev_ft", 0.0)),
-        "act_lat": float(disp.get("lat", th_lat)),
-        "act_lon": float(disp.get("lon", th_lon)),
-    }
-    ap["from_fpl"] = False        # engaged — don't re-trigger
+        # Reached the destination.  A loaded approach is NOT auto-engaged —
+        # the pilot activates it deliberately (FPL screen / CDI).  Just end
+        # plan sequencing.
+        _fpl_deactivate()
 
 
 def _ssync_publish_fpl():
@@ -4487,8 +4465,9 @@ def _nav_confirm_apply():
     if ident:
         _nav_set_by_ident(ident)
         ap = disp.get("approach")
-        if ap and ap.get("active"):
+        if ap and (ap.get("active") or ap.get("loaded")):
             ap["active"] = False
+            ap["loaded"] = False
     disp["nav_confirm_ident"] = ""
     disp["mode"] = disp.get("nav_confirm_prev", "pfd")
 
@@ -5408,11 +5387,14 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "pfd"
             elif action and action.startswith("select:"):
                 idx = int(action.split(":", 1)[1])
-                ident = (disp.get("nav") or {}).get("ident", "") or \
-                        (disp.get("approach") or {}).get("airport", "")
+                ident = (disp.get("approach") or {}).get("airport", "") or \
+                        (disp.get("nav") or {}).get("ident", "")
                 ends = _apr_runway_ends(ident)
                 if 0 <= idx < len(ends):
-                    _approach_activate(ends[idx])
+                    # From the FPL → load armed (pilot activates later); a plain
+                    # direct-to APPR loads + activates in one step.
+                    from_fpl = bool(disp.get("approach", {}).get("arm_from_fpl"))
+                    _approach_load(ident, ends[idx], activate=not from_fpl)
                     disp["mode"] = "pfd"
             return True
 
@@ -5600,20 +5582,23 @@ def handle_event(event, demo_mode):
             elif act == "deact":
                 _fpl_deactivate()
             elif act == "load_appr":
-                # Synthetic approach to the FPL destination.  Anchor the runway
-                # picker on the destination airport.  When a FPL is active we
-                # DON'T retarget the nav — the CDI keeps sequencing the plan and
-                # the approach only engages on reaching the final waypoint (see
-                # _approach_activate / _fpl_check_advance).  With no active FPL
-                # we fall back to a plain direct-to so the picker + CDI anchor
-                # on the airport.
-                dest = _fpl_dest_approach_ident()
-                if dest:
-                    disp["approach"]["airport"] = dest
-                    disp["approach"]["arm_from_fpl"] = _fpl_is_active()
-                    if not _fpl_is_active():
-                        _nav_set_by_ident(dest)
-                    disp["mode"] = "approach_select"
+                # The approach button is a 3-state machine, mirroring a real
+                # navigator: nothing loaded → open the runway picker to LOAD
+                # (armed only); loaded but not active → ACTIVATE (engage
+                # threshold guidance); active → CANCEL.  Loading never retargets
+                # the CDI — the plan keeps flying to the airport until the pilot
+                # deliberately activates.
+                _ap = disp.get("approach") or {}
+                if _ap.get("active"):
+                    _approach_cancel()
+                elif _ap.get("loaded"):
+                    _approach_engage()
+                else:
+                    dest = _fpl_dest_approach_ident()
+                    if dest:
+                        disp["approach"]["airport"] = dest
+                        disp["approach"]["arm_from_fpl"] = True
+                        disp["mode"] = "approach_select"
             elif act == "activate":
                 _fpl_activate(payload, reset_activation=True)
             elif act == "up" and payload > 0:
@@ -6035,6 +6020,7 @@ def handle_event(event, demo_mode):
                         # current airport.  Then jump to the picker.
                         if buf and buf != cur_ident:
                             _nav_set_by_ident(buf)
+                        disp["approach"]["airport"] = target_ident
                         disp["approach"]["arm_from_fpl"] = False  # plain D2
                         disp["kbd_buf"] = ""
                         disp["kbd_error"] = ""
@@ -7434,7 +7420,10 @@ def draw_approach_select(surf):
 
     nv  = disp.get("nav") or {}
     ap  = disp.get("approach") or {}
-    ident = nv.get("ident", "") or ap.get("airport", "")
+    # Prefer the approach's own airport (set when the approach was opened) so a
+    # FPL-loaded approach resolves the destination's runways, not the active
+    # leg's waypoint that happens to be in disp["nav"].
+    ident = ap.get("airport", "") or nv.get("ident", "")
 
     # Header line — the airport this picker is for.
     if ident:
@@ -7485,7 +7474,10 @@ def approach_select_hit(x, y):
 
     nv  = disp.get("nav") or {}
     ap  = disp.get("approach") or {}
-    ident = nv.get("ident", "") or ap.get("airport", "")
+    # Prefer the approach's own airport (set when the approach was opened) so a
+    # FPL-loaded approach resolves the destination's runways, not the active
+    # leg's waypoint that happens to be in disp["nav"].
+    ident = ap.get("airport", "") or nv.get("ident", "")
     if not ident:
         return None
 
@@ -7505,53 +7497,69 @@ def approach_select_hit(x, y):
     return None
 
 
-def _approach_activate(rwy_end):
-    """Activate HITS to the given runway end and retarget the
-    direct-to so the CDI / ETE / inset all line up with the threshold
-    instead of the airport centroid."""
+def _approach_load(ident, rwy_end, activate=False):
+    """Load a synthetic approach to a runway end of airport `ident`.
+
+    Two states.  *Loaded* (armed) stores the threshold and shows the approach
+    on the plan, but leaves lateral guidance alone — the CDI keeps flying the
+    flight plan to the airport.  *Active* (engaged) hands the CDI / ETE / inset
+    line to the threshold and turns on HITS + the vertical deviation indicator.
+
+    A plain direct-to APPR loads-and-activates in one step (activate=True); an
+    approach loaded from the flight plan stays armed until the pilot activates
+    it (FPL screen / CDI)."""
     rid, la, lo, elev, hdg, _length = rwy_end
-    ident = disp.get("nav", {}).get("ident", "") or \
-            disp.get("approach", {}).get("airport", "")
-    # Armed from the FPL LOAD APPR path (vs a plain direct-to APPR)?  Only then
-    # do we keep sequencing the plan and engage the threshold at the last leg.
-    from_fpl = bool(disp.get("approach", {}).get("arm_from_fpl")) and _fpl_is_active()
     disp["approach"] = {
-        "active":          True,
+        "loaded":          True,
+        "active":          bool(activate),
         "airport":         ident,
         "runway":          rid,
         "thresh_lat":      float(la),
         "thresh_lon":      float(lo),
         "thresh_elev_ft":  float(elev),
         "course_deg":      float(hdg),
-        "from_fpl":        from_fpl,
     }
-    if from_fpl:
-        # Loaded onto the end of an active flight plan: leave the CDI / ETE on
-        # the active leg's next waypoint.  The threshold is armed and the CDI
-        # hands over to it when the plan sequences to its destination
-        # (_fpl_check_advance).  _nav_set_by_ident may have nudged nav onto the
-        # airport earlier; restore the active-leg target.
-        _fpl_apply_active()
-    else:
-        # Plain direct-to approach: retarget D2 to the threshold so CDI
-        # deviation, ETE and the map inset's magenta line all land on the
-        # runway end.  Keep nav["ident"] the plain airport ident so airport-DB
-        # lookups still resolve; draw_cdi appends the runway suffix itself.
-        disp["nav"] = {
-            "ident":   ident,
-            "lat":     float(la),
-            "lon":     float(lo),
-            "elev_ft": float(elev),
-            "act_lat": float(disp.get("lat", la)),
-            "act_lon": float(disp.get("lon", lo)),
-        }
+    if activate:
+        _approach_retarget_nav()
+
+
+def _approach_retarget_nav():
+    """Point the direct-to / CDI at the active approach's threshold.  Keep
+    nav["ident"] the plain airport ident so airport-DB lookups still resolve;
+    draw_cdi appends the runway suffix itself."""
+    ap = disp.get("approach") or {}
+    th_lat = float(ap.get("thresh_lat", 0.0))
+    th_lon = float(ap.get("thresh_lon", 0.0))
+    disp["nav"] = {
+        "ident":   ap.get("airport", ""),
+        "lat":     th_lat,
+        "lon":     th_lon,
+        "elev_ft": float(ap.get("thresh_elev_ft", 0.0)),
+        "act_lat": float(disp.get("lat", th_lat)),
+        "act_lon": float(disp.get("lon", th_lon)),
+    }
+
+
+def _approach_engage():
+    """Pilot deliberately activates a loaded approach — engage threshold
+    guidance.  No-op if nothing is loaded."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return
+    ap["active"] = True
+    _approach_retarget_nav()
 
 
 def _approach_cancel():
-    """Clear the active approach.  Leaves the direct-to pointing at
-    the threshold (pilot can re-issue a D2 to the airport centroid
-    if they want)."""
-    disp["approach"]["active"] = False
+    """Clear the loaded/active approach.  If a flight plan is still active,
+    restore the CDI to its active leg; otherwise leave the direct-to where it
+    is (pilot can re-issue a D2)."""
+    ap = disp.get("approach")
+    if ap:
+        ap["loaded"] = False
+        ap["active"] = False
+    if _fpl_is_active():
+        _fpl_apply_active()
 
 
 def draw_ahrs_setup(surf, ss):
@@ -14130,7 +14138,14 @@ def draw_fpl(surf):
 
     appr_r, (dx, dy, dw, dh) = _fpl_deact_row_rects()
     if appr_r is not None:
-        _action_btn(surf, *appr_r, "LOAD APPR", "ok", r=6)
+        _ap = disp.get("approach") or {}
+        _rwy = _ap.get("runway", "")
+        if _ap.get("active"):
+            _action_btn(surf, *appr_r, f"CANCEL APPR {_rwy}", "danger", r=6)
+        elif _ap.get("loaded"):
+            _action_btn(surf, *appr_r, f"ACTIVATE {_rwy}", "warn", r=6)
+        else:
+            _action_btn(surf, *appr_r, "LOAD APPR", "ok", r=6)
     if is_active:
         _action_btn(surf, dx, dy, dw, dh, "DEACTIVATE", "warn", r=6)
     else:
@@ -14193,6 +14208,25 @@ def draw_fpl(surf):
         _fpl_icon_btn(surf, up_r, "↑", dim=(i == 0))
         _fpl_icon_btn(surf, dn_r, "↓", dim=(i == len(wps) - 1))
         _fpl_icon_btn(surf, del_r, "✕")
+
+    # Loaded-approach placeholder — an indented row under the destination so the
+    # approach shows in the plan, armed, until the pilot activates it.
+    _ap = disp.get("approach") or {}
+    if _ap.get("loaded") and wps:
+        lbx, lby, lbw, lbh = _fpl_row_rect(len(wps) - 1)
+        py = lby + lbh + 6
+        ph = 36
+        if list_top <= py <= list_bot:
+            armed = not _ap.get("active")
+            col = (225, 185, 80) if armed else (60, 220, 100)
+            pygame.draw.rect(surf, (0, 14, 28), (lbx + 40, py, lbw - 40, ph),
+                             border_radius=5)
+            pygame.draw.rect(surf, col, (lbx + 40, py, lbw - 40, ph), width=1,
+                             border_radius=5)
+            _text(surf, f"↳  APPR RWY {_ap.get('runway', '')}", 17, col,
+                  bold=True, x=lbx + 58, cy=py + ph // 2)
+            _text(surf, "ARMED · tap ACTIVATE" if armed else "● ACTIVE",
+                  14, col, x=lbx + lbw - 230, cy=py + ph // 2)
 
     surf.set_clip(prev_clip)
     max_s = _fpl_max_scroll(len(wps))
@@ -15874,6 +15908,18 @@ def main():
             disp["mode"] = args.ss_mode
             if args.ss_mode == "navdata_data":
                 _nd_load()          # deterministic stats for the screenshot
+            if args.ss_mode == "fpl":
+                # Demo plan + a loaded (armed) approach, for layout checks.
+                disp["fpl"]["waypoints"] = [
+                    {"ident": "DRK", "lat": 34.70, "lon": -111.30, "name": "DRAKE"},
+                    {"ident": "SEZ", "lat": 34.85, "lon": -111.79, "name": "SEDONA"},
+                    {"ident": "KFLG", "lat": 35.14, "lon": -111.67, "name": "FLAGSTAFF PULLIAM"},
+                ]
+                disp["fpl"]["active_idx"] = 1
+                disp["approach"] = {"loaded": True, "active": False,
+                                    "airport": "KFLG", "runway": "21",
+                                    "thresh_lat": 35.13, "thresh_lon": -111.66,
+                                    "thresh_elev_ft": 7000.0, "course_deg": 210.0}
         smooth_state()              # now a no-op (disp already matches state)
         render(surf, demo_mode=False, connected=True, data_stale=False)
         _flip()
