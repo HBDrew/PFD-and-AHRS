@@ -4484,16 +4484,19 @@ _NAVPICK_BTN_H  = 56
 
 def _navpick_options():
     """The buttons to show, as (action, label, style).  DIRECT-TO + FLIGHT PLAN
-    always; a loaded approach adds ACTIVATE (armed) or CANCEL (active)."""
+    always; a loaded approach adds controls for its current phase."""
     opts = [("d2", "DIRECT-TO  →", "ok"),
             ("fpl", "FLIGHT PLAN  →", "normal")]
     ap = disp.get("approach") or {}
-    if ap.get("loaded"):
-        rwy = ap.get("runway", "")
-        if ap.get("active"):
-            opts.append(("appr_cancel", f"CANCEL APPR {rwy}", "danger"))
-        else:
-            opts.append(("appr_activate", f"ACTIVATE APPR {rwy}", "warn"))
+    rwy = ap.get("runway", "")
+    phase = _approach_phase()
+    if phase == "armed":
+        opts.append(("appr_activate", f"ACTIVATE APPR {rwy}", "warn"))
+    elif phase == "active":
+        opts.append(("appr_missed", f"MISSED APPROACH {rwy}", "warn"))
+        opts.append(("appr_cancel", f"CANCEL APPR {rwy}", "danger"))
+    elif phase == "missed":
+        opts.append(("appr_cancel", f"END MISSED {rwy}", "danger"))
     return opts
 
 
@@ -4530,11 +4533,14 @@ def draw_nav_pick(surf):
           cx=bx + _NAVPICK_W // 2, cy=by + 20)
     if has_reminder:
         ap = disp.get("approach") or {}
-        armed = not ap.get("active")
-        col = (225, 185, 80) if armed else (60, 220, 100)
+        phase = _approach_phase()
+        plabel = {"armed": "ARMED", "active": "ACTIVE",
+                  "missed": "MISSED"}.get(phase, "")
+        col = {"armed": (225, 185, 80), "active": (60, 220, 100),
+               "missed": (240, 140, 60)}.get(phase, (200, 200, 200))
         _text(surf, f"APPR  {ap.get('airport','')} RWY {ap.get('runway','')}  ·  "
-                    + ("ARMED" if armed else "ACTIVE"),
-              12, col, bold=True, cx=bx + _NAVPICK_W // 2, cy=by + 40)
+                    + plabel, 12, col, bold=True,
+              cx=bx + _NAVPICK_W // 2, cy=by + 40)
     for (_act, lbl, style), (_a, rect) in zip(opts, rects):
         _action_btn(surf, *rect, lbl, style)
     _text(surf, "tap outside to cancel", 11, (140, 150, 160),
@@ -5616,10 +5622,10 @@ def handle_event(event, demo_mode):
                 # threshold guidance); active → CANCEL.  Loading never retargets
                 # the CDI — the plan keeps flying to the airport until the pilot
                 # deliberately activates.
-                _ap = disp.get("approach") or {}
-                if _ap.get("active"):
+                _phase = _approach_phase()
+                if _phase in ("active", "missed"):
                     _approach_cancel()
-                elif _ap.get("loaded"):
+                elif _phase == "armed":
                     _approach_engage()
                 else:
                     dest = _fpl_dest_approach_ident()
@@ -5820,6 +5826,9 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "fpl"        # the existing FPL editor
             elif action == "appr_activate":
                 _approach_engage()
+                disp["mode"] = "pfd"
+            elif action == "appr_missed":
+                _approach_go_missed()
                 disp["mode"] = "pfd"
             elif action == "appr_cancel":
                 _approach_cancel()
@@ -7581,17 +7590,49 @@ def _approach_engage():
     if not ap.get("loaded"):
         return
     ap["active"] = True
+    ap["missed"] = False
     _approach_retarget_nav()
 
 
+def _approach_go_missed():
+    """Pilot goes missed / goes around on an active approach.
+
+    SYNTHETIC (advisory only, until published missed legs from NAVDATA): drop
+    descent guidance (active=False turns off the VDI / HITS / terrain inhibit)
+    and keep the lateral CDI on the runway centreline so it reads as a
+    'fly runway heading, climb straight ahead' advisory.  A real published
+    missed (climb to a fix, hold) will sequence here once nav data is loaded."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return
+    ap["active"] = False
+    ap["missed"] = True
+    # Leave disp["nav"] pointing at the threshold — draw_cdi keeps the runway
+    # centreline reference while missed, so the needle still flies the heading.
+
+
+def _approach_phase():
+    """'none' | 'armed' | 'active' | 'missed' — the single source of truth the
+    UI reads to label the approach controls."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return "none"
+    if ap.get("missed"):
+        return "missed"
+    if ap.get("active"):
+        return "active"
+    return "armed"
+
+
 def _approach_cancel():
-    """Clear the loaded/active approach.  If a flight plan is still active,
-    restore the CDI to its active leg; otherwise leave the direct-to where it
-    is (pilot can re-issue a D2)."""
+    """Clear the loaded/active/missed approach.  If a flight plan is still
+    active, restore the CDI to its active leg; otherwise leave the direct-to
+    where it is (pilot can re-issue a D2)."""
     ap = disp.get("approach")
     if ap:
         ap["loaded"] = False
         ap["active"] = False
+        ap["missed"] = False
     if _fpl_is_active():
         _fpl_apply_active()
 
@@ -11500,7 +11541,10 @@ def draw_cdi(surf):
         dist_nm, brg = _nav_geo_dist_brg(lat, lon, wpt_lat, wpt_lon)
 
         ap = disp.get("approach") or {}
-        appr_active = ap.get("active") and ap.get("airport") == ident
+        appr_missed = ap.get("missed") and ap.get("airport") == ident
+        # Both the active approach and a synthetic missed track the runway
+        # centreline (missed = "climb straight ahead on runway heading").
+        appr_active = (ap.get("active") or appr_missed) and ap.get("airport") == ident
         if appr_active:
             # Approach: CDI reference is the extended runway centreline
             # (threshold + published course) — NOT the line from the
@@ -11536,9 +11580,17 @@ def draw_cdi(surf):
         # than original (11→16); positioned so the text bottom sits 3 px higher
         # than the original layout would have placed it.  When an approach is
         # active, append the runway suffix to the airport ident.
-        ident_lbl = f"{ident}/{ap['runway']}" if appr_active else ident
+        if appr_missed:
+            ident_lbl = f"{ident} MISS ▲"
+            read_col = (240, 150, 60)        # amber — go-around advisory
+        elif appr_active:
+            ident_lbl = f"{ident}/{ap['runway']}"
+            read_col = MAGENTA
+        else:
+            ident_lbl = ident
+            read_col = MAGENTA
         readout = f"{ident_lbl}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
-        _text(surf, readout, 16, MAGENTA, bold=True, cx=CX, cy=bar_y - 20)
+        _text(surf, readout, 16, read_col, bold=True, cx=CX, cy=bar_y - 20)
     else:
         # No active waypoint — leave the bar empty (no diamond) and show
         # the "DIRECT  →" affordance so the pilot knows tapping opens the
@@ -14174,9 +14226,12 @@ def draw_fpl(surf):
     if appr_r is not None:
         _ap = disp.get("approach") or {}
         _rwy = _ap.get("runway", "")
-        if _ap.get("active"):
+        _phase = _approach_phase()
+        if _phase == "active":
             _action_btn(surf, *appr_r, f"CANCEL APPR {_rwy}", "danger", r=6)
-        elif _ap.get("loaded"):
+        elif _phase == "missed":
+            _action_btn(surf, *appr_r, f"END MISSED {_rwy}", "danger", r=6)
+        elif _phase == "armed":
             _action_btn(surf, *appr_r, f"ACTIVATE {_rwy}", "warn", r=6)
         else:
             _action_btn(surf, *appr_r, "LOAD APPR", "ok", r=6)
@@ -14244,23 +14299,25 @@ def draw_fpl(surf):
         _fpl_icon_btn(surf, del_r, "✕")
 
     # Loaded-approach placeholder — an indented row under the destination so the
-    # approach shows in the plan, armed, until the pilot activates it.
+    # approach shows in the plan, with its phase (armed / active / missed).
     _ap = disp.get("approach") or {}
-    if _ap.get("loaded") and wps:
+    _phase = _approach_phase()
+    if _phase != "none" and wps:
         lbx, lby, lbw, lbh = _fpl_row_rect(len(wps) - 1)
         py = lby + lbh + 6
         ph = 36
         if list_top <= py <= list_bot:
-            armed = not _ap.get("active")
-            col = (225, 185, 80) if armed else (60, 220, 100)
+            col = {"armed": (225, 185, 80), "active": (60, 220, 100),
+                   "missed": (240, 140, 60)}.get(_phase, (200, 200, 200))
+            tag = {"armed": "ARMED · tap ACTIVATE", "active": "● ACTIVE",
+                   "missed": "● MISSED · go around"}.get(_phase, "")
             pygame.draw.rect(surf, (0, 14, 28), (lbx + 40, py, lbw - 40, ph),
                              border_radius=5)
             pygame.draw.rect(surf, col, (lbx + 40, py, lbw - 40, ph), width=1,
                              border_radius=5)
             _text(surf, f"↳  APPR RWY {_ap.get('runway', '')}", 17, col,
                   bold=True, x=lbx + 58, cy=py + ph // 2)
-            _text(surf, "ARMED · tap ACTIVATE" if armed else "● ACTIVE",
-                  14, col, x=lbx + lbw - 230, cy=py + ph // 2)
+            _text(surf, tag, 14, col, x=lbx + lbw - 230, cy=py + ph // 2)
 
     surf.set_clip(prev_clip)
     max_s = _fpl_max_scroll(len(wps))
