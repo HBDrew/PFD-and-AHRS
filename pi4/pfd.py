@@ -607,6 +607,7 @@ def _ssync_kinds_from_cs(direction):
     if cs.get("sync_fpl_enabled", True):
         out.add(_ssync_mod.KIND_FPL)
         out.add(_ssync_mod.KIND_FPLLIB)
+        out.add(_ssync_mod.KIND_APPR)        # approach rides with the plan
     # Winds-aloft zones always sync both ways when screen-sync is on — it's pure
     # benefit (a screen with internet feeds the others so they don't each hit
     # Open-Meteo's shared-per-IP rate limit).
@@ -1203,6 +1204,91 @@ def _ssync_apply_fpl(data):
             disp["nav"]["lat"]     = 0.0
             disp["nav"]["lon"]     = 0.0
             disp["nav"]["elev_ft"] = 0.0
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_publish_approach():
+    """Broadcast the loaded/active published approach so peer screens draw the
+    same approach (legs, missed, threshold, course) and re-derive the holds
+    from their own nav data.  Gated by the FPL share toggle — an approach is
+    part of the plan.  Called whenever the approach state changes."""
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        _screen_sync.publish(_ssync_mod.KIND_APPR, {"loaded": False})
+        return
+    _screen_sync.publish(_ssync_mod.KIND_APPR, {
+        "loaded":         True,
+        "active":         bool(ap.get("active")),
+        "missed":         bool(ap.get("missed")),
+        "published":      bool(ap.get("published")),
+        "airport":        str(ap.get("airport", "")),
+        "procedure":      str(ap.get("procedure", "")),
+        "transition":     str(ap.get("transition", "")),
+        "runway":         str(ap.get("runway", "")),
+        "legs":           [list(l) for l in (ap.get("legs") or [])],
+        "final_idx":      int(ap.get("final_idx", 0)),
+        "missed_legs":    [list(l) for l in (ap.get("missed_legs") or [])],
+        "thresh_lat":     ap.get("thresh_lat"),
+        "thresh_lon":     ap.get("thresh_lon"),
+        "thresh_elev_ft": ap.get("thresh_elev_ft"),
+        "course_deg":     ap.get("course_deg"),
+        "leg_idx":        int(ap.get("leg_idx", 0)),
+    })
+
+
+def _ssync_apply_approach(data):
+    """Adopt a peer's loaded/active approach so this screen draws it (and, when
+    active, mirrors the active leg into disp['nav'] so the CDI / magenta course
+    track it — same pattern as _ssync_apply_fpl)."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if not data.get("loaded"):
+            disp["approach"] = {"loaded": False}
+            return
+
+        def _legs(key):
+            out = []
+            for l in (data.get(key) or []):
+                try:
+                    out.append((
+                        float(l[0]), float(l[1]), str(l[2]),
+                        str(l[3]) if len(l) > 3 and l[3] is not None else "",
+                        l[4] if len(l) > 4 else None,
+                        l[5] if len(l) > 5 else None))
+                except (TypeError, ValueError, IndexError):
+                    continue
+            return out
+
+        disp["approach"] = {
+            "loaded":         True,
+            "active":         bool(data.get("active")),
+            "missed":         bool(data.get("missed")),
+            "published":      bool(data.get("published")),
+            "airport":        str(data.get("airport", "")),
+            "procedure":      str(data.get("procedure", "")),
+            "transition":     str(data.get("transition", "")),
+            "runway":         str(data.get("runway", "")),
+            "legs":           _legs("legs"),
+            "final_idx":      int(data.get("final_idx", 0)),
+            "missed_legs":    _legs("missed_legs"),
+            "thresh_lat":     data.get("thresh_lat"),
+            "thresh_lon":     data.get("thresh_lon"),
+            "thresh_elev_ft": data.get("thresh_elev_ft"),
+            "course_deg":     data.get("course_deg"),
+            "leg_idx":        int(data.get("leg_idx", 0)),
+        }
+        # Mirror the active leg into disp["nav"] so the CDI / magenta course line
+        # track it (the peer screen has no sim engine; this is display only).
+        ap = disp["approach"]
+        if ap.get("active") and (ap.get("legs") or []):
+            if ap.get("missed"):
+                _approach_apply_missed_leg()
+            else:
+                _approach_apply_leg()
     finally:
         _ssync_suppress_publish -= 1
 
@@ -8025,6 +8111,7 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
     }
     if activate:
         _approach_begin_guidance()
+    _ssync_publish_approach()
     return True
 
 
@@ -8155,6 +8242,7 @@ def _approach_engage():
     ap["active"] = True
     ap["missed"] = False
     _approach_begin_guidance()
+    _ssync_publish_approach()
 
 
 def _approach_go_missed():
@@ -8175,6 +8263,7 @@ def _approach_go_missed():
         _approach_apply_missed_leg()
     # else: synthetic / no missed legs — disp["nav"] stays on the threshold and
     # draw_cdi keeps the centreline reference (runway-heading climb advisory).
+    _ssync_publish_approach()
 
 
 def _approach_apply_missed_leg():
@@ -8209,6 +8298,7 @@ def _approach_check_missed_advance(lat, lon):
     if _nav_geo_dist_brg(lat, lon, la, lo)[0] < _FPL_ADVANCE_DIST_NM:
         ap["missed_idx"] = idx + 1
         _approach_apply_missed_leg()
+        _ssync_publish_approach()
 
 
 def _approach_phase():
@@ -8243,6 +8333,7 @@ def _approach_cancel():
         ap["loaded"] = False
         ap["active"] = False
         ap["missed"] = False
+    _ssync_publish_approach()
     if _fpl_is_active():
         _fpl_apply_active()
 
@@ -13392,6 +13483,7 @@ _wx_drag = None             # drag-to-scroll state for the TAF / advisory readou
 _mfd_last_range = 10
 _mfd_last_orient = "trk"
 _mfd_last_track = None
+_inset_render_err_logged = False   # log the first PFD-inset render exception once
 _MFD_DRAG_THRESHOLD = 8
 
 _mfd_apt_font = None
@@ -16360,54 +16452,66 @@ def render(surf, demo_mode, connected, data_stale=False):
         # so the destination doesn't spin under the chevron during whole-leg
         # fit.
         _eff_orient = "nrth" if _eff_label == "AUTO" else _orient_pref
-        _map_mod.render(
-            surf, rect, lat, lon, alt, hdg, _map_track,
-            _eff_orient,
-            _eff_range,
-            ds,
-            airports_arr=_airports,
-            runways_arr=_runways,
-            obstacles_arr=_obstacles,
-            srtm_dir=SRTM_DIR,
-            water_dir=WATER_DIR,
-            direct_to=d2 if d2.get("ident") else None,
-            font=_get_font(11, bold=True),
-            airport_types_visible=_types_vis,
-            # GS specifically — NEVER the user-selected speed source. The map
-            # is a ground-motion display, so range/ETE/track decisions must
-            # come from GPS groundspeed even when the speed tape is showing IAS.
-            gs_kt=_gs_kt,
-            vso_kt=fp.get("vs0", VS0),
-            range_label=_eff_label,
-            state_lines=_state_lines,
-            country_lines=_country_lines,
-            # Multi-leg FPL polyline.  Mirrored from the MFD over
-            # screen sync (KIND_FPL) — only renders when the pilot has
-            # FPL sync set to RX on this side AND the MFD is TXing.
-            fpl_remaining=_fpl_render_remaining(),
-            approach_path=_approach_render_path(),
-            missed_path=_approach_render_missed(),
-            holds=_approach_render_holds(),
-            # Airspace polygons (B/C/D/MOA/R).  Loaded in the
-            # background at startup from AIRSPACE_DIR/airspaces.json;
-            # per-class display gates live in disp["ds"]["map_show_airspace_*"].
-            airspaces=_airspaces,
-            # ADS-B traffic — relativised + threat-classified each frame in
-            # _update_traffic.  Clamped to nearby safety traffic on the PFD
-            # inset (always a non-TFC view) so it never clutters the SVT.
-            traffic=_traffic_to_draw(),
-            # METAR station dots — gated by ds["map_show_metar"] (MET / OVLY).
-            metars=disp.get("weather", {}).get("metars"),
-            ground_stations=disp.get("weather", {}).get("stations"),
-            wx_graphics=disp.get("weather", {}).get("graphics"),
-            winds_barbs=(_winds_barbs(0)        # inset is always NOW
-                         if (disp["ds"].get("map_show_winds")
-                             and _eff_range >= WINDS_MIN_RENDER_NM) else None),
-            # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"].
-            nexrad=_nexrad_render_arg(),
-            nexrad_cells=(_fisb_nexrad_cells()
-                          if disp["ds"].get("map_show_nexrad") else None),
-        )
+        # The inset is a SECONDARY display — never let an exception in it (or in
+        # the approach/FPL overlays it draws) abort the rest of the frame, which
+        # would drop the primary speed/alt tapes drawn below.  Log the first
+        # failure (with traceback) so the cause is captured, then carry on.
+        try:
+            _map_mod.render(
+                surf, rect, lat, lon, alt, hdg, _map_track,
+                _eff_orient,
+                _eff_range,
+                ds,
+                airports_arr=_airports,
+                runways_arr=_runways,
+                obstacles_arr=_obstacles,
+                srtm_dir=SRTM_DIR,
+                water_dir=WATER_DIR,
+                direct_to=d2 if d2.get("ident") else None,
+                font=_get_font(11, bold=True),
+                airport_types_visible=_types_vis,
+                # GS specifically — NEVER the user-selected speed source. The map
+                # is a ground-motion display, so range/ETE/track decisions must
+                # come from GPS groundspeed even when the speed tape shows IAS.
+                gs_kt=_gs_kt,
+                vso_kt=fp.get("vs0", VS0),
+                range_label=_eff_label,
+                state_lines=_state_lines,
+                country_lines=_country_lines,
+                # Multi-leg FPL polyline.  Mirrored from the MFD over
+                # screen sync (KIND_FPL) — only renders when the pilot has
+                # FPL sync set to RX on this side AND the MFD is TXing.
+                fpl_remaining=_fpl_render_remaining(),
+                approach_path=_approach_render_path(),
+                missed_path=_approach_render_missed(),
+                holds=_approach_render_holds(),
+                # Airspace polygons (B/C/D/MOA/R).  Loaded in the
+                # background at startup from AIRSPACE_DIR/airspaces.json; per-
+                # class display gates live in disp["ds"]["map_show_airspace_*"].
+                airspaces=_airspaces,
+                # ADS-B traffic — relativised + threat-classified each frame in
+                # _update_traffic.  Clamped to nearby safety traffic on the PFD
+                # inset (always a non-TFC view) so it never clutters the SVT.
+                traffic=_traffic_to_draw(),
+                # METAR station dots — gated by ds["map_show_metar"] (MET/OVLY).
+                metars=disp.get("weather", {}).get("metars"),
+                ground_stations=disp.get("weather", {}).get("stations"),
+                wx_graphics=disp.get("weather", {}).get("graphics"),
+                winds_barbs=(_winds_barbs(0)        # inset is always NOW
+                             if (disp["ds"].get("map_show_winds")
+                                 and _eff_range >= WINDS_MIN_RENDER_NM) else None),
+                # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"].
+                nexrad=_nexrad_render_arg(),
+                nexrad_cells=(_fisb_nexrad_cells()
+                              if disp["ds"].get("map_show_nexrad") else None),
+            )
+        except Exception:
+            global _inset_render_err_logged
+            if not _inset_render_err_logged:
+                import traceback
+                print("[PFD] inset render error (tapes preserved):")
+                traceback.print_exc()
+                _inset_render_err_logged = True
         # OVLY label — bottom-left of the inset; tap there to cycle the
         # WX / Airspace overlay (traffic stays on).  Colour hints the state.
         _ov_state = _map_overlay_state(disp["ds"])
@@ -16896,6 +17000,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
     _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
     _screen_sync.on(_ssync_mod.KIND_FPL,  _ssync_apply_fpl)
+    _screen_sync.on(_ssync_mod.KIND_APPR, _ssync_apply_approach)
     _screen_sync.on(_ssync_mod.KIND_FPLLIB, _ssync_apply_fpl_lib)
     _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
     _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)

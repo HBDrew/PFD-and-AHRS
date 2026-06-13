@@ -48,6 +48,8 @@ KIND_NAV   = "nav"    # D2 ident, lat/lon, activation point
 KIND_AHRS  = "ahrs"   # pitch, roll, yaw
 KIND_GPS   = "gps"    # lat, lon, alt, speed, track
 KIND_FPL   = "fpl"    # full flight-plan waypoint list + active_idx
+KIND_APPR  = "appr"   # loaded/active published approach (legs, missed, holds-by
+                      # -procedure, threshold, course) so peer screens draw it
 KIND_FPLLIB = "fpllib"  # saved-plan + user-waypoint LIBRARY (merged, peer-to
                         # -peer; lets any screen load a plan stored on any other)
 KIND_WINDS = "winds"  # one national winds-aloft ZONE (compact) — lets a screen
@@ -57,7 +59,7 @@ KIND_WINDS = "winds"  # one national winds-aloft ZONE (compact) — lets a scree
 KIND_HELLO = "hello"  # heartbeat, no payload — keeps peer-status live
 
 ALL_KINDS = (KIND_BUGS, KIND_BARO, KIND_NAV, KIND_AHRS, KIND_GPS, KIND_FPL,
-             KIND_FPLLIB, KIND_WINDS)
+             KIND_APPR, KIND_FPLLIB, KIND_WINDS)
 
 # Transport selectors.  "auto" sends on every usable interface (USB
 # and network alike); "usb" / "net" restrict sends to one category.
