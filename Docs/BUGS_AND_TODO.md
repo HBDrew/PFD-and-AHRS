@@ -740,6 +740,35 @@ fix → a detail card) showing the rich data:
 Probably its own full-screen viewer reachable from a map/airport tap, plus the
 inline navaid-freq display as a quick first win.
 
+### VNAV-ADVISORY  Vertical guidance from FPL / approach crossing altitudes
+Status: **OPEN — lateral guidance + altitude display already shipped**
+Context: we already fly lateral guidance (CDI) and show each approach fix's
+published crossing altitude in the plan (`_appr_alt_label`); the final approach
+already drives a VDI glideslope to the threshold. Extend that to a real
+advisory vertical path off the crossing altitudes, with two visual levels by
+context (pilot's call):
+  - **Enroute (pilot-entered altitudes): VDI only — no boxes.** Add a per-
+    waypoint target-altitude entry on the FPL (a field per row / via the leg
+    menu), compute a vertical path between altitude-constrained waypoints
+    (glidepath angle + top-of-descent), and drive the VDI to it. No HITS
+    corridor enroute (just the deviation needle).
+  - **Approach (published altitudes): VDI + HITS boxes.** Use the CIFP leg
+    altitudes (already parsed) to build the descent path through the whole
+    procedure (not just the final glideslope today) and render the HITS
+    highway-in-the-sky corridor along it, with the VDI.
+Work items:
+  - Vertical-path model: given altitude-constrained legs + groundspeed, compute
+    the target altitude at the current along-track distance + the deviation
+    (above/below) for the VDI; flag top-of-descent.
+  - Enroute alt entry: numpad on a FPL waypoint (leg menu → "SET ALT"), store
+    on the waypoint dict, persist with the plan; show it on the row like the
+    approach legs do.
+  - Approach: drive the existing HITS renderer along the published descent path
+    (currently HITS is only the final-segment corridor); VDI follows the path
+    through the step-downs, not just the runway glideslope.
+  - Honor constraint types (at / at-or-above / at-or-below / window) when
+    building the path — don't descend below an at-or-above floor.
+
 ## Completed
 
 ### SENTRY-INTEGRATION  uAvionix/ForeFlight Sentry as a GDL90 source
