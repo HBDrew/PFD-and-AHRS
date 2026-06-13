@@ -7799,18 +7799,55 @@ def _approach_engage():
 def _approach_go_missed():
     """Pilot goes missed / goes around on an active approach.
 
-    SYNTHETIC (advisory only, until published missed legs from NAVDATA): drop
-    descent guidance (active=False turns off the VDI / HITS / terrain inhibit)
-    and keep the lateral CDI on the runway centreline so it reads as a
-    'fly runway heading, climb straight ahead' advisory.  A real published
-    missed (climb to a fix, hold) will sequence here once nav data is loaded."""
+    Drops descent guidance (active=False turns off the VDI / HITS / terrain
+    inhibit).  A published approach with missed legs sequences the real missed
+    procedure (climb to a fix, hold); otherwise it's the synthetic advisory —
+    the CDI keeps the runway centreline so it reads as 'climb straight ahead on
+    the runway heading'."""
     ap = disp.get("approach") or {}
     if not ap.get("loaded"):
         return
     ap["active"] = False
     ap["missed"] = True
-    # Leave disp["nav"] pointing at the threshold — draw_cdi keeps the runway
-    # centreline reference while missed, so the needle still flies the heading.
+    if ap.get("published") and (ap.get("missed_legs") or []):
+        ap["missed_idx"] = 0
+        _approach_apply_missed_leg()
+    # else: synthetic / no missed legs — disp["nav"] stays on the threshold and
+    # draw_cdi keeps the centreline reference (runway-heading climb advisory).
+
+
+def _approach_apply_missed_leg():
+    """Drive disp["nav"] from the active published missed-approach leg
+    (direct fix-to-fix; the last leg, usually the hold fix, is held)."""
+    ap = disp.get("approach") or {}
+    mlegs = ap.get("missed_legs") or []
+    if not mlegs:
+        return
+    idx = max(0, min(int(ap.get("missed_idx", 0)), len(mlegs) - 1))
+    ap["missed_idx"] = idx
+    la, lo, ident, _lt, _alt = mlegs[idx]
+    prev = mlegs[idx - 1] if idx > 0 else None
+    disp["nav"] = {
+        "ident": ident, "lat": float(la), "lon": float(lo), "elev_ft": 0.0,
+        "act_lat": float(prev[0]) if prev else float(disp.get("lat", la)),
+        "act_lon": float(prev[1]) if prev else float(disp.get("lon", lo)),
+    }
+
+
+def _approach_check_missed_advance(lat, lon):
+    """Per-frame: sequence through the published missed legs; hold on the last
+    one (the missed-approach holding fix)."""
+    ap = disp.get("approach") or {}
+    if not (ap.get("missed") and ap.get("published")):
+        return
+    mlegs = ap.get("missed_legs") or []
+    idx = int(ap.get("missed_idx", 0))
+    if idx >= len(mlegs) - 1:
+        return
+    la, lo, _ident, _lt, _alt = mlegs[idx]
+    if _nav_geo_dist_brg(lat, lon, la, lo)[0] < _FPL_ADVANCE_DIST_NM:
+        ap["missed_idx"] = idx + 1
+        _approach_apply_missed_leg()
 
 
 def _approach_phase():
@@ -11892,9 +11929,11 @@ def draw_cdi(surf):
         # than original (11→16); positioned so the text bottom sits 3 px higher
         # than the original layout would have placed it.  When an approach is
         # active, append the runway suffix to the airport ident.
-        if appr_missed:
-            ident_lbl = f"{ident} MISS ▲"
-            read_col = (240, 150, 60)        # amber — go-around advisory
+        if ap.get("missed"):
+            # Missed: amber readout to the missed fix (published) or the
+            # runway-heading climb advisory (synthetic, ident == airport).
+            ident_lbl = f"{ident} ▲MA"
+            read_col = (240, 150, 60)
         elif appr_active:
             ident_lbl = f"{ident}/{ap['runway']}"
             read_col = MAGENTA
@@ -15326,6 +15365,9 @@ def render(surf, demo_mode, connected, data_stale=False):
         if _ap_seq.get("active") and _ap_seq.get("published") \
                 and not _ap_seq.get("missed"):
             _approach_check_advance(lat, lon)        # fly the published legs
+        elif _ap_seq.get("missed") and _ap_seq.get("published") \
+                and _ap_seq.get("missed_legs"):
+            _approach_check_missed_advance(lat, lon)  # fly the missed procedure
         elif not (_ap_seq.get("active") or _ap_seq.get("missed")) \
                 and _fpl_is_active():
             _fpl_check_advance(lat, lon)             # no approach engaged → FPL
