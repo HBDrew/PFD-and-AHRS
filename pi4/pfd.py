@@ -4581,6 +4581,77 @@ def _nav_pick_open():
     disp["mode"] = "nav_pick"
 
 
+# ── Leg menu — tap a flight-plan waypoint / approach fix to choose what to fly ──
+_LEGMENU_W      = 360
+_LEGMENU_BTN_H  = 56
+
+
+def _legmenu_open(kind, idx):
+    """kind = 'fpl' | 'appr'; idx into the plan / approach legs."""
+    disp["leg_menu"] = {"kind": kind, "idx": int(idx)}
+    disp["mode"] = "leg_menu"
+
+
+def _legmenu_title():
+    lm = disp.get("leg_menu") or {}
+    idx = lm.get("idx", 0)
+    if lm.get("kind") == "appr":
+        legs = (disp.get("approach") or {}).get("legs") or []
+        return (legs[idx][2] if 0 <= idx < len(legs) else ""), "Approach leg"
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    return ((wps[idx].get("ident", "") if 0 <= idx < len(wps) else ""),
+            "Flight-plan leg")
+
+
+def _legmenu_options():
+    opts = [("activate", "ACTIVATE LEG", "ok"),
+            ("d2",       "DIRECT-TO  →", "normal")]
+    if (disp.get("leg_menu") or {}).get("kind") == "appr":
+        opts.append(("vectors", "VECTORS TO FINAL", "warn"))
+    return opts
+
+
+def _legmenu_layout():
+    opts = _legmenu_options()
+    gap, top = 10, 56
+    h = top + len(opts) * _LEGMENU_BTN_H + (len(opts) - 1) * gap + 28
+    bx = (DISPLAY_W - _LEGMENU_W) // 2
+    by = (DISPLAY_H - h) // 2
+    bxl, btn_w = bx + 20, _LEGMENU_W - 40
+    y0 = by + top
+    rects = [(opt[0], (bxl, y0 + i * (_LEGMENU_BTN_H + gap), btn_w, _LEGMENU_BTN_H))
+             for i, opt in enumerate(opts)]
+    return bx, by, h, opts, rects
+
+
+def draw_leg_menu(surf):
+    """Modal over the FPL screen: tap a leg → ACTIVATE / DIRECT-TO / (VECTORS)."""
+    draw_fpl(surf)
+    bx, by, h, opts, rects = _legmenu_layout()
+    _draw_veil(surf)
+    panel = pygame.Surface((_LEGMENU_W, h), pygame.SRCALPHA)
+    panel.fill((0, 12, 32, 235))
+    surf.blit(panel, (bx, by))
+    pygame.draw.rect(surf, CYAN, (bx, by, _LEGMENU_W, h), width=2, border_radius=10)
+    ident, sub = _legmenu_title()
+    _text(surf, ident or "—", 22, WHITE, bold=True, cx=bx + _LEGMENU_W // 2, cy=by + 22)
+    _text(surf, sub, 12, (150, 180, 210), cx=bx + _LEGMENU_W // 2, cy=by + 42)
+    for (_a, lbl, st), (_a2, rect) in zip(opts, rects):
+        _action_btn(surf, *rect, lbl, st)
+    _text(surf, "tap outside to cancel", 11, (140, 150, 160),
+          cx=bx + _LEGMENU_W // 2, cy=by + h - 12)
+
+
+def leg_menu_hit(x, y):
+    bx, by, h, _opts, rects = _legmenu_layout()
+    if not (bx <= x <= bx + _LEGMENU_W and by <= y <= by + h):
+        return "cancel"
+    for act, (rx, ry, rw, rh) in rects:
+        if rx <= x <= rx + rw and ry <= y <= ry + rh:
+            return act
+    return "noop"
+
+
 def _nav_open_confirm(ident: str, prev_mode: str) -> bool:
     """Switch to the nav_confirm modal for `ident`.  Returns False if
     the ident is empty (caller should fall through to its no-op
@@ -5687,8 +5758,10 @@ def handle_event(event, demo_mode):
                         disp["mode"] = ("appr_proc_select"
                                         if _appr_published(dest)
                                         else "approach_select")
-            elif act == "activate":
-                _fpl_activate(payload, reset_activation=True)
+            elif act == "legmenu":
+                _legmenu_open("fpl", payload)
+            elif act == "appr_legmenu":
+                _legmenu_open("appr", payload)
             elif act == "up" and payload > 0:
                 _fpl_swap(payload, payload - 1)
             elif act == "down":
@@ -5868,6 +5941,31 @@ def handle_event(event, demo_mode):
             return True
 
         # ── Nav picker (CDI tap → Direct-To / Flight Plan) ────────────────
+        if mode == "leg_menu":
+            action = leg_menu_hit(x, y)
+            lm = disp.get("leg_menu") or {}
+            kind, idx = lm.get("kind"), int(lm.get("idx", 0))
+            if action == "activate":
+                if kind == "appr":
+                    _approach_goto_leg(idx, from_present=False)
+                else:
+                    _fpl_activate(idx, reset_activation=False)
+                disp["mode"] = "fpl"
+            elif action == "d2":
+                if kind == "appr":
+                    _approach_goto_leg(idx, from_present=True)
+                else:
+                    _fpl_activate(idx, reset_activation=True)
+                disp["mode"] = "fpl"
+            elif action == "vectors":
+                if kind == "appr":
+                    fi = int((disp.get("approach") or {}).get("final_idx", 0))
+                    _approach_goto_leg(fi, from_present=True)
+                disp["mode"] = "fpl"
+            elif action == "cancel":
+                disp["mode"] = "fpl"
+            return True
+
         if mode == "nav_pick":
             action = nav_pick_hit(x, y)
             if action == "d2":
@@ -7672,6 +7770,7 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
     legs = []
     if transition and transition in (p.get("transitions") or {}):
         legs.extend(p["transitions"][transition])
+    trans_pts = _appr_leg_pts(legs)            # flyable transition legs so far
     legs.extend(p.get("final") or [])
     final_pts = _appr_leg_pts(p.get("final") or [])
     if not final_pts:                       # nothing flyable — bail to synthetic
@@ -7696,6 +7795,7 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
         "transition":      transition,
         "runway":          _appr_runway_from_name(proc_ident),
         "legs":            _appr_leg_pts(legs),
+        "final_idx":       len(trans_pts),     # leg index where the final begins
         "missed_legs":     _appr_leg_pts(p.get("missed") or []),
         "thresh_lat":      float(th_lat),
         "thresh_lon":      float(th_lon),
@@ -7724,10 +7824,12 @@ def _approach_begin_guidance():
         _approach_retarget_nav()
 
 
-def _approach_apply_leg():
+def _approach_apply_leg(from_present=False):
     """Drive disp["nav"] from the active published-approach leg.  The final leg
     targets the airport/threshold so draw_cdi switches to the runway-centreline
-    branch (HITS + VDI); earlier legs fly direct fix-to-fix."""
+    branch (HITS + VDI); earlier legs fly direct fix-to-fix.  ``from_present``
+    anchors the course origin at the aircraft (a direct-to) instead of the
+    previous leg."""
     ap = disp.get("approach") or {}
     legs = ap.get("legs") or []
     if not legs:
@@ -7735,7 +7837,7 @@ def _approach_apply_leg():
     idx = max(0, min(int(ap.get("leg_idx", 0)), len(legs) - 1))
     ap["leg_idx"] = idx
     la, lo, ident, _lt, _alt = legs[idx]
-    prev = legs[idx - 1] if idx > 0 else None
+    prev = None if from_present else (legs[idx - 1] if idx > 0 else None)
     act_lat = float(prev[0]) if prev else float(disp.get("lat", la))
     act_lon = float(prev[1]) if prev else float(disp.get("lon", lo))
     if idx == len(legs) - 1:                 # final leg → threshold/centreline
@@ -7769,6 +7871,23 @@ def _approach_check_advance(lat, lon):
     if dist_nm < _FPL_ADVANCE_DIST_NM:
         ap["leg_idx"] = idx + 1
         _approach_apply_leg()
+
+
+def _approach_goto_leg(idx, from_present=False):
+    """Engage the approach and jump to leg ``idx`` (used by the leg menu's
+    ACTIVATE / DIRECT-TO and VECTORS).  from_present anchors the course at the
+    aircraft (direct-to)."""
+    ap = disp.get("approach") or {}
+    legs = ap.get("legs") or []
+    if not legs:
+        return
+    ap["active"] = True
+    ap["missed"] = False
+    if _fpl_is_active():
+        disp["fpl"]["active_idx"] = -1
+        _ssync_publish_fpl()
+    ap["leg_idx"] = max(0, min(int(idx), len(legs) - 1))
+    _approach_apply_leg(from_present=from_present)
 
 
 def _approach_retarget_nav():
@@ -14780,7 +14899,18 @@ def fpl_hit(x, y):
         rx, ry, rw, rh = del_r
         if rx <= x <= rx + rw and ry <= y <= ry + rh:
             return ("delete", i)
-        return ("activate", i)
+        return ("legmenu", i)
+    # Approach-section leg rows (read-only display, but tappable to fly).
+    ap = disp.get("approach") or {}
+    legs = ap.get("legs") or []
+    if wps and legs and _approach_phase() != "none":
+        lbx, lby, lbw, lbh = _fpl_row_rect(len(wps) - 1)
+        hy = lby + lbh + 6
+        rh = 28
+        for k in range(len(legs)):
+            ry = hy + 22 + k * (rh + 3)
+            if lbx + 40 <= x <= lbx + lbw and ry <= y <= ry + rh:
+                return ("appr_legmenu", k)
     return (None, None)
 
 
@@ -15240,6 +15370,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_mfd_strip_setup(surf); return
     if mode == "fpl":
         draw_fpl(surf); return
+    if mode == "leg_menu":
+        draw_leg_menu(surf); return
     if mode == "fpl_latlon_entry":
         draw_fpl_latlon_entry(surf); return
     if mode == "user_wpt_picker":
@@ -16443,7 +16575,7 @@ def main():
                     state[_k] = _v
                 _approach_load_published("KFLG", "RNAV (GPS) RWY 03",
                                          "BANYO", activate=True)
-            if args.ss_mode in ("fpl", "nav_pick"):
+            if args.ss_mode in ("fpl", "nav_pick", "leg_menu"):
                 # Demo plan + a loaded (armed) approach, for layout checks.
                 disp["fpl"]["waypoints"] = [
                     {"ident": "DRK", "lat": 34.70, "lon": -111.30, "name": "DRAKE"},
@@ -16458,6 +16590,8 @@ def main():
                                         "airport": "KFLG", "runway": "21",
                                         "thresh_lat": 35.13, "thresh_lon": -111.66,
                                         "thresh_elev_ft": 7000.0, "course_deg": 210.0}
+                if args.ss_mode == "leg_menu":
+                    disp["leg_menu"] = {"kind": "appr", "idx": 0}
         smooth_state()              # now a no-op (disp already matches state)
         render(surf, demo_mode=False, connected=True, data_stale=False)
         _flip()

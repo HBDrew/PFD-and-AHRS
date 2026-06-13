@@ -720,6 +720,26 @@ Work items:
     "EXIT HOLD" (then resume the next leg). This is the one place the
     existing distance-gated sequencer needs a real state change.
 
+### INFO-VIEWER  Airport / approach / navaid data viewer
+Status: **OPEN — data is in hand; this is a display feature**
+Context: the NAVDATA-FAA cache + the OurAirports DB already carry far more
+than we surface today. Build a tappable info viewer (tap an airport / navaid /
+fix → a detail card) showing the rich data:
+  - **Navaid frequencies** — already in `navdata_navaids.npy` (`freq`, `name`,
+    `ntype`); surface VOR/VORTAC/NDB freqs on the map tap + a navaid card.
+  - **Airways** — log/keep the CIFP enroute `R` records (19k in the file); the
+    NASR `AWY_BASE.csv` `AIRWAY_STRING` is the other source. Build the
+    `tools/build_navdata_us.py` airway parser (deferred earlier) so V/J routes
+    can draw (ties into NAV-FIXES-AIRWAYS-DISPLAY) and list in the viewer.
+  - **Airport card** — runways (length/surface/lighting), elevation, published
+    approaches (from `navdata.procedures_for`), and — once parsed from NASR —
+    CTAF/TWR/GND/ATIS comm frequencies + AWOS/ASOS.
+  - **Approach card** — the procedure's legs, FAF, MAP, missed, minimums (CIFP
+    has the altitudes; minimums proper need the CIFP `S…P…F` continuation /
+    minima records — investigate).
+Probably its own full-screen viewer reachable from a map/airport tap, plus the
+inline navaid-freq display as a quick first win.
+
 ## Completed
 
 ### SENTRY-INTEGRATION  uAvionix/ForeFlight Sentry as a GDL90 source
