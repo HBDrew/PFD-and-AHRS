@@ -119,25 +119,21 @@ def _dashed_polyline(surf, color, pts, dash=9, gap=6, width=2):
 
 
 def _place_label(surf, font, text, color, ax, ay, placed):
-    """Blit ``text`` near the anchor (ax, ay), trying a ring of candidate
-    offsets and picking the first that doesn't overlap an already-placed label
-    rect — so clustered approach fixes (RWY 03 / FAF / IF near the airport)
-    stop stacking on top of each other.  Appends the chosen rect to ``placed``."""
+    """Blit ``text`` to the SIDE of the anchor (ax, ay) — never centred over it,
+    which would sit on the course line.  Labels are right- or left-justified and
+    staggered side-to-side for consecutive fixes; the first candidate that
+    doesn't overlap an already-placed rect wins.  Appends the chosen rect to
+    ``placed`` so clustered fixes (RWY 03 / FAF / IF near the airport) don't
+    stack."""
     if not text or font is None:
         return
     img = font.render(text, True, color)
     w, h = img.get_size()
     d = 6
-    cands = [
-        (ax + d, ay - h // 2),       # right
-        (ax - w - d, ay - h // 2),   # left
-        (ax - w // 2, ay - h - d),   # above
-        (ax - w // 2, ay + d),       # below
-        (ax + d, ay + d),            # down-right
-        (ax - w - d, ay - h - d),    # up-left
-        (ax + d, ay - h - d),        # up-right
-        (ax - w - d, ay + d),        # down-left
-    ]
+    right = [(ax + d, ay - h // 2), (ax + d, ay - h - d), (ax + d, ay + d)]
+    left = [(ax - w - d, ay - h // 2), (ax - w - d, ay - h - d), (ax - w - d, ay + d)]
+    # Stagger: alternate which side we try first so neighbours land opposite.
+    cands = (right + left) if (len(placed) % 2 == 0) else (left + right)
     for cx, cy in cands:
         r = pygame.Rect(cx, cy, w, h)
         if not any(r.colliderect(pr) for pr in placed):
