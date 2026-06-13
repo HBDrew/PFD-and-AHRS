@@ -130,10 +130,20 @@ def _place_label(surf, font, text, color, ax, ay, placed):
     img = font.render(text, True, color)
     w, h = img.get_size()
     d = 6
-    right = [(ax + d, ay - h // 2), (ax + d, ay - h - d), (ax + d, ay + d)]
-    left = [(ax - w - d, ay - h // 2), (ax - w - d, ay - h - d), (ax - w - d, ay + d)]
+    step = h + 2
+    # Side-anchored candidates, stepped vertically so a crowded cluster can
+    # stack labels up/down beside it instead of overlapping.  Never centred
+    # over the fix (that sits on the course line).
+    rights, lefts = [], []
+    for m in (0, 1, -1, 2, -2, 3, -3):
+        rights.append((ax + d, ay - h // 2 + m * step))
+        lefts.append((ax - w - d, ay - h // 2 + m * step))
     # Stagger: alternate which side we try first so neighbours land opposite.
-    cands = (right + left) if (len(placed) % 2 == 0) else (left + right)
+    cands = []
+    first, second = (rights, lefts) if (len(placed) % 2 == 0) else (lefts, rights)
+    for a, b in zip(first, second):
+        cands.append(a)
+        cands.append(b)
     for cx, cy in cands:
         r = pygame.Rect(cx, cy, w, h)
         if not any(r.colliderect(pr) for pr in placed):

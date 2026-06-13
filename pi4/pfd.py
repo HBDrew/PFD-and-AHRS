@@ -7929,6 +7929,26 @@ def _appr_dedupe(pts):
     return out
 
 
+def _appr_path_dedupe(pts):
+    """Dedupe an approach path: drop consecutive same-ident legs AND an earlier
+    occurrence of a fix that recurs later — a transition that overlaps the
+    common segment lists the shared fix twice, non-adjacently (e.g. FIMAL via
+    the FLG transition).  Keeps the LAST occurrence so the common-segment order
+    wins; legs without an ident (synthesised points) are always kept."""
+    last = {}
+    for i, p in enumerate(pts):
+        if p[2]:
+            last[p[2]] = i
+    out = []
+    for i, p in enumerate(pts):
+        if p[2] and last.get(p[2]) != i:
+            continue                              # earlier dup of a later fix
+        if out and out[-1][2] and out[-1][2] == p[2]:
+            continue                              # consecutive same ident
+        out.append(p)
+    return out
+
+
 def _approach_load_published(airport, proc_ident, transition="", activate=False):
     """Load a published approach (its transition + final legs, and the missed
     legs) into disp["approach"], armed.  Reuses the existing approach guidance:
@@ -7945,31 +7965,42 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
     final_pts = _appr_leg_pts(p.get("final") or [])
     if not final_pts:                       # nothing flyable — bail to synthetic
         return False
-    # Dedupe consecutive same-fix legs: a transition terminates at the IF, which
-    # is also the first fix of the final/common segment — so the IF (and
-    # sometimes the FAF/MAP) would otherwise appear twice.
-    all_pts = _appr_dedupe(_appr_leg_pts(legs))
+    # Split off the missed approach.  The missed begins at the first climb leg
+    # (CA/FA/VA/VM/FM) or hold-to-manual (HM) — you only climb on the missed —
+    # which works for LOC/VOR approaches whose MAP is a timing point (no RWxx
+    # fix) as well as for ILS/RNAV.  Fall back to the RWxx fix, then to "all".
+    _CLIMB = ("CA", "FA", "VA", "VM", "FM")
+    missed_start = None
+    for i, lg in enumerate(legs):
+        lt = (lg.get("leg_type") or "").upper()
+        if lt in _CLIMB or lt == "HM":
+            missed_start = i
+            break
+    if missed_start is None:
+        rw = [i for i, lg in enumerate(legs)
+              if _re_appr.match(r"RW\d", lg.get("fix") or "")]
+        missed_start = (rw[-1] + 1) if rw else len(legs)
+    # Resolve coords + dedupe.  The approach path also drops a fix that recurs
+    # later (a transition that overlaps the common segment lists the shared fix
+    # twice, non-adjacently — e.g. FIMAL via the FLG transition).
+    all_pts = _appr_path_dedupe(_appr_leg_pts(legs[:missed_start]))
+    missed_pts = _appr_dedupe(_appr_leg_pts(legs[missed_start:] + (p.get("missed") or [])))
+    if not all_pts:
+        return False
     first_final = final_pts[0][2]
     final_idx = next((i for i, q in enumerate(all_pts) if q[2] == first_final), 0)
-    # CIFP folds the missed approach into the common segment, so a missed fix
-    # (e.g. the missed-hold) leaks into the path after the runway/MAP.  Split at
-    # the runway/MAP fix (RWxx): legs up to it are the approach; the rest are the
-    # missed approach.
-    map_i = max((i for i, q in enumerate(all_pts)
-                 if _re_appr.match(r"RW\d", q[2] or "")),
-                default=len(all_pts) - 1)
-    leaked_missed = all_pts[map_i + 1:]
-    all_pts = all_pts[:map_i + 1]
-    final_idx = min(final_idx, len(all_pts) - 1)
-    missed_pts = _appr_dedupe(_appr_leg_pts(p.get("missed") or []) + leaked_missed)
-    # Snap the MAP/last fix to the real runway landing threshold so the final
-    # leg actually reaches the runway bar (the CIFP RWxx fix can sit slightly
-    # off the OurAirports threshold, leaving a visible gap at the FAF→runway).
+    # Connect to the runway: if the last approach fix IS the runway (RWxx) snap
+    # it onto the real threshold; otherwise (LOC/VOR — the MAP is a timing
+    # point) extend the final leg to the threshold so it reaches the runway bar.
     rwy = _appr_runway_from_name(proc_ident)
     thr = _appr_landing_threshold(airport, rwy)
     if thr is not None:
-        la0, lo0, idn, lt0, alt0, at0 = all_pts[-1]
-        all_pts[-1] = (float(thr[0]), float(thr[1]), idn, lt0, alt0, at0)
+        if _re_appr.match(r"RW\d", all_pts[-1][2] or ""):
+            la0, lo0, idn, lt0, alt0, at0 = all_pts[-1]
+            all_pts[-1] = (float(thr[0]), float(thr[1]), idn, lt0, alt0, at0)
+        else:
+            all_pts.append((float(thr[0]), float(thr[1]), "", "TF", None, None))
+    final_idx = min(final_idx, len(all_pts) - 1)
     th_lat, th_lon, _thid, _tht, th_alt, _that = all_pts[-1]
     # Final-approach course = bearing of the leg into the MAP (matches the plate
     # far better than the raw CIFP course field).
