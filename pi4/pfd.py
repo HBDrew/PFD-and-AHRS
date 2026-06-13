@@ -5419,8 +5419,30 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "pfd"
             elif act == "pick":
                 airport = (disp.get("approach") or {}).get("airport", "")
-                from_fpl = bool(disp.get("approach", {}).get("arm_from_fpl"))
-                if _approach_load_published(airport, payload, transition="",
+                p = (_navdata.procedure(airport, payload)
+                     if _navdata is not None else None)
+                if p and (p.get("transitions") or {}):
+                    disp["approach"]["pending_proc"] = payload
+                    disp["mode"] = "appr_trans_select"
+                else:
+                    from_fpl = bool(disp.get("approach", {}).get("arm_from_fpl"))
+                    if _approach_load_published(airport, payload, "",
+                                                activate=not from_fpl):
+                        disp["mode"] = "pfd"
+            return True
+
+        # ── Published-approach transition picker taps ─────────────────────
+        if mode == "appr_trans_select":
+            act, payload = appr_trans_select_hit(x, y)
+            if act == "back":
+                disp["mode"] = "appr_proc_select"
+            elif act == "pick":
+                ap = disp.get("approach") or {}
+                airport = ap.get("airport", "")
+                proc = ap.get("pending_proc", "")
+                from_fpl = bool(ap.get("arm_from_fpl"))
+                trans = "" if payload == "VECTORS" else payload
+                if _approach_load_published(airport, proc, trans,
                                             activate=not from_fpl):
                     disp["mode"] = "pfd"
             return True
@@ -7798,6 +7820,52 @@ def appr_proc_select_hit(x, y):
     for i in range(min(len(procs), _prc_visible_count())):
         if _prc_row_rect(i).collidepoint(x, y):
             return ("pick", procs[i])
+    return (None, None)
+
+
+def _appr_pending_transitions():
+    """['VECTORS', <iaf>, …] for the procedure picked in appr_proc_select."""
+    ap = disp.get("approach") or {}
+    p = (_navdata.procedure(ap.get("airport", ""), ap.get("pending_proc", ""))
+         if _navdata is not None else None)
+    return ["VECTORS"] + sorted((p.get("transitions") or {}).keys()) if p else ["VECTORS"]
+
+
+def draw_appr_trans_select(surf):
+    """Pick a transition (IAF) for the procedure chosen on the previous screen,
+    or VECTORS to fly the final segment only."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "TRANSITION")
+    ap = disp.get("approach") or {}
+    _text(surf, f"{ap.get('airport','')}  {ap.get('pending_proc','')}", 18, WHITE,
+          bold=True, cx=DISPLAY_W // 2, cy=72)
+    trans = _appr_pending_transitions()
+    nvis = _prc_visible_count()
+    for i, tid in enumerate(trans[:nvis]):
+        rect = _prc_row_rect(i)
+        vectors = (tid == "VECTORS")
+        for j in range(rect.height):
+            t = 1.0 - j / rect.height
+            base = ((int(t * 8), int(10 + t * 16), int(20 + t * 30)) if vectors
+                    else (int(t * 10), int(14 + t * 22), int(30 + t * 42)))
+            pygame.draw.line(surf, base, (rect.x, rect.y + j), (rect.right, rect.y + j))
+        pygame.draw.rect(surf, (90, 110, 80) if vectors else (60, 90, 130),
+                         rect, width=1, border_radius=6)
+        lbl = "VECTORS (final only)" if vectors else tid
+        _text(surf, lbl, 19, (200, 210, 180) if vectors else WHITE, bold=True,
+              x=rect.x + 16, cy=rect.centery)
+        if not vectors:
+            _text(surf, "IAF ▶", 14, (120, 140, 170), x=rect.right - 56,
+                  cy=rect.centery)
+
+
+def appr_trans_select_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    trans = _appr_pending_transitions()
+    for i in range(min(len(trans), _prc_visible_count())):
+        if _prc_row_rect(i).collidepoint(x, y):
+            return ("pick", trans[i])
     return (None, None)
 
 
@@ -14965,6 +15033,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_display_setup(surf, disp["ds"]); return
     if mode == "appr_proc_select":
         draw_appr_proc_select(surf); return
+    if mode == "appr_trans_select":
+        draw_appr_trans_select(surf); return
     if mode == "approach_select":
         draw_approach_select(surf); return
     if mode == "ahrs_setup":
@@ -16173,6 +16243,10 @@ def main():
             if args.ss_mode == "appr_proc_select":
                 _nd_load()          # load _navdata so procedures resolve
                 disp["approach"] = {"airport": "KFLG", "arm_from_fpl": True}
+            if args.ss_mode == "appr_trans_select":
+                _nd_load()
+                disp["approach"] = {"airport": "KFLG", "arm_from_fpl": True,
+                                    "pending_proc": "RNAV (GPS) RWY 03"}
             if args.ss_mode in ("fpl", "nav_pick"):
                 # Demo plan + a loaded (armed) approach, for layout checks.
                 disp["fpl"]["waypoints"] = [
