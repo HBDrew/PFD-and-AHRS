@@ -16743,6 +16743,25 @@ def main():
                     disp["leg_menu"] = {"kind": "appr", "idx": 0}
             if args.ss_mode == "appr_preview":
                 _nd_load()
+                # Seed a real KFLG 03/21 runway so the preview exercises the
+                # runway-DB marker path (not just the fallback).
+                global _runways
+                try:
+                    import numpy as _np_rw
+                    _runways = _np_rw.array([(
+                        "KFLG", 6999.0, 150.0, "ASP", True, "03", "21",
+                        35.129, -111.677, 7014.0, 28.0,
+                        35.149, -111.666, 7014.0, 208.0)],
+                        dtype=[("airport", "U7"), ("length_ft", "f4"),
+                               ("width_ft", "f4"), ("surface", "U6"),
+                               ("lighted", "?"), ("le_ident", "U4"),
+                               ("he_ident", "U4"), ("le_lat", "f4"),
+                               ("le_lon", "f4"), ("le_elev_ft", "f4"),
+                               ("le_hdg", "f4"), ("he_lat", "f4"),
+                               ("he_lon", "f4"), ("he_elev_ft", "f4"),
+                               ("he_hdg", "f4")])
+                except Exception:
+                    pass
                 disp["approach"] = {"airport": "KFLG", "arm_from_fpl": True}
                 _approach_load_published("KFLG", "RNAV (GPS) RWY 03",
                                          "BANYO", activate=False)
