@@ -5515,7 +5515,7 @@ def handle_event(event, demo_mode):
                     from_fpl = bool(disp.get("approach", {}).get("arm_from_fpl"))
                     if _approach_load_published(airport, payload, "",
                                                 activate=not from_fpl):
-                        disp["mode"] = "pfd"
+                        disp["mode"] = "appr_preview" if from_fpl else "pfd"
             return True
 
         # ── Published-approach transition picker taps ─────────────────────
@@ -5531,7 +5531,17 @@ def handle_event(event, demo_mode):
                 trans = "" if payload == "VECTORS" else payload
                 if _approach_load_published(airport, proc, trans,
                                             activate=not from_fpl):
-                    disp["mode"] = "pfd"
+                    disp["mode"] = "appr_preview" if from_fpl else "pfd"
+            return True
+
+        # ── Approach preview taps ─────────────────────────────────────────
+        if mode == "appr_preview":
+            action = appr_preview_hit(x, y)
+            if action == "back":
+                _approach_cancel()
+                disp["mode"] = "appr_proc_select"
+            elif action == "load":
+                disp["mode"] = "pfd"
             return True
 
         # ── Approach selection taps ───────────────────────────────────────
@@ -8105,6 +8115,68 @@ def appr_trans_select_hit(x, y):
         if _prc_row_rect(i).collidepoint(x, y):
             return ("pick", trans[i])
     return (None, None)
+
+
+# ── Approach preview (map) — shown before a loaded approach is kept ─────────────
+_APRV_BTN_H = 56
+
+
+def _appr_preview_extent():
+    """(center_lat, center_lon, range_nm) fitting the loaded approach legs +
+    threshold, for the preview map."""
+    ap = disp.get("approach") or {}
+    pts = [(p[0], p[1]) for p in (ap.get("legs") or [])]
+    if ap.get("thresh_lat") is not None:
+        pts.append((float(ap["thresh_lat"]), float(ap["thresh_lon"])))
+    if not pts:
+        return (float(disp.get("lat", DEMO_LAT)),
+                float(disp.get("lon", DEMO_LON)), 10)
+    lats = [p[0] for p in pts]; lons = [p[1] for p in pts]
+    clat = (min(lats) + max(lats)) / 2.0
+    clon = (min(lons) + max(lons)) / 2.0
+    n_nm = (max(lats) - min(lats)) * 60.0
+    e_nm = (max(lons) - min(lons)) * 60.0 * max(0.2, math.cos(math.radians(clat)))
+    rng = _map_mod.auto_fit_range(math.hypot(n_nm, e_nm) * 1.25 + 4.0)
+    return clat, clon, rng
+
+
+def draw_appr_preview(surf):
+    """Map preview of the loaded approach with LOAD / BACK."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "APPROACH PREVIEW")
+    ap = disp.get("approach") or {}
+    via = (f"via {ap.get('transition')}" if ap.get("transition") else "VECTORS")
+    _text(surf, f"{ap.get('airport','')}   {ap.get('procedure','')}   ·   {via}",
+          15, WHITE, bold=True, cx=DISPLAY_W // 2, cy=62)
+    rect = (12, 82, DISPLAY_W - 24, DISPLAY_H - 82 - (_APRV_BTN_H + 24))
+    clat, clon, rng = _appr_preview_extent()
+    _map_mod.render(surf, rect, clat, clon, 0.0, 0.0, 0.0, "nrth", rng,
+                    dict(disp.get("ds", {})),
+                    airports_arr=_airports, runways_arr=_runways,
+                    srtm_dir=SRTM_DIR, water_dir=WATER_DIR,
+                    font=_mfd_get_apt_font(),
+                    state_lines=_state_lines, country_lines=_country_lines,
+                    approach_path=_approach_render_path(),
+                    draw_corner_labels=False)
+    by = DISPLAY_H - _APRV_BTN_H - 12
+    half = (DISPLAY_W - 24 - 12) // 2
+    _action_btn(surf, 12, by, half, _APRV_BTN_H, "‹ BACK", "warn")
+    _action_btn(surf, 12 + half + 12, by, DISPLAY_W - 24 - half - 12,
+                _APRV_BTN_H, "LOAD APPROACH", "ok")
+
+
+def appr_preview_hit(x, y):
+    if _back_hit(x, y):
+        return "back"
+    by = DISPLAY_H - _APRV_BTN_H - 12
+    if not (by <= y <= by + _APRV_BTN_H):
+        return None
+    half = (DISPLAY_W - 24 - 12) // 2
+    if 12 <= x <= 12 + half:
+        return "back"
+    if 12 + half + 12 <= x <= DISPLAY_W - 12:
+        return "load"
+    return None
 
 
 def draw_ahrs_setup(surf, ss):
@@ -15340,6 +15412,8 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_appr_proc_select(surf); return
     if mode == "appr_trans_select":
         draw_appr_trans_select(surf); return
+    if mode == "appr_preview":
+        draw_appr_preview(surf); return
     if mode == "approach_select":
         draw_approach_select(surf); return
     if mode == "ahrs_setup":
@@ -16592,6 +16666,11 @@ def main():
                                         "thresh_elev_ft": 7000.0, "course_deg": 210.0}
                 if args.ss_mode == "leg_menu":
                     disp["leg_menu"] = {"kind": "appr", "idx": 0}
+            if args.ss_mode == "appr_preview":
+                _nd_load()
+                disp["approach"] = {"airport": "KFLG", "arm_from_fpl": True}
+                _approach_load_published("KFLG", "RNAV (GPS) RWY 03",
+                                         "BANYO", activate=False)
         smooth_state()              # now a no-op (disp already matches state)
         render(surf, demo_mode=False, connected=True, data_stale=False)
         _flip()
