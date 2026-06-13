@@ -3982,7 +3982,8 @@ class SimFlyState:
                         cur_lat, cur_lon, wp_lat, wp_lon)
 
                     ap = disp.get("approach") or {}
-                    if ap.get("active"):
+                    appr_cl = _approach_centerline_active()
+                    if appr_cl:
                         # Approach: course is the published runway
                         # heading (true).  Final is short enough (5–10
                         # nm) that flat-earth XTK at the threshold is
@@ -4022,9 +4023,9 @@ class SimFlyState:
 
                     tgt_hdg = _sim_intercept_heading(
                         course_deg, xtk,
-                        approach=bool(ap.get("active")))
+                        approach=appr_cl)
 
-                    if ap.get("active"):
+                    if appr_cl:
                         # Standard glideslope capture: only ever
                         # intercept the GS FROM ABOVE.  Never command
                         # a climb to chase the GS — that's wrong
@@ -8077,6 +8078,24 @@ def _approach_apply_leg(from_present=False):
             "ident": ident, "lat": float(la), "lon": float(lo), "elev_ft": 0.0,
             "act_lat": act_lat, "act_lon": act_lon,
         }
+
+
+def _approach_centerline_active():
+    """True when guidance should fly the runway CENTRELINE (the final approach
+    leg, or a synthetic missed) rather than direct-to an intermediate fix.
+    Mirrors draw_cdi exactly: the centreline applies only when disp['nav'] is
+    targeting the airport itself — which `_approach_apply_leg` sets only on the
+    final leg / threshold.  On an intermediate leg (or a published missed leg)
+    nav targets the fix, so this is False and guidance flies direct-to it.
+
+    This is the fix for "D2/activate an approach leg flies the opposite way":
+    the sim autopilot + the inset's magenta line keyed off `approach.active`
+    alone, forcing the final-approach course/threshold even when the active
+    leg was an upstream fix behind the aircraft."""
+    ap = disp.get("approach") or {}
+    nv = disp.get("nav") or {}
+    return bool((ap.get("active") or ap.get("missed"))
+                and ap.get("airport") and nv.get("ident") == ap.get("airport"))
 
 
 def _approach_check_advance(lat, lon):
@@ -14763,8 +14782,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
 
     d2 = dict(disp.get("nav") or {})
     _ap = disp.get("approach") or {}
-    d2["approach_active"] = bool(_ap.get("active"))
-    if _ap.get("active"):
+    # Centreline (cyan) only on the final leg; intermediate D2/activated legs
+    # draw the normal magenta course to the fix.
+    d2["approach_active"] = _approach_centerline_active()
+    if d2["approach_active"]:
         d2["approach_course_deg"] = float(_ap.get("course_deg", 0.0))
         d2["approach_final_nm"]   = _hits_mod.DEFAULT_FINAL_NM
 
@@ -16278,8 +16299,10 @@ def render(surf, demo_mode, connected, data_stale=False):
         # a generic D2 line from activation point to threshold.
         d2 = dict(d2_src)
         _ap = disp.get("approach") or {}
-        d2["approach_active"] = bool(_ap.get("active"))
-        if _ap.get("active"):
+        # Centreline (cyan) only on the final leg; intermediate D2/activated
+        # legs draw the normal magenta course to the fix.
+        d2["approach_active"] = _approach_centerline_active()
+        if d2["approach_active"]:
             d2["approach_course_deg"] = float(_ap.get("course_deg", 0.0))
             d2["approach_final_nm"]   = _hits_mod.DEFAULT_FINAL_NM
         # GPS track sticks at its last value when groundspeed drops to
