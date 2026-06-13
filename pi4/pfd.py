@@ -8151,6 +8151,32 @@ def appr_trans_select_hit(x, y):
 _APRV_BTN_H = 56
 
 
+def _appr_project(lat, lon, brg_deg, dist_nm):
+    """Destination lat/lon from a point along a bearing (equirectangular —
+    fine for the short runway/marker distances here)."""
+    br = math.radians(brg_deg)
+    dlat = (dist_nm / 60.0) * math.cos(br)
+    dlon = (dist_nm / 60.0) * math.sin(br) / max(0.2, math.cos(math.radians(lat)))
+    return lat + dlat, lon + dlon
+
+
+def _appr_runway_marker(ap):
+    """((thr_la, thr_lo), (far_la, far_lo), 'RWY 03') for the approach's runway,
+    or None.  Uses the runway-DB end matching the approach runway id (real
+    length/heading); falls back to the threshold + final course extended 1 nm."""
+    rwy = (ap.get("runway") or "").upper()
+    for rid, la, lo, _elev, hdg, length in _apr_runway_ends(ap.get("airport", "")):
+        if str(rid).upper() == rwy and rwy:
+            ln_nm = max(0.3, (length or 5000.0) / 6076.12)
+            fla, flo = _appr_project(la, lo, hdg, ln_nm)
+            return ((la, lo), (fla, flo), f"RWY {rid}")
+    if ap.get("thresh_lat") is not None:
+        la, lo = float(ap["thresh_lat"]), float(ap["thresh_lon"])
+        fla, flo = _appr_project(la, lo, float(ap.get("course_deg", 0.0)), 1.0)
+        return ((la, lo), (fla, flo), (f"RWY {rwy}" if rwy else "RWY"))
+    return None
+
+
 def _appr_preview_extent(rect):
     """(center_lat, center_lon, range_nm) that tightly frames every approach fix
     + the threshold in ``rect``.  range_nm is the vertical half-extent; the wide
@@ -8159,6 +8185,9 @@ def _appr_preview_extent(rect):
     pts = [(p[0], p[1]) for p in (ap.get("legs") or [])]
     if ap.get("thresh_lat") is not None:
         pts.append((float(ap["thresh_lat"]), float(ap["thresh_lon"])))
+    rwm = _appr_runway_marker(ap)
+    if rwm is not None:
+        pts.extend([rwm[0], rwm[1]])           # keep the runway in frame
     if not pts:
         return (float(disp.get("lat", DEMO_LAT)),
                 float(disp.get("lon", DEMO_LON)), 10.0)
@@ -8198,6 +8227,7 @@ def draw_appr_preview(surf):
                     symbol_scale=1.4,
                     state_lines=_state_lines, country_lines=_country_lines,
                     approach_path=_approach_render_path(),
+                    runway_marker=_appr_runway_marker(ap),
                     draw_corner_labels=False)
     by = DISPLAY_H - _APRV_BTN_H - 12
     half = (DISPLAY_W - 24 - 12) // 2

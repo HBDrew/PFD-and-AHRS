@@ -1065,7 +1065,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            draw_corner_labels=True, own_lat=None, own_lon=None,
            symbol_scale=1.0, fast=False, ground_stations=None,
            wx_graphics=None, winds_barbs=None, nexrad_cells=None,
-           approach_path=None):
+           approach_path=None, runway_marker=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1538,6 +1538,22 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                              (int(_project(nla, nlo)[0]), int(_project(nla, nlo)[1])), 2)
             _appr_fix(nla, nlo, nident)
             fla, flo = nla, nlo
+
+    # ── Runway marker — the physical runway the approach lands on ───────────
+    # ((thr_lat, thr_lon), (far_lat, far_lon), label).  A thick white bar with a
+    # dark centreline, drawn from the threshold along the runway.  Explicit (not
+    # the runway-DB layer) so it's always visible at approach-preview zoom.
+    if runway_marker is not None:
+        (a_la, a_lo), (b_la, b_lo), rlabel = runway_marker
+        ax, ay = _project(a_la, a_lo)
+        bx, by = _project(b_la, b_lo)
+        pygame.draw.line(surf, (235, 235, 245),
+                         (int(ax), int(ay)), (int(bx), int(by)), 7)
+        pygame.draw.line(surf, (40, 44, 55),
+                         (int(ax), int(ay)), (int(bx), int(by)), 1)
+        if rlabel and font is not None:
+            surf.blit(font.render(rlabel, True, (235, 235, 245)),
+                      (int(ax) + 7, int(ay) + 5))
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
     # The big MFD draws the flight-category dots on *every* page (we already
