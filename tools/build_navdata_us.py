@@ -420,7 +420,12 @@ def parse_cifp(cifp_path, fixes=None, navaids=None, keep_sidstar=True,
             section = line[_A424_SECTION] if len(line) > _A424_SECTION else " "
 
             # ── enroute holds ──────────────────────────────────────────────
-            if section == "E" and len(line) > 12 and line[12] == "P":
+            # Enroute (section 'E') records carry the subsection code at col 6
+            # (index 5), NOT col 13 like airport records.  'P' = holding pattern.
+            if section == "E" and len(line) > 5 and line[5] == "P":
+                if dump and dumped < dump:
+                    print(f"  HOLD: {line.rstrip()[:90]}")
+                    dumped += 1
                 fix = _a424_str(line, _A424_HOLD_FIX).upper()
                 if not fix:
                     continue

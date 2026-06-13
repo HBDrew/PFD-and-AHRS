@@ -49,3 +49,7 @@ groundstation_out/
 build/
 dist/
 *.spec.bak
+
+# Raw FAA NASR/CIFP source files (build inputs, large, per-cycle)
+*/data/rawnavdata/
+rawnavdata/
