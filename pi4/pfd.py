@@ -5512,7 +5512,7 @@ def handle_event(event, demo_mode):
                     disp["approach"]["pending_proc"] = payload
                     disp["mode"] = "appr_trans_select"
                 else:
-                    from_fpl = bool(disp.get("approach", {}).get("arm_from_fpl"))
+                    from_fpl = bool(disp.get("appr_from_fpl"))
                     if _approach_load_published(airport, payload, "",
                                                 activate=not from_fpl):
                         disp["mode"] = "appr_preview" if from_fpl else "pfd"
@@ -5527,7 +5527,7 @@ def handle_event(event, demo_mode):
                 ap = disp.get("approach") or {}
                 airport = ap.get("airport", "")
                 proc = ap.get("pending_proc", "")
-                from_fpl = bool(ap.get("arm_from_fpl"))
+                from_fpl = bool(disp.get("appr_from_fpl"))
                 trans = "" if payload == "VECTORS" else payload
                 if _approach_load_published(airport, proc, trans,
                                             activate=not from_fpl):
@@ -5560,7 +5560,7 @@ def handle_event(event, demo_mode):
                 if 0 <= idx < len(ends):
                     # From the FPL → load armed (pilot activates later); a plain
                     # direct-to APPR loads + activates in one step.
-                    from_fpl = bool(disp.get("approach", {}).get("arm_from_fpl"))
+                    from_fpl = bool(disp.get("appr_from_fpl"))
                     _approach_load(ident, ends[idx], activate=not from_fpl)
                     disp["mode"] = "pfd"
             return True
@@ -5764,7 +5764,7 @@ def handle_event(event, demo_mode):
                     dest = _fpl_dest_approach_ident()
                     if dest:
                         disp["approach"]["airport"] = dest
-                        disp["approach"]["arm_from_fpl"] = True
+                        disp["appr_from_fpl"] = True
                         disp["mode"] = ("appr_proc_select"
                                         if _appr_published(dest)
                                         else "approach_select")
@@ -6228,7 +6228,7 @@ def handle_event(event, demo_mode):
                         if buf and buf != cur_ident:
                             _nav_set_by_ident(buf)
                         disp["approach"]["airport"] = target_ident
-                        disp["approach"]["arm_from_fpl"] = False  # plain D2
+                        disp["appr_from_fpl"] = False  # plain D2
                         disp["kbd_buf"] = ""
                         disp["kbd_error"] = ""
                         disp["mode"] = ("appr_proc_select"
@@ -7742,15 +7742,24 @@ def _appr_runway_from_name(name):
     return m.group(1) if m else ""
 
 
+# An approach name carries its type/runway (RNAV (GPS) RWY 03, ILS OR LOC RWY 21,
+# VOR-A, …); a SID/STAR is a fix-name + number (FLG1, SEDON2).  Filter on the
+# name so a mis-typed departure can't sneak into the approach list.
+_APPR_NAME_RE = _re_appr.compile(
+    r"\b(?:RWY|RNAV|ILS|LOC|VOR|NDB|GPS|GLS|LDA|TACAN|RNP|SDF|MLS)\b", _re_appr.I)
+
+
 def _appr_published(airport):
-    """Published APPROACH procedure idents for an airport (SIDs/STARs filtered
-    out), or [] when no nav data is loaded / none exist."""
+    """Published APPROACH procedure idents for an airport (SIDs/STARs/departures
+    filtered out by type AND name), or [] when no nav data is loaded."""
     if _navdata is None or not airport:
         return []
     out = []
     for pid in _navdata.procedures_for(airport):
         p = _navdata.procedure(airport, pid)
-        if p and p.get("type") not in ("SID", "STAR"):
+        if not p or p.get("type") in ("SID", "STAR"):
+            continue
+        if _APPR_NAME_RE.search(pid):
             out.append(pid)
     return out
 
@@ -7810,21 +7819,29 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
         return False
     # Dedupe consecutive same-fix legs: a transition terminates at the IF, which
     # is also the first fix of the final/common segment — so the IF (and
-    # sometimes the FAF/MAP) would otherwise appear twice.  Keep a crossing
-    # altitude if the surviving row lacked one.
+    # sometimes the FAF/MAP) would otherwise appear twice.
     all_pts = _appr_dedupe(_appr_leg_pts(legs))
     first_final = final_pts[0][2]
     final_idx = next((i for i, q in enumerate(all_pts) if q[2] == first_final), 0)
-    th_lat, th_lon, _thid, _tht, th_alt, _that = final_pts[-1]
-    # Final-approach course: the published course on the last final leg, else
-    # the bearing of the last final segment.
-    course = None
-    for lg in reversed(p.get("final") or []):
-        if lg.get("course") is not None:
-            course = float(lg["course"]); break
-    if course is None and len(final_pts) >= 2:
-        _d, course = _nav_geo_dist_brg(final_pts[-2][0], final_pts[-2][1],
+    # CIFP folds the missed approach into the common segment, so a missed fix
+    # (e.g. the missed-hold) leaks into the path after the runway/MAP.  Split at
+    # the runway/MAP fix (RWxx): legs up to it are the approach; the rest are the
+    # missed approach.
+    map_i = max((i for i, q in enumerate(all_pts)
+                 if _re_appr.match(r"RW\d", q[2] or "")),
+                default=len(all_pts) - 1)
+    leaked_missed = all_pts[map_i + 1:]
+    all_pts = all_pts[:map_i + 1]
+    final_idx = min(final_idx, len(all_pts) - 1)
+    missed_pts = _appr_dedupe(_appr_leg_pts(p.get("missed") or []) + leaked_missed)
+    th_lat, th_lon, _thid, _tht, th_alt, _that = all_pts[-1]
+    # Final-approach course = bearing of the leg into the MAP (matches the plate
+    # far better than the raw CIFP course field).
+    if len(all_pts) >= 2:
+        _d, course = _nav_geo_dist_brg(all_pts[-2][0], all_pts[-2][1],
                                        th_lat, th_lon)
+    else:
+        course = 0.0
     disp["approach"] = {
         "loaded":          True,
         "active":          bool(activate),
@@ -7836,7 +7853,7 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
         "runway":          _appr_runway_from_name(proc_ident),
         "legs":            all_pts,
         "final_idx":       final_idx,          # leg index where the final begins
-        "missed_legs":     _appr_dedupe(_appr_leg_pts(p.get("missed") or [])),
+        "missed_legs":     missed_pts,
         "thresh_lat":      float(th_lat),
         "thresh_lon":      float(th_lon),
         "thresh_elev_ft":  float(th_alt or 0.0),
