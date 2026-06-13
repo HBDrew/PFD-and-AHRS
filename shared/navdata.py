@@ -83,6 +83,9 @@ DOWNLOAD_BASE_URL = \
 
 # Stale after this many days (one 28-day cycle + a few days' grace).
 EXPIRY_DAYS = 32
+# A CIFP cycle is issued ~28 days before effective and current for the 28-day
+# effective period — so ~56 days of usefulness from the issue date.
+ISSUE_VALID_DAYS = 56
 
 _FIX_DTYPE = [("ident", "U5"), ("lat", "f4"), ("lon", "f4")]
 _NAV_DTYPE = [("ident", "U4"), ("ntype", "U4"), ("lat", "f4"), ("lon", "f4"),
@@ -95,16 +98,18 @@ class NavData:
     """Loaded nav-data: spatial fix/navaid arrays + procedural dicts.  Cheap to
     hold; query via the methods below.  Any component may be empty/None."""
 
-    __slots__ = ("fixes", "navaids", "airways", "holds", "procedures", "cycle")
+    __slots__ = ("fixes", "navaids", "airways", "holds", "procedures",
+                 "cycle", "issued")
 
     def __init__(self, fixes=None, navaids=None, airways=None, holds=None,
-                 procedures=None, cycle=""):
+                 procedures=None, cycle="", issued=""):
         self.fixes      = fixes
         self.navaids    = navaids
         self.airways    = airways or {}
         self.holds      = holds or {}
         self.procedures = procedures or {}
         self.cycle      = cycle
+        self.issued     = issued        # cycle issue date, ISO 'YYYY-MM-DD'
 
     # ── availability ──────────────────────────────────────────────────────────
     def has_fixes(self):
@@ -208,7 +213,7 @@ def load(data_dir: str):
     fixes = _load_array(os.path.join(data_dir, FIXES_FILE))
     navs  = _load_array(os.path.join(data_dir, NAVAIDS_FILE))
     airways = holds = procedures = None
-    cycle = ""
+    cycle = issued = ""
     jpath = os.path.join(data_dir, JSON_FILE)
     if os.path.exists(jpath):
         try:
@@ -218,12 +223,13 @@ def load(data_dir: str):
             holds      = d.get("holds")
             procedures = d.get("procedures")
             cycle      = d.get("cycle", "")
+            issued     = d.get("issued", "")
         except Exception:
             pass
     if fixes is None and navs is None and not procedures:
         return None
     return NavData(fixes=fixes, navaids=navs, airways=airways, holds=holds,
-                   procedures=procedures, cycle=cycle)
+                   procedures=procedures, cycle=cycle, issued=issued)
 
 
 def _load_array(path):
@@ -300,7 +306,7 @@ def disk_bytes(data_dir):
 def cache_stats(data_dir):
     """A light summary dict for the DATA screen — counts, size, cycle, age.
     Loads the cache (cheap enough for a settings screen; not a hot path)."""
-    out = {"present": False, "cycle": "", "fixes": 0, "navaids": 0,
+    out = {"present": False, "cycle": "", "issued": "", "fixes": 0, "navaids": 0,
            "airways": 0, "procedures": 0, "holds": 0, "mb": 0.0,
            "date": None, "age_days": 0, "expired": False}
     nd = load(data_dir)
@@ -308,18 +314,36 @@ def cache_stats(data_dir):
         return out
     out["present"]    = True
     out["cycle"]      = nd.cycle
+    out["issued"]     = nd.issued
     out["fixes"]      = len(nd.fixes) if nd.has_fixes() else 0
     out["navaids"]    = len(nd.navaids) if nd.has_navaids() else 0
     out["airways"]    = len(nd.airways)
     out["procedures"] = sum(len(v) for v in nd.procedures.values())
     out["holds"]      = len(nd.holds)
     out["mb"]         = disk_bytes(data_dir) / (1024.0 * 1024.0)
-    d = download_date(data_dir)
-    if d is not None:
-        out["date"]     = d
-        out["age_days"] = (datetime.date.today() - d).days
-        out["expired"]  = out["age_days"] > EXPIRY_DAYS
+    # Prefer the cycle's own issue date (from the CIFP header) over the file
+    # mtime — currency is a property of the data, not when it was copied on.
+    # An FAA cycle is issued ~28 days before it's effective and stays current
+    # ~28 days after, so call it stale ~ISSUE_VALID_DAYS after issue.
+    issued_date = _parse_iso(nd.issued)
+    ref = issued_date or download_date(data_dir)
+    if ref is not None:
+        out["date"]     = ref
+        out["age_days"] = (datetime.date.today() - ref).days
+        out["expired"]  = out["age_days"] > (ISSUE_VALID_DAYS if issued_date
+                                             else EXPIRY_DAYS)
     return out
+
+
+def _parse_iso(s):
+    """'YYYY-MM-DD' → datetime.date, or None."""
+    if not s:
+        return None
+    try:
+        y, m, d = (int(x) for x in s.split("-"))
+        return datetime.date(y, m, d)
+    except (ValueError, TypeError):
+        return None
 
 
 def download_url(filename):

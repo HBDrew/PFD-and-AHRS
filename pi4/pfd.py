@@ -250,6 +250,7 @@ disp["nd"] = {
     "dl_cancel":   False,
     "present":     False,
     "cycle":       "",
+    "issued":      "",
     "fixes":       0,
     "navaids":     0,
     "airways":     0,
@@ -7566,6 +7567,89 @@ def _approach_load(ident, rwy_end, activate=False):
         _approach_retarget_nav()
 
 
+# ── Published approaches (FAA CIFP, via shared/navdata) ─────────────────────────
+import re as _re_appr
+
+
+def _appr_runway_from_name(name):
+    """'RNAV (GPS) RWY 03' → '03'  ·  'ILS OR LOC RWY 21L' → '21L'  ·  '' if none."""
+    m = _re_appr.search(r"RWY\s*(\d{1,2}[LRC]?)", name or "")
+    return m.group(1) if m else ""
+
+
+def _appr_published(airport):
+    """Published APPROACH procedure idents for an airport (SIDs/STARs filtered
+    out), or [] when no nav data is loaded / none exist."""
+    if _navdata is None or not airport:
+        return []
+    out = []
+    for pid in _navdata.procedures_for(airport):
+        p = _navdata.procedure(airport, pid)
+        if p and p.get("type") not in ("SID", "STAR"):
+            out.append(pid)
+    return out
+
+
+def _appr_leg_pts(legs):
+    """Filter a leg list to those with resolved coordinates →
+    [(lat, lon, ident, leg_type, alt_ft), ...]  (for the map + threshold)."""
+    out = []
+    for lg in legs or []:
+        la, lo = lg.get("lat"), lg.get("lon")
+        if la is None or lo is None:
+            continue
+        out.append((float(la), float(lo), str(lg.get("fix", "")),
+                    str(lg.get("leg_type", "")), lg.get("alt_ft")))
+    return out
+
+
+def _approach_load_published(airport, proc_ident, transition="", activate=False):
+    """Load a published approach (its transition + final legs, and the missed
+    legs) into disp["approach"], armed.  Reuses the existing approach guidance:
+    threshold + final-approach course come from the procedure's last final leg,
+    so HITS / VDI / centreline CDI all work unchanged once activated.  Returns
+    False if the procedure can't be resolved."""
+    p = _navdata.procedure(airport, proc_ident) if _navdata is not None else None
+    if not p:
+        return False
+    legs = []
+    if transition and transition in (p.get("transitions") or {}):
+        legs.extend(p["transitions"][transition])
+    legs.extend(p.get("final") or [])
+    final_pts = _appr_leg_pts(p.get("final") or [])
+    if not final_pts:                       # nothing flyable — bail to synthetic
+        return False
+    th_lat, th_lon, _thid, _tht, th_alt = final_pts[-1]
+    # Final-approach course: the published course on the last final leg, else
+    # the bearing of the last final segment.
+    course = None
+    for lg in reversed(p.get("final") or []):
+        if lg.get("course") is not None:
+            course = float(lg["course"]); break
+    if course is None and len(final_pts) >= 2:
+        _d, course = _nav_geo_dist_brg(final_pts[-2][0], final_pts[-2][1],
+                                       th_lat, th_lon)
+    disp["approach"] = {
+        "loaded":          True,
+        "active":          bool(activate),
+        "missed":          False,
+        "published":       True,
+        "airport":         airport,
+        "procedure":       proc_ident,
+        "transition":      transition,
+        "runway":          _appr_runway_from_name(proc_ident),
+        "legs":            _appr_leg_pts(legs),
+        "missed_legs":     _appr_leg_pts(p.get("missed") or []),
+        "thresh_lat":      float(th_lat),
+        "thresh_lon":      float(th_lon),
+        "thresh_elev_ft":  float(th_alt or 0.0),
+        "course_deg":      float(course or 0.0),
+    }
+    if activate:
+        _approach_retarget_nav()
+    return True
+
+
 def _approach_retarget_nav():
     """Point the direct-to / CDI at the active approach's threshold.  Keep
     nav["ident"] the plain airport ident so airport-DB lookups still resolve;
@@ -9802,7 +9886,7 @@ def _nd_load():
     _navdata = nd_mod.load(NAVDATA_DIR)
     st = nd_mod.cache_stats(NAVDATA_DIR)
     disp["nd"].update({k: st[k] for k in (
-        "present", "cycle", "fixes", "navaids", "airways", "procedures",
+        "present", "cycle", "issued", "fixes", "navaids", "airways", "procedures",
         "holds", "mb", "date", "age_days", "expired")})
 
 
@@ -9880,8 +9964,10 @@ def draw_navdata_data(surf, nd):
             stat_col = (220, 130, 60)
         else:
             stat_col = (60, 220, 80)
-        stat_str = (f"cycle {nd.get('cycle') or '—'}  ·  "
-                    f"{nd.get('mb', 0.0):.1f} MB on disk{age_str}")
+        _iss = nd.get('issued') or ''
+        _iss_str = f"issued {_iss}  ·  " if _iss else ""
+        stat_str = (f"cycle {nd.get('cycle') or '—'}  ·  {_iss_str}"
+                    f"{nd.get('mb', 0.0):.1f} MB{age_str}")
     else:
         stat_str = "No nav data on disk"
         stat_col = YELLOW

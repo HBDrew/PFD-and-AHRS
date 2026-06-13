@@ -160,6 +160,7 @@ disp["nd"] = {
     "dl_cancel":   False,
     "present":     False,
     "cycle":       "",
+    "issued":      "",
     "fixes":       0,
     "navaids":     0,
     "airways":     0,
@@ -8996,7 +8997,7 @@ def _nd_load():
     _navdata = nd_mod.load(NAVDATA_DIR)
     st = nd_mod.cache_stats(NAVDATA_DIR)
     disp["nd"].update({k: st[k] for k in (
-        "present", "cycle", "fixes", "navaids", "airways", "procedures",
+        "present", "cycle", "issued", "fixes", "navaids", "airways", "procedures",
         "holds", "mb", "date", "age_days", "expired")})
 
 
@@ -9074,7 +9075,9 @@ def draw_navdata_data(surf, nd):
             stat_col = (220, 130, 60)
         else:
             stat_col = (60, 220, 80)
-        stat_str = (f"cycle {nd.get('cycle') or '—'}  ·  "
+        _iss = nd.get('issued') or ''
+        _iss_str = f"issued {_iss}  ·  " if _iss else ""
+        stat_str = (f"cycle {nd.get('cycle') or '—'}  ·  {_iss_str}"
                     f"{nd.get('mb', 0.0):.1f} MB{age_str}")
     else:
         stat_str = "No nav data on disk"

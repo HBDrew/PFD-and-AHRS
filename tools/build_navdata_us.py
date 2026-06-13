@@ -547,6 +547,33 @@ def _name_procedure(pid, subsec, route_types):
 # write / verify
 # ════════════════════════════════════════════════════════════════════════════
 
+_MONTHS = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+           "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+
+
+def parse_cifp_header(cifp_path):
+    """(cycle, issued_iso) from the CIFP HDR01 record, e.g.
+    'HDR01FAACIFP18 … 2606  20-MAY-2026 15:51:22  U.S.A. DOT FAA …'
+    → ('2606', '2026-05-20').  ('', '') if not parseable."""
+    if not cifp_path:
+        return "", ""
+    try:
+        with open(cifp_path, "r", encoding="latin-1") as fh:
+            line = fh.readline()
+    except OSError:
+        return "", ""
+    if not line.startswith("HDR"):
+        return "", ""
+    m = re.search(r"(\d{4})\s+(\d{2})-([A-Z]{3})-(\d{4})", line)
+    if not m:
+        return "", ""
+    cycle = m.group(1)
+    day, mon, year = int(m.group(2)), _MONTHS.get(m.group(3)), int(m.group(4))
+    if not mon:
+        return cycle, ""
+    return cycle, f"{year:04d}-{mon:02d}-{day:02d}"
+
+
 def _infer_cycle(nasr_dir):
     """Best-effort 28-day cycle stamp 'YYMM' from a NASR dir name like
     '28DaySubscription_Effective_2024-06-13', else from today's date."""
@@ -560,13 +587,15 @@ def _infer_cycle(nasr_dir):
     return f"{t.year % 100:02d}{t.month:02d}"
 
 
-def write_cache(out_dir, fixes, navaids, airways, procedures, holds, cycle):
+def write_cache(out_dir, fixes, navaids, airways, procedures, holds, cycle,
+                issued=""):
     os.makedirs(out_dir, exist_ok=True)
     if fixes is not None:
         np.save(os.path.join(out_dir, FIXES_FILE), fixes)
     if navaids is not None:
         np.save(os.path.join(out_dir, NAVAIDS_FILE), navaids)
     doc = {"cycle": cycle,
+           "issued": issued,
            "airways": airways or {},
            "holds": holds or {},
            "procedures": procedures or {}}
@@ -574,7 +603,7 @@ def write_cache(out_dir, fixes, navaids, airways, procedures, holds, cycle):
         json.dump(doc, fh, separators=(",", ":"))
     jsz = os.path.getsize(os.path.join(out_dir, JSON_FILE)) / 1024.0
     print(f"\nwrote → {out_dir}")
-    print(f"  {JSON_FILE}: {jsz:.0f} KB   cycle={cycle}")
+    print(f"  {JSON_FILE}: {jsz:.0f} KB   cycle={cycle}   issued={issued or '—'}")
 
 
 def verify(data_dir):
@@ -640,14 +669,21 @@ def main():
         navaids = parse_navaids(args.nasr)
         airways = parse_airways(args.nasr)
 
+    hdr_cycle = hdr_issued = ""
     if args.cifp:
         print(f"CIFP {args.cifp}:")
+        hdr_cycle, hdr_issued = parse_cifp_header(args.cifp)
+        if hdr_cycle:
+            print(f"  header: cycle {hdr_cycle}  issued {hdr_issued or '—'}")
         procedures, holds = parse_cifp(
             args.cifp, fixes=fixes, navaids=navaids,
             keep_sidstar=not args.no_sidstar, dump=args.dump_cifp)
 
-    cycle = args.cycle or _infer_cycle(args.nasr)
-    write_cache(args.out, fixes, navaids, airways, procedures, holds, cycle)
+    # Prefer the CIFP header's own cycle/issue date over a date guessed from the
+    # build environment.
+    cycle = args.cycle or hdr_cycle or _infer_cycle(args.nasr)
+    write_cache(args.out, fixes, navaids, airways, procedures, holds, cycle,
+                issued=hdr_issued)
     print()
     verify(args.out)
 
