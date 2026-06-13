@@ -1520,20 +1520,23 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # of direct_to so it also draws on the approach preview (no D2 set).
     if approach_path is not None and len(approach_path) >= 2:
         d2 = 4
-        fla, flo, _fid = approach_path[0]
+
+        def _appr_fix(la, lo, ident):
+            px, py = _project(la, lo)
+            pygame.draw.polygon(surf, _HITS_CYAN,
+                                [(int(px), int(py) - d2), (int(px) + d2, int(py)),
+                                 (int(px), int(py) + d2), (int(px) - d2, int(py))])
+            if ident and font is not None:
+                surf.blit(font.render(ident, True, _HITS_CYAN),
+                          (int(px) + d2 + 3, int(py) - d2 - 2))
+
+        fla, flo, fid = approach_path[0]
+        _appr_fix(fla, flo, fid)               # the first fix (IAF) too
         for nla, nlo, nident in approach_path[1:]:
             pygame.draw.line(surf, _HITS_CYAN,
                              (int(_project(fla, flo)[0]), int(_project(fla, flo)[1])),
                              (int(_project(nla, nlo)[0]), int(_project(nla, nlo)[1])), 2)
-            npx, npy = _project(nla, nlo)
-            pygame.draw.polygon(surf, _HITS_CYAN,
-                                [(int(npx),      int(npy) - d2),
-                                 (int(npx) + d2, int(npy)),
-                                 (int(npx),      int(npy) + d2),
-                                 (int(npx) - d2, int(npy))])
-            if nident and font is not None:
-                surf.blit(font.render(nident, True, _HITS_CYAN),
-                          (int(npx) + d2 + 3, int(npy) - d2 - 2))
+            _appr_fix(nla, nlo, nident)
             fla, flo = nla, nlo
 
     # ── Weather (METAR station dots) ───────────────────────────────────────

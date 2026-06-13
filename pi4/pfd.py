@@ -7779,6 +7779,19 @@ def _appr_alt_label(alt_ft, alt_type):
     return f"{int(alt_ft):,}{suffix}"
 
 
+def _appr_dedupe(pts):
+    """Drop consecutive same-ident legs (transition/final IF overlap, repeated
+    MAP, …), keeping a crossing altitude if the surviving row lacked one."""
+    out = []
+    for p in pts:
+        if out and out[-1][2] == p[2]:
+            if out[-1][4] is None and p[4] is not None:
+                out[-1] = p
+            continue
+        out.append(p)
+    return out
+
+
 def _approach_load_published(airport, proc_ident, transition="", activate=False):
     """Load a published approach (its transition + final legs, and the missed
     legs) into disp["approach"], armed.  Reuses the existing approach guidance:
@@ -7791,11 +7804,17 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
     legs = []
     if transition and transition in (p.get("transitions") or {}):
         legs.extend(p["transitions"][transition])
-    trans_pts = _appr_leg_pts(legs)            # flyable transition legs so far
     legs.extend(p.get("final") or [])
     final_pts = _appr_leg_pts(p.get("final") or [])
     if not final_pts:                       # nothing flyable — bail to synthetic
         return False
+    # Dedupe consecutive same-fix legs: a transition terminates at the IF, which
+    # is also the first fix of the final/common segment — so the IF (and
+    # sometimes the FAF/MAP) would otherwise appear twice.  Keep a crossing
+    # altitude if the surviving row lacked one.
+    all_pts = _appr_dedupe(_appr_leg_pts(legs))
+    first_final = final_pts[0][2]
+    final_idx = next((i for i, q in enumerate(all_pts) if q[2] == first_final), 0)
     th_lat, th_lon, _thid, _tht, th_alt, _that = final_pts[-1]
     # Final-approach course: the published course on the last final leg, else
     # the bearing of the last final segment.
@@ -7815,9 +7834,9 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
         "procedure":       proc_ident,
         "transition":      transition,
         "runway":          _appr_runway_from_name(proc_ident),
-        "legs":            _appr_leg_pts(legs),
-        "final_idx":       len(trans_pts),     # leg index where the final begins
-        "missed_legs":     _appr_leg_pts(p.get("missed") or []),
+        "legs":            all_pts,
+        "final_idx":       final_idx,          # leg index where the final begins
+        "missed_legs":     _appr_dedupe(_appr_leg_pts(p.get("missed") or [])),
         "thresh_lat":      float(th_lat),
         "thresh_lon":      float(th_lon),
         "thresh_elev_ft":  float(th_alt or 0.0),
@@ -8132,23 +8151,26 @@ def appr_trans_select_hit(x, y):
 _APRV_BTN_H = 56
 
 
-def _appr_preview_extent():
-    """(center_lat, center_lon, range_nm) fitting the loaded approach legs +
-    threshold, for the preview map."""
+def _appr_preview_extent(rect):
+    """(center_lat, center_lon, range_nm) that tightly frames every approach fix
+    + the threshold in ``rect``.  range_nm is the vertical half-extent; the wide
+    landscape rect shows range_nm*aspect across, so fit both axes."""
     ap = disp.get("approach") or {}
     pts = [(p[0], p[1]) for p in (ap.get("legs") or [])]
     if ap.get("thresh_lat") is not None:
         pts.append((float(ap["thresh_lat"]), float(ap["thresh_lon"])))
     if not pts:
         return (float(disp.get("lat", DEMO_LAT)),
-                float(disp.get("lon", DEMO_LON)), 10)
+                float(disp.get("lon", DEMO_LON)), 10.0)
     lats = [p[0] for p in pts]; lons = [p[1] for p in pts]
     clat = (min(lats) + max(lats)) / 2.0
     clon = (min(lons) + max(lons)) / 2.0
-    n_nm = (max(lats) - min(lats)) * 60.0
-    e_nm = (max(lons) - min(lons)) * 60.0 * max(0.2, math.cos(math.radians(clat)))
-    rng = _map_mod.auto_fit_range(math.hypot(n_nm, e_nm) * 1.25 + 4.0)
-    return clat, clon, rng
+    half_n = (max(lats) - min(lats)) / 2.0 * 60.0
+    half_e = (max(lons) - min(lons)) / 2.0 * 60.0 * max(0.2, math.cos(math.radians(clat)))
+    _x, _y, rw, rh = rect
+    aspect = max(0.1, rw / float(rh))
+    rng = max(half_n, half_e / aspect) * 1.35 + 1.0
+    return clat, clon, max(3.0, rng)
 
 
 def draw_appr_preview(surf):
@@ -8160,12 +8182,20 @@ def draw_appr_preview(surf):
     _text(surf, f"{ap.get('airport','')}   {ap.get('procedure','')}   ·   {via}",
           15, WHITE, bold=True, cx=DISPLAY_W // 2, cy=62)
     rect = (12, 82, DISPLAY_W - 24, DISPLAY_H - 82 - (_APRV_BTN_H + 24))
-    clat, clon, rng = _appr_preview_extent()
-    _map_mod.render(surf, rect, clat, clon, 0.0, 0.0, 0.0, "nrth", rng,
-                    dict(disp.get("ds", {})),
+    clat, clon, rng = _appr_preview_extent(rect)
+    # Declutter: keep terrain/water context + airports (so the runway shows),
+    # drop weather / traffic / obstacles / airspace.
+    ds = dict(disp.get("ds", {}))
+    ds.update({"map_show_airports": True, "map_show_obstacles": False,
+               "map_show_traffic": False, "map_show_metar": False,
+               "map_show_winds": False, "map_show_nexrad": False,
+               "map_show_airspaces": False})
+    _map_mod.render(surf, rect, clat, clon, 0.0, 0.0, 0.0, "nrth", rng, ds,
                     airports_arr=_airports, runways_arr=_runways,
                     srtm_dir=SRTM_DIR, water_dir=WATER_DIR,
                     font=_mfd_get_apt_font(),
+                    airport_types_visible={"S", "M", "L", "H"},
+                    symbol_scale=1.4,
                     state_lines=_state_lines, country_lines=_country_lines,
                     approach_path=_approach_render_path(),
                     draw_corner_labels=False)
