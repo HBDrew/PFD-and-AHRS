@@ -43,3 +43,9 @@ pi4/data/
 # are build artifacts — regenerate with pandoc rather than committing them)
 *.docx
 *.pdf
+
+# Ground Station build workspace + PyInstaller output
+groundstation_out/
+build/
+dist/
+*.spec.bak
