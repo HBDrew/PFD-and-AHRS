@@ -4478,50 +4478,78 @@ def _nav_confirm_cancel():
 
 
 # ── Nav picker (tap the CDI → choose Direct-To or Flight Plan) ────────────────
-_NAVPICK_W      = 320
-_NAVPICK_H      = 188
+_NAVPICK_W      = 340
 _NAVPICK_BTN_H  = 56
 
 
-def _navpick_geom():
+def _navpick_options():
+    """The buttons to show, as (action, label, style).  DIRECT-TO + FLIGHT PLAN
+    always; a loaded approach adds ACTIVATE (armed) or CANCEL (active)."""
+    opts = [("d2", "DIRECT-TO  →", "ok"),
+            ("fpl", "FLIGHT PLAN  →", "normal")]
+    ap = disp.get("approach") or {}
+    if ap.get("loaded"):
+        rwy = ap.get("runway", "")
+        if ap.get("active"):
+            opts.append(("appr_cancel", f"CANCEL APPR {rwy}", "danger"))
+        else:
+            opts.append(("appr_activate", f"ACTIVATE APPR {rwy}", "warn"))
+    return opts
+
+
+def _navpick_layout():
+    """(bx, by, h, rects) where rects is [(action, (x,y,w,h)), ...].  Height
+    grows with the option count + a loaded-approach reminder line."""
+    opts = _navpick_options()
+    has_reminder = bool((disp.get("approach") or {}).get("loaded"))
+    top = 36
+    rem_h = 22 if has_reminder else 0
+    gap = 10
+    h = top + rem_h + len(opts) * _NAVPICK_BTN_H + (len(opts) - 1) * gap + 30
     bx = (DISPLAY_W - _NAVPICK_W) // 2
-    by = (DISPLAY_H - _NAVPICK_H) // 2
-    btn_y = by + 40
+    by = (DISPLAY_H - h) // 2
+    bxl = bx + 20
     btn_w = _NAVPICK_W - 40
-    return bx, by, btn_y, btn_w
+    y0 = by + top + rem_h
+    rects = [(opt[0], (bxl, y0 + i * (_NAVPICK_BTN_H + gap), btn_w, _NAVPICK_BTN_H))
+             for i, opt in enumerate(opts)]
+    return bx, by, h, opts, rects, has_reminder
 
 
 def draw_nav_pick(surf):
-    """Two-choice modal shown when the CDI strip is tapped: Direct-To (opens
-    the D2 ident keyboard) or Flight Plan (opens the FPL editor)."""
-    bx, by, btn_y, btn_w = _navpick_geom()
+    """Modal shown when the CDI strip is tapped: Direct-To, Flight Plan, and —
+    when an approach is loaded — Activate/Cancel it (with a which-approach
+    reminder)."""
+    bx, by, h, opts, rects, has_reminder = _navpick_layout()
     _draw_veil(surf)
-    panel = pygame.Surface((_NAVPICK_W, _NAVPICK_H), pygame.SRCALPHA)
+    panel = pygame.Surface((_NAVPICK_W, h), pygame.SRCALPHA)
     panel.fill((0, 12, 32, 235))
     surf.blit(panel, (bx, by))
-    pygame.draw.rect(surf, CYAN, (bx, by, _NAVPICK_W, _NAVPICK_H),
-                     width=2, border_radius=10)
+    pygame.draw.rect(surf, CYAN, (bx, by, _NAVPICK_W, h), width=2, border_radius=10)
     _text(surf, "NAVIGATE", 14, (160, 200, 230), bold=True,
           cx=bx + _NAVPICK_W // 2, cy=by + 20)
-    _action_btn(surf, bx + 20, btn_y, btn_w, _NAVPICK_BTN_H,
-                "DIRECT-TO  →", "ok")
-    _action_btn(surf, bx + 20, btn_y + _NAVPICK_BTN_H + 10, btn_w,
-                _NAVPICK_BTN_H, "FLIGHT PLAN  →", "normal")
+    if has_reminder:
+        ap = disp.get("approach") or {}
+        armed = not ap.get("active")
+        col = (225, 185, 80) if armed else (60, 220, 100)
+        _text(surf, f"APPR  {ap.get('airport','')} RWY {ap.get('runway','')}  ·  "
+                    + ("ARMED" if armed else "ACTIVE"),
+              12, col, bold=True, cx=bx + _NAVPICK_W // 2, cy=by + 40)
+    for (_act, lbl, style), (_a, rect) in zip(opts, rects):
+        _action_btn(surf, *rect, lbl, style)
     _text(surf, "tap outside to cancel", 11, (140, 150, 160),
-          cx=bx + _NAVPICK_W // 2, cy=by + _NAVPICK_H - 12)
+          cx=bx + _NAVPICK_W // 2, cy=by + h - 12)
 
 
 def nav_pick_hit(x, y):
-    """Return 'd2' / 'fpl' / 'cancel' / 'noop' for a tap on the nav picker."""
-    bx, by, btn_y, btn_w = _navpick_geom()
-    if not (bx <= x <= bx + _NAVPICK_W and by <= y <= by + _NAVPICK_H):
+    """Return the tapped option's action ('d2'/'fpl'/'appr_activate'/
+    'appr_cancel'), 'cancel' (tap-outside), or 'noop'."""
+    bx, by, h, _opts, rects, _ = _navpick_layout()
+    if not (bx <= x <= bx + _NAVPICK_W and by <= y <= by + h):
         return "cancel"
-    bxl = bx + 20
-    if btn_y <= y <= btn_y + _NAVPICK_BTN_H and bxl <= x <= bxl + btn_w:
-        return "d2"
-    y2 = btn_y + _NAVPICK_BTN_H + 10
-    if y2 <= y <= y2 + _NAVPICK_BTN_H and bxl <= x <= bxl + btn_w:
-        return "fpl"
+    for act, (rx, ry, rw, rh) in rects:
+        if rx <= x <= rx + rw and ry <= y <= ry + rh:
+            return act
     return "noop"
 
 
@@ -5790,6 +5818,12 @@ def handle_event(event, demo_mode):
                 disp["mode"]       = "keyboard"
             elif action == "fpl":
                 disp["mode"] = "fpl"        # the existing FPL editor
+            elif action == "appr_activate":
+                _approach_engage()
+                disp["mode"] = "pfd"
+            elif action == "appr_cancel":
+                _approach_cancel()
+                disp["mode"] = "pfd"
             elif action == "cancel":
                 disp["mode"] = "pfd"
             # "noop": keep the modal up
@@ -15908,7 +15942,7 @@ def main():
             disp["mode"] = args.ss_mode
             if args.ss_mode == "navdata_data":
                 _nd_load()          # deterministic stats for the screenshot
-            if args.ss_mode == "fpl":
+            if args.ss_mode in ("fpl", "nav_pick"):
                 # Demo plan + a loaded (armed) approach, for layout checks.
                 disp["fpl"]["waypoints"] = [
                     {"ident": "DRK", "lat": 34.70, "lon": -111.30, "name": "DRAKE"},
