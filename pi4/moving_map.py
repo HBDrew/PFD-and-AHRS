@@ -1526,7 +1526,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             pygame.draw.polygon(surf, _HITS_CYAN,
                                 [(int(px), int(py) - d2), (int(px) + d2, int(py)),
                                  (int(px), int(py) + d2), (int(px) - d2, int(py))])
-            if ident and font is not None:
+            # Skip the label for the runway/MAP fix when the runway bar already
+            # labels it (avoids the redundant "RW03" over "RWY 03").
+            if ident and font is not None and not (
+                    runway_marker is not None and ident[:2] == "RW"
+                    and ident[2:3].isdigit()):
                 surf.blit(font.render(ident, True, _HITS_CYAN),
                           (int(px) + d2 + 3, int(py) - d2 - 2))
 
@@ -1540,20 +1544,18 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             fla, flo = nla, nlo
 
     # ── Runway marker — the physical runway the approach lands on ───────────
-    # ((thr_lat, thr_lon), (far_lat, far_lon), label).  A thick white bar with a
-    # dark centreline, drawn from the threshold along the runway.  Explicit (not
-    # the runway-DB layer) so it's always visible at approach-preview zoom.
+    # ((le_lat, le_lon), (he_lat, he_lon), label): a single clean white bar
+    # between the two real runway thresholds, so its position + orientation are
+    # exact.  Explicit (not the runway-DB layer) so it shows at preview zoom.
     if runway_marker is not None:
         (a_la, a_lo), (b_la, b_lo), rlabel = runway_marker
         ax, ay = _project(a_la, a_lo)
         bx, by = _project(b_la, b_lo)
-        pygame.draw.line(surf, (235, 235, 245),
-                         (int(ax), int(ay)), (int(bx), int(by)), 7)
-        pygame.draw.line(surf, (40, 44, 55),
-                         (int(ax), int(ay)), (int(bx), int(by)), 1)
+        pygame.draw.line(surf, (245, 245, 250),
+                         (int(ax), int(ay)), (int(bx), int(by)), 5)
         if rlabel and font is not None:
-            surf.blit(font.render(rlabel, True, (235, 235, 245)),
-                      (int(bx) + 7, int(by) - 6))   # far end — clear of the fixes
+            surf.blit(font.render(rlabel, True, (210, 220, 235)),
+                      (int(bx) + 8, int(by) - 6))   # far end — clear of the fixes
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
     # The big MFD draws the flight-category dots on *every* page (we already

@@ -720,6 +720,15 @@ Work items:
     "EXIT HOLD" (then resume the next leg). This is the one place the
     existing distance-gated sequencer needs a real state change.
 
+### DEPARTURES-PICKER  SID/STAR selection (own section, not the approach list)
+Status: **OPEN — SIDs/STARs are parsed + cached; just not selectable yet**
+Context: the approach picker now filters to approaches only (by type + name), so
+departures (e.g. FLG ONE) no longer pollute it.  But the SIDs/STARs ARE in the
+cache and should be selectable — under their own DEPARTURE / ARRIVAL section
+(off the FPL origin for SIDs, the destination for STARs), loaded onto the plan
+like approaches.  Mirror the appr_proc_select / transition / preview flow with
+`_navdata.procedures_for` filtered to type SID (origin) / STAR (destination).
+
 ### INFO-VIEWER  Airport / approach / navaid data viewer
 Status: **OPEN — data is in hand; this is a display feature**
 Context: the NAVDATA-FAA cache + the OurAirports DB already carry far more

@@ -5155,7 +5155,7 @@ def handle_event(event, demo_mode):
     # consume the drag (no action fires) or replay the tap at the up
     # position so the underlying row-hit code runs as if nothing happened.
     global _ss_drag, _dispatch_replay, _mfd_drag, _fpl_drag, _fpl_scroll
-    global _wx_drag
+    global _wx_drag, _prc_drag, _prc_scroll
     # ── FPL list scroll drag (defer-replay; taps still fire) ──────────────────
     if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _fpl_drag is not None:
         pos = event.pos if hasattr(event, "pos") else (
@@ -5173,6 +5173,31 @@ def handle_event(event, demo_mode):
     if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _fpl_drag is not None:
         d = _fpl_drag
         _fpl_drag = None
+        if not d["is_drag"]:
+            _dispatch_replay = True
+            try:
+                handle_event(pygame.event.Event(
+                    pygame.MOUSEBUTTONDOWN, {"pos": d["pos"], "button": 1}),
+                    demo_mode)
+            finally:
+                _dispatch_replay = False
+        return True
+
+    # ── Approach procedure/transition picker scroll drag ──────────────────────
+    if event.type in (pygame.MOUSEMOTION, pygame.FINGERMOTION) and _prc_drag is not None:
+        pos = event.pos if hasattr(event, "pos") else (
+            int(event.x * DISPLAY_W), int(event.y * DISPLAY_H))
+        dy = pos[1] - _prc_drag["down_y"]
+        if not _prc_drag["is_drag"] and abs(dy) > _FPL_DRAG_THRESHOLD:
+            _prc_drag["is_drag"] = True
+        if _prc_drag["is_drag"]:
+            _prc_scroll = max(0, min(_prc_max_scroll(_prc_drag["n"]),
+                                     _prc_drag["scroll_at_down"] - dy))
+        _prc_drag["pos"] = pos
+        return True
+    if event.type in (pygame.MOUSEBUTTONUP, pygame.FINGERUP) and _prc_drag is not None:
+        d = _prc_drag
+        _prc_drag = None
         if not d["is_drag"]:
             _dispatch_replay = True
             try:
@@ -5499,6 +5524,17 @@ def handle_event(event, demo_mode):
                 _settings.mark_dirty()
             return True
 
+        # Picker list area defers for a possible scroll-drag; header/back taps
+        # (above the list) fall through to the hit-test.
+        if not _dispatch_replay and mode in ("appr_proc_select", "appr_trans_select"):
+            if _PRC_TOP <= y <= _prc_list_bot():
+                n = (len(_appr_published((disp.get("approach") or {}).get("airport", "")))
+                     if mode == "appr_proc_select"
+                     else len(_appr_pending_transitions()))
+                _prc_drag = {"down_y": y, "pos": (x, y),
+                             "scroll_at_down": _prc_scroll, "is_drag": False, "n": n}
+                return True
+
         # ── Published-approach procedure picker taps ──────────────────────
         if mode == "appr_proc_select":
             act, payload = appr_proc_select_hit(x, y)
@@ -5510,6 +5546,7 @@ def handle_event(event, demo_mode):
                      if _navdata is not None else None)
                 if p and (p.get("transitions") or {}):
                     disp["approach"]["pending_proc"] = payload
+                    _prc_scroll = 0
                     disp["mode"] = "appr_trans_select"
                 else:
                     from_fpl = bool(disp.get("appr_from_fpl"))
@@ -5522,6 +5559,7 @@ def handle_event(event, demo_mode):
         if mode == "appr_trans_select":
             act, payload = appr_trans_select_hit(x, y)
             if act == "back":
+                _prc_scroll = 0
                 disp["mode"] = "appr_proc_select"
             elif act == "pick":
                 ap = disp.get("approach") or {}
@@ -5539,6 +5577,7 @@ def handle_event(event, demo_mode):
             action = appr_preview_hit(x, y)
             if action == "back":
                 _approach_cancel()
+                _prc_scroll = 0
                 disp["mode"] = "appr_proc_select"
             elif action == "load":
                 disp["mode"] = "pfd"
@@ -5765,6 +5804,7 @@ def handle_event(event, demo_mode):
                     if dest:
                         disp["approach"]["airport"] = dest
                         disp["appr_from_fpl"] = True
+                        _prc_scroll = 0
                         disp["mode"] = ("appr_proc_select"
                                         if _appr_published(dest)
                                         else "approach_select")
@@ -6231,6 +6271,7 @@ def handle_event(event, demo_mode):
                         disp["appr_from_fpl"] = False  # plain D2
                         disp["kbd_buf"] = ""
                         disp["kbd_error"] = ""
+                        _prc_scroll = 0
                         disp["mode"] = ("appr_proc_select"
                                         if _appr_published(target_ident)
                                         else "approach_select")
@@ -8073,13 +8114,70 @@ _PRC_ROW_H = 52
 _PRC_GY    = 8
 
 
+def _prc_list_bot():
+    return DISPLAY_H - 12
+
+
 def _prc_row_rect(i):
-    by = _PRC_TOP + i * (_PRC_ROW_H + _PRC_GY)
+    by = _PRC_TOP + i * (_PRC_ROW_H + _PRC_GY) - _prc_scroll
     return pygame.Rect(_PRC_MX, by, DISPLAY_W - 2 * _PRC_MX, _PRC_ROW_H)
 
 
-def _prc_visible_count():
-    return max(1, (DISPLAY_H - _PRC_TOP - 10) // (_PRC_ROW_H + _PRC_GY))
+def _prc_max_scroll(n):
+    content = n * (_PRC_ROW_H + _PRC_GY) - _PRC_GY
+    return max(0, content - (_prc_list_bot() - _PRC_TOP))
+
+
+def _prc_clamp_scroll(n):
+    global _prc_scroll
+    _prc_scroll = max(0, min(_prc_scroll, _prc_max_scroll(n)))
+
+
+def _prc_scrollbar(surf, n):
+    max_s = _prc_max_scroll(n)
+    if max_s <= 0:
+        return
+    top, bot = _PRC_TOP, _prc_list_bot()
+    th = bot - top
+    bx = DISPLAY_W - 6
+    thumb = max(24, int(th * th / (th + max_s)))
+    ty = top + int((th - thumb) * _prc_scroll / max_s)
+    pygame.draw.rect(surf, (40, 50, 70), (bx, top, 4, th), border_radius=2)
+    pygame.draw.rect(surf, (120, 150, 190), (bx, ty, 4, thumb), border_radius=2)
+
+
+def _prc_draw_rows(surf, items, accent=(60, 90, 130), label_color=WHITE,
+                   suffix="▶"):
+    """Draw a scrollable row list; returns nothing.  items: list of (label,) or
+    (label, sublabel, accent_override)."""
+    _prc_clamp_scroll(len(items))
+    clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, _PRC_TOP, DISPLAY_W, _prc_list_bot() - _PRC_TOP))
+    for i, it in enumerate(items):
+        rect = _prc_row_rect(i)
+        if rect.bottom < _PRC_TOP or rect.top > _prc_list_bot():
+            continue
+        for j in range(rect.height):
+            t = 1.0 - j / rect.height
+            pygame.draw.line(surf, (int(t * 10), int(14 + t * 22), int(30 + t * 42)),
+                             (rect.x, rect.y + j), (rect.right, rect.y + j))
+        pygame.draw.rect(surf, accent, rect, width=1, border_radius=6)
+        _text(surf, it, 19, label_color, bold=True, x=rect.x + 16, cy=rect.centery)
+        if suffix:
+            _text(surf, suffix, 18, (70, 100, 140), x=rect.right - 30,
+                  cy=rect.centery)
+    surf.set_clip(clip)
+    _prc_scrollbar(surf, len(items))
+
+
+def _prc_row_hit(n, x, y):
+    """Index of the on-screen row hit, or None."""
+    for i in range(n):
+        r = _prc_row_rect(i)
+        if r.top >= _PRC_TOP - 1 and r.bottom <= _prc_list_bot() + 1 \
+                and r.collidepoint(x, y):
+            return i
+    return None
 
 
 def draw_appr_proc_select(surf):
@@ -8093,29 +8191,15 @@ def draw_appr_proc_select(surf):
         _text(surf, f"No published approaches for {airport}", 15, YELLOW,
               cx=DISPLAY_W // 2, cy=_PRC_TOP + 30)
         return
-    nvis = _prc_visible_count()
-    for i, pid in enumerate(procs[:nvis]):
-        rect = _prc_row_rect(i)
-        for j in range(rect.height):
-            t = 1.0 - j / rect.height
-            pygame.draw.line(surf, (int(t * 10), int(14 + t * 22), int(30 + t * 42)),
-                             (rect.x, rect.y + j), (rect.right, rect.y + j))
-        pygame.draw.rect(surf, (60, 90, 130), rect, width=1, border_radius=6)
-        _text(surf, pid, 19, WHITE, bold=True, x=rect.x + 16, cy=rect.centery)
-        _text(surf, "▶", 18, (70, 100, 140), x=rect.right - 30, cy=rect.centery)
-    if len(procs) > nvis:
-        _text(surf, f"+{len(procs) - nvis} more", 11, (130, 145, 170),
-              cx=DISPLAY_W // 2, cy=DISPLAY_H - 16)
+    _prc_draw_rows(surf, procs)
 
 
 def appr_proc_select_hit(x, y):
     if _back_hit(x, y):
         return ("back", None)
     procs = _appr_published((disp.get("approach") or {}).get("airport", ""))
-    for i in range(min(len(procs), _prc_visible_count())):
-        if _prc_row_rect(i).collidepoint(x, y):
-            return ("pick", procs[i])
-    return (None, None)
+    i = _prc_row_hit(len(procs), x, y)
+    return ("pick", procs[i]) if i is not None else (None, None)
 
 
 def _appr_pending_transitions():
@@ -8135,9 +8219,13 @@ def draw_appr_trans_select(surf):
     _text(surf, f"{ap.get('airport','')}  {ap.get('pending_proc','')}", 18, WHITE,
           bold=True, cx=DISPLAY_W // 2, cy=72)
     trans = _appr_pending_transitions()
-    nvis = _prc_visible_count()
-    for i, tid in enumerate(trans[:nvis]):
+    _prc_clamp_scroll(len(trans))
+    clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, _PRC_TOP, DISPLAY_W, _prc_list_bot() - _PRC_TOP))
+    for i, tid in enumerate(trans):
         rect = _prc_row_rect(i)
+        if rect.bottom < _PRC_TOP or rect.top > _prc_list_bot():
+            continue
         vectors = (tid == "VECTORS")
         for j in range(rect.height):
             t = 1.0 - j / rect.height
@@ -8152,16 +8240,16 @@ def draw_appr_trans_select(surf):
         if not vectors:
             _text(surf, "IAF ▶", 14, (120, 140, 170), x=rect.right - 56,
                   cy=rect.centery)
+    surf.set_clip(clip)
+    _prc_scrollbar(surf, len(trans))
 
 
 def appr_trans_select_hit(x, y):
     if _back_hit(x, y):
         return ("back", None)
     trans = _appr_pending_transitions()
-    for i in range(min(len(trans), _prc_visible_count())):
-        if _prc_row_rect(i).collidepoint(x, y):
-            return ("pick", trans[i])
-    return (None, None)
+    i = _prc_row_hit(len(trans), x, y)
+    return ("pick", trans[i]) if i is not None else (None, None)
 
 
 # ── Approach preview (map) — shown before a loaded approach is kept ─────────────
@@ -14726,6 +14814,8 @@ _FPL_DEACT_H     = 36
 _fpl_scroll = 0
 _fpl_drag = None
 _FPL_DRAG_THRESHOLD = 8
+_prc_scroll = 0             # approach procedure/transition picker scroll
+_prc_drag = None
 
 
 def _fpl_actions_rect():
