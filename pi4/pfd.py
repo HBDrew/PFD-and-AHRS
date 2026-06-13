@@ -3999,27 +3999,22 @@ class SimFlyState:
                         xtk = (de_nm * math.cos(course_rad)
                                - dn_nm * math.sin(course_rad))
                     else:
-                        # D2: fly the great-circle to the waypoint.
-                        # ``brg`` (computed above) is the local GC
-                        # tangent at the current position — that's the
-                        # desired track once we're back on course, and
-                        # it tracks the GC bend naturally as we cross
-                        # the leg.  Cross-track is the spherical
-                        # perpendicular distance from the act→wpt great
-                        # circle, matching the CDI's reference and the
-                        # SVT trace.  Holding the *initial* bearing from
-                        # the activation point (the previous behaviour)
-                        # plus a flat-earth XTK at the waypoint produced
-                        # phantom XTKs of tens to hundreds of nm on long
-                        # legs — pure equirectangular distortion — and
-                        # the AP saturated at 45° intercept aimed at the
-                        # wrong heading.
+                        # D2 / activated leg: fly DIRECT to the fix (pure
+                        # pursuit) — steer at the current bearing to the
+                        # waypoint, no cross-track term.  ``brg`` already points
+                        # at the fix and is recomputed every frame, so the
+                        # aircraft always converges, from any starting position.
+                        #
+                        # The earlier scheme intercepted the act→wpt course at
+                        # 45° with a cross-track correction.  That works on a
+                        # plain D2 (act = aircraft) but on ACTIVATE LEG (act =
+                        # previous fix) a 45° intercept can't catch a course you
+                        # sit abeam/behind, so the AP flew a parallel heading
+                        # AWAY from the fix.  Pure pursuit to the fix is what
+                        # "fly to this fix" should do and never diverges; the
+                        # final-approach centreline (above) still tracks course.
                         course_deg = brg
-                        ax_lat = float(nv.get("act_lat", cur_lat))
-                        ax_lon = float(nv.get("act_lon", cur_lon))
-                        xtk = _nav_xtk_nm(ax_lat, ax_lon,
-                                          wp_lat, wp_lon,
-                                          cur_lat, cur_lon)
+                        xtk = 0.0
 
                     tgt_hdg = _sim_intercept_heading(
                         course_deg, xtk,
@@ -6088,14 +6083,12 @@ def handle_event(event, demo_mode):
                     _approach_goto_leg(idx, from_present=False)
                 else:
                     _fpl_activate(idx, reset_activation=False)
-                    _sim_engage_follow()
                 disp["mode"] = "fpl"
             elif action == "d2":
                 if kind == "appr":
                     _approach_goto_leg(idx, from_present=True)
                 else:
                     _fpl_activate(idx, reset_activation=True)
-                    _sim_engage_follow()
                 disp["mode"] = "fpl"
             elif action == "vectors":
                 if kind == "appr":
@@ -8049,7 +8042,6 @@ def _approach_begin_guidance():
         _approach_apply_leg()
     else:
         _approach_retarget_nav()
-    _sim_engage_follow()
 
 
 def _approach_apply_leg(from_present=False):
@@ -8119,15 +8111,6 @@ def _approach_check_advance(lat, lon):
         _approach_apply_leg()
 
 
-def _sim_engage_follow():
-    """In the sim, engage the autopilot's FOLLOW = FLT-PLAN source so a freshly
-    activated leg / direct-to is actually flown (otherwise the sim keeps flying
-    the heading bug and the new course is only advisory).  No-op on real
-    hardware — follow_mode drives the sim engine only."""
-    if _sim_state is not None:
-        disp["sim"]["follow_mode"] = "fp"
-
-
 def _approach_goto_leg(idx, from_present=False):
     """Engage the approach and jump to leg ``idx`` (used by the leg menu's
     ACTIVATE / DIRECT-TO and VECTORS).  from_present anchors the course at the
@@ -8143,7 +8126,6 @@ def _approach_goto_leg(idx, from_present=False):
         _ssync_publish_fpl()
     ap["leg_idx"] = max(0, min(int(idx), len(legs) - 1))
     _approach_apply_leg(from_present=from_present)
-    _sim_engage_follow()
 
 
 def _approach_retarget_nav():
