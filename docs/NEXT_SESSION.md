@@ -131,24 +131,30 @@ via `_winds_pos`, not the airport DB). A `WindsPoller` (15 min) feeds it like
 the other internet sources; readout tags `[INET]` vs `[FIS-B]`. Field names are
 coded to Open-Meteo's documented schema — wants a live-pull check on-device.
 
-### ★ NOTAM access — blocked on FAA approval (key requested by email)
+### NOTAM access — NMS-API wired; live-test pending (pre-prod creds in hand)
 
-The NOTAM *code* is done and dormant (in-app credential entry + poller no-op
-without a key).  The blocker is purely getting a key:
+NMS pre-prod credentials arrived and the client is **repointed to the FAA NMS-
+API** (was the legacy `external-api.faa.gov` endpoint).  Status: code done,
+awaiting a live test against pre-prod.
 
-- **FAA NOTAM API is mid-migration** (legacy `api.faa.gov` → new **NMS**, full
-  transition targeted 2026).  There is **no self-service signup** right now —
-  access is by **emailed request + FAA approval**.  Andrew has **submitted an
-  email request** (the only current path); awaiting approval.
-- Registration paths once live: FNS NDS registration
-  (`notams.aim.faa.gov/fnsAdmin/?page=nds_registration`) and the NMS portal
-  (`nms.aim.faa.gov`).  Still OAuth client_credentials (client_id/secret), so
-  the in-app Connectivity field fits.
-- **Caveat:** our client targets the *legacy* `external-api.faa.gov/notamapi/v1`
-  endpoint.  Once a key arrives, **live-test it** — the NMS migration may have
-  moved the endpoint / changed field names (GeoJSON/AIXM).  Repoint
-  `wx.fetch_notams` if needed.  *No app changes otherwise — paste the key into
-  Connectivity and NOTAMs light up.*
+- **Two-step OAuth2** (`shared/wx.py`): `_nms_token()` POSTs Basic-auth
+  `KEY:SECRET` + `grant_type=client_credentials` to `{host}/v1/auth/token`
+  (base host, NOT `/nmsapi`), caches the ~30 min bearer token per env (renews
+  60 s early).  `fetch_notams()` then GETs `{host}/nmsapi/v1/notams?latitude=
+  &longitude=&radius=` with `Authorization: Bearer` + `nmsResponseFormat:
+  GEOJSON`.  `parse_notams()` reads the NMS GeoJSON shape
+  (`data.geojson[].properties.coreNOTAMData…`, `domestic_message`/
+  `icao_message`) and still tolerates the legacy `items[]` shape.
+- **Hosts** (`_NMS_HOSTS`): preprod `api-staging.cgifederal-aim.com` (default),
+  prod `api-nms.aim.faa.gov`, + sit/fit.  Selected by the new **NOTAM ENV**
+  Connectivity field (`cs.notam_env`, default `preprod`) / `FAA_NOTAM_ENV` env.
+- **In-app:** Connectivity → **NOTAM KEY** (client_id) + **NOTAM SECRET**
+  (client_secret) + **NOTAM ENV**.  Poller reads them live; paste + go.
+- **Live-test checklist:** enter KEY/SECRET, leave ENV=preprod, watch the WX/
+  NOTAM poller.  A 401 = auth (token) issue; empty but 200 = no NOTAMs in the
+  view.  When prod access lands, flip NOTAM ENV to `prod`.  FAQ gotchas: token
+  is 30 min; auth URL has NO `/nmsapi`; a cert "revocation" error is a
+  Windows-only curl issue (not the Pi's urllib).
 - **Optional alternative — Notamify** (paid): instant Bearer-token signup, and
   it returns **plain-English decoded** NOTAMs.  Endpoint `api.notamify.com/api/
   v2/notams?locations=ICAO` (≤5/call), `Authorization: Bearer`.  Credit-based

@@ -377,10 +377,12 @@ disp["cs"] = {                      # connectivity settings
     "ahrs_url":  PICO_URL, "wifi_ssid": "AHRS-Link",
     "wifi_pass": "",        "wifi_ok":  False,
     "wifi_actual": "",      # SSID actually associated now (from iwgetid -r)
-    # FAA NOTAM API credentials (entered in Connectivity → free key at
-    # api.faa.gov).  Persisted (plaintext) so they survive restarts; the NOTAM
-    # poller reads them live, so entering a key enables NOTAMs without a reboot.
+    # FAA NMS-API NOTAM credentials (entered in Connectivity).  KEY = client_id,
+    # SECRET = client_secret, from the FAA NMS onboarding sheet.  Persisted
+    # (plaintext); the poller reads them live, so entering them enables NOTAMs
+    # without a reboot.  notam_env selects the host (preprod | prod).
     "notam_client_id": "",  "notam_client_secret": "",
+    "notam_env": "preprod",
     "scan_state": "",   "scan_nets": [], "scan_scroll": 0, "scan_error": "",
     "ahrs_ok":   False,     "test_msg": "", "apply_msg": "",
     # AHRS link diagnostics (populated by the transport client thread)
@@ -1969,7 +1971,8 @@ def _notam_fetch(lat, lon, radius_nm):
     return _wx.fetch_notams(
         lat, lon, radius_nm,
         client_id=(cs.get("notam_client_id") or "").strip() or None,
-        client_secret=(cs.get("notam_client_secret") or "").strip() or None)
+        client_secret=(cs.get("notam_client_secret") or "").strip() or None,
+        env=(cs.get("notam_env") or "preprod").strip().lower())
 
 
 def _fisb_locate(icao):
@@ -6053,7 +6056,8 @@ def handle_event(event, demo_mode):
                 lbl, sty = hit
                 target  = disp["kbd_target"]
                 _CS_MAX = {"wifi_ssid": 32, "wifi_pass": 63, "ahrs_url": 80,
-                           "notam_client_id": 80, "notam_client_secret": 80}
+                           "notam_client_id": 80, "notam_client_secret": 80,
+                           "notam_env": 10}
                 _FPL_KBD_MAX = {"fpl_ident": 7, "fpl_latlon_ident": 10,
                                 "fpl_latlon_lat": 12, "fpl_latlon_lon": 12,
                                 "fpl_save_name": 16, "nav_ident": 7}
@@ -8354,8 +8358,9 @@ _CS_FIELDS = [
     ("ahrs_url",  "AHRS URL",        "Pico W access-point address"),
     ("wifi_ssid", "WiFi SSID",       "Network name to join"),
     ("wifi_pass", "WiFi PASSWORD",   "WPA2 passphrase"),
-    ("notam_client_id",     "NOTAM CLIENT ID", "FAA NOTAM API key — free at api.faa.gov"),
-    ("notam_client_secret", "NOTAM SECRET",    "FAA NOTAM API secret — stored on device"),
+    ("notam_client_id",     "NOTAM KEY",    "FAA NMS-API key (client_id) — onboarding sheet"),
+    ("notam_client_secret", "NOTAM SECRET", "FAA NMS-API secret (client_secret) — on device"),
+    ("notam_env",           "NOTAM ENV",    "preprod (default) or prod"),
 ]
 _CS_BTN_Y  = _ss_row_y(len(_CS_FIELDS) + 2) + 4   # below fields + STATUS + AHRS LINK rows
 _CS_BTN_H  = 50

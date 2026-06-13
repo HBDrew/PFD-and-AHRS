@@ -17,6 +17,7 @@ Advisory only — like all in-cockpit weather, METARs are observations that
 age; treat them as situational awareness, not a dispatch product.
 """
 
+import base64
 import calendar
 import json
 import math
@@ -42,12 +43,22 @@ _AWC_AIRSIGMET = "https://aviationweather.gov/api/data/airsigmet"
 # retired the text FB winds product; the GFS grids behind it now come as JSON
 # here, batched many points per request.
 _OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
-# FAA NOTAM API — needs free developer credentials (client_id / client_secret
-# from https://api.faa.gov), supplied via env.  No key → the fetch no-ops, so
-# the rest of the weather suite is unaffected.
-_FAA_NOTAM = "https://external-api.faa.gov/notamapi/v1/notams"
+# FAA NOTAM Management System (NMS) API — OAuth2 client-credentials.
+# Credentials (KEY = client_id, SECRET = client_secret) come from the FAA NMS
+# onboarding sheet, entered in-app (Connectivity) or via env.  No creds → the
+# fetch no-ops, so the rest of the weather suite is unaffected.
+# IMPORTANT: the auth token lives at the BASE host (no /nmsapi); the data
+# endpoints live under /nmsapi/v1/.
+_NMS_HOSTS = {
+    "preprod": "https://api-staging.cgifederal-aim.com",
+    "prod":    "https://api-nms.aim.faa.gov",
+    "sit":     "https://api-sit.cgifederal-aim.com",
+    "fit":     "https://api-fit.cgifederal-aim.com",
+}
+_NMS_DEFAULT_ENV = "preprod"      # only env most users have access to today
 _FAA_NOTAM_ID_ENV = "FAA_NOTAM_CLIENT_ID"
 _FAA_NOTAM_SECRET_ENV = "FAA_NOTAM_CLIENT_SECRET"
+_FAA_NOTAM_ENV_ENV = "FAA_NOTAM_ENV"
 _UA = "PFD-and-AHRS/wx (experimental EFB; contact via repo)"
 _NM_PER_DEG = 60.0
 _M_TO_FT = 3.280839895
@@ -1218,24 +1229,28 @@ def have_notam_creds(client_id=None, client_secret=None):
 
 
 def parse_notams(data):
-    """Parse an FAA NOTAM API (geoJson) response into advisory text strings.
+    """Parse an FAA NMS-API GeoJSON NOTAM response into advisory text strings.
 
-    Prefers the human-readable ``formattedText`` translation, falls back to the
-    raw ICAO ``text``; prefixes the location id so the advisory list can
-    geolocate the NOTAM by airport (``_notam_locate``).  De-duplicates."""
+    Prefers the readable LOCAL/domestic translation, falls back to the ICAO
+    translation, then the raw ``text``; prefixes the location id so the advisory
+    list can geolocate the NOTAM by airport (``_notam_locate``).  De-duplicates.
+    Tolerant of both the NMS shape (``data.geojson[]``) and the legacy FAA NOTAM
+    API shape (``items[]``)."""
     out, seen = [], set()
-    for it in (data or {}).get("items") or []:
-        core = ((it.get("properties") or {}).get("coreNOTAMData") or {})
+    data = data or {}
+    feats = (((data.get("data") or {}).get("geojson"))
+             or data.get("geojson") or data.get("items") or [])
+    for it in feats:
+        core = ((it.get("properties") or {}).get("coreNOTAMData")
+                or it.get("coreNOTAMData") or {})
         notam = core.get("notam") or {}
         loc = (notam.get("icaoLocation") or notam.get("location") or "").strip()
-        text = ""
+        local = icao = ""
         for tr in core.get("notamTranslation") or []:
-            ft = (tr.get("formattedText") or tr.get("simpleText") or "").strip()
-            if ft:
-                text = ft
-                break
-        if not text:
-            text = (notam.get("text") or "").strip()
+            local = local or (tr.get("domestic_message") or tr.get("formattedText")
+                              or tr.get("simpleText") or "").strip()
+            icao = icao or (tr.get("icao_message") or "").strip()
+        text = local or icao or (notam.get("text") or "").strip()
         if not text:
             continue
         text = " ".join(text.split())          # collapse newlines / runs
@@ -1247,23 +1262,62 @@ def parse_notams(data):
     return out
 
 
+# ── NMS OAuth2 bearer-token cache ──────────────────────────────────────────────
+_nms_token_cache = {}                 # env -> (token, expires_monotonic)
+_nms_token_lock = threading.Lock()
+
+
+def _nms_base(env):
+    return _NMS_HOSTS.get((env or _NMS_DEFAULT_ENV).lower(),
+                          _NMS_HOSTS[_NMS_DEFAULT_ENV])
+
+
+def _nms_token(cid, csec, env, timeout=15):
+    """Return a (cached) NMS bearer token.  Tokens last ~30 min; we renew ~60 s
+    early.  POSTs to the BASE host's /v1/auth/token (NOT /nmsapi) with Basic
+    auth + grant_type=client_credentials.  Raises on failure."""
+    now = time.monotonic()
+    with _nms_token_lock:
+        cached = _nms_token_cache.get(env)
+        if cached and cached[1] > now:
+            return cached[0]
+    basic = base64.b64encode(f"{cid}:{csec}".encode()).decode()
+    req = urllib.request.Request(
+        f"{_nms_base(env)}/v1/auth/token",
+        data=b"grant_type=client_credentials", method="POST",
+        headers={"Authorization": f"Basic {basic}",
+                 "Content-Type": "application/x-www-form-urlencoded",
+                 "User-Agent": _UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        d = json.loads(r.read().decode("utf-8", "ignore"))
+    tok = (d.get("access_token") or "").strip()
+    if not tok:
+        raise RuntimeError("NMS auth returned no access_token")
+    ttl = int(d.get("expires_in") or 1799)
+    with _nms_token_lock:
+        _nms_token_cache[env] = (tok, now + max(60, ttl - 60))
+    return tok
+
+
 def fetch_notams(lat, lon, radius_nm, timeout=15, page_size=50,
-                 client_id=None, client_secret=None):
-    """Fetch NOTAMs within ``radius_nm`` (capped at the API's 100 nm) of a point.
-    Credentials come from the passed pair (entered in-app) or, failing that, the
-    environment.  Returns ``[]`` — a harmless no-op — when none are configured,
-    so the rest of the weather suite runs unaffected without an FAA key."""
+                 client_id=None, client_secret=None, env=None):
+    """Fetch NOTAMs within ``radius_nm`` (capped at the API's 100 nm) of a point
+    from the FAA NMS-API.  Credentials come from the passed pair (entered in-app)
+    or the environment.  Returns ``[]`` — a harmless no-op — when none are
+    configured, so the weather suite runs unaffected without NMS creds."""
     cid = client_id or os.environ.get(_FAA_NOTAM_ID_ENV)
     csec = client_secret or os.environ.get(_FAA_NOTAM_SECRET_ENV)
     if not cid or not csec:
         return []
+    env = (env or os.environ.get(_FAA_NOTAM_ENV_ENV) or _NMS_DEFAULT_ENV).lower()
     rad = max(1, min(100, int(round(radius_nm))))
-    url = (f"{_FAA_NOTAM}?responseFormat=geoJson"
-           f"&locationLongitude={lon:.4f}&locationLatitude={lat:.4f}"
-           f"&locationRadius={rad}&pageSize={page_size}&pageNum=1"
-           f"&sortBy=effectiveStartDate&sortOrder=Desc")
+    token = _nms_token(cid, csec, env, timeout=timeout)
+    # Geospatial query: latitude + longitude + radius must be supplied together.
+    url = (f"{_nms_base(env)}/nmsapi/v1/notams"
+           f"?latitude={lat:.6f}&longitude={lon:.6f}&radius={rad}")
     req = urllib.request.Request(url, headers={
-        "client_id": cid, "client_secret": csec,
+        "Authorization": f"Bearer {token}",
+        "nmsResponseFormat": "GEOJSON",
         "User-Agent": _UA, "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read().decode("utf-8", "ignore"))
