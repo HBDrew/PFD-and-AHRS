@@ -8278,6 +8278,22 @@ def _appr_pending_transitions():
     return ["VECTORS"] + sorted((p.get("transitions") or {}).keys()) if p else ["VECTORS"]
 
 
+def _appr_trans_kind(tid):
+    """Short tag for a transition entry so a navaid feeder reads differently
+    from a charted IAF: 'VOR'/'VORTAC'/'NDB'/… when the ident resolves to a
+    navaid (e.g. the FLG VORTAC feeder), else 'IAF'."""
+    if _navdata is not None:
+        nv = _navdata.navaid(tid)
+        if nv:
+            nt = (nv[1] or "").upper().strip()
+            if nt.startswith("VOR") or nt in ("DME", "TAC", "VT"):
+                return "VOR"
+            if nt.startswith("NDB"):
+                return "NDB"
+            return nt or "VOR"
+    return "IAF"
+
+
 def draw_appr_trans_select(surf):
     """Pick a transition (IAF) for the procedure chosen on the previous screen,
     or VECTORS to fly the final segment only."""
@@ -8306,7 +8322,12 @@ def draw_appr_trans_select(surf):
         _text(surf, lbl, 19, (200, 210, 180) if vectors else WHITE, bold=True,
               x=rect.x + 16, cy=rect.centery)
         if not vectors:
-            _text(surf, "IAF ▶", 14, (120, 140, 170), x=rect.right - 56,
+            # Tag feeders by kind so a VOR/VORTAC reads differently from an IAF
+            # fix (a navaid feeder like FLG isn't a charted IAF).
+            kind = _appr_trans_kind(tid)
+            is_iaf = (kind == "IAF")
+            kcol = (120, 140, 170) if is_iaf else (255, 200, 110)
+            _text(surf, f"{kind} ▶", 14, kcol, x=rect.right - 84,
                   cy=rect.centery)
     surf.set_clip(clip)
     _prc_scrollbar(surf, len(trans))
