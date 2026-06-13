@@ -920,6 +920,19 @@ def _fpl_render_remaining():
             for w in wps[idx:]]
 
 
+def _approach_render_path():
+    """[(lat, lon, ident), ...] of a loaded published approach's legs for the
+    moving-map inset, or None (nothing loaded, or a synthetic single-point
+    approach with no leg list)."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return None
+    legs = ap.get("legs") or []
+    if len(legs) < 2:
+        return None
+    return [(la, lo, ident) for (la, lo, ident, _lt, _alt) in legs]
+
+
 # ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
 _FPL_MAX_WAYPOINTS = 20     # matches pi_zero
 _FPL_SAVED_MAX     = 8
@@ -14082,6 +14095,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
         range_label=eff_label,
         state_lines=_state_lines, country_lines=_country_lines,
         fpl_remaining=_fpl_render_remaining(),
+        approach_path=_approach_render_path(),
         airspaces=_airspaces,
         traffic=_traffic_to_draw(),
         metars=disp.get("weather", {}).get("metars"),
@@ -15547,6 +15561,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             # screen sync (KIND_FPL) — only renders when the pilot has
             # FPL sync set to RX on this side AND the MFD is TXing.
             fpl_remaining=_fpl_render_remaining(),
+            approach_path=_approach_render_path(),
             # Airspace polygons (B/C/D/MOA/R).  Loaded in the
             # background at startup from AIRSPACE_DIR/airspaces.json;
             # per-class display gates live in disp["ds"]["map_show_airspace_*"].
@@ -16247,6 +16262,17 @@ def main():
                 _nd_load()
                 disp["approach"] = {"airport": "KFLG", "arm_from_fpl": True,
                                     "pending_proc": "RNAV (GPS) RWY 03"}
+            if args.ss_mode == "mfd_appr":
+                _nd_load()
+                disp["mode"] = "pfd"
+                disp["display_mode"] = "mfd"
+                disp["ds"]["mfd_enabled"] = True
+                disp["ds"]["map_zoom_nm"] = 20
+                for _k, _v in (("lat", 35.02), ("lon", -111.80)):
+                    disp[_k] = _v
+                    state[_k] = _v
+                _approach_load_published("KFLG", "RNAV (GPS) RWY 03",
+                                         "BANYO", activate=True)
             if args.ss_mode in ("fpl", "nav_pick"):
                 # Demo plan + a loaded (armed) approach, for layout checks.
                 disp["fpl"]["waypoints"] = [

@@ -1064,7 +1064,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            traffic=None, metars=None, nexrad=None,
            draw_corner_labels=True, own_lat=None, own_lon=None,
            symbol_scale=1.0, fast=False, ground_stations=None,
-           wx_graphics=None, winds_barbs=None, nexrad_cells=None):
+           wx_graphics=None, winds_barbs=None, nexrad_cells=None,
+           approach_path=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1511,6 +1512,29 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     surf.blit(font.render(next_ident, True, faded),
                               (int(npx) + d + 3, int(npy) - d - 2))
                 from_la, from_lo = next_la, next_lo
+
+        # ── Loaded published approach path (cyan) ──────────────────────────
+        # The transition + final legs of a loaded CIFP approach, drawn as a
+        # cyan polyline with fix diamonds + idents so the pilot can see the
+        # whole procedure (the final-approach course line above is the last
+        # leg).  Shown whenever an approach is loaded (armed or active).
+        if approach_path is not None and len(approach_path) >= 2:
+            d2 = max(3, d - 1)
+            fla, flo, _fid = approach_path[0]
+            for nla, nlo, nident in approach_path[1:]:
+                pygame.draw.line(surf, _HITS_CYAN,
+                                 (int(_project(fla, flo)[0]), int(_project(fla, flo)[1])),
+                                 (int(_project(nla, nlo)[0]), int(_project(nla, nlo)[1])), 2)
+                npx, npy = _project(nla, nlo)
+                pygame.draw.polygon(surf, _HITS_CYAN,
+                                    [(int(npx),      int(npy) - d2),
+                                     (int(npx) + d2, int(npy)),
+                                     (int(npx),      int(npy) + d2),
+                                     (int(npx) - d2, int(npy))])
+                if nident and font is not None:
+                    surf.blit(font.render(nident, True, _HITS_CYAN),
+                              (int(npx) + d2 + 3, int(npy) - d2 - 2))
+                fla, flo = nla, nlo
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
     # The big MFD draws the flight-category dots on *every* page (we already
