@@ -720,6 +720,31 @@ Work items:
     "EXIT HOLD" (then resume the next leg). This is the one place the
     existing distance-gated sequencer needs a real state change.
 
+### NAVDATA-BUILD-CLEANUP  Fix approach legs in the build, not at runtime
+Status: **OPEN — runtime works around a dirty cache; clean the cache instead**
+Context: the CIFP cache has artifacts the runtime currently papers over every
+frame.  Per flight-test (KFLG RNAV 03), the raw `final` is
+`['SEZCY','TOHQU','TOHQU','YEDUV','RW03','·(CA)','TAWNE']` — i.e. a **doubled
+fix** (TOHQU TOHQU), a **no-coord climb leg** (CA/VA/FA), and the **missed
+approach folded into `final`** after the MAP (RWxx).  `pi4/pfd.py` cleans all
+this at load time: `_appr_dedupe` (drop consecutive same-ident), `_appr_leg_pts`
+(drop no-coord legs), and a runtime MAP-split at the `RWxx` fix to peel the
+missed off `final`.  That's the right *display* but the wrong *place* — do it
+once in `tools/build_navdata_us.py` so the cache is clean and the runtime is a
+straight read.  Build-side fixes:
+  - **Dedupe** consecutive same-fix legs when writing each segment.
+  - **Split missed properly**: CIFP flags the missed via the common-route's
+    route-type 'M'; track per-leg route type (we already read col 20) and route
+    those legs to `missed` instead of the heuristic "everything after RWxx".
+  - **Climb/no-fix legs** (CA/VA/FA): keep the leg (course+alt drive the missed
+    climb-ahead render) but mark it so the runtime needn't infer; the runtime
+    already synthesises the climb point off the MAP course.
+  - Re-confirm **SID/STAR classification** (type=SID/STAR via subsection D/E) so
+    the approach-list name+type filter can eventually relax.
+Once the cache is clean, the runtime `_appr_dedupe` / MAP-split can be dropped
+(or kept as cheap belt-and-suspenders).  Rebuild + re-run `tools/diag_navdata.py`
+to verify each procedure reads clean.
+
 ### DEPARTURES-PICKER  SID/STAR selection (own section, not the approach list)
 Status: **OPEN — SIDs/STARs are parsed + cached; just not selectable yet**
 Context: the approach picker now filters to approaches only (by type + name), so

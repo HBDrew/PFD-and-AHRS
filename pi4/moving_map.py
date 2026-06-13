@@ -118,6 +118,37 @@ def _dashed_polyline(surf, color, pts, dash=9, gap=6, width=2):
             d += dash + gap
 
 
+def _place_label(surf, font, text, color, ax, ay, placed):
+    """Blit ``text`` near the anchor (ax, ay), trying a ring of candidate
+    offsets and picking the first that doesn't overlap an already-placed label
+    rect — so clustered approach fixes (RWY 03 / FAF / IF near the airport)
+    stop stacking on top of each other.  Appends the chosen rect to ``placed``."""
+    if not text or font is None:
+        return
+    img = font.render(text, True, color)
+    w, h = img.get_size()
+    d = 6
+    cands = [
+        (ax + d, ay - h // 2),       # right
+        (ax - w - d, ay - h // 2),   # left
+        (ax - w // 2, ay - h - d),   # above
+        (ax - w // 2, ay + d),       # below
+        (ax + d, ay + d),            # down-right
+        (ax - w - d, ay - h - d),    # up-left
+        (ax + d, ay - h - d),        # up-right
+        (ax - w - d, ay + d),        # down-left
+    ]
+    for cx, cy in cands:
+        r = pygame.Rect(cx, cy, w, h)
+        if not any(r.colliderect(pr) for pr in placed):
+            surf.blit(img, (cx, cy))
+            placed.append(r)
+            return
+    cx, cy = cands[0]
+    surf.blit(img, (cx, cy))
+    placed.append(pygame.Rect(cx, cy, w, h))
+
+
 def _hold_racetrack_pts(la, lo, course_deg, turn, leg_nm, cos_lat):
     """Lat/lon points tracing a holding racetrack at (la, lo): inbound on
     ``course_deg`` to the fix, ``turn`` ('R'/'L') onto the parallel outbound
@@ -1577,6 +1608,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # polyline with fix diamonds + idents so the pilot can see the whole
     # procedure (the final-approach course line is the last leg).  Independent
     # of direct_to so it also draws on the approach preview (no D2 set).
+    _appr_label_rects = []                     # de-conflict approach labels
     if approach_path is not None and len(approach_path) >= 2:
         d2 = 4
 
@@ -1587,11 +1619,11 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                                  (int(px), int(py) + d2), (int(px) - d2, int(py))])
             # Skip the label for the runway/MAP fix when the runway bar already
             # labels it (avoids the redundant "RW03" over "RWY 03").
-            if ident and font is not None and not (
+            if ident and not (
                     runway_marker is not None and ident[:2] == "RW"
                     and ident[2:3].isdigit()):
-                surf.blit(font.render(ident, True, _HITS_CYAN),
-                          (int(px) + d2 + 3, int(py) - d2 - 2))
+                _place_label(surf, font, ident, _HITS_CYAN,
+                             int(px), int(py), _appr_label_rects)
 
         fla, flo, fid = approach_path[0]
         _appr_fix(fla, flo, fid)               # the first fix (IAF) too
@@ -1612,9 +1644,9 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
         bx, by = _project(b_la, b_lo)
         pygame.draw.line(surf, (245, 245, 250),
                          (int(ax), int(ay)), (int(bx), int(by)), 5)
-        if rlabel and font is not None:
-            surf.blit(font.render(rlabel, True, (210, 220, 235)),
-                      (int(bx) + 8, int(by) - 6))   # far end — clear of the fixes
+        if rlabel:
+            _place_label(surf, font, rlabel, (210, 220, 235),
+                         int(bx), int(by), _appr_label_rects)  # de-conflicted
 
     # ── Missed approach (dashed amber) + holding patterns ───────────────────
     # missed_path: [(la, lo, ident), …].  Per the plate it does NOT touch the
@@ -1630,9 +1662,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             pygame.draw.polygon(surf, _MISSED_AMBER,
                                 [(px, py - d2), (px + d2, py),
                                  (px, py + d2), (px - d2, py)], 1)
-            if ident and font is not None:
-                surf.blit(font.render(ident, True, _MISSED_AMBER),
-                          (px + d2 + 3, py - d2 - 2))
+            _place_label(surf, font, ident, _MISSED_AMBER,
+                         px, py, _appr_label_rects)
     for h in (holds or []):
         h_la, h_lo, h_crs, h_turn, h_leg = h
         loop = _hold_racetrack_pts(h_la, h_lo, h_crs, h_turn, h_leg, cos_lat)
