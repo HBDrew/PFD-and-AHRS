@@ -6088,12 +6088,14 @@ def handle_event(event, demo_mode):
                     _approach_goto_leg(idx, from_present=False)
                 else:
                     _fpl_activate(idx, reset_activation=False)
+                    _sim_engage_follow()
                 disp["mode"] = "fpl"
             elif action == "d2":
                 if kind == "appr":
                     _approach_goto_leg(idx, from_present=True)
                 else:
                     _fpl_activate(idx, reset_activation=True)
+                    _sim_engage_follow()
                 disp["mode"] = "fpl"
             elif action == "vectors":
                 if kind == "appr":
@@ -8047,6 +8049,7 @@ def _approach_begin_guidance():
         _approach_apply_leg()
     else:
         _approach_retarget_nav()
+    _sim_engage_follow()
 
 
 def _approach_apply_leg(from_present=False):
@@ -8116,6 +8119,15 @@ def _approach_check_advance(lat, lon):
         _approach_apply_leg()
 
 
+def _sim_engage_follow():
+    """In the sim, engage the autopilot's FOLLOW = FLT-PLAN source so a freshly
+    activated leg / direct-to is actually flown (otherwise the sim keeps flying
+    the heading bug and the new course is only advisory).  No-op on real
+    hardware — follow_mode drives the sim engine only."""
+    if _sim_state is not None:
+        disp["sim"]["follow_mode"] = "fp"
+
+
 def _approach_goto_leg(idx, from_present=False):
     """Engage the approach and jump to leg ``idx`` (used by the leg menu's
     ACTIVATE / DIRECT-TO and VECTORS).  from_present anchors the course at the
@@ -8131,6 +8143,7 @@ def _approach_goto_leg(idx, from_present=False):
         _ssync_publish_fpl()
     ap["leg_idx"] = max(0, min(int(idx), len(legs) - 1))
     _approach_apply_leg(from_present=from_present)
+    _sim_engage_follow()
 
 
 def _approach_retarget_nav():
