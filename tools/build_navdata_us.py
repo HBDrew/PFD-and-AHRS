@@ -467,10 +467,13 @@ def parse_cifp(cifp_path, fixes=None, navaids=None, keep_sidstar=True,
             fix_id = _a424_str(line, _A424_FIX_ID).upper()
             crs = _a424_course(line, _A424_MAG_CRS)
             alt_ft, alt_type = _a424_alt(line)
+            turn = (line[_A424_TURN_DIR]
+                    if len(line) > _A424_TURN_DIR else " ").strip().upper()
             ll = coord.get(fix_id)
             leg = {
                 "fix": fix_id, "leg_type": leg_type or "TF",
                 "course": crs,
+                "turn": turn if turn in ("L", "R") else None,
                 "alt_ft": alt_ft, "alt_type": alt_type,
                 "lat": ll[0] if ll else None, "lon": ll[1] if ll else None,
             }

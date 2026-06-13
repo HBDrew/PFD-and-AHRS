@@ -1124,7 +1124,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            symbol_scale=1.0, fast=False, ground_stations=None,
            wx_graphics=None, winds_barbs=None, nexrad_cells=None,
            approach_path=None, runway_marker=None,
-           missed_path=None, hold=None):
+           missed_path=None, holds=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1616,10 +1616,10 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             surf.blit(font.render(rlabel, True, (210, 220, 235)),
                       (int(bx) + 8, int(by) - 6))   # far end — clear of the fixes
 
-    # ── Missed approach (dashed amber) + holding pattern ────────────────────
-    # missed_path: [(la, lo, ident), …] starting at the MAP/runway so the dashed
-    # line continues from where the approach ends.  hold: (la, lo, course, turn,
-    # leg_nm) draws a racetrack at the missed hold fix.
+    # ── Missed approach (dashed amber) + holding patterns ───────────────────
+    # missed_path: [(la, lo, ident), …].  Per the plate it does NOT touch the
+    # runway — it starts at the climb point off the MAP.  holds: list of
+    # (la, lo, course, turn, leg_nm) racetracks (HILPT at the IF, missed hold…).
     if missed_path is not None and len(missed_path) >= 2:
         scr = [(_project(p[0], p[1])) for p in missed_path]
         _dashed_polyline(surf, _MISSED_AMBER,
@@ -1633,8 +1633,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             if ident and font is not None:
                 surf.blit(font.render(ident, True, _MISSED_AMBER),
                           (px + d2 + 3, py - d2 - 2))
-    if hold is not None:
-        h_la, h_lo, h_crs, h_turn, h_leg = hold
+    for h in (holds or []):
+        h_la, h_lo, h_crs, h_turn, h_leg = h
         loop = _hold_racetrack_pts(h_la, h_lo, h_crs, h_turn, h_leg, cos_lat)
         _dashed_polyline(surf, _MISSED_AMBER,
                          [(int(_project(a, b)[0]), int(_project(a, b)[1]))

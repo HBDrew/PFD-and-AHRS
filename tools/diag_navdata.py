@@ -74,18 +74,41 @@ def main(airports):
         pids = nav.procedures_for(ap)
         if not pids:
             print("  (no procedures in cache for this airport)")
+        def _fmt(lg):
+            """fix[leg_type crs/turn] — shows what drives holds + courses."""
+            f = lg.get("fix") or "·"
+            lt = lg.get("leg_type") or ""
+            extra = []
+            if lg.get("course") is not None:
+                extra.append(f"{lg['course']:.0f}°")
+            if lg.get("turn"):
+                extra.append(f"{lg['turn']}turn")
+            tag = f"[{lt}{(' ' + ' '.join(extra)) if extra else ''}]" if lt else ""
+            return f"{f}{tag}"
+
         for pid in pids:
             p = nav.procedure(ap, pid) or {}
             keep = _kept_by_picker(pid, p)
             trans = list((p.get("transitions") or {}).keys())
-            fin = [lg.get("fix") for lg in (p.get("final") or [])]
-            mis = [lg.get("fix") for lg in (p.get("missed") or [])]
+            fin = [_fmt(lg) for lg in (p.get("final") or [])]
+            mis = [_fmt(lg) for lg in (p.get("missed") or [])]
             flag = "KEEP (approach list)" if keep else "drop"
             print(f"\n  {pid!r}")
             print(f"      type={p.get('type')!r}   picker={flag}")
             print(f"      transitions={trans}")
             print(f"      final ={fin}")
             print(f"      missed={mis}")
+            # Any fix that will render a holding pattern (HM/HF/HA leg or a
+            # published hold entry) — this is what draws SEZCY/TAWNE holds.
+            holdy = []
+            for lg in (p.get("final") or []) + (p.get("missed") or []):
+                fx = lg.get("fix")
+                if (lg.get("leg_type") or "").upper() in ("HM", "HF", "HA") \
+                        or (fx and nav.hold(fx)):
+                    holdy.append(f"{fx}({lg.get('leg_type')} crs={lg.get('course')} "
+                                 f"turn={lg.get('turn')})")
+            if holdy:
+                print(f"      HOLDS  ={holdy}")
 
         # Runway DB rows for this airport (zero-padding etc. visible here).
         if rwys is not None and hasattr(rwys, "dtype"):

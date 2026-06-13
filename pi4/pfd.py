@@ -935,47 +935,82 @@ def _approach_render_path():
     return [(la, lo, ident) for (la, lo, ident, _lt, _alt, _at) in legs]
 
 
+def _approach_raw_proc():
+    """The raw procedure dict ({type,transitions,final,missed}) for the loaded
+    approach, or None — used to read per-leg leg_type/course/turn the rendered
+    6-tuples don't carry."""
+    ap = disp.get("approach") or {}
+    if _navdata is None or not ap.get("published"):
+        return None
+    return _navdata.procedure(ap.get("airport", ""), ap.get("procedure", ""))
+
+
 def _approach_render_missed():
-    """[(lat, lon, ident), ...] for the missed approach, prefixed with the
-    approach's final fix (the MAP/runway) so the dashed line continues from
-    where the solid approach ends.  None when there's nothing to draw."""
+    """[(lat, lon, ident), ...] for the missed approach.  Per the plate it does
+    NOT touch the runway: it begins at the climb-ahead point off the MAP (final
+    course) and continues to the missed fixes.  None when nothing to draw."""
     ap = disp.get("approach") or {}
     if not ap.get("loaded"):
         return None
-    legs = ap.get("legs") or []
     missed = ap.get("missed_legs") or []
-    if not missed or not legs:
+    if not missed or ap.get("thresh_lat") is None:
         return None
-    start = legs[-1]
-    pts = [(start[0], start[1], start[2])]
+    thr_la, thr_lo = float(ap["thresh_lat"]), float(ap["thresh_lon"])
+    crs = float(ap.get("course_deg", 0.0))
+    # Climb-straight-ahead point off the MAP — so the dashed line starts ahead
+    # of the runway (a gap), pointing up the final course like the plate.
+    cl_la, cl_lo = _appr_project(thr_la, thr_lo, crs, 2.0)
+    pts = [(cl_la, cl_lo, "")]
     pts += [(la, lo, ident) for (la, lo, ident, _lt, _alt, _at) in missed]
     return pts if len(pts) >= 2 else None
 
 
-def _approach_render_hold():
-    """(lat, lon, course, turn, leg_nm) for the holding pattern at the missed
-    hold fix, or None.  Pulls published hold params when available, else falls
-    back to a right-turn racetrack on the inbound course into the fix."""
+_HOLD_LEG_TYPES = ("HM", "HF", "HA")
+
+
+def _approach_render_holds():
+    """All holding patterns in the loaded approach → [(la, lo, course, turn,
+    leg_nm), …].  Reads the raw legs (transition + final + missed) so the hold
+    inbound course/turn come from the actual HM/HF/HA leg (correct racetrack
+    orientation) — e.g. the HILPT at the IF and the missed hold.  Falls back to
+    a published hold entry, then the arrival bearing."""
     ap = disp.get("approach") or {}
-    missed = ap.get("missed_legs") or []
-    if not missed:
-        return None
-    h_la, h_lo, h_id = missed[-1][0], missed[-1][1], missed[-1][2]
-    crs, turn, leg = None, "R", 4.0
-    if _navdata is not None and h_id:
-        hd = _navdata.hold(h_id)
-        if hd:
-            crs = hd.get("course")
-            turn = hd.get("turn") or "R"
-            leg = hd.get("leg_nm") or 4.0
-    if crs is None:
-        # Inbound course = bearing from the previous fix into the hold fix.
-        prev = missed[-2] if len(missed) >= 2 else ((ap.get("legs") or [None])[-1])
-        if prev:
-            _d, crs = _nav_geo_dist_brg(prev[0], prev[1], h_la, h_lo)
-        else:
-            crs = float(ap.get("course_deg", 0.0))
-    return (float(h_la), float(h_lo), float(crs or 0.0), turn, float(leg or 4.0))
+    if not ap.get("loaded"):
+        return []
+    p = _approach_raw_proc()
+    raw = []
+    if p:
+        tr = ap.get("transition", "")
+        if tr and tr in (p.get("transitions") or {}):
+            raw += p["transitions"][tr]
+        raw += p.get("final") or []
+        raw += p.get("missed") or []
+    out, seen, prev = [], set(), None
+    for lg in raw:
+        la, lo, ident = lg.get("lat"), lg.get("lon"), (lg.get("fix") or "")
+        if la is None or lo is None or not ident:
+            continue
+        lt = (lg.get("leg_type") or "").upper()
+        hd = _navdata.hold(ident) if _navdata is not None else None
+        if (lt in _HOLD_LEG_TYPES or hd) and ident not in seen:
+            crs = lg.get("course")
+            turn = (lg.get("turn") or "").upper()        # from the hold leg
+            leg_nm = 4.0
+            if hd:
+                if crs is None:
+                    crs = hd.get("course")
+                if turn not in ("L", "R"):
+                    turn = (hd.get("turn") or "").upper()
+                leg_nm = hd.get("leg_nm") or 4.0
+            if turn not in ("L", "R"):
+                turn = "R"
+            if crs is None and prev is not None:        # last resort: arrival brg
+                _d, crs = _nav_geo_dist_brg(prev[0], prev[1], la, lo)
+            if crs is not None:
+                out.append((float(la), float(lo), float(crs), turn, float(leg_nm)))
+                seen.add(ident)
+        prev = (la, lo)
+    return out
 
 
 # ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
@@ -7924,6 +7959,14 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
     all_pts = all_pts[:map_i + 1]
     final_idx = min(final_idx, len(all_pts) - 1)
     missed_pts = _appr_dedupe(_appr_leg_pts(p.get("missed") or []) + leaked_missed)
+    # Snap the MAP/last fix to the real runway landing threshold so the final
+    # leg actually reaches the runway bar (the CIFP RWxx fix can sit slightly
+    # off the OurAirports threshold, leaving a visible gap at the FAF→runway).
+    rwy = _appr_runway_from_name(proc_ident)
+    thr = _appr_landing_threshold(airport, rwy)
+    if thr is not None:
+        la0, lo0, idn, lt0, alt0, at0 = all_pts[-1]
+        all_pts[-1] = (float(thr[0]), float(thr[1]), idn, lt0, alt0, at0)
     th_lat, th_lon, _thid, _tht, th_alt, _that = all_pts[-1]
     # Final-approach course = bearing of the leg into the MAP (matches the plate
     # far better than the raw CIFP course field).
@@ -8410,6 +8453,19 @@ def _rwy_ident_eq(a, b):
     return norm(a) == norm(b) and bool(norm(a))
 
 
+def _appr_landing_threshold(airport, rwy):
+    """(lat, lon) of the landing threshold for ``rwy`` at ``airport`` from the
+    runway DB (the end whose ident matches the approach runway), or None."""
+    if not rwy or _runways is None or not hasattr(_runways, "dtype"):
+        return None
+    for r in _runways[_runways["airport"] == airport]:
+        if _rwy_ident_eq(rwy, str(r["le_ident"])):
+            return (float(r["le_lat"]), float(r["le_lon"]))
+        if _rwy_ident_eq(rwy, str(r["he_ident"])):
+            return (float(r["he_lat"]), float(r["he_lon"]))
+    return None
+
+
 def _appr_runway_marker(ap):
     """((le_la, le_lo), (he_la, he_lo), 'RWY 03') — the ENTIRE real runway from
     the runway DB (true endpoints, so position/orientation/length are exact),
@@ -8442,14 +8498,11 @@ def _appr_preview_extent(rect):
     rwm = _appr_runway_marker(ap)
     if rwm is not None:
         pts.extend([rwm[0], rwm[1]])           # keep the runway in frame
-    # Keep the missed approach + hold racetrack in frame too.
+    # Keep the missed approach + every hold racetrack in frame too.
     pts += [(p[0], p[1]) for p in (_approach_render_missed() or [])]
-    hold = _approach_render_hold()
-    if hold is not None:
-        h_la, h_lo, h_crs, h_turn, h_leg = hold
+    for h_la, h_lo, h_crs, h_turn, h_leg in _approach_render_holds():
         pts += _map_mod._hold_racetrack_pts(
-            h_la, h_lo, h_crs, h_turn, h_leg,
-            math.cos(math.radians(h_la)))
+            h_la, h_lo, h_crs, h_turn, h_leg, math.cos(math.radians(h_la)))
     if not pts:
         return (float(disp.get("lat", DEMO_LAT)),
                 float(disp.get("lon", DEMO_LON)), 10.0)
@@ -8474,24 +8527,24 @@ def draw_appr_preview(surf):
           15, WHITE, bold=True, cx=DISPLAY_W // 2, cy=62)
     rect = (12, 82, DISPLAY_W - 24, DISPLAY_H - 82 - (_APRV_BTN_H + 24))
     clat, clon, rng = _appr_preview_extent(rect)
-    # Declutter: keep terrain/water context + airports (so the runway shows),
-    # drop weather / traffic / obstacles / airspace.
+    # Declutter: keep terrain/water context only.  The destination airport's
+    # symbol+label is dropped (it stacks on top of the RW threshold / "RWY xx"
+    # marker — unreadable); the explicit runway_marker draws the runway instead.
     ds = dict(disp.get("ds", {}))
-    ds.update({"map_show_airports": True, "map_show_obstacles": False,
+    ds.update({"map_show_airports": False, "map_show_obstacles": False,
                "map_show_traffic": False, "map_show_metar": False,
                "map_show_winds": False, "map_show_nexrad": False,
                "map_show_airspaces": False})
     _map_mod.render(surf, rect, clat, clon, 0.0, 0.0, 0.0, "nrth", rng, ds,
-                    airports_arr=_airports, runways_arr=_runways,
+                    runways_arr=_runways,
                     srtm_dir=SRTM_DIR, water_dir=WATER_DIR,
                     font=_mfd_get_apt_font(),
-                    airport_types_visible={"S", "M", "L", "H"},
                     symbol_scale=1.4,
                     state_lines=_state_lines, country_lines=_country_lines,
                     approach_path=_approach_render_path(),
                     runway_marker=_appr_runway_marker(ap),
                     missed_path=_approach_render_missed(),
-                    hold=_approach_render_hold(),
+                    holds=_approach_render_holds(),
                     draw_corner_labels=False)
     by = DISPLAY_H - _APRV_BTN_H - 12
     half = (DISPLAY_W - 24 - 12) // 2
@@ -14732,7 +14785,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
         fpl_remaining=_fpl_render_remaining(),
         approach_path=_approach_render_path(),
         missed_path=_approach_render_missed(),
-        hold=_approach_render_hold(),
+        holds=_approach_render_holds(),
         airspaces=_airspaces,
         traffic=_traffic_to_draw(),
         metars=disp.get("weather", {}).get("metars"),
@@ -16282,7 +16335,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             fpl_remaining=_fpl_render_remaining(),
             approach_path=_approach_render_path(),
             missed_path=_approach_render_missed(),
-            hold=_approach_render_hold(),
+            holds=_approach_render_holds(),
             # Airspace polygons (B/C/D/MOA/R).  Loaded in the
             # background at startup from AIRSPACE_DIR/airspaces.json;
             # per-class display gates live in disp["ds"]["map_show_airspace_*"].
