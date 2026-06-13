@@ -5524,13 +5524,19 @@ def handle_event(event, demo_mode):
                 _settings.mark_dirty()
             return True
 
-        # Picker list area defers for a possible scroll-drag; header/back taps
-        # (above the list) fall through to the hit-test.
-        if not _dispatch_replay and mode in ("appr_proc_select", "appr_trans_select"):
-            if _PRC_TOP <= y <= _prc_list_bot():
-                n = (len(_appr_published((disp.get("approach") or {}).get("airport", "")))
-                     if mode == "appr_proc_select"
-                     else len(_appr_pending_transitions()))
+        # Picker scroll controls (▲/▼ tap buttons) + list-area scroll-drag.
+        if mode in ("appr_proc_select", "appr_trans_select"):
+            n = (len(_appr_published((disp.get("approach") or {}).get("airport", "")))
+                 if mode == "appr_proc_select"
+                 else len(_appr_pending_transitions()))
+            btn = _prc_scroll_btn_hit(n, x, y)
+            if btn:
+                _prc_scroll_by(n, btn)
+                return True
+            # List area defers for a possible scroll-drag; header/back taps
+            # (above the list) fall through to the hit-test.
+            if not _dispatch_replay and _PRC_TOP <= y <= _prc_list_bot() \
+                    and x < DISPLAY_W - _PRC_SB_W:
                 _prc_drag = {"down_y": y, "pos": (x, y),
                              "scroll_at_down": _prc_scroll, "is_drag": False, "n": n}
                 return True
@@ -8112,6 +8118,8 @@ _PRC_TOP   = 100
 _PRC_MX    = 14
 _PRC_ROW_H = 52
 _PRC_GY    = 8
+_PRC_SB_W  = 84            # reserved right column for ▲/▼ scroll buttons
+_PRC_BTN_H = 76            # height of each scroll button
 
 
 def _prc_list_bot():
@@ -8120,7 +8128,7 @@ def _prc_list_bot():
 
 def _prc_row_rect(i):
     by = _PRC_TOP + i * (_PRC_ROW_H + _PRC_GY) - _prc_scroll
-    return pygame.Rect(_PRC_MX, by, DISPLAY_W - 2 * _PRC_MX, _PRC_ROW_H)
+    return pygame.Rect(_PRC_MX, by, DISPLAY_W - _PRC_MX - _PRC_SB_W, _PRC_ROW_H)
 
 
 def _prc_max_scroll(n):
@@ -8133,17 +8141,77 @@ def _prc_clamp_scroll(n):
     _prc_scroll = max(0, min(_prc_scroll, _prc_max_scroll(n)))
 
 
+def _prc_page_step():
+    """Scroll amount for one ▲/▼ tap: a near-full page (keeps one row of
+    overlap so nothing is skipped)."""
+    return max(_PRC_ROW_H + _PRC_GY,
+               (_prc_list_bot() - _PRC_TOP) - (_PRC_ROW_H + _PRC_GY))
+
+
+def _prc_up_btn_rect():
+    bx = DISPLAY_W - _PRC_SB_W + 6
+    return pygame.Rect(bx, _PRC_TOP, _PRC_SB_W - 12, _PRC_BTN_H)
+
+
+def _prc_down_btn_rect():
+    bx = DISPLAY_W - _PRC_SB_W + 6
+    return pygame.Rect(bx, _prc_list_bot() - _PRC_BTN_H, _PRC_SB_W - 12, _PRC_BTN_H)
+
+
+def _prc_scroll_btn_hit(n, x, y):
+    """'up' / 'down' / None for a tap on a scroll button (only live when the
+    list overflows in that direction)."""
+    if _prc_max_scroll(n) <= 0:
+        return None
+    if _prc_scroll > 0 and _prc_up_btn_rect().collidepoint(x, y):
+        return "up"
+    if _prc_scroll < _prc_max_scroll(n) and _prc_down_btn_rect().collidepoint(x, y):
+        return "down"
+    return None
+
+
+def _prc_scroll_by(n, direction):
+    global _prc_scroll
+    _prc_scroll += _prc_page_step() * (1 if direction == "down" else -1)
+    _prc_clamp_scroll(n)
+
+
 def _prc_scrollbar(surf, n):
+    """Draw the right-column scroll controls: ▲/▼ tap buttons, an 'N MORE'
+    badge, and a thin position bar.  Buttons dim when they can't move."""
     max_s = _prc_max_scroll(n)
     if max_s <= 0:
         return
     top, bot = _PRC_TOP, _prc_list_bot()
+    # Thin position bar hugging the inner edge of the reserved column.
+    bx = DISPLAY_W - _PRC_SB_W
     th = bot - top
-    bx = DISPLAY_W - 6
     thumb = max(24, int(th * th / (th + max_s)))
     ty = top + int((th - thumb) * _prc_scroll / max_s)
     pygame.draw.rect(surf, (40, 50, 70), (bx, top, 4, th), border_radius=2)
     pygame.draw.rect(surf, (120, 150, 190), (bx, ty, 4, thumb), border_radius=2)
+
+    row = _PRC_ROW_H + _PRC_GY
+    above = int(round(_prc_scroll / row))
+    below = int(round((max_s - _prc_scroll) / row))
+
+    def _btn(rect, glyph, count, live):
+        col_bg = (24, 40, 64) if live else (16, 20, 28)
+        col_ln = (90, 130, 180) if live else (45, 55, 70)
+        col_tx = (210, 230, 255) if live else (70, 80, 95)
+        pygame.draw.rect(surf, col_bg, rect, border_radius=10)
+        pygame.draw.rect(surf, col_ln, rect, width=2, border_radius=10)
+        _text(surf, glyph, 30, col_tx, bold=True, cx=rect.centerx,
+              cy=rect.centery - 9)
+        _text(surf, (f"{count}" if live else "—"), 14, col_tx,
+              cx=rect.centerx, cy=rect.centery + 18)
+
+    _btn(_prc_up_btn_rect(),   "▲", above, _prc_scroll > 0)
+    _btn(_prc_down_btn_rect(), "▼", below, _prc_scroll < max_s)
+    if below > 0:
+        _text(surf, f"{below} MORE ▼", 14, (255, 210, 90), bold=True,
+              cx=DISPLAY_W - _PRC_SB_W // 2,
+              cy=(_prc_up_btn_rect().bottom + _prc_down_btn_rect().top) // 2)
 
 
 def _prc_draw_rows(surf, items, accent=(60, 90, 130), label_color=WHITE,
@@ -8265,6 +8333,19 @@ def _appr_project(lat, lon, brg_deg, dist_nm):
     return lat + dlat, lon + dlon
 
 
+def _rwy_ident_eq(a, b):
+    """Runway-ident equality tolerant of zero-padding: '3' == '03', '3L' ==
+    '03L'.  OurAirports stores single-digit runways unpadded while the CIFP
+    approach name yields a padded number, so a naive '==' silently misses."""
+    def norm(s):
+        s = (s or "").upper().strip()
+        i = 0
+        while i < len(s) and s[i] == "0":
+            i += 1
+        return s[i:] if i < len(s) else s
+    return norm(a) == norm(b) and bool(norm(a))
+
+
 def _appr_runway_marker(ap):
     """((le_la, le_lo), (he_la, he_lo), 'RWY 03') — the ENTIRE real runway from
     the runway DB (true endpoints, so position/orientation/length are exact),
@@ -8275,7 +8356,7 @@ def _appr_runway_marker(ap):
         rows = _runways[_runways["airport"] == airport]
         for r in rows:
             le, he = str(r["le_ident"]).upper(), str(r["he_ident"]).upper()
-            if rwy in (le, he):
+            if _rwy_ident_eq(rwy, le) or _rwy_ident_eq(rwy, he):
                 return ((float(r["le_lat"]), float(r["le_lon"])),
                         (float(r["he_lat"]), float(r["he_lon"])),
                         f"RWY {rwy}")
