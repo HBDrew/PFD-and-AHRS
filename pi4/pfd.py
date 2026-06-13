@@ -980,9 +980,12 @@ def _approach_render_holds():
     p = _approach_raw_proc()
     raw = []
     if p:
-        tr = ap.get("transition", "")
-        if tr and tr in (p.get("transitions") or {}):
-            raw += p["transitions"][tr]
+        # Scan EVERY transition (not just the selected one): a hold-in-lieu-of-PT
+        # is often coded only on the transition that needs the course reversal
+        # (e.g. KFLG R03's SEZCY HILPT lives in the FLG transition), but the
+        # plate charts it regardless of how you join — so always show it.
+        for tlegs in (p.get("transitions") or {}).values():
+            raw += tlegs
         raw += p.get("final") or []
         raw += p.get("missed") or []
     out, seen, prev = [], set(), None
