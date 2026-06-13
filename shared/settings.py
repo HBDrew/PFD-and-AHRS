@@ -44,6 +44,12 @@ _PERSIST_SUBTREES = [
 ]
 _PERSIST_COMPLEX_SUBTREES = {"fpl", "user_wpts", "fpl_saved"}
 
+# Individual leaf keys allowed to persist as a list/dict even though their
+# subtree only saves scalars by default.  The PFD top-ribbon and MFD data-strip
+# field selections live in "ds" as lists; without this they'd reset every power
+# cycle.
+_PERSIST_COMPLEX_KEYS = {"pfd_top_kinds", "mfd_strip_kinds"}
+
 # Top-level scalar keys that persist as-is
 _PERSIST_SCALARS = [
     "hdg_bug",      # optional — pilot may prefer to start fresh each flight
@@ -90,7 +96,8 @@ def _extract(disp: dict) -> dict:
                 continue
             if isinstance(v, scalar_types):
                 sub_out[k] = v
-            elif allow_complex and isinstance(v, (list, dict)):
+            elif (allow_complex or k in _PERSIST_COMPLEX_KEYS) \
+                    and isinstance(v, (list, dict)):
                 # Trust the caller for opted-in subtrees; the top-level
                 # json.dump will catch anything that's not actually
                 # serializable.
