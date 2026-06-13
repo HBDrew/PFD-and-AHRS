@@ -14509,9 +14509,19 @@ def _fpl_row_rect(idx):
             DISPLAY_W - 2 * pad, _FPL_ROW_H)
 
 
+def _appr_section_h():
+    """Extra scroll height for the loaded-approach section under the plan."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return 0
+    legs = ap.get("legs") or []
+    return (22 + len(legs) * 31 + 8) if legs else 42
+
+
 def _fpl_max_scroll(n_rows):
     visible_h = DISPLAY_H - _fpl_list_y0() - 6
     content_h = n_rows * (_FPL_ROW_H + _FPL_ROW_GAP) - _FPL_ROW_GAP
+    content_h += _appr_section_h()
     return max(0, content_h - visible_h)
 
 
@@ -14639,7 +14649,20 @@ def draw_fpl(surf):
         else:
             sub = f"{wp['lat']:.4f}, {wp['lon']:.4f}"
             sub_col = (130, 150, 180)
-        max_sub_x = bx + bw - 6 - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 14
+        # Leg distance — from the previous waypoint (from the aircraft for the
+        # first leg) — shown at the row's bottom-right, before the icons.
+        if i == 0:
+            leg_txt = (f"{_nav_geo_dist_brg(disp['lat'], disp['lon'], wp['lat'], wp['lon'])[0]:.1f} nm"
+                       if (disp.get('gps_ok') and disp.get('lat') is not None) else "")
+        else:
+            _pv = wps[i - 1]
+            leg_txt = f"{_nav_geo_dist_brg(_pv['lat'], _pv['lon'], wp['lat'], wp['lon'])[0]:.1f} nm"
+        dist_right = bx + bw - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 14
+        dist_w = _get_font(15, bold=True).size(leg_txt)[0] if leg_txt else 0
+        if leg_txt:
+            _text(surf, leg_txt, 15, (90, 205, 225), bold=True,
+                  x=dist_right - dist_w, y=by + bh - 26)
+        max_sub_x = dist_right - dist_w - 14
         sub_font = _get_font(18, bold=False)
         while sub and sub_font.size(sub)[0] > (max_sub_x - (bx + 56)):
             sub = sub[:-1]
@@ -14653,26 +14676,55 @@ def draw_fpl(surf):
         _fpl_icon_btn(surf, dn_r, "↓", dim=(i == len(wps) - 1))
         _fpl_icon_btn(surf, del_r, "✕")
 
-    # Loaded-approach placeholder — an indented row under the destination so the
-    # approach shows in the plan, with its phase (armed / active / missed).
+    # Loaded approach — an indented read-only section under the destination: one
+    # row per leg (with leg distances) for a published approach, or a single
+    # placeholder line for a synthetic one.
     _ap = disp.get("approach") or {}
     _phase = _approach_phase()
+    _legs = _ap.get("legs") or []
     if _phase != "none" and wps:
+        col = {"armed": (225, 185, 80), "active": (60, 220, 100),
+               "missed": (240, 140, 60)}.get(_phase, (200, 200, 200))
+        tag = {"armed": "ARMED · tap ACTIVATE", "active": "ACTIVE",
+               "missed": "MISSED"}.get(_phase, "")
         lbx, lby, lbw, lbh = _fpl_row_rect(len(wps) - 1)
-        py = lby + lbh + 6
-        ph = 36
-        if list_top <= py <= list_bot:
-            col = {"armed": (225, 185, 80), "active": (60, 220, 100),
-                   "missed": (240, 140, 60)}.get(_phase, (200, 200, 200))
-            tag = {"armed": "ARMED · tap ACTIVATE", "active": "● ACTIVE",
-                   "missed": "● MISSED · go around"}.get(_phase, "")
-            pygame.draw.rect(surf, (0, 14, 28), (lbx + 40, py, lbw - 40, ph),
+        hy = lby + lbh + 6
+        if _legs:
+            if list_top <= hy <= list_bot:
+                _text(surf, f"APPROACH · {_approach_label()} · {tag}", 13, col,
+                      bold=True, x=lbx + 40, y=hy)
+            leg_idx = int(_ap.get("leg_idx", -1)) if _phase == "active" else -1
+            prev_la, prev_lo = wps[-1]["lat"], wps[-1]["lon"]
+            rh = 28
+            for k, (la, lo, ident, _lt, _alt) in enumerate(_legs):
+                ry = hy + 22 + k * (rh + 3)
+                ld = _nav_geo_dist_brg(prev_la, prev_lo, la, lo)[0]
+                prev_la, prev_lo = la, lo
+                if ry > list_bot:
+                    _text(surf, f"+{len(_legs) - k} more", 11, col,
+                          x=lbx + 56, y=ry - 2)
+                    break
+                if ry + rh < list_top:
+                    continue
+                on_leg = (_phase == "active" and k == leg_idx)
+                rc = pygame.Rect(lbx + 40, ry, lbw - 40, rh)
+                pygame.draw.rect(surf, (0, 36, 18) if on_leg else (0, 14, 28),
+                                 rc, border_radius=4)
+                pygame.draw.rect(surf, col if on_leg else (50, 70, 95), rc,
+                                 width=2 if on_leg else 1, border_radius=4)
+                _text(surf, f"↳ {ident}", 16, (90, 240, 130) if on_leg else WHITE,
+                      bold=True, x=rc.x + 14, cy=rc.centery)
+                _text(surf, f"{ld:.1f} nm", 14, (90, 205, 225),
+                      x=rc.right - 92, cy=rc.centery)
+        elif list_top <= hy <= list_bot:
+            ph = 36
+            pygame.draw.rect(surf, (0, 14, 28), (lbx + 40, hy, lbw - 40, ph),
                              border_radius=5)
-            pygame.draw.rect(surf, col, (lbx + 40, py, lbw - 40, ph), width=1,
+            pygame.draw.rect(surf, col, (lbx + 40, hy, lbw - 40, ph), width=1,
                              border_radius=5)
             _text(surf, f"↳  {_approach_label()}", 17, col,
-                  bold=True, x=lbx + 58, cy=py + ph // 2)
-            _text(surf, tag, 14, col, x=lbx + lbw - 230, cy=py + ph // 2)
+                  bold=True, x=lbx + 58, cy=hy + ph // 2)
+            _text(surf, tag, 14, col, x=lbx + lbw - 200, cy=hy + ph // 2)
 
     surf.set_clip(prev_clip)
     max_s = _fpl_max_scroll(len(wps))
@@ -16394,10 +16446,13 @@ def main():
                     {"ident": "KFLG", "lat": 35.14, "lon": -111.67, "name": "FLAGSTAFF PULLIAM"},
                 ]
                 disp["fpl"]["active_idx"] = 1
-                disp["approach"] = {"loaded": True, "active": False,
-                                    "airport": "KFLG", "runway": "21",
-                                    "thresh_lat": 35.13, "thresh_lon": -111.66,
-                                    "thresh_elev_ft": 7000.0, "course_deg": 210.0}
+                _nd_load()
+                if not _approach_load_published("KFLG", "RNAV (GPS) RWY 03",
+                                                "BANYO", activate=False):
+                    disp["approach"] = {"loaded": True, "active": False,
+                                        "airport": "KFLG", "runway": "21",
+                                        "thresh_lat": 35.13, "thresh_lon": -111.66,
+                                        "thresh_elev_ft": 7000.0, "course_deg": 210.0}
         smooth_state()              # now a no-op (disp already matches state)
         render(surf, demo_mode=False, connected=True, data_stale=False)
         _flip()
