@@ -932,7 +932,7 @@ def _approach_render_path():
     legs = ap.get("legs") or []
     if len(legs) < 2:
         return None
-    return [(la, lo, ident) for (la, lo, ident, _lt, _alt) in legs]
+    return [(la, lo, ident) for (la, lo, ident, _lt, _alt, _at) in legs]
 
 
 # ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
@@ -7757,15 +7757,26 @@ def _appr_published(airport):
 
 def _appr_leg_pts(legs):
     """Filter a leg list to those with resolved coordinates →
-    [(lat, lon, ident, leg_type, alt_ft), ...]  (for the map + threshold)."""
+    [(lat, lon, ident, leg_type, alt_ft, alt_type), ...]  (map + threshold +
+    crossing-altitude display).  alt_type: 'AB' above · 'BL' below · 'AT' at ·
+    'WN' window."""
     out = []
     for lg in legs or []:
         la, lo = lg.get("lat"), lg.get("lon")
         if la is None or lo is None:
             continue
         out.append((float(la), float(lo), str(lg.get("fix", "")),
-                    str(lg.get("leg_type", "")), lg.get("alt_ft")))
+                    str(lg.get("leg_type", "")), lg.get("alt_ft"),
+                    lg.get("alt_type")))
     return out
+
+
+def _appr_alt_label(alt_ft, alt_type):
+    """'9000A' (at/above) · '8500' (at) · '10000B' (at/below) · '' if none."""
+    if alt_ft is None:
+        return ""
+    suffix = {"AB": "A", "BL": "B", "WN": "W"}.get(alt_type, "")
+    return f"{int(alt_ft):,}{suffix}"
 
 
 def _approach_load_published(airport, proc_ident, transition="", activate=False):
@@ -7785,7 +7796,7 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
     final_pts = _appr_leg_pts(p.get("final") or [])
     if not final_pts:                       # nothing flyable — bail to synthetic
         return False
-    th_lat, th_lon, _thid, _tht, th_alt = final_pts[-1]
+    th_lat, th_lon, _thid, _tht, th_alt, _that = final_pts[-1]
     # Final-approach course: the published course on the last final leg, else
     # the bearing of the last final segment.
     course = None
@@ -7846,7 +7857,7 @@ def _approach_apply_leg(from_present=False):
         return
     idx = max(0, min(int(ap.get("leg_idx", 0)), len(legs) - 1))
     ap["leg_idx"] = idx
-    la, lo, ident, _lt, _alt = legs[idx]
+    la, lo, ident, _lt, _alt, _at = legs[idx]
     prev = None if from_present else (legs[idx - 1] if idx > 0 else None)
     act_lat = float(prev[0]) if prev else float(disp.get("lat", la))
     act_lon = float(prev[1]) if prev else float(disp.get("lon", lo))
@@ -7876,7 +7887,7 @@ def _approach_check_advance(lat, lon):
     idx = int(ap.get("leg_idx", 0))
     if idx >= len(legs) - 1:
         return
-    la, lo, _ident, _lt, _alt = legs[idx]
+    la, lo, _ident, _lt, _alt, _at = legs[idx]
     dist_nm, _ = _nav_geo_dist_brg(lat, lon, la, lo)
     if dist_nm < _FPL_ADVANCE_DIST_NM:
         ap["leg_idx"] = idx + 1
@@ -7958,7 +7969,7 @@ def _approach_apply_missed_leg():
         return
     idx = max(0, min(int(ap.get("missed_idx", 0)), len(mlegs) - 1))
     ap["missed_idx"] = idx
-    la, lo, ident, _lt, _alt = mlegs[idx]
+    la, lo, ident, _lt, _alt, _at = mlegs[idx]
     prev = mlegs[idx - 1] if idx > 0 else None
     disp["nav"] = {
         "ident": ident, "lat": float(la), "lon": float(lo), "elev_ft": 0.0,
@@ -7977,7 +7988,7 @@ def _approach_check_missed_advance(lat, lon):
     idx = int(ap.get("missed_idx", 0))
     if idx >= len(mlegs) - 1:
         return
-    la, lo, _ident, _lt, _alt = mlegs[idx]
+    la, lo, _ident, _lt, _alt, _at = mlegs[idx]
     if _nav_geo_dist_brg(lat, lon, la, lo)[0] < _FPL_ADVANCE_DIST_NM:
         ap["missed_idx"] = idx + 1
         _approach_apply_missed_leg()
@@ -14892,7 +14903,7 @@ def draw_fpl(surf):
             leg_idx = int(_ap.get("leg_idx", -1)) if _phase == "active" else -1
             prev_la, prev_lo = wps[-1]["lat"], wps[-1]["lon"]
             rh = 28
-            for k, (la, lo, ident, _lt, _alt) in enumerate(_legs):
+            for k, (la, lo, ident, _lt, _alt, _at) in enumerate(_legs):
                 ry = hy + 22 + k * (rh + 3)
                 ld = _nav_geo_dist_brg(prev_la, prev_lo, la, lo)[0]
                 prev_la, prev_lo = la, lo
@@ -14910,6 +14921,10 @@ def draw_fpl(surf):
                                  width=2 if on_leg else 1, border_radius=4)
                 _text(surf, f"↳ {ident}", 16, (90, 240, 130) if on_leg else WHITE,
                       bold=True, x=rc.x + 14, cy=rc.centery)
+                alt_lbl = _appr_alt_label(_alt, _at)
+                if alt_lbl:
+                    _text(surf, alt_lbl, 15, (210, 200, 120), bold=True,
+                          x=rc.right - 210, cy=rc.centery)
                 _text(surf, f"{ld:.1f} nm", 14, (90, 205, 225),
                       x=rc.right - 92, cy=rc.centery)
         elif list_top <= hy <= list_bot:
