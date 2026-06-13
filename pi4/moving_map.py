@@ -1553,7 +1553,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                          (int(ax), int(ay)), (int(bx), int(by)), 1)
         if rlabel and font is not None:
             surf.blit(font.render(rlabel, True, (235, 235, 245)),
-                      (int(ax) + 7, int(ay) + 5))
+                      (int(bx) + 7, int(by) - 6))   # far end — clear of the fixes
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
     # The big MFD draws the flight-category dots on *every* page (we already

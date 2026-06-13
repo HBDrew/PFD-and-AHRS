@@ -8161,16 +8161,20 @@ def _appr_project(lat, lon, brg_deg, dist_nm):
 
 
 def _appr_runway_marker(ap):
-    """((thr_la, thr_lo), (far_la, far_lo), 'RWY 03') for the approach's runway,
-    or None.  Uses the runway-DB end matching the approach runway id (real
-    length/heading); falls back to the threshold + final course extended 1 nm."""
+    """((le_la, le_lo), (he_la, he_lo), 'RWY 03') — the ENTIRE real runway from
+    the runway DB (true endpoints, so position/orientation/length are exact),
+    or a threshold + final-course fallback when the DB has no match."""
     rwy = (ap.get("runway") or "").upper()
-    for rid, la, lo, _elev, hdg, length in _apr_runway_ends(ap.get("airport", "")):
-        if str(rid).upper() == rwy and rwy:
-            ln_nm = max(0.3, (length or 5000.0) / 6076.12)
-            fla, flo = _appr_project(la, lo, hdg, ln_nm)
-            return ((la, lo), (fla, flo), f"RWY {rid}")
-    if ap.get("thresh_lat") is not None:
+    airport = ap.get("airport", "")
+    if rwy and _runways is not None and hasattr(_runways, "dtype"):
+        rows = _runways[_runways["airport"] == airport]
+        for r in rows:
+            le, he = str(r["le_ident"]).upper(), str(r["he_ident"]).upper()
+            if rwy in (le, he):
+                return ((float(r["le_lat"]), float(r["le_lon"])),
+                        (float(r["he_lat"]), float(r["he_lon"])),
+                        f"RWY {rwy}")
+    if ap.get("thresh_lat") is not None:        # no DB match → short stub
         la, lo = float(ap["thresh_lat"]), float(ap["thresh_lon"])
         fla, flo = _appr_project(la, lo, float(ap.get("course_deg", 0.0)), 1.0)
         return ((la, lo), (fla, flo), (f"RWY {rwy}" if rwy else "RWY"))
