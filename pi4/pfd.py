@@ -1066,32 +1066,63 @@ def _approach_hits_path():
 
 
 def _approach_hits_polylines():
-    """HITS box polylines for the active approach: the published per-segment
-    profile when leg altitudes are available, else the synthetic 3° corridor."""
+    """HITS box polylines for the active approach (cached)."""
+    _approach_hits_refresh()
+    return _appr_hits_cache["polylines"]
+
+
+# Cache the HITS boxes + vertical profile so they're rebuilt only when the
+# loaded approach changes — NOT every frame.  Building ~100 boxes (and
+# re-deriving the path for the AP + VDI) every frame slowed the whole sim.
+_appr_hits_cache = {"key": None, "polylines": [], "profile": None}
+_HITS_MAX_BOXES = 48          # cap render cost; widen spacing on long corridors
+
+
+def _approach_hits_refresh():
     ap = disp.get("approach") or {}
+    key = (ap.get("airport"), ap.get("procedure"), ap.get("transition"),
+           bool(ap.get("loaded")), len(ap.get("legs") or []),
+           ap.get("thresh_lat"), ap.get("thresh_lon"))
+    if _appr_hits_cache["key"] == key:
+        return
+    _appr_hits_cache["key"] = key
     path = _approach_hits_path()
-    if path is not None:
-        return _hits_mod.build_box_polylines_path(path)
-    return _hits_mod.build_box_polylines(
-        ap["thresh_lat"], ap["thresh_lon"], ap["thresh_elev_ft"],
-        ap["course_deg"], final_nm=_approach_hits_final_nm())
+    if path:
+        # Pick a spacing that keeps the box count bounded over the whole
+        # IAF→runway corridor (denser on a short final, sparser on a long one).
+        total_ft = 0.0
+        for (la0, lo0, _a0), (la1, lo1, _a1) in zip(path[:-1], path[1:]):
+            total_ft += _nav_geo_dist_brg(la0, lo0, la1, lo1)[0] * 6076.12
+        spacing = max(_hits_mod.DEFAULT_SPACING_FT, total_ft / _HITS_MAX_BOXES)
+        _appr_hits_cache["polylines"] = _hits_mod.build_box_polylines_path(
+            path, spacing_ft=spacing)
+        tla, tlo = float(ap["thresh_lat"]), float(ap["thresh_lon"])
+        _appr_hits_cache["profile"] = sorted(
+            (_nav_geo_dist_brg(pla, plo, tla, tlo)[0], pa)
+            for pla, plo, pa in path)
+    elif ap.get("loaded") and ap.get("thresh_lat") is not None:
+        _appr_hits_cache["polylines"] = _hits_mod.build_box_polylines(
+            ap["thresh_lat"], ap["thresh_lon"], ap["thresh_elev_ft"],
+            ap["course_deg"], final_nm=_approach_hits_final_nm())
+        _appr_hits_cache["profile"] = None
+    else:
+        _appr_hits_cache["polylines"] = []
+        _appr_hits_cache["profile"] = None
 
 
 def _approach_target_alt(lat, lon):
     """Target altitude (ft) of the PUBLISHED vertical profile at the aircraft's
     current distance from the threshold — the altitude the boxes show, what the
-    AP descends to and the VDI references.  Interpolates the per-fix crossing
-    altitudes by distance-to-threshold; capped at the IAF altitude before the
-    IAF and the threshold elevation past it.  None when no published profile
-    (synthetic approach) → callers fall back to the 3° glideslope."""
-    path = _approach_hits_path()
+    AP descends to and the VDI references.  Uses the cached profile (cheap
+    interpolation); None when no published profile (synthetic approach) →
+    callers fall back to the 3° glideslope."""
+    _approach_hits_refresh()
+    prof = _appr_hits_cache["profile"]
     ap = disp.get("approach") or {}
-    if not path or ap.get("thresh_lat") is None:
+    if not prof or ap.get("thresh_lat") is None:
         return None
-    tla, tlo = float(ap["thresh_lat"]), float(ap["thresh_lon"])
-    prof = sorted((_nav_geo_dist_brg(pla, plo, tla, tlo)[0], pa)
-                  for pla, plo, pa in path)
-    d = _nav_geo_dist_brg(float(lat), float(lon), tla, tlo)[0]
+    d = _nav_geo_dist_brg(float(lat), float(lon),
+                          float(ap["thresh_lat"]), float(ap["thresh_lon"]))[0]
     if d <= prof[0][0]:
         return prof[0][1]
     if d >= prof[-1][0]:
