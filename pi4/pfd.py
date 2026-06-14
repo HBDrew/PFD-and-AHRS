@@ -1223,6 +1223,7 @@ def _ssync_publish_approach():
     if not ap.get("loaded"):
         _screen_sync.publish(_ssync_mod.KIND_APPR, {"loaded": False})
         return
+    nv = disp.get("nav") or {}
     _screen_sync.publish(_ssync_mod.KIND_APPR, {
         "loaded":         True,
         "active":         bool(ap.get("active")),
@@ -1240,6 +1241,17 @@ def _ssync_publish_approach():
         "thresh_elev_ft": ap.get("thresh_elev_ft"),
         "course_deg":     ap.get("course_deg"),
         "leg_idx":        int(ap.get("leg_idx", 0)),
+        # The EXACT active nav (course origin included) so the peer draws the
+        # identical magenta course / CDI — a D2 anchors at the aircraft, not the
+        # previous leg, so the consumer must not re-derive the origin.
+        "nav": ({
+            "ident":   str(nv.get("ident", "")),
+            "lat":     float(nv.get("lat", 0.0)),
+            "lon":     float(nv.get("lon", 0.0)),
+            "elev_ft": float(nv.get("elev_ft", 0.0)),
+            "act_lat": float(nv.get("act_lat", 0.0)),
+            "act_lon": float(nv.get("act_lon", 0.0)),
+        } if ap.get("active") and nv.get("ident") else None),
     })
 
 
@@ -1287,8 +1299,21 @@ def _ssync_apply_approach(data):
         }
         # Mirror the active leg into disp["nav"] so the CDI / magenta course line
         # track it (the peer screen has no sim engine; this is display only).
+        # Prefer the EXACT nav the publisher sent (so a D2's course origin is
+        # the aircraft, matching the originating screen's XTK/magenta); fall
+        # back to re-deriving it from the active leg for older peers.
         ap = disp["approach"]
-        if ap.get("active") and (ap.get("legs") or []):
+        nv = data.get("nav")
+        if ap.get("active") and nv and nv.get("ident"):
+            disp["nav"] = {
+                "ident":   str(nv.get("ident", "")),
+                "lat":     float(nv.get("lat", 0.0)),
+                "lon":     float(nv.get("lon", 0.0)),
+                "elev_ft": float(nv.get("elev_ft", 0.0)),
+                "act_lat": float(nv.get("act_lat", 0.0)),
+                "act_lon": float(nv.get("act_lon", 0.0)),
+            }
+        elif ap.get("active") and (ap.get("legs") or []):
             if ap.get("missed"):
                 _approach_apply_missed_leg()
             else:
