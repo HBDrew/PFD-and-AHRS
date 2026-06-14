@@ -963,6 +963,55 @@ class _SharedState:
             self._last_line_width = line_width
         self.line_vao.render(mode=moderngl.LINE_STRIP, vertices=len(world))
 
+    def render_polylines_latlonelev_batched(self, mvp, polylines):
+        """Draw many depth-tested polylines in as few GL calls as possible.
+
+        Groups the polylines by (colour, width) and emits ONE GL_LINES batch per
+        group — a single buffer upload + a single draw call — instead of one of
+        each per polyline.  The per-polyline path wrote the shared line VBO and
+        drew it once for every box, which forced a CPU↔GPU buffer-sync stall per
+        box; with ~100 HITS boxes up that dropped the frame rate to a crawl.
+        """
+        if not polylines:
+            return
+        cos_mlat = max(1e-6, math.cos(math.radians(self.mesh_center_lat)))
+        groups = {}                       # (rgba, width) → [segment arrays]
+        for verts, rgba, width in polylines:
+            if verts is None or len(verts) < 2:
+                continue
+            v = np.asarray(verts, dtype=np.float32)
+            east_m  = (v[:, 1] - self.mesh_center_lon) * 60.0 * NM_TO_M * cos_mlat
+            north_m = (v[:, 0] - self.mesh_center_lat) * 60.0 * NM_TO_M
+            up_m    = v[:, 2] * FT_TO_M
+            world = np.stack([east_m, north_m, up_m], axis=1).astype(np.float32)
+            # Expand the strip into GL_LINES segment pairs: v0v1 v1v2 v2v3 …
+            seg = np.empty((2 * (len(world) - 1), 3), dtype=np.float32)
+            seg[0::2] = world[:-1]
+            seg[1::2] = world[1:]
+            groups.setdefault((tuple(rgba), float(width)), []).append(seg)
+        if not groups:
+            return
+        self.line_prog['u_mvp'].write(mvp.T.tobytes())
+        for (rgba, width), segs in groups.items():
+            data_arr = np.concatenate(segs, axis=0) if len(segs) > 1 else segs[0]
+            data = data_arr.tobytes()
+            if len(data) > self.line_capacity:
+                self.line_vbo.release()
+                self.line_vao.release()
+                self.line_capacity = max(len(data), self.line_capacity * 2)
+                self.line_vbo = self.ctx.buffer(reserve=self.line_capacity)
+                self.line_vao = self.ctx.vertex_array(
+                    self.line_prog, [(self.line_vbo, '3f', 'in_pos')])
+            self.line_vbo.write(data)
+            self.line_prog['u_color'].value = rgba
+            if self._last_line_width != width:
+                try:
+                    self.ctx.line_width = float(width)
+                except Exception:
+                    pass
+                self._last_line_width = width
+            self.line_vao.render(mode=moderngl.LINES, vertices=len(data_arr))
+
     def _tier_target_key(self, lat, lon, radius_nm, grid_n, airports_arr):
         """Compute the cache key a tier WOULD have for this position.
         Used by the async dispatcher to decide whether the cached mesh
@@ -1468,9 +1517,7 @@ def render_svt_into_current_fb(
     # tiers occludes line segments that fall behind ridges.  Polyline uses
     # the inner mesh's MVP frame (course is mostly within mesh radius).
     if polylines and inner_mvp is not None:
-        for verts, rgba, width in polylines:
-            st.render_polyline_latlonelev(inner_mvp, verts, rgba=rgba,
-                                          line_width=width)
+        st.render_polylines_latlonelev_batched(inner_mvp, polylines)
 
     ctx.disable(moderngl.DEPTH_TEST)
     return True
