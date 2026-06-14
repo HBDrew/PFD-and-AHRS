@@ -8218,6 +8218,7 @@ def _approach_goto_leg(idx, from_present=False):
         _ssync_publish_fpl()
     ap["leg_idx"] = max(0, min(int(idx), len(legs) - 1))
     _approach_apply_leg(from_present=from_present)
+    _ssync_publish_approach()    # broadcast the activated/D2'd leg to peers
 
 
 def _approach_retarget_nav():
