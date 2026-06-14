@@ -1077,6 +1077,32 @@ def _approach_hits_polylines():
         ap["course_deg"], final_nm=_approach_hits_final_nm())
 
 
+def _approach_target_alt(lat, lon):
+    """Target altitude (ft) of the PUBLISHED vertical profile at the aircraft's
+    current distance from the threshold — the altitude the boxes show, what the
+    AP descends to and the VDI references.  Interpolates the per-fix crossing
+    altitudes by distance-to-threshold; capped at the IAF altitude before the
+    IAF and the threshold elevation past it.  None when no published profile
+    (synthetic approach) → callers fall back to the 3° glideslope."""
+    path = _approach_hits_path()
+    ap = disp.get("approach") or {}
+    if not path or ap.get("thresh_lat") is None:
+        return None
+    tla, tlo = float(ap["thresh_lat"]), float(ap["thresh_lon"])
+    prof = sorted((_nav_geo_dist_brg(pla, plo, tla, tlo)[0], pa)
+                  for pla, plo, pa in path)
+    d = _nav_geo_dist_brg(float(lat), float(lon), tla, tlo)[0]
+    if d <= prof[0][0]:
+        return prof[0][1]
+    if d >= prof[-1][0]:
+        return prof[-1][1]
+    for (d0, a0), (d1, a1) in zip(prof[:-1], prof[1:]):
+        if d0 <= d <= d1:
+            f = (d - d0) / (d1 - d0) if d1 > d0 else 0.0
+            return a0 + f * (a1 - a0)
+    return prof[-1][1]
+
+
 # ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
 _FPL_MAX_WAYPOINTS = 20     # matches pi_zero
 _FPL_SAVED_MAX     = 8
@@ -4191,26 +4217,22 @@ class SimFlyState:
                         course_deg, xtk,
                         approach=appr_cl)
 
-                    if appr_cl:
-                        # Standard glideslope capture: only ever
-                        # intercept the GS FROM ABOVE.  Never command
-                        # a climb to chase the GS — that's wrong
-                        # avionics behaviour (and would be wrong for
-                        # the real AP when we wire this in later).
-                        # Above the GS: track it (sim's existing
-                        # ±1500 fpm VS clamp caps the descent rate).
-                        # Below the GS: hold current altitude — the
-                        # GS will descend toward the aircraft as it
-                        # closes on the threshold and naturally
-                        # capture from above.  Small +20 ft hysteresis
-                        # avoids per-frame jitter at the boundary.
+                    # Vertical guidance — fly the PUBLISHED step-down profile
+                    # (the same altitudes the HITS boxes show) whenever the
+                    # approach is active, not just on the final centreline, so
+                    # it descends segment-by-segment (SEZCY→YEDUV→RW) instead of
+                    # diving at the end.  Capture from ABOVE only: descend to the
+                    # profile, never climb to chase it.  Falls back to a 3° GS to
+                    # the threshold for a synthetic approach (no published alts).
+                    if ap.get("active") and not ap.get("missed"):
                         thresh_elev = float(ap["thresh_elev_ft"])
-                        gs_deg      = 3.0
-                        gs_alt = thresh_elev + (
-                            dist_nm * 6076.12
-                            * math.tan(math.radians(gs_deg)))
-                        if state["alt"] >= gs_alt - 20:
-                            tgt_alt = max(gs_alt, thresh_elev + 5)
+                        prof_alt = _approach_target_alt(cur_lat, cur_lon)
+                        if prof_alt is None:
+                            prof_alt = thresh_elev + (
+                                dist_nm * 6076.12
+                                * math.tan(math.radians(3.0)))
+                        if state["alt"] >= prof_alt - 20:
+                            tgt_alt = max(prof_alt, thresh_elev + 5)
                         else:
                             tgt_alt = state["alt"]
 
@@ -12789,8 +12811,14 @@ def draw_vdi(surf):
     if dist_ft < 100.0:
         return  # over the threshold — VDI no longer meaningful
 
-    elev_angle_deg = math.degrees(math.atan2(alt - th_elev, dist_ft))
-    dev_deg = elev_angle_deg - 3.0   # + above GS, - below GS
+    # Deviation from the PUBLISHED vertical profile (the altitude the HITS boxes
+    # show at this distance), expressed as the angle the altitude error subtends
+    # at the current range so sensitivity tightens near the runway like a GS.
+    # Falls back to a flat 3° glideslope for a synthetic approach.
+    prof_alt = _approach_target_alt(lat, lon)
+    if prof_alt is None:
+        prof_alt = th_elev + dist_ft * math.tan(math.radians(3.0))
+    dev_deg = math.degrees(math.atan2(alt - prof_alt, dist_ft))  # + high, - low
 
     # Bar geometry — vertical strip just inside the alt tape.
     bar_w = 6
