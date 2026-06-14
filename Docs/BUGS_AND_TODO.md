@@ -8,6 +8,23 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### APPR-PATH-RENDER  Next-segment colour + curved fly-by / hard fly-over turns
+Status: **OPEN — magenta path is single-colour with hard corners everywhere**
+Context: the approach/flight-plan magenta course on both the MFD (moving map)
+and PFD (SVT) is drawn as one colour and the legs join at hard corners, so the
+pilot can't tell the active leg from what's coming next or how a turn will be
+flown.  Two enhancements:
+  1. Draw the NEXT segment (the leg after the active one) in a slightly
+     different magenta — dimmer/desaturated, or a distinct shade — so the active
+     leg reads as the bright "fly this now" line and the next leg as "coming up,
+     not active".  Apply on both MFD and PFD magenta course lines.
+  2. Render the turns to match how they'll be flown: fly-BY fixes get a turn
+     RADIUS (an arc filleting the two legs, radius ≈ f(groundspeed, bank)),
+     fly-OVER fixes stay HARD CORNERS (overfly then turn).  Same depiction on
+     MFD and PFD.  Pairs with APPR-FINAL-FLYBY (which adds the actual fly-by
+     guidance) — this is the visual half: show the anticipated curved path on
+     fly-by legs and the sharp corner on fly-over legs.
+
 ### APPR-FINAL-FLYBY  Fly-by (lead) turn onto the final approach course
 Status: **OPEN — fly-over works; the final-course intercept should anticipate**
 Context: approach leg sequencing is now fly-OVER (cross the fix, then turn) —
