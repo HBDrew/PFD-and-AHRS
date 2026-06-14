@@ -4257,26 +4257,35 @@ class SimFlyState:
                                 course_deg, xtk = leg_course, leg_xtk
                                 lateral_gain = True
 
-                    tgt_hdg = _sim_intercept_heading(
-                        course_deg, xtk,
-                        approach=(appr_cl or lateral_gain))
-
-                    # Cross-track INTEGRAL — kills the steady-state offset a pure
-                    # proportional intercept leaves (it would otherwise hang a
-                    # few hundredths of a mile off the centreline forever).
-                    # Anti-windup clamp + a capped authority keep it from
-                    # hunting; reset when not tracking an approach course.
+                    # Lateral guidance.  On an approach course (final centreline
+                    # or a tracked feeder leg) use a full PID on cross-track so it
+                    # captures fast AND holds the centreline:
+                    #   P  — proportional to XTK (capture)
+                    #   D  — cross-track RATE: lets P be aggressive yet roll out
+                    #        onto the centreline without overshoot (the "rate"
+                    #        term — anticipates the closure instead of waiting)
+                    #   I  — kills the steady-state offset a P/PD law leaves
+                    # Otherwise (enroute / plain D2) keep the simple intercept.
                     global _appr_xtk_int
                     if appr_cl or lateral_gain:
+                        gs = max(20.0, float(state["speed"]))
+                        trk_off = ((float(state["track"]) - course_deg + 180.0)
+                                   % 360.0) - 180.0
+                        xtk_rate = gs * math.sin(math.radians(trk_off)) / 3600.0
+                        corr = -(_APPR_XTK_KP * xtk + _APPR_XTK_KD * xtk_rate)
+                        corr = max(-_APPR_MAX_INTERCEPT,
+                                   min(_APPR_MAX_INTERCEPT, corr))
                         _appr_xtk_int = max(-_APPR_XTK_INT_LIM,
                                             min(_APPR_XTK_INT_LIM,
                                                 _appr_xtk_int + xtk * dt))
                         i_corr = max(-_APPR_XTK_I_AUTH,
                                      min(_APPR_XTK_I_AUTH,
                                          -_APPR_XTK_KI * _appr_xtk_int))
-                        tgt_hdg = (tgt_hdg + i_corr) % 360.0
+                        tgt_hdg = (course_deg + corr + i_corr) % 360.0
                     else:
                         _appr_xtk_int = 0.0
+                        tgt_hdg = _sim_intercept_heading(
+                            course_deg, xtk, approach=False)
 
                     # Vertical guidance — fly the PUBLISHED step-down profile
                     # (the same altitudes the HITS boxes show) whenever the
@@ -13681,12 +13690,16 @@ _mfd_last_orient = "trk"
 _mfd_last_track = None
 _inset_render_err_logged = False   # log the first PFD-inset render exception once
 
-# Cross-track integrator for the approach lateral AP (drives steady-state XTK to
-# zero so it centres and holds instead of hanging off-course).  Tunable.
+# Approach lateral AP — PID on cross-track so it captures fast and holds the
+# centreline (P = capture, D = cross-track rate for damping/anticipation,
+# I = removes steady-state offset).  All tunable.
 _appr_xtk_int      = 0.0    # state: accumulated cross-track (nm·s)
-_APPR_XTK_KI       = 4.0    # deg of heading correction per (nm·s) of integral
+_APPR_XTK_KP       = 180.0  # deg of intercept per nm of cross-track
+_APPR_XTK_KD       = 500.0  # deg per (nm/s) of cross-track RATE — the rate term
+_APPR_XTK_KI       = 5.0    # deg per (nm·s) of integral
 _APPR_XTK_INT_LIM  = 2.0    # anti-windup clamp on the integral (nm·s)
-_APPR_XTK_I_AUTH   = 10.0   # max integral authority (deg) — bounds any hunt
+_APPR_XTK_I_AUTH   = 10.0   # max integral authority (deg)
+_APPR_MAX_INTERCEPT = 45.0  # max commanded intercept angle (deg)
 _MFD_DRAG_THRESHOLD = 8
 
 _mfd_apt_font = None
