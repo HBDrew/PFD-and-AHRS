@@ -4215,6 +4215,7 @@ class SimFlyState:
 
                     ap = disp.get("approach") or {}
                     appr_cl = _approach_centerline_active()
+                    lateral_gain = False     # use tight APPROACH intercept gain
                     if appr_cl:
                         # Approach: course is the published runway
                         # heading (true).  Final is short enough (5–10
@@ -4231,26 +4232,34 @@ class SimFlyState:
                         xtk = (de_nm * math.cos(course_rad)
                                - dn_nm * math.sin(course_rad))
                     else:
-                        # D2 / activated leg: fly DIRECT to the fix (pure
-                        # pursuit) — steer at the current bearing to the
-                        # waypoint, no cross-track term.  ``brg`` already points
-                        # at the fix and is recomputed every frame, so the
-                        # aircraft always converges, from any starting position.
-                        #
-                        # The earlier scheme intercepted the act→wpt course at
-                        # 45° with a cross-track correction.  That works on a
-                        # plain D2 (act = aircraft) but on ACTIVATE LEG (act =
-                        # previous fix) a 45° intercept can't catch a course you
-                        # sit abeam/behind, so the AP flew a parallel heading
-                        # AWAY from the fix.  Pure pursuit to the fix is what
-                        # "fly to this fix" should do and never diverges; the
-                        # final-approach centreline (above) still tracks course.
-                        course_deg = brg
-                        xtk = 0.0
+                        # Feeder leg.  On an ACTIVE approach, TRACK the published
+                        # leg course (centre on the charted track) with the tight
+                        # APPROACH gain, so it's established on course before the
+                        # final — not flying loose enroute gain.  Fall back to
+                        # direct-to (pure pursuit) for a plain D2 (act≈aircraft)
+                        # or when the aircraft is abeam/behind and an intercept
+                        # would parallel/diverge from the fix (the old fly-away).
+                        ax_lat = float(nv.get("act_lat", cur_lat))
+                        ax_lon = float(nv.get("act_lon", cur_lon))
+                        appr_active = bool(ap.get("active")
+                                           and not ap.get("missed"))
+                        leg_d, leg_course = _nav_geo_dist_brg(
+                            ax_lat, ax_lon, wp_lat, wp_lon)
+                        course_deg, xtk = brg, 0.0          # default: direct
+                        if appr_active and leg_d > 0.3:
+                            leg_xtk = _nav_xtk_nm(ax_lat, ax_lon,
+                                                  wp_lat, wp_lon,
+                                                  cur_lat, cur_lon)
+                            cand = _sim_intercept_heading(
+                                leg_course, leg_xtk, approach=True)
+                            if abs(((cand - brg + 180.0) % 360.0)
+                                   - 180.0) <= 80.0:        # converges to the fix
+                                course_deg, xtk = leg_course, leg_xtk
+                                lateral_gain = True
 
                     tgt_hdg = _sim_intercept_heading(
                         course_deg, xtk,
-                        approach=appr_cl)
+                        approach=(appr_cl or lateral_gain))
 
                     # Vertical guidance — fly the PUBLISHED step-down profile
                     # (the same altitudes the HITS boxes show) whenever the
@@ -8226,6 +8235,10 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
             all_pts.append((float(thr[0]), float(thr[1]), "", "TF", None, None))
     final_idx = min(final_idx, len(all_pts) - 1)
     th_lat, th_lon, _thid, _tht, th_alt, _that = all_pts[-1]
+    # Threshold elevation: prefer the runway DB (authoritative field elevation);
+    # the CIFP RW leg often has no altitude (→ 0), which would put the whole
+    # vertical profile / HITS boxes / glidepath at sea level.
+    th_elev = float(thr[2]) if (thr is not None and len(thr) > 2) else float(th_alt or 0.0)
     # Final-approach course = bearing of the leg into the MAP (matches the plate
     # far better than the raw CIFP course field).
     if len(all_pts) >= 2:
@@ -8247,7 +8260,7 @@ def _approach_load_published(airport, proc_ident, transition="", activate=False)
         "missed_legs":     missed_pts,
         "thresh_lat":      float(th_lat),
         "thresh_lon":      float(th_lon),
-        "thresh_elev_ft":  float(th_alt or 0.0),
+        "thresh_elev_ft":  th_elev,
         "course_deg":      float(course or 0.0),
         "leg_idx":         0,
     }
@@ -8323,9 +8336,12 @@ def _approach_centerline_active():
 
 
 def _approach_check_advance(lat, lon):
-    """Per-frame: sequence to the next approach leg when inside the advance
-    radius of the active leg's fix.  Holds on the final leg (the centreline
-    CDI + HITS/VDI fly it in)."""
+    """Per-frame: sequence to the next approach leg only once the aircraft has
+    CROSSED (flown over) the active fix — fly-over, not fly-by — so it doesn't
+    cut the corner and jump the vertical profile to the next segment early.
+    Passage is the aircraft crossing the plane perpendicular to the inbound
+    course at the fix (the bearing fix→aircraft falls within 90° of the inbound
+    course).  Holds on the final leg (the centreline CDI + HITS/VDI fly it in)."""
     ap = disp.get("approach") or {}
     if not (ap.get("active") and ap.get("published") and not ap.get("missed")):
         return
@@ -8334,8 +8350,16 @@ def _approach_check_advance(lat, lon):
     if idx >= len(legs) - 1:
         return
     la, lo, _ident, _lt, _alt, _at = legs[idx]
-    dist_nm, _ = _nav_geo_dist_brg(lat, lon, la, lo)
-    if dist_nm < _FPL_ADVANCE_DIST_NM:
+    # Inbound course to this fix: from the previous fix, or the aircraft on the
+    # first leg.  Crossed when the fix is now behind the perpendicular at it.
+    if idx > 0:
+        pla, plo = float(legs[idx - 1][0]), float(legs[idx - 1][1])
+    else:
+        pla, plo = lat, lon
+    _d, course_in = _nav_geo_dist_brg(pla, plo, la, lo)
+    dist_nm, brg_fix_ac = _nav_geo_dist_brg(la, lo, lat, lon)
+    ahead = abs(((brg_fix_ac - course_in + 180.0) % 360.0) - 180.0) < 90.0
+    if ahead or dist_nm < 0.10:          # crossed the fix (or dead over it)
         ap["leg_idx"] = idx + 1
         _approach_apply_leg()
         _ssync_publish_approach()    # propagate the sequenced leg to peers
@@ -8737,15 +8761,18 @@ def _rwy_ident_eq(a, b):
 
 
 def _appr_landing_threshold(airport, rwy):
-    """(lat, lon) of the landing threshold for ``rwy`` at ``airport`` from the
-    runway DB (the end whose ident matches the approach runway), or None."""
+    """(lat, lon, elev_ft) of the landing threshold for ``rwy`` at ``airport``
+    from the runway DB (the end whose ident matches the approach runway), or
+    None.  The elevation is authoritative for the vertical profile — the CIFP
+    RW leg often carries no altitude (→ 0), which would anchor the whole HITS /
+    glidepath profile at sea level."""
     if not rwy or _runways is None or not hasattr(_runways, "dtype"):
         return None
     for r in _runways[_runways["airport"] == airport]:
         if _rwy_ident_eq(rwy, str(r["le_ident"])):
-            return (float(r["le_lat"]), float(r["le_lon"]))
+            return (float(r["le_lat"]), float(r["le_lon"]), float(r["le_elev_ft"]))
         if _rwy_ident_eq(rwy, str(r["he_ident"])):
-            return (float(r["he_lat"]), float(r["he_lon"]))
+            return (float(r["he_lat"]), float(r["he_lon"]), float(r["he_elev_ft"]))
     return None
 
 
