@@ -1021,6 +1021,21 @@ def _approach_render_holds():
     return out
 
 
+def _approach_hits_final_nm():
+    """Length (nm) of the HITS corridor.  Spans the whole approach — from the
+    runway threshold back to the first fix (IAF) — instead of just the final
+    5 nm, so the boxes are visible the moment the approach is active and lead
+    all the way in.  Capped to a sane max for odd geometries; falls back to the
+    default when there's no leg list (synthetic approach)."""
+    ap = disp.get("approach") or {}
+    legs = ap.get("legs") or []
+    if ap.get("thresh_lat") is None or not legs:
+        return _hits_mod.DEFAULT_FINAL_NM
+    d, _ = _nav_geo_dist_brg(float(ap["thresh_lat"]), float(ap["thresh_lon"]),
+                             float(legs[0][0]), float(legs[0][1]))
+    return max(_hits_mod.DEFAULT_FINAL_NM, min(d, 20.0))
+
+
 # ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
 _FPL_MAX_WAYPOINTS = 20     # matches pi_zero
 _FPL_SAVED_MAX     = 8
@@ -14905,7 +14920,7 @@ def draw_mfd(surf, connected=True, data_stale=False):
     d2["approach_active"] = _approach_centerline_active()
     if d2["approach_active"]:
         d2["approach_course_deg"] = float(_ap.get("course_deg", 0.0))
-        d2["approach_final_nm"]   = _hits_mod.DEFAULT_FINAL_NM
+        d2["approach_final_nm"]   = _approach_hits_final_nm()
 
     _ad = disp.get("ad", {})
     types_vis = set()
@@ -16302,6 +16317,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             _gl_polylines.extend(_hits_mod.build_box_polylines(
                 _ap["thresh_lat"], _ap["thresh_lon"],
                 _ap["thresh_elev_ft"], _ap["course_deg"],
+                final_nm=_approach_hits_final_nm(),
             ))
         render_svt_into_current_fb(
             _shared_gl_ctx, SRTM_DIR,
@@ -16338,6 +16354,7 @@ def render(surf, demo_mode, connected, data_stale=False):
             _gl_polylines.extend(_hits_mod.build_box_polylines(
                 _ap["thresh_lat"], _ap["thresh_lon"],
                 _ap["thresh_elev_ft"], _ap["course_deg"],
+                final_nm=_approach_hits_final_nm(),
             ))
         draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt_render,
                            lat, lon, polylines=_gl_polylines)
@@ -16424,7 +16441,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         d2["approach_active"] = _approach_centerline_active()
         if d2["approach_active"]:
             d2["approach_course_deg"] = float(_ap.get("course_deg", 0.0))
-            d2["approach_final_nm"]   = _hits_mod.DEFAULT_FINAL_NM
+            d2["approach_final_nm"]   = _approach_hits_final_nm()
         # GPS track sticks at its last value when groundspeed drops to
         # zero (stationary on the ramp), so passing it straight to the
         # inset would freeze the rotation at whatever heading we last
