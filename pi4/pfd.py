@@ -4261,6 +4261,23 @@ class SimFlyState:
                         course_deg, xtk,
                         approach=(appr_cl or lateral_gain))
 
+                    # Cross-track INTEGRAL — kills the steady-state offset a pure
+                    # proportional intercept leaves (it would otherwise hang a
+                    # few hundredths of a mile off the centreline forever).
+                    # Anti-windup clamp + a capped authority keep it from
+                    # hunting; reset when not tracking an approach course.
+                    global _appr_xtk_int
+                    if appr_cl or lateral_gain:
+                        _appr_xtk_int = max(-_APPR_XTK_INT_LIM,
+                                            min(_APPR_XTK_INT_LIM,
+                                                _appr_xtk_int + xtk * dt))
+                        i_corr = max(-_APPR_XTK_I_AUTH,
+                                     min(_APPR_XTK_I_AUTH,
+                                         -_APPR_XTK_KI * _appr_xtk_int))
+                        tgt_hdg = (tgt_hdg + i_corr) % 360.0
+                    else:
+                        _appr_xtk_int = 0.0
+
                     # Vertical guidance — fly the PUBLISHED step-down profile
                     # (the same altitudes the HITS boxes show) whenever the
                     # approach is active, not just on the final centreline, so
@@ -8379,6 +8396,8 @@ def _approach_goto_leg(idx, from_present=False):
         disp["fpl"]["active_idx"] = -1
         _ssync_publish_fpl()
     ap["leg_idx"] = max(0, min(int(idx), len(legs) - 1))
+    global _appr_xtk_int
+    _appr_xtk_int = 0.0          # fresh leg → reset the cross-track integrator
     _approach_apply_leg(from_present=from_present)
     _ssync_publish_approach()    # broadcast the activated/D2'd leg to peers
 
@@ -12321,8 +12340,8 @@ def _sim_intercept_heading(course_deg, xtk_nm, max_intercept=45.0,
     if approach:
         gentle_nm   = 0.1
         full_nm     = 0.5
-        gentle_gain = 100.0   # deg per nm
-        gentle_cap  = 25.0
+        gentle_gain = 200.0   # deg per nm — steeper so it drives onto centreline
+        gentle_cap  = 32.0
     else:
         gentle_nm   = 0.3
         full_nm     = 1.5
@@ -13661,6 +13680,13 @@ _mfd_last_range = 10
 _mfd_last_orient = "trk"
 _mfd_last_track = None
 _inset_render_err_logged = False   # log the first PFD-inset render exception once
+
+# Cross-track integrator for the approach lateral AP (drives steady-state XTK to
+# zero so it centres and holds instead of hanging off-course).  Tunable.
+_appr_xtk_int      = 0.0    # state: accumulated cross-track (nm·s)
+_APPR_XTK_KI       = 4.0    # deg of heading correction per (nm·s) of integral
+_APPR_XTK_INT_LIM  = 2.0    # anti-windup clamp on the integral (nm·s)
+_APPR_XTK_I_AUTH   = 10.0   # max integral authority (deg) — bounds any hunt
 _MFD_DRAG_THRESHOLD = 8
 
 _mfd_apt_font = None
