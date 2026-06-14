@@ -1072,10 +1072,14 @@ def _approach_hits_polylines():
 
 
 # Cache the HITS boxes + vertical profile so they're rebuilt only when the
-# loaded approach changes — NOT every frame.  Building ~100 boxes (and
+# loaded approach changes — NOT every frame.  Building the boxes (and
 # re-deriving the path for the AP + VDI) every frame slowed the whole sim.
 _appr_hits_cache = {"key": None, "polylines": [], "profile": None}
-_HITS_MAX_BOXES = 48          # cap render cost; widen spacing on long corridors
+# Boxes now batch into a SINGLE draw call (svt render_polylines_..._batched), so
+# count is cheap — this is just a safety bound on pathologically long corridors.
+# Normal approaches stay at the dense default spacing (~1000 ft → a continuous
+# tunnel from the IAF to the runway).
+_HITS_MAX_BOXES = 500
 
 
 def _approach_hits_refresh():
