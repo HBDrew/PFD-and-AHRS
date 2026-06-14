@@ -23,7 +23,10 @@ flown.  Two enhancements:
      fly-OVER fixes stay HARD CORNERS (overfly then turn).  Same depiction on
      MFD and PFD.  Pairs with APPR-FINAL-FLYBY (which adds the actual fly-by
      guidance) — this is the visual half: show the anticipated curved path on
-     fly-by legs and the sharp corner on fly-over legs.
+     fly-by legs and the sharp corner on fly-over legs.  The arc radius/lead
+     must come from the SAME groundspeed-based helper that drives sequencing
+     (R = GS²/(g·tan bank), L = R·tan(Δtrack/2)); drawing and flying share one
+     computation so the magenta curve matches the flown path.
 
 ### APPR-FINAL-FLYBY  Fly-by (lead) turn onto the final approach course
 Status: **OPEN — fly-over works; the final-course intercept should anticipate**
@@ -37,6 +40,15 @@ Real plates mark most fixes fly-by (turn anticipation) and only specific ones
 final-course intercept (lead distance ≈ f(groundspeed, turn angle, bank)),
 keeping fly-over for the MAP / charted fly-over fixes.  `_approach_check_advance`
 is the place; it currently advances exactly at fix passage for all legs.
+Sequencing must therefore become GROUNDSPEED-BASED for fly-by legs: the leg
+advances (and the turn rolls in) at the lead point computed from current GS,
+turn angle and bank — turn radius R = GS²/(g·tan(bank)), lead distance
+L = R·tan(Δtrack/2) — so we roll in and roll out at exactly the right time and
+roll out established on course.  This is the same geometry APPR-PATH-RENDER
+draws as the arc, so guidance and the magenta radius MUST share one helper
+(compute R/L once, use it for both the flown path and the drawn curve) or the
+picture won't match what the AP flies.  Fly-over legs keep exact-fix-passage
+sequencing (no lead).
 
 ### FPV-RUNWAY-ALIGN  Flight-path vector should sit on the runway on final
 Status: **OPEN — colour fixed (green); pilot reports it was NOT on the threshold**
