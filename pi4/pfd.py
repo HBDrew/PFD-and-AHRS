@@ -12241,7 +12241,8 @@ def draw_fpv_marker(surf, ai_rect, hdg_deg, pitch_deg, roll_deg,
     sx = cx + sxr * cos_r - syr * sin_r
     sy = cy + sxr * sin_r + syr * cos_r
 
-    FPV_COL = (120, 220, 255)    # cyan — pilot-relevant, matches the bug set
+    FPV_COL = (40, 230, 60)     # green — stands out from the cyan HITS boxes /
+                                # course line it would otherwise blend into
     margin  = 26
 
     if (ax + margin <= sx <= ax + aw - margin

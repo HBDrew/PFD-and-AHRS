@@ -8,6 +8,32 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### APPR-FINAL-FLYBY  Fly-by (lead) turn onto the final approach course
+Status: **OPEN — fly-over works; the final-course intercept should anticipate**
+Context: approach leg sequencing is now fly-OVER (cross the fix, then turn) —
+correct for step-down crossings and confirmed in flight.  But the turn from the
+intermediate segment ONTO the final approach course should be a fly-BY: lead the
+turn so the aircraft rolls out established ON the final course instead of
+overflying the turn fix and S-turning back through the localizer/centreline.
+Real plates mark most fixes fly-by (turn anticipation) and only specific ones
+(the MAP, some others) fly-over.  Implement turn-anticipation for the
+final-course intercept (lead distance ≈ f(groundspeed, turn angle, bank)),
+keeping fly-over for the MAP / charted fly-over fixes.  `_approach_check_advance`
+is the place; it currently advances exactly at fix passage for all legs.
+
+### FPV-RUNWAY-ALIGN  Flight-path vector should sit on the runway on final
+Status: **OPEN — colour fixed (now green); verify it overlays the threshold**
+Context: the FPV (velocity vector) marker is centred on the aircraft's actual
+flight path (track + flight-path angle) and projects with the same ah/48°
+px-per-deg scale as the SVT/runway overlays, so when established on course AND
+on the glidepath its ring centre should land on the runway threshold.  In flight
+it didn't appear to point at the runway.  Likely the aircraft was above the
+glidepath at the time (FPV correctly sits high) rather than a bug — but verify:
+fly a stabilised on-profile final and confirm the green FPV ring overlays the
+threshold; if not, check the FPV vertical projection (pitch − γ) against the
+runway symbol's vertical angle for a scale/sign mismatch.  (Colour cyan→green
+already done so it's visible against the HITS boxes.)
+
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
 Today PFD picks the AHRS transport once at startup (USB if
