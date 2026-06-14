@@ -1022,11 +1022,8 @@ def _approach_render_holds():
 
 
 def _approach_hits_final_nm():
-    """Length (nm) of the HITS corridor.  Spans the whole approach — from the
-    runway threshold back to the first fix (IAF) — instead of just the final
-    5 nm, so the boxes are visible the moment the approach is active and lead
-    all the way in.  Capped to a sane max for odd geometries; falls back to the
-    default when there's no leg list (synthetic approach)."""
+    """Length (nm) of the synthetic-glideslope HITS corridor (fallback only,
+    when there are no published leg altitudes).  Spans threshold → first fix."""
     ap = disp.get("approach") or {}
     legs = ap.get("legs") or []
     if ap.get("thresh_lat") is None or not legs:
@@ -1034,6 +1031,50 @@ def _approach_hits_final_nm():
     d, _ = _nav_geo_dist_brg(float(ap["thresh_lat"]), float(ap["thresh_lon"]),
                              float(legs[0][0]), float(legs[0][1]))
     return max(_hits_mod.DEFAULT_FINAL_NM, min(d, 20.0))
+
+
+def _approach_hits_path():
+    """[(lat, lon, alt_ft), …] from the first fix (IAF) to the runway threshold
+    for the HITS boxes, using the PUBLISHED crossing altitude at each fix so the
+    boxes follow the real vertical profile (step-downs), not a constant 3°.
+    Fixes without a published altitude are linearly interpolated from their
+    neighbours; the last point is pinned to the runway threshold elevation.
+    None for a synthetic approach (no legs) → caller uses the 3° fallback."""
+    ap = disp.get("approach") or {}
+    legs = ap.get("legs") or []
+    if len(legs) < 2 or ap.get("thresh_lat") is None:
+        return None
+    pts = [[float(la), float(lo),
+            (float(alt) if alt is not None else None)]
+           for (la, lo, _ident, _lt, alt, _at) in legs]
+    # The last leg is the MAP/runway — pin it to the real threshold elevation.
+    pts[-1][2] = float(ap.get("thresh_elev_ft") or (pts[-1][2] or 0.0))
+    known = [i for i, p in enumerate(pts) if p[2] is not None]
+    if not known:
+        return None
+    for i, p in enumerate(pts):
+        if p[2] is not None:
+            continue
+        prev = max((k for k in known if k < i), default=None)
+        nxt = min((k for k in known if k > i), default=None)
+        if prev is not None and nxt is not None:
+            f = (i - prev) / float(nxt - prev)
+            p[2] = pts[prev][2] + f * (pts[nxt][2] - pts[prev][2])
+        else:
+            p[2] = pts[prev][2] if prev is not None else pts[nxt][2]
+    return [(p[0], p[1], p[2]) for p in pts]
+
+
+def _approach_hits_polylines():
+    """HITS box polylines for the active approach: the published per-segment
+    profile when leg altitudes are available, else the synthetic 3° corridor."""
+    ap = disp.get("approach") or {}
+    path = _approach_hits_path()
+    if path is not None:
+        return _hits_mod.build_box_polylines_path(path)
+    return _hits_mod.build_box_polylines(
+        ap["thresh_lat"], ap["thresh_lon"], ap["thresh_elev_ft"],
+        ap["course_deg"], final_nm=_approach_hits_final_nm())
 
 
 # ── FPL editing (MFD flight-plan editor) ──────────────────────────────────────
@@ -16314,11 +16355,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         # glideslope whenever an approach is active (any leg), so the corridor
         # into the runway is visible ahead while you fly the feeder legs too.
         if _ap.get("active"):
-            _gl_polylines.extend(_hits_mod.build_box_polylines(
-                _ap["thresh_lat"], _ap["thresh_lon"],
-                _ap["thresh_elev_ft"], _ap["course_deg"],
-                final_nm=_approach_hits_final_nm(),
-            ))
+            _gl_polylines.extend(_approach_hits_polylines())
         render_svt_into_current_fb(
             _shared_gl_ctx, SRTM_DIR,
             DISPLAY_W, HDG_Y,
@@ -16351,11 +16388,7 @@ def render(surf, demo_mode, connected, data_stale=False):
                     3.0,
                 ))
         if _ap.get("active"):
-            _gl_polylines.extend(_hits_mod.build_box_polylines(
-                _ap["thresh_lat"], _ap["thresh_lon"],
-                _ap["thresh_elev_ft"], _ap["course_deg"],
-                final_nm=_approach_hits_final_nm(),
-            ))
+            _gl_polylines.extend(_approach_hits_polylines())
         draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt_render,
                            lat, lon, polylines=_gl_polylines)
     else:

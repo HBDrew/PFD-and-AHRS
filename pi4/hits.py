@@ -108,3 +108,57 @@ def build_box_polylines(thresh_lat: float,
         polylines.append(([tl, tr, br, bl, tl], color, line_width))
 
     return polylines
+
+
+def build_box_polylines_path(waypoints,
+                             box_w_ft: float = DEFAULT_BOX_W_FT,
+                             box_h_ft: float = DEFAULT_BOX_H_FT,
+                             spacing_ft: float = DEFAULT_SPACING_FT,
+                             color: tuple = HITS_COLOR,
+                             line_width: float = HITS_LINE_WIDTH
+                             ) -> list:
+    """HITS boxes along a PUBLISHED approach path at its segment altitudes.
+
+    ``waypoints`` is the ordered approach path from the first fix (IAF) to the
+    runway threshold: ``[(lat, lon, alt_ft), …]``, where alt_ft is the crossing
+    altitude at that fix.  Boxes are stepped along each segment, following the
+    leg's track (so turns are honoured) and interpolating altitude linearly
+    between the two fixes — i.e. they start and stop at the published altitudes
+    of each segment, the real vertical profile, instead of a synthetic constant
+    glideslope.  Returns the same ``(verts, rgba, width)`` tuples as
+    ``build_box_polylines``.
+    """
+    polylines = []
+    if not waypoints or len(waypoints) < 2:
+        return polylines
+    half_w_ft = box_w_ft / 2.0
+    half_h_ft = box_h_ft / 2.0
+    deg_per_ft_lat = 1.0 / (60.0 * _NM_TO_FT)
+
+    for (la0, lo0, a0), (la1, lo1, a1) in zip(waypoints[:-1], waypoints[1:]):
+        cos_lat = max(1e-6, math.cos(math.radians((la0 + la1) * 0.5)))
+        deg_per_ft_lon = deg_per_ft_lat / cos_lat
+        dn_ft = (la1 - la0) / deg_per_ft_lat                 # north feet
+        de_ft = (lo1 - lo0) / deg_per_ft_lon                 # east feet
+        seg_ft = math.hypot(dn_ft, de_ft)
+        if seg_ft < 1.0:
+            continue
+        ux, uy = de_ft / seg_ft, dn_ft / seg_ft              # unit (E, N)
+        # Perpendicular (E, N) for the box width.
+        d_lat_perp = (-ux) * half_w_ft * deg_per_ft_lat
+        d_lon_perp = (uy) * half_w_ft * deg_per_ft_lon
+        n = max(1, int(round(seg_ft / spacing_ft)))
+        # Place boxes through the segment; include the segment's far endpoint so
+        # a box sits right at each fix (the step-down altitude).
+        for i in range(1, n + 1):
+            f = i / float(n)
+            clat = la0 + dn_ft * f * deg_per_ft_lat
+            clon = lo0 + de_ft * f * deg_per_ft_lon
+            alt = a0 + (a1 - a0) * f
+            top, bot = alt + half_h_ft, alt - half_h_ft
+            tl = (clat + d_lat_perp, clon + d_lon_perp, top)
+            tr = (clat - d_lat_perp, clon - d_lon_perp, top)
+            br = (clat - d_lat_perp, clon - d_lon_perp, bot)
+            bl = (clat + d_lat_perp, clon + d_lon_perp, bot)
+            polylines.append(([tl, tr, br, bl, tl], color, line_width))
+    return polylines
