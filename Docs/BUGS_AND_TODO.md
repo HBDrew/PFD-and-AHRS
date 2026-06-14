@@ -8,6 +8,30 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### NEW-AP-VIZION  Modern autopilot from the legacy TruTrak Vizion code (FUTURE — likely its own project)
+Status: **FUTURE / BLOCKED — waiting on Andrew to retrieve the original source**
+Scope note: this will probably be **broken out of PFD-AND-AHRS into its own
+repo/project** — capturing it here only so nothing is forgotten until it gets
+its own home.
+Goal: build a modern, current-hardware autopilot derived from Andrew's legacy
+TruTrak work — target capability class is the **Vizion / Sorcerer** (his former
+company's products).  Roll + pitch + turn-rate hold, nav/approach coupling.
+Input: Andrew will dig the **original assembly source** out of his old backups
+("will do it one day soon"); that source is the starting point.
+Approach (rough):
+  - Reverse / port the proven control laws (the roll, pitch, and turn-rate
+    logic that already flies well) out of the assembly into modern code.
+  - New hardware: modern MCU + servo drive; clean sensor inputs (the AHRS in
+    this project is a candidate attitude source).
+  - Keep the field-proven gains/behaviour as the reference; modernize the
+    implementation, not the flying qualities.
+Tie-in to this project: share the guidance GEOMETRY with the sim AP work here —
+the groundspeed-based fly-by lead / turn-radius math (R = GS²/(g·tan bank),
+L = R·tan(Δtrack/2)) and the published-profile vertical guidance — so the bench
+AP and the PFD speak the same language and can be developed/validated together.
+Next action: Andrew retrieves the assembly source → then stand up a new repo and
+move this item there.
+
 ### APPR-PATH-RENDER  Next-segment colour + curved fly-by / hard fly-over turns
 Status: **OPEN — magenta path is single-colour with hard corners everywhere**
 Context: the approach/flight-plan magenta course on both the MFD (moving map)
