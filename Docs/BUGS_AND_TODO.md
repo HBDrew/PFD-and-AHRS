@@ -37,11 +37,19 @@ Analysis so far (the geometry SHOULD line up on a 3° final):
   ⇒ On the FINAL 3° segment FPV and threshold must overlap.  On a STEP-DOWN
     segment the FPV correctly sits ABOVE the threshold (it shows the actual,
     shallower flight path, not the line to the runway) — expected, not a bug.
-Need to disambiguate from flight: (a) which segment (final vs step-down) and
-(b) which way the FPV was off (above/below vs left/right).  If it's off on a
-stabilised final, the direction localises the bug — check the pitch source
-passed to draw_fpv_marker vs the SVT (same frame `pitch`?), the `-roll` sign
-(FPV gets -roll, SVT gets roll), and FPA sign.  Colour cyan→green already done.
+Flight clues (2026-06-14): on a stabilised final, VDI perfectly centred (~few
+ft high) but the FPV "never got close to the runway" — and in LEVEL flight
+(VS=0) the FPV sits well above the horizon with its BOTTOM EDGE on the horizon
+line (i.e. ring centre ~1 radius ≈ 1° / 12 px high).  By the math, level flight
+⇒ γ=0 ⇒ ring centre ON the horizon; the alt-tape VSI uses the SAME `vspeed` the
+FPV does, so VSI=0 ⇒ γ=0.  So either (a) a small residual VS the VSI rounds to
+0 — note GS was ~90 kt, where the FPV is very sensitive (~1° per ~150 fpm), so
+~150 fpm already lifts the ring a full radius — or (b) a reference offset
+between the FPV's linear (pitch−γ)·ah/48 and the SVT's perspective horizon.
+Added a debug overlay to read it live: set `FPV_DEBUG = True` in config_local.py
+→ shows `pit / VS / GS / g / dy` by the marker.  Next flight: when it looks
+high, confirm whether VS is truly 0; if VS=0 and γ≠0 it's a code bug, else the
+FPV is honest and we may want a min-GS floor / deadband on γ.  Colour green done.
 
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**

@@ -152,6 +152,12 @@ NAVDATA_DIR   = os.path.join(_HERE, "data", "navdata")
 # filters and other user-configurable values across reboots.
 SETTINGS_PATH = os.path.join(_HERE, "data", "settings.json")
 
+# ── Diagnostics ───────────────────────────────────────────────────────────────
+# Set FPV_DEBUG = True in config_local.py to overlay the flight-path-vector
+# inputs (pitch / VS / GS / γ) next to the marker — used to chase FPV-vs-horizon
+# alignment in flight.  No effect when False.
+FPV_DEBUG = False
+
 # ── Try to import local overrides ─────────────────────────────────────────────
 # config_local.py can override DISPLAY_PROFILE, DISPLAY_W, DISPLAY_H, etc.
 try:

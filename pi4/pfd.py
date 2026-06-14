@@ -12234,6 +12234,16 @@ def draw_fpv_marker(surf, ai_rect, hdg_deg, pitch_deg, roll_deg,
     gs_fpm  = gs_kt * 101.27     # kt → ft/min (6076.12 / 60)
     fpa_deg = math.degrees(math.atan2(vspeed_fpm, max(gs_fpm, 1.0)))
 
+    # Diagnostic overlay (config_local: FPV_DEBUG=True) — shows the inputs so an
+    # FPV-vs-horizon misalignment can be read in flight.  In level flight γ must
+    # be 0 (ring centred on the horizon); if it isn't, the VS feeding the FPV is
+    # non-zero.  At low GS the marker is very sensitive (≈1° per gs/57 fpm).
+    if FPV_DEBUG:
+        _text(surf, "pit %+.1f  VS %+d  GS %.0f  g %+.2f  dy %+.2f"
+              % (pitch_deg, int(round(vspeed_fpm)), gs_kt, fpa_deg,
+                 pitch_deg - fpa_deg),
+              13, (40, 230, 60), bold=True, x=ax + 8, y=ay_r + 6)
+
     sxr = rel_brg * PX_PER_DEG
     syr = (pitch_deg - fpa_deg) * PX_PER_DEG
     cos_r = math.cos(math.radians(roll_deg))
