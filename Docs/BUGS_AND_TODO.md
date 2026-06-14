@@ -22,17 +22,26 @@ keeping fly-over for the MAP / charted fly-over fixes.  `_approach_check_advance
 is the place; it currently advances exactly at fix passage for all legs.
 
 ### FPV-RUNWAY-ALIGN  Flight-path vector should sit on the runway on final
-Status: **OPEN — colour fixed (now green); verify it overlays the threshold**
-Context: the FPV (velocity vector) marker is centred on the aircraft's actual
-flight path (track + flight-path angle) and projects with the same ah/48°
-px-per-deg scale as the SVT/runway overlays, so when established on course AND
-on the glidepath its ring centre should land on the runway threshold.  In flight
-it didn't appear to point at the runway.  Likely the aircraft was above the
-glidepath at the time (FPV correctly sits high) rather than a bug — but verify:
-fly a stabilised on-profile final and confirm the green FPV ring overlays the
-threshold; if not, check the FPV vertical projection (pitch − γ) against the
-runway symbol's vertical angle for a scale/sign mismatch.  (Colour cyan→green
-already done so it's visible against the HITS boxes.)
+Status: **OPEN — colour fixed (green); pilot reports it was NOT on the threshold**
+Analysis so far (the geometry SHOULD line up on a 3° final):
+  - FPV rect `_full_ai = (0,0,W,HDG_Y)` matches the shared-GL SVT viewport
+    `(0,HDG_H,W,HDG_Y)` (both height HDG_Y), and the SVT uses V_FOV=48° = the
+    same ah/48 px-per-deg the FPV uses.  Centres + scale agree (perspective vs
+    linear differ <~1 px at 3°).
+  - Vertical: FPV y = (pitch − γ)·px/deg below centre; the threshold on a 3°
+    path is 3° below the horizon, horizon is pitch below centre → also
+    (pitch − γ) below centre.  Pitch cancels, so they coincide — even with the
+    sim's crude `pitch = VS/100` model (shifts both equally).
+  - Horizontal: rel_brg = track − hdg; the runway sits at the same crab offset
+    from the nose, so they coincide with wind too.
+  ⇒ On the FINAL 3° segment FPV and threshold must overlap.  On a STEP-DOWN
+    segment the FPV correctly sits ABOVE the threshold (it shows the actual,
+    shallower flight path, not the line to the runway) — expected, not a bug.
+Need to disambiguate from flight: (a) which segment (final vs step-down) and
+(b) which way the FPV was off (above/below vs left/right).  If it's off on a
+stabilised final, the direction localises the bug — check the pitch source
+passed to draw_fpv_marker vs the SVT (same frame `pitch`?), the `-roll` sign
+(FPV gets -roll, SVT gets roll), and FPA sign.  Colour cyan→green already done.
 
 ### AHRS-SRC-SELECTOR  Runtime AHRS source picker (AUTO / USB / WIFI)
 Status: **OPEN — usable workaround documented**
