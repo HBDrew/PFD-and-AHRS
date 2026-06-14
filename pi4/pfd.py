@@ -608,6 +608,10 @@ def _ssync_kinds_from_cs(direction):
         out.add(_ssync_mod.KIND_FPL)
         out.add(_ssync_mod.KIND_FPLLIB)
         out.add(_ssync_mod.KIND_APPR)        # approach rides with the plan
+        out.add(_ssync_mod.KIND_NAV)         # direct-to / active fix rides too,
+                                             # so a D2 on one screen drives the
+                                             # other's CDI + AP (its own NAV
+                                             # toggle still works independently)
     # Winds-aloft zones always sync both ways when screen-sync is on — it's pure
     # benefit (a screen with internet feeds the others so they don't each hit
     # Open-Meteo's shared-per-IP rate limit).
