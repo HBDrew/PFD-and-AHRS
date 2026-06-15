@@ -563,6 +563,33 @@ _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
 _traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traffic_source
 _prev_alert_ids = set()  # ICAOs already in alert state (edge-trigger the callout)
 _perf = _perf_mod.PerfGrab()   # frame-timing sampler (no-op unless PFD_PERF set)
+
+
+def _soc_thermals():
+    """Return (temp_c, throttled_hex) for the SoC, or (None, None) off-Pi.
+
+    Temperature is read straight from sysfs (no subprocess).  The throttle
+    word needs vcgencmd, which we cache-off after the first failure so dev
+    boxes / sims pay nothing.  Used by the per-frame diagnostic line so a
+    perf run shows whether the Pi 4/5 is thermally or power throttling
+    (throttled=0x0 means neither — the measured fps is the real ceiling).
+    """
+    temp_c = None
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as _f:
+            temp_c = int(_f.read().strip()) / 1000.0
+    except (OSError, ValueError):
+        pass
+    thr = None
+    if getattr(_soc_thermals, "_vc_ok", True):
+        try:
+            import subprocess
+            out = subprocess.run(["vcgencmd", "get_throttled"],
+                                 capture_output=True, text=True, timeout=1.0)
+            thr = out.stdout.strip().split("=", 1)[-1] or None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            _soc_thermals._vc_ok = False
+    return temp_c, thr
 _wx_client   = None   # WxClient (internet METAR poller) when weather enabled
 _taf_client  = None   # AwcPoller (internet TAF backfill) when weather enabled
 _airsig_client = None # AwcPoller (internet AIRMET/SIGMET backfill)
@@ -18072,8 +18099,17 @@ def main():
                 _p = max(0.0, flip_ms - _s - _u)
                 _flip_dbg = (f"flip={flip_ms:.1f}ms"
                              f"(ser={_s:.1f}/upl={_u:.1f}/pre={_p:.1f}) ")
+            # SoC temp + throttle word: confirms whether thermals/PSU are
+            # capping fps. "thr=0x0" = clean; anything else = throttling now
+            # or since boot (a trailing "!" flags non-zero so it's obvious).
+            _tc, _thr = _soc_thermals()
+            _therm_dbg = ""
+            if _tc is not None:
+                _therm_dbg = f"temp={_tc:.1f}C "
+            if _thr is not None:
+                _therm_dbg += f"thr={_thr}{'!' if _thr not in ('0x0','0') else ''}  "
             print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  "
-                  f"{_flip_dbg}  rss={_mem_kb/1024:.1f}MB  "
+                  f"{_flip_dbg}  rss={_mem_kb/1024:.1f}MB  {_therm_dbg}"
                   f"roll={disp.get('roll', 0.0):+.2f} "
                   f"pitch={disp.get('pitch', 0.0):+.2f} "
                   f"yaw={disp.get('yaw', 0.0):+.2f} "
