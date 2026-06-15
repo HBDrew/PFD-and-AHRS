@@ -33,6 +33,12 @@ class PerfGrab:
         self.path     = os.environ.get("PFD_PERF_FILE", "/tmp/pfd_perf.txt")
         self._render  = []
         self._flip    = []
+        # Optional handoff breakdown (shared-GL composite path): the CPU
+        # serialize (tostring) and GPU upload (tex.write) halves of flip, plus
+        # the leftover present (vsync/swap).  Stay empty on non-GL paths.
+        self._ser     = []
+        self._upl     = []
+        self._pre     = []
         self._win_start = None
         self._tag     = ""
         if self.enabled:
@@ -46,9 +52,14 @@ class PerfGrab:
             except OSError:
                 pass
 
-    def add(self, render_ms, flip_ms, tag="", now=None):
+    def add(self, render_ms, flip_ms, tag="", now=None,
+            serialize_ms=None, upload_ms=None, present_ms=None):
         """Record one frame.  ``tag`` is an optional context label (e.g. the
-        current page + range) carried into the window's summary."""
+        current page + range) carried into the window's summary.
+
+        ``serialize_ms``/``upload_ms``/``present_ms`` optionally break the flip
+        time into its 2D-handoff parts (CPU tostring, GPU upload, vsync present)
+        so the summary can show which one to optimise.  Omit on non-GL paths."""
         if not self.enabled:
             return
         now = now if now is not None else time.monotonic()
@@ -56,6 +67,12 @@ class PerfGrab:
             self._win_start = now
         self._render.append(render_ms)
         self._flip.append(flip_ms)
+        if serialize_ms is not None:
+            self._ser.append(serialize_ms)
+        if upload_ms is not None:
+            self._upl.append(upload_ms)
+        if present_ms is not None:
+            self._pre.append(present_ms)
         if tag:
             self._tag = tag
         if now - self._win_start >= self.interval:
@@ -73,13 +90,19 @@ class PerfGrab:
         r = sorted(self._render)
         fl = sorted(self._flip)
         fps = n / dur if dur > 0 else 0.0
-        return (f"{time.strftime('%H:%M:%S')} "
+        line = (f"{time.strftime('%H:%M:%S')} "
                 f"fps={fps:4.1f} n={n:4d}  "
                 f"render p50={self._pct(r, 50):5.1f} p95={self._pct(r, 95):5.1f} "
                 f"max={(r[-1] if r else 0.0):5.1f}  "
                 f"flip p50={self._pct(fl, 50):5.1f} p95={self._pct(fl, 95):5.1f} "
-                f"max={(fl[-1] if fl else 0.0):5.1f}"
-                + (f"  [{self._tag}]" if self._tag else ""))
+                f"max={(fl[-1] if fl else 0.0):5.1f}")
+        # Handoff breakdown — only when the GL composite path fed it in.
+        if self._ser or self._upl or self._pre:
+            s = sorted(self._ser); u = sorted(self._upl); p = sorted(self._pre)
+            line += (f"  [serialize p50={self._pct(s, 50):4.1f} "
+                     f"upload p50={self._pct(u, 50):4.1f} "
+                     f"present p50={self._pct(p, 50):4.1f}]")
+        return line + (f"  [{self._tag}]" if self._tag else "")
 
     def _flush(self, now):
         line = self._fmt(now - self._win_start, len(self._render))
@@ -91,5 +114,8 @@ class PerfGrab:
         print("[PERF] " + line)
         self._render.clear()
         self._flip.clear()
+        self._ser.clear()
+        self._upl.clear()
+        self._pre.clear()
         self._win_start = now
         self._tag = ""

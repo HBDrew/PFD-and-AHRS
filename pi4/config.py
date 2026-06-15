@@ -70,7 +70,12 @@ BL_MODE     = _profile["backlight"]   # "pwm_gpio18" | "sysfs" | "none"
 DT_OVERLAY  = _profile["overlay"]     # DT overlay name or None
 
 FULLSCREEN     = True   # set False for windowed testing
-TARGET_FPS     = 30
+# Frame-rate cap.  Override at runtime with PFD_TARGET_FPS (e.g. 60) so the
+# same build can be A/B-tested on a Pi 4 and a Pi 5 without editing config.
+# Set PFD_TARGET_FPS=0 to run UNCAPPED — the loop draws as fast as it can and
+# clock.get_fps() then reports the true hardware ceiling.  Default 30 keeps
+# field behaviour unchanged unless the env var is set.
+TARGET_FPS     = int(os.environ.get("PFD_TARGET_FPS", "30"))
 DISPLAY_ROTATE = 0      # degrees CCW: 0, 90, 180, 270
 
 # ── Dynamic layout ───────────────────────────────────────────────────────────

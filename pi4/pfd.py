@@ -18029,7 +18029,18 @@ def main():
                          f"{int(_mfd_last_range or 0)}nm"
                          + (" pan" if (_mfd_drag and _mfd_drag.get('is_drag'))
                             else ""))
-            _perf.add((_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0, tag=_ptag)
+            _flip_ms = (_t2 - _t1) * 1000.0
+            if _use_shared_gl and gl_compositor is not None:
+                # Split the flip into its parts: CPU serialize (tostring) and
+                # GPU upload (tex.write) come from the compositor; present is
+                # whatever's left (quad draw + vsync swap).
+                _ser = gl_compositor.t_serialize
+                _upl = gl_compositor.t_upload
+                _pre = max(0.0, _flip_ms - _ser - _upl)
+                _perf.add((_t1 - _t0) * 1000.0, _flip_ms, tag=_ptag,
+                          serialize_ms=_ser, upload_ms=_upl, present_ms=_pre)
+            else:
+                _perf.add((_t1 - _t0) * 1000.0, _flip_ms, tag=_ptag)
 
         # Print frame timing every 60 frames so we can diagnose bottlenecks
         if not hasattr(main, '_frame_n'):
@@ -18051,8 +18062,18 @@ def main():
                             break
             except OSError:
                 pass
+            # In shared-GL mode break flip into serialize/upload/present so a
+            # glance at the console shows whether the 2D handoff or the vsync
+            # present dominates — decides which optimisation is worth doing.
+            _flip_dbg = f"flip={flip_ms:.1f}ms"
+            if _use_shared_gl and gl_compositor is not None:
+                _s = gl_compositor.t_serialize
+                _u = gl_compositor.t_upload
+                _p = max(0.0, flip_ms - _s - _u)
+                _flip_dbg = (f"flip={flip_ms:.1f}ms"
+                             f"(ser={_s:.1f}/upl={_u:.1f}/pre={_p:.1f}) ")
             print(f"[PFD] fps={fps:.1f}  render={render_ms:.1f}ms  "
-                  f"flip={flip_ms:.1f}ms  rss={_mem_kb/1024:.1f}MB  "
+                  f"{_flip_dbg}  rss={_mem_kb/1024:.1f}MB  "
                   f"roll={disp.get('roll', 0.0):+.2f} "
                   f"pitch={disp.get('pitch', 0.0):+.2f} "
                   f"yaw={disp.get('yaw', 0.0):+.2f} "

@@ -35,6 +35,7 @@ pygame-only SVT_RENDERER path.
 """
 
 import os
+import time
 
 import pygame
 
@@ -190,6 +191,15 @@ class Compositor:
         self.tex.repeat_x = False
         self.tex.repeat_y = False
 
+        # Per-frame handoff timing (ms), populated only when profiling so the
+        # field perf grab can tell the CPU serialize (tostring) cost apart from
+        # the GPU upload (tex.write) — the two halves of the 2D handoff tax.
+        # Near-free when off: a single env lookup at construction, no per-frame
+        # clock reads.  Read by the main loop's perf path in pfd.py.
+        self.profile     = bool(os.environ.get("PFD_PERF"))
+        self.t_serialize = 0.0
+        self.t_upload    = 0.0
+
     def upload_and_draw(self, pfd_surface: pygame.Surface):
         """Upload the given pygame Surface to our GL texture and draw
         it as a fullscreen quad with alpha blending.
@@ -204,8 +214,17 @@ class Compositor:
                 f"surface size {pfd_surface.get_size()}"
             )
 
-        raw = pygame.image.tostring(pfd_surface, "RGBA", True)
-        self.tex.write(raw)
+        if self.profile:
+            _t0 = time.perf_counter()
+            raw = pygame.image.tostring(pfd_surface, "RGBA", True)
+            _t1 = time.perf_counter()
+            self.tex.write(raw)
+            _t2 = time.perf_counter()
+            self.t_serialize = (_t1 - _t0) * 1000.0
+            self.t_upload    = (_t2 - _t1) * 1000.0
+        else:
+            raw = pygame.image.tostring(pfd_surface, "RGBA", True)
+            self.tex.write(raw)
         self.tex.use(location=0)
         self.prog["u_tex"].value = 0
 
