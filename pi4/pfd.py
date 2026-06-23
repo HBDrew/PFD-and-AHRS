@@ -4389,19 +4389,29 @@ class SimFlyState:
                                 and tgt_alt < state["alt"] - 5.0)
             alt     = state["alt"]
             alt_err = tgt_alt - alt
+            # Compute the new altitude per the control law, then DERIVE vspeed
+            # from the actual altitude change.  The old code hard-coded
+            # vs_fpm=0 whenever |alt_err|<5 and snapped alt=tgt_alt — but on an
+            # approach tgt_alt itself descends along the glidepath, so the
+            # aircraft kept losing altitude while VS read 0.  That zero fed the
+            # FPV (γ = atan2(VS, GS)) and pinned the flight-path marker to the
+            # horizon instead of the runway.  Deriving VS from Δalt makes the
+            # snap-to-profile case report the real descent rate; a true level
+            # hold (tgt_alt constant) still yields 0.
             if abs(alt_err) < 5.0:
-                state["alt"] = tgt_alt
-                vs_fpm = 0.0
+                new_alt = tgt_alt
             elif _on_appr_descent:
                 gs_descent_fpm = -(state["speed"] * 6076.12
                                     * math.tan(math.radians(3.0)) / 60.0)
-                vs_fpm = max(-1500.0, min(1500.0,
+                vs_cmd  = max(-1500.0, min(1500.0,
                                           alt_err * 6.0 + gs_descent_fpm))
-                state["alt"] = alt + vs_fpm / 60.0 * dt
+                new_alt = alt + vs_cmd / 60.0 * dt
             else:
-                vs_fpm  = max(-1500.0, min(1500.0, alt_err * 2.0))
-                state["alt"] = alt + vs_fpm / 60.0 * dt
-            state["gps_alt"] = state["alt"]
+                vs_cmd  = max(-1500.0, min(1500.0, alt_err * 2.0))
+                new_alt = alt + vs_cmd / 60.0 * dt
+            vs_fpm = (new_alt - alt) / max(dt, 1e-3) * 60.0
+            state["alt"]     = new_alt
+            state["gps_alt"] = new_alt
             state["vspeed"]  = vs_fpm
             state["pitch"]   = max(-10.0, min(10.0, vs_fpm / 100.0)) if not ahrs_fail else 0.0
 
