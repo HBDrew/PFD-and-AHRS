@@ -562,6 +562,18 @@ _sse_client  = None
 _adsb_client = None   # ADSBClient (GDL90/UDP traffic) when ADS-B enabled
 _traffic_feed = None  # TrafficFeed (built-in internet feed) — paused per traffic_source
 _prev_alert_ids = set()  # ICAOs already in alert state (edge-trigger the callout)
+
+# Traffic recompute throttle.  _update_traffic relativises + threat-classifies
+# every target against ownship; the PFD_CPROFILE_SEC profile showed ~290
+# targets recomputed EVERY frame costing ~14 ms/frame on a Pi 4.  ADS-B only
+# refreshes ~1 Hz, so doing this at frame rate is ~29× wasted work.  Run it at
+# a few Hz instead — far faster than the data, invisible on screen, and still
+# well ahead of any threat callout.  PFD_TRAFFIC_HZ overrides for tuning.
+try:
+    _TRAFFIC_UPDATE_DT = 1.0 / max(1.0, float(os.environ.get("PFD_TRAFFIC_HZ", "5") or 5))
+except ValueError:
+    _TRAFFIC_UPDATE_DT = 0.2
+
 _perf = _perf_mod.PerfGrab()   # frame-timing sampler (no-op unless PFD_PERF set)
 
 
@@ -17956,6 +17968,7 @@ def main():
         pass   # non-main-thread / unsupported platform — F9/F10 still work
 
     running = True
+    _last_traffic_t = 0.0      # monotonic time of last traffic recompute (throttle)
     while running:
         # Update demo state
         if demo_mode and demo:
@@ -17971,7 +17984,13 @@ def main():
         smooth_state()
 
         # Refresh ADS-B traffic against the freshly smoothed ownship fix.
-        _update_traffic(demo_mode)
+        # Throttled to ~5 Hz (see _TRAFFIC_UPDATE_DT): the recompute is the
+        # single biggest non-render cost per frame and the data underneath
+        # only moves at ~1 Hz, so frame-rate recompute is wasted work.
+        _now_t = time.monotonic()
+        if _now_t - _last_traffic_t >= _TRAFFIC_UPDATE_DT:
+            _update_traffic(demo_mode)
+            _last_traffic_t = _now_t
         _update_weather()
         _update_nexrad()
 
