@@ -17409,7 +17409,25 @@ def main():
     pygame.display.set_caption("PFD")
     clock = pygame.time.Clock()
 
-    # ── Screenshot mode ───────────────────────────────────────────────────────
+    # ── Built-in render-loop profiler ────────────────────────────────────────
+    # Set PFD_CPROFILE_SEC=20 to cProfile the first N seconds of the live loop
+    # and self-print the top functions by tottime — no Ctrl-C, no second
+    # command, no lost .prof file.  Default 0 = off (zero overhead).  Lets a
+    # field tester find the hot draw calls with one env var.  Also dumps the
+    # raw stats to /tmp/pfd.prof for offline `pstats` digging.
+    _cprof = None
+    _cprof_until = 0.0
+    try:
+        _cprof_sec = float(os.environ.get("PFD_CPROFILE_SEC", "0") or 0)
+    except ValueError:
+        _cprof_sec = 0.0
+    if _cprof_sec > 0:
+        import cProfile
+        _cprof = cProfile.Profile()
+        _cprof.enable()
+        _cprof_until = time.monotonic() + _cprof_sec
+        print(f"[CPROF] profiling first {_cprof_sec:.0f}s of the render loop…")
+
     # Seed state directly (bypasses IIR smoothing), render one frame, save PNG.
     # Run on the Pi with SRTM tiles installed to capture real SVT renders.
     #   python3 pfd.py --screenshot ~/ss/sedona_cruise.png
@@ -18046,6 +18064,21 @@ def main():
         _flip()
         _t2 = time.monotonic()
         clock.tick(TARGET_FPS)
+
+        # Built-in profiler: once the window elapses, dump the ranked table
+        # in-line (loop keeps running) and disable so there's no further cost.
+        if _cprof is not None and time.monotonic() >= _cprof_until:
+            _cprof.disable()
+            try:
+                import pstats, io as _io
+                _buf = _io.StringIO()
+                pstats.Stats(_cprof, stream=_buf).sort_stats("tottime").print_stats(25)
+                print("[CPROF] top 25 by tottime (self time):\n" + _buf.getvalue())
+                _cprof.dump_stats("/tmp/pfd.prof")
+                print("[CPROF] raw stats -> /tmp/pfd.prof")
+            except Exception as _e:
+                print(f"[CPROF] dump failed: {_e}")
+            _cprof = None
 
         # Field perf grab (PFD_PERF=1) — render vs flip percentiles per window,
         # tagged with the view so a slow page/zoom is obvious in the summary.
