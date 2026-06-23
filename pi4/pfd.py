@@ -4174,6 +4174,7 @@ class SimFlyState:
         sim = disp["sim"]
         preset = SIM_PRESETS[sim["preset_idx"]]
         self._last_t = time.monotonic()
+        self._vs_filt = 0.0    # low-passed vspeed (smooths per-frame Δalt/dt jitter)
         with _state_lock:
             state["lat"]     = preset[2]
             state["lon"]     = preset[3]
@@ -4409,7 +4410,14 @@ class SimFlyState:
             else:
                 vs_cmd  = max(-1500.0, min(1500.0, alt_err * 2.0))
                 new_alt = alt + vs_cmd / 60.0 * dt
-            vs_fpm = (new_alt - alt) / max(dt, 1e-3) * 60.0
+            raw_vs = (new_alt - alt) / max(dt, 1e-3) * 60.0
+            # Δalt reflects the PREVIOUS frame's position advance (gs·dt_prev)
+            # but we divide by THIS frame's dt; with jittery frame times that
+            # ratio swings, so the raw rate bounces ~200↔300 fpm on a steady
+            # glidepath.  dt-aware low-pass (τ≈0.6 s) → smooth VS, and since
+            # pitch and the FPV both derive from VS, a smooth descent too.
+            self._vs_filt += (raw_vs - self._vs_filt) * (dt / (0.6 + dt))
+            vs_fpm = self._vs_filt
             state["alt"]     = new_alt
             state["gps_alt"] = new_alt
             state["vspeed"]  = vs_fpm
