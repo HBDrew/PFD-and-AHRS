@@ -727,6 +727,112 @@ def _draw_borders_cached(surf, rect, state_lines, country_lines, settings,
     surf.blit(c["surf"], (x + dx, y + dy))
 
 
+# ── Airspaces (cached) ──────────────────────────────────────────────────────
+# Same idea as _draw_borders_cached: the airspace layer used to re-project +
+# fill + outline + label EVERY nearby polygon EVERY frame (a SRCALPHA Surface
+# alloc per polygon) — the bulk of the "mfd asp" render time.  Bake the rotated
+# fills+outlines into one offscreen raster keyed on the quantised view, shift it
+# for pan, and rebuild only when the centre/zoom/rotation/toggles actually
+# change.  Labels stay OUT of the raster (they'd rotate sideways with it): they
+# pre-render at build time and blit upright per frame at the projected centroid.
+_airspace_cache = {"key": None, "surf": None, "blat": 0.0, "blon": 0.0,
+                   "labels": []}
+
+
+def _draw_airspaces_cached(surf, rect, airspaces, airspace_visible, settings,
+                           range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
+                           sin_r, cos_r, rot_deg, font, fast):
+    if (airspaces is None
+            or not settings.get("map_show_airspaces", True)
+            or range_nm > 80):
+        return
+    x, y, w, h = rect
+    # Rebuild signature: any centre/zoom/rotation move or class-toggle change.
+    vis_sig = (tuple(sorted(airspace_visible))
+               if airspace_visible is not None else None)
+    tog_sig = tuple(sorted((k, settings[k]) for k in settings
+                           if k.startswith("map_show_airspace_")))
+    qdeg = max(1e-6, 3.0 / max(0.01, px_per_nm) / _NM_PER_DEG_LAT)
+    qlat = round(lat / qdeg)
+    qlon = round(lon / (qdeg / cos_lat))
+    key = (qlat, qlon, round(range_nm, 1), round(rot_deg / 2.0),
+           vis_sig, tog_sig, w, h)
+    c = _airspace_cache
+    if c["surf"] is None or (not fast and c["key"] != key):
+        bs = pygame.Surface((w, h), pygame.SRCALPHA)
+        lcx, lcy = cx - x, cy - y       # build centre = (w/2, h/2) inside bs
+        labels = []
+        for asp in _airspaces_query_nearby(airspaces, lat, lon, range_nm * 1.4):
+            cls = asp["class"]
+            if airspace_visible is not None and cls not in airspace_visible:
+                continue
+            if not settings.get(f"map_show_airspace_{cls.lower()}", True):
+                continue
+            col, fill = _AIRSPACE_COLORS.get(cls, _AIRSPACE_DEFAULT)
+            pts = []
+            for la, lo in asp["polygon"]:
+                n_nm = (la - lat) * _NM_PER_DEG_LAT
+                e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+                e2 = e_nm * cos_r - n_nm * sin_r
+                n2 = e_nm * sin_r + n_nm * cos_r
+                pts.append((int(lcx + e2 * px_per_nm), int(lcy - n2 * px_per_nm)))
+            if len(pts) < 3:
+                continue
+            xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+            if max(xs) < 0 or min(xs) > w or max(ys) < 0 or min(ys) > h:
+                continue
+            # Fill via a per-polygon SRCALPHA surface blitted onto bs — same
+            # alpha handling as the original (draws onto SRCALPHA can drop the
+            # fill; a blit composites it correctly and lets overlaps blend).
+            if fill is not None:
+                bx0 = max(0, min(xs)); by0 = max(0, min(ys))
+                bx1 = min(w, max(xs)); by1 = min(h, max(ys))
+                bw_ = max(1, bx1 - bx0); bh_ = max(1, by1 - by0)
+                fs = pygame.Surface((bw_, bh_), pygame.SRCALPHA)
+                pygame.draw.polygon(fs, fill, [(p[0] - bx0, p[1] - by0)
+                                               for p in pts])
+                bs.blit(fs, (bx0, by0))
+            pygame.draw.polygon(bs, col, pts, 2)
+            if font is not None:
+                w_px = max(xs) - min(xs); h_px = max(ys) - min(ys)
+                if w_px > 60 and h_px > 30:
+                    # Centroid in lat/lon (view-independent) so the upright
+                    # label re-projects to the right spot on every frame.
+                    poly = asp["polygon"]
+                    clat = sum(p[0] for p in poly) / len(poly)
+                    clon = sum(p[1] for p in poly) / len(poly)
+                    id_surf = font.render(asp["ident"], True, col)
+                    alt_str = _airspace_alt_label(asp)
+                    alt_surf = (font.render(alt_str, True, col)
+                                if alt_str else None)
+                    labels.append((clat, clon, id_surf, alt_surf))
+        c.update(key=key, surf=bs, blat=lat, blon=lon, labels=labels)
+    # Shift the cached raster by the screen-space centre movement since build.
+    e_nm = (c["blon"] - lon) * _NM_PER_DEG_LAT * cos_lat
+    n_nm = (c["blat"] - lat) * _NM_PER_DEG_LAT
+    dx = (e_nm * cos_r - n_nm * sin_r) * px_per_nm
+    dy = -(e_nm * sin_r + n_nm * cos_r) * px_per_nm
+    surf.blit(c["surf"], (x + dx, y + dy))
+    # Upright labels, re-projected per frame at the current view.
+    if font is not None:
+        for clat, clon, id_surf, alt_surf in c["labels"]:
+            n_nm = (clat - lat) * _NM_PER_DEG_LAT
+            e_nm = (clon - lon) * _NM_PER_DEG_LAT * cos_lat
+            e2 = e_nm * cos_r - n_nm * sin_r
+            n2 = e_nm * sin_r + n_nm * cos_r
+            cxp = int(cx + e2 * px_per_nm); cyp = int(cy - n2 * px_per_nm)
+            if alt_surf is not None:
+                gap = 1
+                total_h = id_surf.get_height() + gap + alt_surf.get_height()
+                y0 = cyp - total_h // 2
+                surf.blit(id_surf, (cxp - id_surf.get_width() // 2, y0))
+                surf.blit(alt_surf, (cxp - alt_surf.get_width() // 2,
+                                     y0 + id_surf.get_height() + gap))
+            else:
+                surf.blit(id_surf, (cxp - id_surf.get_width() // 2,
+                                    cyp - id_surf.get_height() // 2))
+
+
 # ── NEXRAD reflectivity raster ──────────────────────────────────────────────
 _NEXRAD_ALPHA = 150
 _nexrad_scaled = {"seq": None, "w": 0, "h": 0, "surf": None}
@@ -1341,56 +1447,9 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # obstacles + airports + D2 (flight-critical, must read on top)
     # but OVER state/country lines.  Per-class display gates live in
     # the same `settings` dict as the other layer toggles.
-    if (airspaces is not None
-            and settings.get("map_show_airspaces", True)
-            and range_nm <= 80 and not fast):
-        nearby_as = _airspaces_query_nearby(airspaces, lat, lon,
-                                             range_nm * 1.4)
-        x_r, y_r, w_r, h_r = rect
-        for asp in nearby_as:
-            cls = asp["class"]
-            if airspace_visible is not None and cls not in airspace_visible:
-                continue
-            if not settings.get(f"map_show_airspace_{cls.lower()}", True):
-                continue
-            col, fill = _AIRSPACE_COLORS.get(cls, _AIRSPACE_DEFAULT)
-            pts = [(int(px), int(py)) for px, py in
-                   (_project(la, lo) for la, lo in asp["polygon"])]
-            if len(pts) < 3:
-                continue
-            xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
-            if (max(xs) < x_r or min(xs) > x_r + w_r
-                    or max(ys) < y_r or min(ys) > y_r + h_r):
-                continue
-            if fill is not None:
-                bx0 = max(x_r, min(xs)); by0 = max(y_r, min(ys))
-                bx1 = min(x_r + w_r, max(xs)); by1 = min(y_r + h_r, max(ys))
-                bw_  = max(1, bx1 - bx0); bh_  = max(1, by1 - by0)
-                fs = pygame.Surface((bw_, bh_), pygame.SRCALPHA)
-                shifted = [(p[0] - bx0, p[1] - by0) for p in pts]
-                pygame.draw.polygon(fs, fill, shifted)
-                surf.blit(fs, (bx0, by0))
-            pygame.draw.polygon(surf, col, pts, 2)
-            if font is not None:
-                w_px = max(xs) - min(xs); h_px = max(ys) - min(ys)
-                if w_px > 60 and h_px > 30:
-                    cxp = sum(xs) // len(xs); cyp = sum(ys) // len(ys)
-                    id_surf = font.render(asp["ident"], True, col)
-                    alt_str = _airspace_alt_label(asp)
-                    if alt_str:
-                        alt_surf = font.render(alt_str, True, col)
-                        gap = 1
-                        total_h = id_surf.get_height() + gap + alt_surf.get_height()
-                        y0 = cyp - total_h // 2
-                        surf.blit(id_surf,
-                                  (cxp - id_surf.get_width() // 2, y0))
-                        surf.blit(alt_surf,
-                                  (cxp - alt_surf.get_width() // 2,
-                                   y0 + id_surf.get_height() + gap))
-                    else:
-                        surf.blit(id_surf,
-                                  (cxp - id_surf.get_width() // 2,
-                                   cyp - id_surf.get_height() // 2))
+    _draw_airspaces_cached(surf, rect, airspaces, airspace_visible, settings,
+                           range_nm, lat, lon, cos_lat, cx, cy, px_per_nm,
+                           sin_r, cos_r, rot_deg, font, fast)
 
     # ── Runways ──────────────────────────────────────────────────────────────
     # Runway rectangles only carry useful detail at terminal-area zooms —
