@@ -15956,12 +15956,21 @@ def draw_fpl(surf):
             sub_col = (130, 150, 180)
         # Leg distance — from the previous waypoint (from the aircraft for the
         # first leg) — shown at the row's bottom-right, before the icons.
+        # Leg course (true) + distance, e.g. "123°T  4.5 nm".  No magvar model
+        # in the codebase, so all courses here are true — same as the stored
+        # approach course_deg.
         if i == 0:
-            leg_txt = (f"{_nav_geo_dist_brg(disp['lat'], disp['lon'], wp['lat'], wp['lon'])[0]:.1f} nm"
-                       if (disp.get('gps_ok') and disp.get('lat') is not None) else "")
+            if disp.get('gps_ok') and disp.get('lat') is not None:
+                _ld, _lb = _nav_geo_dist_brg(disp['lat'], disp['lon'],
+                                             wp['lat'], wp['lon'])
+                leg_txt = f"{int(round(_lb)) % 360:03d}°T  {_ld:.1f} nm"
+            else:
+                leg_txt = ""
         else:
             _pv = wps[i - 1]
-            leg_txt = f"{_nav_geo_dist_brg(_pv['lat'], _pv['lon'], wp['lat'], wp['lon'])[0]:.1f} nm"
+            _ld, _lb = _nav_geo_dist_brg(_pv['lat'], _pv['lon'],
+                                         wp['lat'], wp['lon'])
+            leg_txt = f"{int(round(_lb)) % 360:03d}°T  {_ld:.1f} nm"
         dist_right = bx + bw - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 14
         dist_w = _get_font(15, bold=True).size(leg_txt)[0] if leg_txt else 0
         if leg_txt:
