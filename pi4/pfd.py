@@ -838,6 +838,11 @@ def _ssync_publish_gps():
         "speed":       float(disp.get("speed", 0.0)),
         "track":       float(disp.get("track", 0.0)),
         "gps_ok":      bool(disp.get("gps_ok", False)),
+        # gps_comm = GPS hardware responding (NMEA flowing) even with no fix.
+        # A shadowing screen needs this to tell "acquiring" (amber NO FIX) from
+        # "dead" (red NO SIGNAL + airspeed/alt red-X): without it a peer with a
+        # live GPS but no satellite lock (e.g. indoors) reads as total failure.
+        "gps_comm":    bool(disp.get("gps_comm", False)),
         "fix":         int(disp.get("fix", 0)),
         "sats":        int(disp.get("sats", 0)),
         # Altitude / vertical
@@ -1664,6 +1669,8 @@ def _ssync_apply_gps(data):
                     state[k] = float(data[k])
             if "gps_ok" in data:
                 state["gps_ok"] = bool(data["gps_ok"])
+            if "gps_comm" in data:
+                state["gps_comm"] = bool(data["gps_comm"])
             if "fix" in data:
                 state["fix"] = int(data["fix"])
             if "sats" in data:
