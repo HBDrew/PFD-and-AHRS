@@ -115,27 +115,39 @@ class SerialClient(threading.Thread):
         ser = serial.Serial(self.port, self.baud, timeout=2)
         self._ser = ser
         last_rx = time.monotonic()
+        buf = b""
         try:
             while not self._stop_event.is_set():
-                raw = ser.readline()
-                # Stale-data watchdog: pyserial's readline() returns b""
-                # after the read timeout when no bytes arrive, so a quiet
-                # but still-open fd shows up as a tight empty-string loop
-                # here. If we go STALE_DATA_TIMEOUT_S without a valid
-                # $AHRS line, raise to trigger the outer reconnect path.
-                if time.monotonic() - last_rx > self.STALE_DATA_TIMEOUT_S:
+                # Read the whole waiting burst in ONE syscall instead of letting
+                # readline() pull a byte at a time (~100 read()+select() calls per
+                # $AHRS line — a real GIL hog that stole render cycles on the
+                # Pi 4).  Block up to the port timeout for the first byte, then
+                # drain in_waiting and split complete lines out of the buffer.
+                chunk = ser.read(1)
+                if chunk:
+                    n = ser.in_waiting
+                    if n:
+                        chunk += ser.read(n)
+                    buf += chunk
+                    if len(buf) > 65536:        # runaway / no-newline guard
+                        buf = buf[-4096:]
+
+                now = time.monotonic()
+                # Stale-data watchdog: a quiet but still-open fd returns b''
+                # after each read timeout.  If we go STALE_DATA_TIMEOUT_S without
+                # a valid $AHRS line, raise to trigger the outer reconnect path.
+                if now - last_rx > self.STALE_DATA_TIMEOUT_S:
                     self.stale_resets += 1
                     raise IOError(
                         f"no $AHRS data for "
                         f"{self.STALE_DATA_TIMEOUT_S:.0f}s — forcing reconnect"
                     )
-                if not raw:
-                    # Empty read = readline timed out. On a clean unplug,
-                    # pyserial would raise — but on a "soft" disconnect
-                    # (or a Pico hang) it just keeps returning b''.
-                    # Bail out and let run() recycle if we've gone too
-                    # long without a real packet.
-                    if time.monotonic() - last_rx > self.heartbeat_timeout:
+                if not chunk:
+                    # Read timed out with no bytes. On a clean unplug pyserial
+                    # would raise — but on a "soft" disconnect (or a Pico hang)
+                    # it just keeps timing out. Bail and let run() recycle if
+                    # we've gone too long without a real packet.
+                    if now - last_rx > self.heartbeat_timeout:
                         self.connected = False
                         self.last_err  = (
                             f"heartbeat: no $AHRS for "
@@ -143,32 +155,38 @@ class SerialClient(threading.Thread):
                         print(f"[Serial] {self.last_err}")
                         return
                     continue
-                line = raw.decode("utf-8", errors="ignore").strip()
-                if line.startswith("$ORIENT_ACK,"):
-                    print(f"[Serial] {line}")
-                if not line.startswith(self.PREFIX):
-                    # Non-$AHRS line — Pico boot output, exception traceback,
-                    # or other diagnostic print. Relay to journalctl so we
-                    # can see WHY the Pico reset / what it logged at boot.
-                    # Skip pure-empty lines and the visual divider banners.
-                    if line and not line.startswith("─"):
-                        print(f"[Pico] {line}")
-                    continue
-                payload = line[len(self.PREFIX):]
-                try:
-                    update = json.loads(payload)
-                    # Keep reading (drain the buffer) but don't merge into
-                    # state while paused — sim/demo owns the state dict
-                    # until unpaused.
-                    if not self.paused:
-                        with self.lock:
-                            self.state.update(update)
-                    self.connected = True
-                    self.rx_count += 1
-                    last_rx = time.monotonic()
-                except json.JSONDecodeError as e:
-                    self.err_count += 1
-                    self.last_err = f"JSON: {e.msg} @ col {e.colno}"
+
+                # Process every COMPLETE line; keep the partial tail buffered.
+                while b"\n" in buf:
+                    rawline, buf = buf.split(b"\n", 1)
+                    line = rawline.decode("utf-8", errors="ignore").strip()
+                    if not line:
+                        continue
+                    if line.startswith("$ORIENT_ACK,"):
+                        print(f"[Serial] {line}")
+                    if not line.startswith(self.PREFIX):
+                        # Non-$AHRS line — Pico boot output, exception traceback,
+                        # or other diagnostic print. Relay to journalctl so we
+                        # can see WHY the Pico reset / what it logged at boot.
+                        # (Skip the visual divider banners.)
+                        if not line.startswith("─"):
+                            print(f"[Pico] {line}")
+                        continue
+                    payload = line[len(self.PREFIX):]
+                    try:
+                        update = json.loads(payload)
+                        # Keep reading (drain the buffer) but don't merge into
+                        # state while paused — sim/demo owns the state dict
+                        # until unpaused.
+                        if not self.paused:
+                            with self.lock:
+                                self.state.update(update)
+                        self.connected = True
+                        self.rx_count += 1
+                        last_rx = now
+                    except json.JSONDecodeError as e:
+                        self.err_count += 1
+                        self.last_err = f"JSON: {e.msg} @ col {e.colno}"
         finally:
             self._ser = None
             try:
