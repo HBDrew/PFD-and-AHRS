@@ -283,6 +283,25 @@ _TINT_N = 64       # elevation samples per side; smoothscaled up to fit
 # One entry in practice (the map rect size is fixed at runtime).
 _veil_cache: dict = {}
 
+# Cached ROTATED tint.  pygame.transform.rotate of the big (~hypot(w,h)) tint is
+# the single most expensive op in the MFD render (~10 ms each, every frame) — the
+# north-up tint is already cached, but the ROTATION was redone every frame even
+# on a dead-steady heading.  Cache the rotated surface keyed on the source
+# surface identity + the rounded angle (same trick _draw_nexrad uses), so a
+# steady heading reuses it and only a turn (or a tint rebuild) re-rotates.
+_tint_rot: dict = {"src": None, "deg": None, "surf": None}
+
+
+def _rot_cached(cache, src, rot_deg):
+    """Return src rotated by rot_deg, reusing the cached rotation when the
+    source surface and rounded angle are unchanged."""
+    deg_key = round(rot_deg)
+    if cache["surf"] is None or cache["src"] is not src or cache["deg"] != deg_key:
+        cache["surf"] = pygame.transform.rotate(src, rot_deg)
+        cache["src"] = src
+        cache["deg"] = deg_key
+    return cache["surf"]
+
 # Cached airport ident labels keyed by (ident, font id).  Each font.render is a
 # real cost on the big MFD; caching lets repeated frames reuse rendered labels.
 # Capped (LRU) so a long flight doesn't grow it unbounded as the visible set
@@ -1511,7 +1530,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                        int(cy) - wait_surf.get_height() // 2))
         if tint is not None:
             if orient == "trk" and rot_deg != 0.0:
-                tint_r = pygame.transform.rotate(tint, rot_deg)
+                tint_r = _rot_cached(_tint_rot, tint, rot_deg)
             else:
                 tint_r = tint
             tr = tint_r.get_rect(center=(int(qx), int(qy)))
