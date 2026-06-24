@@ -12794,6 +12794,70 @@ def _build_direct_to_trace_async(key, wpt_elev):
                 _direct_to_trace_cache_arr = arr
 
 
+# ── Next-leg trace (faded magenta, matches the MFD) ─────────────────────────
+# The PFD already draws the ACTIVE leg as a bright-magenta terrain-following
+# trace.  This adds the NEXT leg (active waypoint → the one after it) as a
+# faded-magenta trace, the same (140,0,140) the MFD uses for remaining legs, so
+# the two displays agree.  Built on a daemon thread (like the direct-to trace)
+# so the SRTM sampling never hitches the render loop; rebuilt only when the leg
+# changes.
+_NEXT_LEG_COLOR = (140 / 255.0, 0.0, 140 / 255.0, 1.0)
+_next_leg_trace_cache = {"key": None, "arr": None}
+_next_leg_trace_thread = None
+
+
+def _build_next_leg_trace_async(key):
+    global _next_leg_trace_cache
+    a_lat, a_lon, b_lat, b_lon = key
+    dist_nm, _ = _nav_geo_dist_brg(a_lat, a_lon, b_lat, b_lon)
+    if dist_nm < 0.05:
+        return
+    n = max(8, min(120, int(dist_nm / 0.5)))
+    pts = []
+    for i in range(n + 1):
+        if _next_leg_trace_cache["key"] != key:
+            return                      # leg changed mid-build — drop this one
+        t = i / n
+        s_lat, s_lon = _nav_gc_interp(a_lat, a_lon, b_lat, b_lon, t)
+        try:
+            e = get_elevation_ft(SRTM_DIR, s_lat, s_lon)
+            if e is None or e < -100:
+                e = 0.0
+        except Exception:
+            e = 0.0
+        pts.append((s_lat, s_lon, e + _DIRECT_TO_DRAPE_OFFSET_FT))
+    try:
+        import numpy as _np
+        arr = _np.array(pts, dtype=_np.float32)
+    except Exception:
+        arr = pts
+    if _next_leg_trace_cache["key"] == key:
+        _next_leg_trace_cache["arr"] = arr
+
+
+def build_next_leg_trace_vertices():
+    """Cached terrain-following trace for the leg AFTER the active one, or None
+    when there's no next leg.  Starts a fresh worker on a leg change."""
+    global _next_leg_trace_thread
+    rem = _fpl_render_remaining()
+    if not rem or len(rem) < 2:
+        _next_leg_trace_cache["key"] = None
+        _next_leg_trace_cache["arr"] = None
+        return None
+    a_lat, a_lon, _ = rem[0]
+    b_lat, b_lon, _ = rem[1]
+    key = (float(a_lat), float(a_lon), float(b_lat), float(b_lon))
+    if key == _next_leg_trace_cache["key"]:
+        return _next_leg_trace_cache["arr"]
+    _next_leg_trace_cache["key"] = key
+    _next_leg_trace_cache["arr"] = None
+    _next_leg_trace_thread = threading.Thread(
+        target=_build_next_leg_trace_async, args=(key,), daemon=True,
+        name="next-leg-trace")
+    _next_leg_trace_thread.start()
+    return None
+
+
 def build_direct_to_trace_vertices():
     """Return the cached trace for the active direct-to.  May return a
     partial vertex array while the background sampler is still walking
@@ -16640,6 +16704,9 @@ def render(surf, demo_mode, connected, data_stale=False):
                     (220 / 255.0, 0.0, 220 / 255.0, 1.0),
                     3.0,
                 ))
+            _next_verts = build_next_leg_trace_vertices()
+            if _next_verts is not None and len(_next_verts) >= 2:
+                _gl_polylines.append((_next_verts, _NEXT_LEG_COLOR, 3.0))
         # HITS boxes — cyan rectangles along the extended centreline at 3°
         # glideslope whenever an approach is active (any leg), so the corridor
         # into the runway is visible ahead while you fly the feeder legs too.
@@ -16677,6 +16744,9 @@ def render(surf, demo_mode, connected, data_stale=False):
                     (220 / 255.0, 0.0, 220 / 255.0, 1.0),
                     3.0,
                 ))
+            _next_verts = build_next_leg_trace_vertices()
+            if _next_verts is not None and len(_next_verts) >= 2:
+                _gl_polylines.append((_next_verts, _NEXT_LEG_COLOR, 3.0))
         if _ap.get("active"):
             _gl_polylines.extend(_approach_hits_polylines())
         _gl_polylines.extend(_approach_signpost_polylines())
