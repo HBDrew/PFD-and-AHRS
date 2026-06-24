@@ -30,6 +30,7 @@ apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     python3-pygame \
     python3-numpy \
+    python3-serial \
     libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libsdl2-mixer-2.0-0 \
     fonts-dejavu-core \
     espeak \
