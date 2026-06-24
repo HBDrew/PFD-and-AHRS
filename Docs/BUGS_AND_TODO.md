@@ -8,6 +8,22 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### TZ-HITCH  Timezone lookup blocks the render thread (~1.7 s freeze)
+Status: **OPEN — found via MFD cProfile (moving sim); not started**
+Context: the MFD strip local time (`_localtime.offset_hours`, pfd.py:14688), its
+zone label (`abbrev`, 14712), and the ETA-local (13896) all run on the RENDER
+thread and call `timezonefinder.timezone_at` on a cache miss.  One cold lookup =
+~800k flatbuffer reads ≈ **1.7 s**, freezing the frame.  `shared/localtime.py`
+already caches by ~0.2° (~12 nm) cell, so it's NOT per-frame — but you get the
+freeze at startup, on a new destination, and potentially each ~12 nm tz-cell
+crossing in flight.  Only shows when MOVING (the parked profile had zero tz cost).
+Fix: get `timezone_at` OFF the render thread.  Add `allow_lookup=False` to
+`tz_name_for`/`offset_hours`/`abbrev` so the render thread reads cache-only and
+falls back to the longitude approx (already there) on a miss; run a small
+background warmer that calls the blocking path for the aircraft AND active
+destination position every few seconds to keep the cache hot.  Unknown whether
+the 1.7 s is a one-time data-load or per-query — the off-thread warmer covers both.
+
 ### MAGVAR  Display magnetic courses/headings (add magnetic variation)
 Status: **OPEN — committed to doing it; not started**
 Context: the whole system is currently TRUE-referenced and self-consistent —
