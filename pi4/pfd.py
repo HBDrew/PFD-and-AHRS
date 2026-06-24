@@ -1153,6 +1153,98 @@ def _approach_hits_refresh():
         _appr_hits_cache["profile"] = None
 
 
+# ── Approach-fix sign-posts ─────────────────────────────────────────────────
+# A "sign post" at each approach waypoint: an amber box floating at the fix's
+# PUBLISHED crossing altitude with a thin vertical post dropping to the terrain
+# below, so the pilot can eyeball whether they're high/low on the profile.  The
+# box + post are 3D depth-tested polylines (same pipeline as the HITS boxes);
+# the ident + altitude text is a 2D overlay projected per frame.  Amber keeps it
+# distinct from the cyan HITS corridor and the magenta course line.
+_SIGNPOST_COLOR    = (1.0, 200 / 255.0, 0.0, 1.0)   # amber
+_SIGNPOST_SIDE_FT  = 400.0
+_appr_signpost_cache = {"key": None, "polylines": [], "labels": []}
+
+
+def _approach_signpost_refresh():
+    ap = disp.get("approach") or {}
+    key = (ap.get("airport"), ap.get("procedure"), ap.get("transition"),
+           bool(ap.get("loaded")), len(ap.get("legs") or []),
+           ap.get("thresh_lat"), ap.get("thresh_lon"))
+    if _appr_signpost_cache["key"] == key:
+        return
+    _appr_signpost_cache["key"] = key
+    polylines = []
+    labels = []
+    path = _approach_hits_path()           # [(la, lo, alt)…] w/ interpolated alts
+    legs = ap.get("legs") or []
+    if path and len(path) == len(legs):
+        course = float(ap.get("course_deg", 0.0))
+        perp_rad = math.radians((course + 90.0) % 360.0)
+        sin_p, cos_p = math.sin(perp_rad), math.cos(perp_rad)
+        half = _SIGNPOST_SIDE_FT / 2.0
+        dpf_lat = 1.0 / (60.0 * 6076.12)   # degrees latitude per foot
+        for (la, lo, alt), leg in zip(path, legs):
+            ident = str(leg[2] or "").strip()
+            if not ident:
+                continue
+            cos_lat = max(1e-6, math.cos(math.radians(la)))
+            dpf_lon = dpf_lat / cos_lat
+            dlat = cos_p * half * dpf_lat
+            dlon = sin_p * half * dpf_lon
+            top, bot = alt + half, alt - half
+            # Square box in the vertical plane perpendicular to the final
+            # course, centred on the crossing altitude (TL→TR→BR→BL→TL).
+            tl = (la + dlat, lo + dlon, top)
+            tr = (la - dlat, lo - dlon, top)
+            br = (la - dlat, lo - dlon, bot)
+            bl = (la + dlat, lo + dlon, bot)
+            polylines.append(([tl, tr, br, bl, tl], _SIGNPOST_COLOR, 2.0))
+            # Vertical post from the box bottom down to the terrain.
+            try:
+                gelev = get_elevation_ft(SRTM_DIR, la, lo)
+                if gelev is None or gelev < -100:
+                    gelev = bot
+            except Exception:
+                gelev = bot
+            polylines.append(([(la, lo, bot), (la, lo, gelev)],
+                              _SIGNPOST_COLOR, 2.0))
+            labels.append((la, lo, alt, ident, int(round(alt))))
+    _appr_signpost_cache["polylines"] = polylines
+    _appr_signpost_cache["labels"] = labels
+
+
+def _approach_signpost_polylines():
+    """3D box + post polylines for each approach fix (cached)."""
+    _approach_signpost_refresh()
+    return _appr_signpost_cache["polylines"]
+
+
+def _draw_approach_signpost_labels(surf, ai_rect, lat, lon, alt_ft,
+                                   hdg, pitch, roll):
+    """2D ident + crossing-altitude text at each sign-post, projected to the
+    fix's screen position (amber, matching the 3D box)."""
+    _approach_signpost_refresh()
+    data = _appr_signpost_cache["labels"]
+    if not data:
+        return
+    ax, ay_r, aw, ah = ai_rect
+    cx_ai = ax + aw // 2
+    cy_ai = ay_r + ah // 2
+    px_per_deg = ah / 48.0
+    old_clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
+    for fla, flo, falt, ident, ialt in data:
+        pt = _project_latlon(float(fla), float(flo), lat, lon, alt_ft,
+                             float(falt), hdg, pitch, roll, cx_ai, cy_ai,
+                             px_per_deg, max_fov_deg=None, ground_only=False)
+        if pt is None:
+            continue
+        sx, sy = int(pt[0]), int(pt[1])
+        _text(surf, ident, 13, (255, 200, 0), bold=True, x=sx + 8, y=sy - 16)
+        _text(surf, f"{ialt:,}", 12, (255, 200, 0), x=sx + 8, y=sy - 1)
+    surf.set_clip(old_clip)
+
+
 def _approach_target_alt(lat, lon):
     """Target altitude (ft) of the PUBLISHED vertical profile at the aircraft's
     current distance from the threshold — the altitude the boxes show, what the
@@ -16553,6 +16645,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         # into the runway is visible ahead while you fly the feeder legs too.
         if _ap.get("active"):
             _gl_polylines.extend(_approach_hits_polylines())
+        _gl_polylines.extend(_approach_signpost_polylines())
         render_svt_into_current_fb(
             _shared_gl_ctx, SRTM_DIR,
             DISPLAY_W, HDG_Y,
@@ -16586,6 +16679,7 @@ def render(surf, demo_mode, connected, data_stale=False):
                 ))
         if _ap.get("active"):
             _gl_polylines.extend(_approach_hits_polylines())
+        _gl_polylines.extend(_approach_signpost_polylines())
         draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt_render,
                            lat, lon, polylines=_gl_polylines)
     else:
@@ -16643,6 +16737,13 @@ def render(surf, demo_mode, connected, data_stale=False):
                       or _shared_gl_ctx is not None)
     if _svt_3d_active:
         draw_zero_pitch_line(surf, ai_rect, pitch, roll)
+
+    # 1c-2. Approach-fix sign-post labels (ident + crossing altitude), upright.
+    # Projected with the same -roll convention the symbol overlays use so the
+    # text sits on the 3D amber box at each fix.
+    if _svt_3d_active and gps_ok:
+        _draw_approach_signpost_labels(surf, ai_rect, lat, lon, alt_render,
+                                       hdg, pitch, -roll)
 
     # 1d. Lower-left moving-map inset (pure-pygame; reuses the airport,
     # runway, obstacle and SRTM caches the SVT already keeps loaded).

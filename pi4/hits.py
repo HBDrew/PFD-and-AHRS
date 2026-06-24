@@ -17,7 +17,7 @@ Geometry defaults (matched to the design choices for this build):
   Box width:  300 ft        (≈ FAA Cat-I final approach corridor)
   Box height: 200 ft
   Box centre on glideslope (pilot eye-line through the middle of the box).
-  Spacing:    1000 ft        (~6 s between boxes at 100 kt GS)
+  Spacing:    1500 ft        (~9 s between boxes at 100 kt GS)
   Final:      5 nm           (boxes from 1000 ft → 5 nm out from threshold)
 """
 
@@ -29,7 +29,7 @@ _NM_TO_FT = 6076.12
 DEFAULT_GS_DEG     = 3.0
 DEFAULT_BOX_W_FT   = 300.0
 DEFAULT_BOX_H_FT   = 200.0
-DEFAULT_SPACING_FT = 1000.0
+DEFAULT_SPACING_FT = 1500.0   # ~1/3 fewer boxes than the old 1000 ft (less clutter)
 DEFAULT_FINAL_NM   = 5.0
 
 # Cyan — visually distinct from the magenta direct-to trace and the
