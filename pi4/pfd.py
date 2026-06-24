@@ -298,6 +298,8 @@ disp["ds"] = {                      # display settings
     # Flight-path vector (velocity vector) marker on the AI.  Default ON —
     # it's a primary instrument cue and self-hides below 5 kt GS.
     "fpv_enabled":   True,
+    # Highway-in-the-sky approach corridor (cyan boxes on the SVT).  Default ON.
+    "hits_enabled":  True,
     # Lower-left moving-map inset
     "map_enabled":       False,
     "map_orient":        "trk",     # "trk" | "nrth"
@@ -5650,9 +5652,21 @@ def handle_event(event, demo_mode):
 
     # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────
     if event.type == pygame.FINGERDOWN:
-        _active_fingers[event.finger_id] = pygame.time.get_ticks()
+        _now_ms = pygame.time.get_ticks()
+        # Drop any finger that's been "down" longer than the longest intended
+        # gesture (the 2 s MFD-swap hold) — it can't belong to the touch
+        # starting now, so it's a ghost from a missed FINGERUP or the spurious
+        # touch some panels emit at startup.  Without this, the first 2-finger
+        # gesture after a restart counted a lingering boot ghost as a 3rd
+        # finger and swapped to the MFD instead of opening setup.
+        for _fid in [f for f, t in _active_fingers.items() if _now_ms - t > 3000]:
+            _active_fingers.pop(_fid, None)
+        if len(_active_fingers) < 2:        # ghost(s) cleared → resync gesture
+            _multitouch_t0 = None
+            _multitouch_max_fingers = 0
+        _active_fingers[event.finger_id] = _now_ms
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
-            _multitouch_t0 = pygame.time.get_ticks()
+            _multitouch_t0 = _now_ms
         if len(_active_fingers) > _multitouch_max_fingers:
             _multitouch_max_fingers = len(_active_fingers)
 
@@ -7826,6 +7840,8 @@ _DSP_ROWS_DISPLAY = [
     ("sun_realtime","SUN POSITION", "Real-time from UTC + GPS",
      [False, True],      ["FIXED", "REAL"],   80),
     ("fpv_enabled", "FLIGHT PATH", "Velocity vector / flight-path marker on AI",
+     [False, True],      ["OFF", "ON"],       80),
+    ("hits_enabled", "HITS BOXES", "Highway-in-the-sky approach corridor",
      [False, True],      ["OFF", "ON"],       80),
 ]
 _DSP_ROWS_MAP = [
@@ -16806,7 +16822,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         # HITS boxes — cyan rectangles along the extended centreline at 3°
         # glideslope whenever an approach is active (any leg), so the corridor
         # into the runway is visible ahead while you fly the feeder legs too.
-        if _ap.get("active"):
+        if _ap.get("active") and disp["ds"].get("hits_enabled", True):
             _gl_polylines.extend(_approach_hits_polylines())
         _gl_polylines.extend(_approach_signpost_polylines())
         _appr_verts = build_approach_trace_vertices()
@@ -16849,7 +16865,7 @@ def render(surf, demo_mode, connected, data_stale=False):
         _next_verts = build_next_leg_trace_vertices()
         if _next_verts is not None and len(_next_verts) >= 2:
             _gl_polylines.append((_next_verts, _NEXT_LEG_COLOR, 3.0))
-        if _ap.get("active"):
+        if _ap.get("active") and disp["ds"].get("hits_enabled", True):
             _gl_polylines.extend(_approach_hits_polylines())
         _gl_polylines.extend(_approach_signpost_polylines())
         _appr_verts = build_approach_trace_vertices()
