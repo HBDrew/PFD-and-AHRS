@@ -833,6 +833,131 @@ def _draw_airspaces_cached(surf, rect, airspaces, airspace_visible, settings,
                                     cyp - id_surf.get_height() // 2))
 
 
+# ── Obstacle + airport symbols (cached) ─────────────────────────────────────
+# Both are static dots that used to re-project + re-draw every frame — the
+# obstacle loop is UNCAPPED, so a dense area paints hundreds of circles per
+# frame.  Bake both into one rotated raster keyed on the quantised view (same
+# trick as the airspace/border caches); airport LABELS stay out of the raster
+# (they'd rotate) and blit upright per frame, with the live Direct-To skip.
+_symbols_cache = {"key": None, "surf": None, "blat": 0.0, "blon": 0.0,
+                  "labels": []}
+
+
+def _draw_symbols_cached(surf, rect, obstacles_arr, airports_arr, settings,
+                         range_nm, lat, lon, alt_ft, cos_lat, cx, cy, px_per_nm,
+                         sin_r, cos_r, rot_deg, font, symbol_scale,
+                         airport_types_visible, direct_to, wx_active, fast):
+    show_obs = (settings.get("map_show_obstacles", True)
+                and obstacles_arr is not None and range_nm <= 10
+                and not wx_active)
+    show_apt = (settings.get("map_show_airports", True)
+                and airports_arr is not None and range_nm <= 40
+                and not wx_active)
+    if not show_obs and not show_apt:
+        return
+    x, y, w, h = rect
+
+    def _r(v):
+        return max(1, int(round(v * symbol_scale)))
+
+    apt_types_sig = (tuple(sorted(airport_types_visible))
+                     if airport_types_visible is not None else None)
+    qdeg = max(1e-6, 3.0 / max(0.01, px_per_nm) / _NM_PER_DEG_LAT)
+    qlat = round(lat / qdeg)
+    qlon = round(lon / (qdeg / cos_lat))
+    key = (qlat, qlon, round(range_nm, 1), round(rot_deg / 2.0),
+           show_obs, show_apt, apt_types_sig, round(symbol_scale, 2),
+           round(alt_ft / 100.0) if show_obs else 0, w, h)
+    c = _symbols_cache
+    if c["surf"] is None or (not fast and c["key"] != key):
+        bs = pygame.Surface((w, h), pygame.SRCALPHA)
+        lcx, lcy = cx - x, cy - y
+        labels = []
+
+        def _lproj(la, lo):
+            n_nm = (la - lat) * _NM_PER_DEG_LAT
+            e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+            e2 = e_nm * cos_r - n_nm * sin_r
+            n2 = e_nm * sin_r + n_nm * cos_r
+            return int(lcx + e2 * px_per_nm), int(lcy - n2 * px_per_nm)
+
+        if show_obs:
+            nearby = _obs_mod.query_nearby(obstacles_arr, lat, lon,
+                                           radius_nm=range_nm * 1.4,
+                                           alt_ft=alt_ft)
+            if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
+                for la, lo in zip(nearby["lat"], nearby["lon"]):
+                    ox, oy = _lproj(float(la), float(lo))
+                    pygame.draw.circle(bs, _OBS_COL, (ox, oy), 2)
+            else:
+                for o in nearby:
+                    ox, oy = _lproj(o.lat, o.lon)
+                    pygame.draw.circle(bs, _OBS_COL, (ox, oy), 2)
+
+        if show_apt:
+            nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
+                                           radius_nm=range_nm * 1.4)
+            if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
+                ids = nearby["ident"]; types = nearby["atype"]
+                lats = nearby["lat"]; lons = nearby["lon"]
+                drawn = 0
+                for i in range(len(nearby)):
+                    if drawn >= 60:               # MAX_AIRPORTS_DRAWN
+                        break
+                    atype = str(types[i])
+                    if (airport_types_visible is not None
+                            and atype not in airport_types_visible):
+                        continue
+                    ix, iy = _lproj(float(lats[i]), float(lons[i]))
+                    if atype == "H":
+                        pygame.draw.circle(bs, _APT_HELI, (ix, iy), _r(3))
+                    elif atype == "W":
+                        pygame.draw.circle(bs, _APT_WATER, (ix, iy), _r(3), 1)
+                    elif atype == "B":
+                        pygame.draw.circle(bs, _APT_OTHER, (ix, iy), _r(2))
+                    else:
+                        pygame.draw.circle(bs, _APT_PUB, (ix, iy),
+                                           _r(4) if atype in ("M", "L") else _r(3))
+                    ident_str = str(ids[i])
+                    if (font is not None
+                            and (range_nm <= 10
+                                 or (range_nm <= 20 and atype in ("M", "L")))):
+                        ck = (ident_str, id(font))
+                        lbl = _apt_label_cache.get(ck)
+                        if lbl is None:
+                            lbl = font.render(ident_str, True, _APT_PUB)
+                            _apt_label_cache[ck] = lbl
+                            if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
+                                _apt_label_cache.popitem(last=False)
+                        else:
+                            _apt_label_cache.move_to_end(ck)
+                        labels.append((float(lats[i]), float(lons[i]), lbl,
+                                       ident_str.strip().upper()))
+                    drawn += 1
+        c.update(key=key, surf=bs, blat=lat, blon=lon, labels=labels)
+    # Shift the cached raster by the screen-space centre movement since build.
+    e_nm = (c["blon"] - lon) * _NM_PER_DEG_LAT * cos_lat
+    n_nm = (c["blat"] - lat) * _NM_PER_DEG_LAT
+    dx = (e_nm * cos_r - n_nm * sin_r) * px_per_nm
+    dy = -(e_nm * sin_r + n_nm * cos_r) * px_per_nm
+    surf.blit(c["surf"], (x + dx, y + dy))
+    # Airport labels: upright, per frame, with the live Direct-To skip so the
+    # white loop label never doubles the magenta D2 label on the same field.
+    if font is not None and c["labels"]:
+        d2_ident = (str(direct_to.get("ident", "")).strip().upper()
+                    if direct_to and direct_to.get("ident") else "")
+        loff = _r(5) + 2
+        for la, lo, lbl, ident_up in c["labels"]:
+            if ident_up == d2_ident:
+                continue
+            n_nm = (la - lat) * _NM_PER_DEG_LAT
+            e_nm = (lo - lon) * _NM_PER_DEG_LAT * cos_lat
+            e2 = e_nm * cos_r - n_nm * sin_r
+            n2 = e_nm * sin_r + n_nm * cos_r
+            ix = int(cx + e2 * px_per_nm); iy = int(cy - n2 * px_per_nm)
+            surf.blit(lbl, (ix + loff, iy - 7))
+
+
 # ── NEXRAD reflectivity raster ──────────────────────────────────────────────
 _NEXRAD_ALPHA = 150
 _nexrad_scaled = {"seq": None, "w": 0, "h": 0, "surf": None}
@@ -1465,103 +1590,13 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             pygame.draw.line(surf, _RWY_COL,
                              (int(x1), int(y1)), (int(x2), int(y2)), w_px)
 
-    # ── Obstacles ────────────────────────────────────────────────────────────
-    # Match the SVT display convention: only show obstacles within
-    # 1000 ft below the aircraft (collision-risk window); obstacles
-    # above are always shown (they're a hazard).  The defaults in
-    # obstacles.query_nearby already encode that, so just pass alt_ft.
-    # Above 10 nm range, obstacle dots turn into useless speckle (and
-    # the pilot is too far away to care), so they're hidden regardless
-    # of the master toggle.
-    if (not fast and settings.get("map_show_obstacles", True)
-            and obstacles_arr is not None
-            and range_nm <= 10 and not wx_active):
-        nearby = _obs_mod.query_nearby(obstacles_arr, lat, lon,
-                                       radius_nm=range_nm * 1.4,
-                                       alt_ft=alt_ft)
-        if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
-            for la, lo in zip(nearby["lat"], nearby["lon"]):
-                ox, oy = _project(float(la), float(lo))
-                pygame.draw.circle(surf, _OBS_COL, (int(ox), int(oy)), 2)
-        else:
-            for o in nearby:
-                ox, oy = _project(o.lat, o.lon)
-                pygame.draw.circle(surf, _OBS_COL, (int(ox), int(oy)), 2)
-
-    # ── Airports ─────────────────────────────────────────────────────────────
-    # Per-type filtering matches the main PFD: caller passes a set of
-    # visible atype letters (S/M/L = public, H = helo, W = water, B = other).
-    # Default ``None`` = show every type the master toggle covers.
-    # Above 40 nm the airport dots smear into noise — the destination is
-    # still marked by the D2 waypoint diamond drawn below, which is what
-    # the pilot actually cares about at whole-leg scale.
-    # When the MET (or NEXRAD) overlay is active the page becomes a dedicated
-    # weather picture — drop the airport dots/labels so the flight-category
-    # METAR dots aren't fighting the white airport symbols for the same pixels.
-    # (Off the overlay, both draw: white airports + always-on METAR dots.)
-    MAX_AIRPORTS_DRAWN = 60
-    if (not fast and settings.get("map_show_airports", True)
-            and not wx_active
-            and airports_arr is not None and range_nm <= 40):
-        # When a field is the active Direct-To, its magenta D2 label is drawn
-        # below — skip the white airport-loop label for it so the two don't
-        # stack into doubled text on the same dot.
-        _d2_ident = (str(direct_to.get("ident", "")).strip().upper()
-                     if direct_to and direct_to.get("ident") else "")
-        nearby = _apt_mod.query_nearby(airports_arr, lat, lon,
-                                       radius_nm=range_nm * 1.4)
-        if HAS_NUMPY and hasattr(nearby, "dtype") and len(nearby) > 0:
-            ids   = nearby["ident"]
-            types = nearby["atype"]
-            lats  = nearby["lat"]
-            lons  = nearby["lon"]
-
-            def _r(v):    # scale dot radius for the big full-screen MFD
-                return max(1, int(round(v * symbol_scale)))
-            # query_nearby returns nearest-first, so the cap drops the farthest
-            # fields — bounds the worst case in dense metros without thinning the
-            # richer set the big screen is meant to show.  More generous than
-            # piZ's 40 (more pixels to fill).
-            drawn = 0
-            for i in range(len(nearby)):
-                if drawn >= MAX_AIRPORTS_DRAWN:
-                    break
-                atype = str(types[i])
-                if (airport_types_visible is not None
-                        and atype not in airport_types_visible):
-                    continue
-                ax2, ay2 = _project(float(lats[i]), float(lons[i]))
-                ix, iy = int(ax2), int(ay2)
-                if atype == "H":
-                    pygame.draw.circle(surf, _APT_HELI, (ix, iy), _r(3))
-                elif atype == "W":
-                    pygame.draw.circle(surf, _APT_WATER, (ix, iy), _r(3), 1)
-                elif atype == "B":
-                    pygame.draw.circle(surf, _APT_OTHER, (ix, iy), _r(2))
-                else:
-                    pygame.draw.circle(surf, _APT_PUB, (ix, iy),
-                                       _r(4) if atype in ("M", "L") else _r(3))
-                # Dots show to 40 nm (the big MFD has the room).  Labels: all
-                # types within 10 nm; only M/L out to 20 nm so the wider view
-                # stays readable without hiding the dots themselves.  Rendered
-                # idents are cached (font.render is a real cost repeated every
-                # frame for the same fields while parked over an area).
-                ident_str = str(ids[i])
-                if (font is not None
-                        and ident_str.strip().upper() != _d2_ident
-                        and (range_nm <= 10
-                             or (range_nm <= 20 and atype in ("M", "L")))):
-                    cache_key = (ident_str, id(font))
-                    lbl = _apt_label_cache.get(cache_key)
-                    if lbl is None:
-                        lbl = font.render(ident_str, True, _APT_PUB)
-                        _apt_label_cache[cache_key] = lbl
-                        if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
-                            _apt_label_cache.popitem(last=False)
-                    else:
-                        _apt_label_cache.move_to_end(cache_key)
-                    surf.blit(lbl, (ix + _r(5) + 2, iy - 7))
-                drawn += 1
+    # ── Obstacle + airport symbols (cached — see _draw_symbols_cached) ───────
+    # Obstacles only ≤10 nm, airports ≤40 nm; both static dots, so they're
+    # baked into one rotated raster keyed on the view and blitted per frame.
+    _draw_symbols_cached(surf, rect, obstacles_arr, airports_arr, settings,
+                         range_nm, lat, lon, alt_ft, cos_lat, cx, cy, px_per_nm,
+                         sin_r, cos_r, rot_deg, font, symbol_scale,
+                         airport_types_visible, direct_to, wx_active, fast)
 
     # ── Direct-to / approach course line + waypoint diamond ─────────────────
     # Two distinct line shapes:
