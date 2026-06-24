@@ -914,6 +914,8 @@ def _fpl_deactivate():
     disp["nav"]["lat"]     = 0.0
     disp["nav"]["lon"]     = 0.0
     disp["nav"]["elev_ft"] = 0.0
+    # Cancelling the plan drops the approach (and its fixes/HITS/sign-posts).
+    disp["approach"] = {"loaded": False}
     _ssync_publish_fpl()
 
 
@@ -1168,47 +1170,53 @@ _appr_signpost_cache = {"key": None, "polylines": [], "labels": []}
 def _approach_signpost_refresh():
     ap = disp.get("approach") or {}
     key = (ap.get("airport"), ap.get("procedure"), ap.get("transition"),
-           bool(ap.get("loaded")), len(ap.get("legs") or []),
+           bool(ap.get("loaded")), bool(ap.get("active")),
+           len(ap.get("legs") or []),
            ap.get("thresh_lat"), ap.get("thresh_lon"))
     if _appr_signpost_cache["key"] == key:
         return
     _appr_signpost_cache["key"] = key
     polylines = []
     labels = []
-    path = _approach_hits_path()           # [(la, lo, alt)…] w/ interpolated alts
-    legs = ap.get("legs") or []
-    if path and len(path) == len(legs):
-        course = float(ap.get("course_deg", 0.0))
-        perp_rad = math.radians((course + 90.0) % 360.0)
-        sin_p, cos_p = math.sin(perp_rad), math.cos(perp_rad)
-        half = _SIGNPOST_SIDE_FT / 2.0
-        dpf_lat = 1.0 / (60.0 * 6076.12)   # degrees latitude per foot
-        for (la, lo, alt), leg in zip(path, legs):
-            ident = str(leg[2] or "").strip()
-            if not ident:
-                continue
-            cos_lat = max(1e-6, math.cos(math.radians(la)))
-            dpf_lon = dpf_lat / cos_lat
-            dlat = cos_p * half * dpf_lat
-            dlon = sin_p * half * dpf_lon
-            top, bot = alt + half, alt - half
-            # Square box in the vertical plane perpendicular to the final
-            # course, centred on the crossing altitude (TL→TR→BR→BL→TL).
-            tl = (la + dlat, lo + dlon, top)
-            tr = (la - dlat, lo - dlon, top)
-            br = (la - dlat, lo - dlon, bot)
-            bl = (la + dlat, lo + dlon, bot)
-            polylines.append(([tl, tr, br, bl, tl], _SIGNPOST_COLOR, 2.0))
-            # Vertical post from the box bottom down to the terrain.
-            try:
-                gelev = get_elevation_ft(SRTM_DIR, la, lo)
-                if gelev is None or gelev < -100:
-                    gelev = bot
-            except Exception:
-                gelev = bot
-            polylines.append(([(la, lo, bot), (la, lo, gelev)],
-                              _SIGNPOST_COLOR, 2.0))
-            labels.append((la, lo, alt, ident, int(round(alt))))
+    # Only while an approach is actually loaded/active — so a new D2 or a
+    # cancelled plan (both drop these flags) clears the sign-posts even though
+    # the leg list may not have been wiped yet.
+    if ap.get("loaded") or ap.get("active"):
+        path = _approach_hits_path()       # [(la, lo, alt)…] interpolated alts
+        legs = ap.get("legs") or []
+        if path and len(path) == len(legs):
+            course = float(ap.get("course_deg", 0.0))
+            perp_rad = math.radians((course + 90.0) % 360.0)
+            sin_p, cos_p = math.sin(perp_rad), math.cos(perp_rad)
+            half = _SIGNPOST_SIDE_FT / 2.0
+            dpf_lat = 1.0 / (60.0 * 6076.12)   # degrees latitude per foot
+            for (la, lo, alt), leg in zip(path, legs):
+                ident = str(leg[2] or "").strip()
+                if not ident:
+                    continue
+                cos_lat = max(1e-6, math.cos(math.radians(la)))
+                dpf_lon = dpf_lat / cos_lat
+                dlat = cos_p * half * dpf_lat
+                dlon = sin_p * half * dpf_lon
+                # Diamond in the vertical plane perpendicular to the final
+                # course, centred on the crossing altitude (top→right→bottom→
+                # left→top).
+                top_pt = (la, lo, alt + half)
+                rt_pt  = (la - dlat, lo - dlon, alt)
+                bot_pt = (la, lo, alt - half)
+                lf_pt  = (la + dlat, lo + dlon, alt)
+                polylines.append(([top_pt, rt_pt, bot_pt, lf_pt, top_pt],
+                                  _SIGNPOST_COLOR, 2.0))
+                # Vertical post from the diamond's bottom point to the terrain.
+                try:
+                    gelev = get_elevation_ft(SRTM_DIR, la, lo)
+                    if gelev is None or gelev < -100:
+                        gelev = alt - half
+                except Exception:
+                    gelev = alt - half
+                polylines.append(([(la, lo, alt - half), (la, lo, gelev)],
+                                  _SIGNPOST_COLOR, 2.0))
+                labels.append((la, lo, alt, ident, int(round(alt))))
     _appr_signpost_cache["polylines"] = polylines
     _appr_signpost_cache["labels"] = labels
 
@@ -1227,6 +1235,15 @@ def _draw_approach_signpost_labels(surf, ai_rect, lat, lon, alt_ft,
     data = _appr_signpost_cache["labels"]
     if not data:
         return
+    # Label ONLY the next fix being flown to (the active approach leg) — a label
+    # at every fix cluttered the midpoint.
+    ap = disp.get("approach") or {}
+    legs = ap.get("legs") or []
+    li = int(ap.get("leg_idx", 0))
+    next_ident = (str(legs[li][2] or "").strip().upper()
+                  if 0 <= li < len(legs) else "")
+    if not next_ident:
+        return
     ax, ay_r, aw, ah = ai_rect
     cx_ai = ax + aw // 2
     cy_ai = ay_r + ah // 2
@@ -1234,14 +1251,17 @@ def _draw_approach_signpost_labels(surf, ai_rect, lat, lon, alt_ft,
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
     for fla, flo, falt, ident, ialt in data:
+        if str(ident).strip().upper() != next_ident:
+            continue
         pt = _project_latlon(float(fla), float(flo), lat, lon, alt_ft,
                              float(falt), hdg, pitch, roll, cx_ai, cy_ai,
                              px_per_deg, max_fov_deg=None, ground_only=False)
-        if pt is None:
-            continue
-        sx, sy = int(pt[0]), int(pt[1])
-        _text(surf, ident, 13, (255, 200, 0), bold=True, x=sx + 8, y=sy - 16)
-        _text(surf, f"{ialt:,}", 12, (255, 200, 0), x=sx + 8, y=sy - 1)
+        if pt is not None:
+            sx, sy = int(pt[0]), int(pt[1])
+            # Above and right of the diamond so it doesn't sit on the box.
+            _text(surf, ident, 13, (255, 200, 0), bold=True, x=sx + 14, y=sy - 34)
+            _text(surf, f"{ialt:,}", 12, (255, 200, 0), x=sx + 14, y=sy - 20)
+        break
     surf.set_clip(old_clip)
 
 
@@ -4742,7 +4762,10 @@ def sim_setup_hit(x, y):
 _SIM_EXIT_W = 88
 _SIM_EXIT_H = 32
 _SIM_EXIT_X = CX - _SIM_EXIT_W // 2
-_SIM_EXIT_Y = CY - 36 - _SIM_EXIT_H
+# Just under the slip/skid bar at the top of the AI (slip bar sits at
+# ROLL_CY - ROLL_R + 24) — keeps the badge out of the approach corridor in the
+# centre of the screen.  Tapping it still opens the (lower) sim-controls panel.
+_SIM_EXIT_Y = ROLL_CY - ROLL_R + 30
 
 
 # ── Sim controls overlay ─────────────────────────────────────────────────────
@@ -4970,10 +4993,11 @@ def _nav_confirm_apply():
     ident = disp.get("nav_confirm_ident", "")
     if ident:
         _nav_set_by_ident(ident)
-        ap = disp.get("approach")
-        if ap and (ap.get("active") or ap.get("loaded")):
-            ap["active"] = False
-            ap["loaded"] = False
+        # Pilot is explicitly choosing a new D2 — drop any loaded/active
+        # approach ENTIRELY (legs, threshold, course), not just its flags, so
+        # the HITS corridor, sign-posts and CDI label/colour all clear instead
+        # of lingering on stale approach data.
+        disp["approach"] = {"loaded": False}
     disp["nav_confirm_ident"] = ""
     disp["mode"] = disp.get("nav_confirm_prev", "pfd")
 
@@ -16704,9 +16728,12 @@ def render(surf, demo_mode, connected, data_stale=False):
                     (220 / 255.0, 0.0, 220 / 255.0, 1.0),
                     3.0,
                 ))
-            _next_verts = build_next_leg_trace_vertices()
-            if _next_verts is not None and len(_next_verts) >= 2:
-                _gl_polylines.append((_next_verts, _NEXT_LEG_COLOR, 3.0))
+        # Next FPL leg (faded magenta) — independent of the final-approach
+        # centreline gate, so it still shows while flying the approach.  Needs
+        # an active multi-leg flight plan; absent on a plain single-point D2.
+        _next_verts = build_next_leg_trace_vertices()
+        if _next_verts is not None and len(_next_verts) >= 2:
+            _gl_polylines.append((_next_verts, _NEXT_LEG_COLOR, 3.0))
         # HITS boxes — cyan rectangles along the extended centreline at 3°
         # glideslope whenever an approach is active (any leg), so the corridor
         # into the runway is visible ahead while you fly the feeder legs too.
@@ -16744,9 +16771,12 @@ def render(surf, demo_mode, connected, data_stale=False):
                     (220 / 255.0, 0.0, 220 / 255.0, 1.0),
                     3.0,
                 ))
-            _next_verts = build_next_leg_trace_vertices()
-            if _next_verts is not None and len(_next_verts) >= 2:
-                _gl_polylines.append((_next_verts, _NEXT_LEG_COLOR, 3.0))
+        # Next FPL leg (faded magenta) — independent of the final-approach
+        # centreline gate, so it still shows while flying the approach.  Needs
+        # an active multi-leg flight plan; absent on a plain single-point D2.
+        _next_verts = build_next_leg_trace_vertices()
+        if _next_verts is not None and len(_next_verts) >= 2:
+            _gl_polylines.append((_next_verts, _NEXT_LEG_COLOR, 3.0))
         if _ap.get("active"):
             _gl_polylines.extend(_approach_hits_polylines())
         _gl_polylines.extend(_approach_signpost_polylines())
