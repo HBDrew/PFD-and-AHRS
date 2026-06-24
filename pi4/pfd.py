@@ -12818,6 +12818,75 @@ def _build_direct_to_trace_async(key, wpt_elev):
                 _direct_to_trace_cache_arr = arr
 
 
+# ── Full approach course trace (magenta, all legs) ──────────────────────────
+# The whole approach drawn as a magenta course line on the PFD (like the FPL
+# legs), in addition to the cyan HITS corridor.  Terrain-draped along every
+# approach leg (IAF → threshold), bright magenta, built on a daemon thread so
+# the SRTM sampling never hitches the render loop; rebuilt only when the loaded
+# approach changes.
+_APPR_TRACE_COLOR = (220 / 255.0, 0.0, 220 / 255.0, 1.0)   # bright magenta
+_appr_trace_cache = {"key": None, "arr": None}
+_appr_trace_thread = None
+
+
+def _build_approach_trace_async(key):
+    global _appr_trace_cache
+    legs = list(key)
+    out = []
+    for (a_lat, a_lon), (b_lat, b_lon) in zip(legs[:-1], legs[1:]):
+        if _appr_trace_cache["key"] != key:
+            return                      # approach changed mid-build — drop it
+        dist_nm, _ = _nav_geo_dist_brg(a_lat, a_lon, b_lat, b_lon)
+        n = max(2, min(80, int(dist_nm / 0.4)))
+        for i in range(n + 1):
+            if i == 0 and out:
+                continue                # skip the shared vertex at a leg join
+            t = i / n
+            s_lat, s_lon = _nav_gc_interp(a_lat, a_lon, b_lat, b_lon, t)
+            try:
+                e = get_elevation_ft(SRTM_DIR, s_lat, s_lon)
+                if e is None or e < -100:
+                    e = 0.0
+            except Exception:
+                e = 0.0
+            out.append((s_lat, s_lon, e + _DIRECT_TO_DRAPE_OFFSET_FT))
+    if len(out) < 2:
+        return
+    try:
+        import numpy as _np
+        arr = _np.array(out, dtype=_np.float32)
+    except Exception:
+        arr = out
+    if _appr_trace_cache["key"] == key:
+        _appr_trace_cache["arr"] = arr
+
+
+def build_approach_trace_vertices():
+    """Cached terrain-draped magenta trace along the whole loaded approach, or
+    None when no approach is loaded/active.  Starts a worker on a change."""
+    global _appr_trace_thread
+    ap = disp.get("approach") or {}
+    if not (ap.get("loaded") or ap.get("active")):
+        _appr_trace_cache["key"] = None
+        _appr_trace_cache["arr"] = None
+        return None
+    legs = ap.get("legs") or []
+    if len(legs) < 2:
+        _appr_trace_cache["key"] = None
+        _appr_trace_cache["arr"] = None
+        return None
+    key = tuple((float(l[0]), float(l[1])) for l in legs)
+    if key == _appr_trace_cache["key"]:
+        return _appr_trace_cache["arr"]
+    _appr_trace_cache["key"] = key
+    _appr_trace_cache["arr"] = None
+    _appr_trace_thread = threading.Thread(
+        target=_build_approach_trace_async, args=(key,), daemon=True,
+        name="approach-trace")
+    _appr_trace_thread.start()
+    return None
+
+
 # ── Next-leg trace (faded magenta, matches the MFD) ─────────────────────────
 # The PFD already draws the ACTIVE leg as a bright-magenta terrain-following
 # trace.  This adds the NEXT leg (active waypoint → the one after it) as a
@@ -16740,6 +16809,9 @@ def render(surf, demo_mode, connected, data_stale=False):
         if _ap.get("active"):
             _gl_polylines.extend(_approach_hits_polylines())
         _gl_polylines.extend(_approach_signpost_polylines())
+        _appr_verts = build_approach_trace_vertices()
+        if _appr_verts is not None and len(_appr_verts) >= 2:
+            _gl_polylines.append((_appr_verts, _APPR_TRACE_COLOR, 3.0))
         render_svt_into_current_fb(
             _shared_gl_ctx, SRTM_DIR,
             DISPLAY_W, HDG_Y,
@@ -16780,6 +16852,9 @@ def render(surf, demo_mode, connected, data_stale=False):
         if _ap.get("active"):
             _gl_polylines.extend(_approach_hits_polylines())
         _gl_polylines.extend(_approach_signpost_polylines())
+        _appr_verts = build_approach_trace_vertices()
+        if _appr_verts is not None and len(_appr_verts) >= 2:
+            _gl_polylines.append((_appr_verts, _APPR_TRACE_COLOR, 3.0))
         draw_ai_background(surf, _full_ai, pitch, roll, hdg, alt_render,
                            lat, lon, polylines=_gl_polylines)
     else:
