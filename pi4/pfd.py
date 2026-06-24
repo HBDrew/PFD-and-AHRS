@@ -8554,13 +8554,26 @@ def _approach_centerline_active():
                 and ap.get("airport") and nv.get("ident") == ap.get("airport"))
 
 
+_APPR_FLYBY_BANK_DEG = 18.0    # nominal bank used to size the turn-anticipation
+
+
 def _approach_check_advance(lat, lon):
-    """Per-frame: sequence to the next approach leg only once the aircraft has
-    CROSSED (flown over) the active fix — fly-over, not fly-by — so it doesn't
-    cut the corner and jump the vertical profile to the next segment early.
-    Passage is the aircraft crossing the plane perpendicular to the inbound
-    course at the fix (the bearing fix→aircraft falls within 90° of the inbound
-    course).  Holds on the final leg (the centreline CDI + HITS/VDI fly it in)."""
+    """Per-frame approach leg sequencing — FLY-BY by default.
+
+    Real procedures mark only a few fixes fly-OVER (the MAP, the odd charted
+    one); the rest are fly-BY: lead the turn and sequence early so the aircraft
+    rolls out established on the next segment instead of overflying the fix and
+    S-turning back onto course.  Our nav data carries no fly-over flag, so per
+    the convention everything intermediate is fly-by.  (The MAP IS fly-over but
+    it's the final leg, which this function never sequences — the centreline
+    CDI/HITS/VDI fly it to the threshold.)
+
+    Sequence when the aircraft is within the turn-anticipation lead distance of
+    the fix — the standard R·tan(Δ/2), R = V²/(g·tanφ) from groundspeed at a
+    nominal bank, Δ the leg-to-leg turn angle — bounded so a near-straight leg
+    still just crosses the fix.  Vertical guidance is distance-to-threshold
+    based (`_approach_target_alt`), NOT leg-index based, so sequencing the
+    LATERAL leg early does not advance the step-down profile early."""
     ap = disp.get("approach") or {}
     if not (ap.get("active") and ap.get("published") and not ap.get("missed")):
         return
@@ -8569,16 +8582,25 @@ def _approach_check_advance(lat, lon):
     if idx >= len(legs) - 1:
         return
     la, lo, _ident, _lt, _alt, _at = legs[idx]
-    # Inbound course to this fix: from the previous fix, or the aircraft on the
-    # first leg.  Crossed when the fix is now behind the perpendicular at it.
+    # Inbound course to this fix (from the previous fix, or the aircraft on the
+    # first leg) and outbound course to the next fix → the turn angle.
     if idx > 0:
         pla, plo = float(legs[idx - 1][0]), float(legs[idx - 1][1])
     else:
         pla, plo = lat, lon
     _d, course_in = _nav_geo_dist_brg(pla, plo, la, lo)
+    nla, nlo = float(legs[idx + 1][0]), float(legs[idx + 1][1])
+    _dn, course_out = _nav_geo_dist_brg(la, lo, nla, nlo)
+    turn = abs(((course_out - course_in + 180.0) % 360.0) - 180.0)
+    # Turn-anticipation lead distance.
+    gs = max(20.0, float(disp.get("speed", 0.0)))
+    v_fps = gs * 1.6878
+    R_ft = v_fps * v_fps / (32.174 * math.tan(math.radians(_APPR_FLYBY_BANK_DEG)))
+    lead_ft = R_ft * math.tan(math.radians(min(turn, 170.0) / 2.0))
+    lead_nm = max(0.10, min(2.0, lead_ft / 6076.12))
     dist_nm, brg_fix_ac = _nav_geo_dist_brg(la, lo, lat, lon)
     ahead = abs(((brg_fix_ac - course_in + 180.0) % 360.0) - 180.0) < 90.0
-    if ahead or dist_nm < 0.10:          # crossed the fix (or dead over it)
+    if dist_nm <= lead_nm or ahead:      # within the turn lead, or crossed
         ap["leg_idx"] = idx + 1
         _approach_apply_leg()
         _ssync_publish_approach()    # propagate the sequenced leg to peers
