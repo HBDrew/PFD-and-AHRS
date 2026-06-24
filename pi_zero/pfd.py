@@ -668,6 +668,9 @@ def _ssync_publish_gps():
         "ias_kt":      float(disp.get("ias_kt", 0.0)),
         "tas_kt":      float(disp.get("tas_kt", 0.0)),
         "airdata_ok":  bool(disp.get("airdata_ok", False)),
+        # Wind solution (firmware) so a shadow screen shows it on the strip.
+        "wind_dir":    float(disp.get("wind_dir", 0.0)),
+        "wind_kt":     float(disp.get("wind_kt", 0.0)),
     })
 
 
@@ -695,6 +698,9 @@ def _ssync_apply_gps(data):
                 state["baro_ok"] = bool(data["baro_ok"])
             if "airdata_ok" in data:
                 state["airdata_ok"] = bool(data["airdata_ok"])
+            for k in ("wind_dir", "wind_kt"):
+                if k in data:
+                    state[k] = float(data[k])
     finally:
         _ssync_suppress_publish -= 1
 
@@ -1304,6 +1310,7 @@ def smooth_state():
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
               "ahrs_ok", "gps_ok", "gps_comm", "baro_ok", "airdata_ok",
+              "wind_dir", "wind_kt",
               "pitch_trim", "roll_trim", "yaw_trim", "fw_ver"):
         if k in snap:
             disp[k] = snap[k]
@@ -10804,6 +10811,38 @@ def _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2):
     return ctx
 
 
+def _strip_wind(ctx):
+    """(from_deg, speed_kt) for the WIND strip field, or None when there's no
+    usable wind (on the ground / no IAS / no GPS track).
+
+    Source ladder: prefer a firmware- or peer-provided solution (disp
+    wind_dir/wind_kt — best when an OAT sensor feeds density-corrected TAS, and
+    how a piZ shadow gets the source screen's wind over sync); otherwise
+    compute it here from IAS + pressure-altitude ISA-TAS and the GPS
+    track/heading triangle, so it still reads without an OAT sensor."""
+    wd = disp.get("wind_dir", 0.0) or 0.0
+    wk = disp.get("wind_kt", 0.0) or 0.0
+    if wk > 0.0:
+        return (wd % 360.0, wk)
+    ias = ctx.get("ias", 0.0)
+    gs  = ctx.get("gs_kt", 0.0)
+    if ias <= 0.0 or gs < HDG_TRK_MIN_KT:
+        return None
+    # ISA TAS from IAS + pressure altitude (no OAT): σ = (1 − 6.8756e-6·h)^4.2559.
+    h = max(0.0, ctx.get("alt", 0.0))
+    sigma = (1.0 - 6.8756e-6 * h) ** 4.2559
+    tas = ias / math.sqrt(sigma) if sigma > 0.0 else ias
+    hd = math.radians(ctx.get("hdg", 0.0))
+    tk = math.radians(ctx.get("track", 0.0))
+    wn = gs * math.cos(tk) - tas * math.cos(hd)
+    we = gs * math.sin(tk) - tas * math.sin(hd)
+    spd = math.hypot(wn, we)
+    if spd < 1.0:
+        return None
+    frm = (math.degrees(math.atan2(we, wn)) + 180.0) % 360.0
+    return (frm, spd)
+
+
 def _mfd_strip_format(kind, ctx):
     """Returns (caption, value_str, color) for a single strip slot.
 
@@ -10849,7 +10888,11 @@ def _mfd_strip_format(kind, ctx):
     if kind == "pa":
         return ("PA", "----", (140, 140, 140))
     if kind == "wind":
-        return ("WIND", "---/--", (140, 140, 140))
+        w = _strip_wind(ctx)
+        if w is None:
+            return ("WIND", "---/--", (140, 140, 140))
+        return ("WIND", f"{int(round(w[0])) % 360:03d}/{int(round(w[1])):02d}",
+                WHITE)
     if kind == "time":
         return ("UTC", time.strftime("%H:%MZ", time.gmtime()), WHITE)
     if kind == "baro":

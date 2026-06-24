@@ -854,6 +854,9 @@ def _ssync_publish_gps():
         "ias_kt":      float(disp.get("ias_kt", 0.0)),
         "tas_kt":      float(disp.get("tas_kt", 0.0)),
         "airdata_ok":  bool(disp.get("airdata_ok", False)),
+        # Wind solution (firmware/sim) so a shadow screen shows it on the strip.
+        "wind_dir":    float(disp.get("wind_dir", 0.0)),
+        "wind_kt":     float(disp.get("wind_kt", 0.0)),
     })
 
 
@@ -1702,6 +1705,9 @@ def _ssync_apply_gps(data):
                 state["baro_ok"] = bool(data["baro_ok"])
             if "airdata_ok" in data:
                 state["airdata_ok"] = bool(data["airdata_ok"])
+            for k in ("wind_dir", "wind_kt"):
+                if k in data:
+                    state[k] = float(data[k])
     finally:
         _ssync_suppress_publish -= 1
 
@@ -2300,6 +2306,7 @@ def smooth_state():
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
               "ahrs_ok", "gps_ok", "gps_comm", "baro_ok", "airdata_ok",
+              "wind_dir", "wind_kt",
               "ahrs_aligning",
               "pitch_trim", "roll_trim", "yaw_trim",
               "orientation", "mounting", "pitch_align", "roll_align",
@@ -4599,6 +4606,10 @@ class SimFlyState:
             gnd_e_kt  = ac_e_kt + wind_e_kt
             gs_kt     = math.hypot(gnd_n_kt, gnd_e_kt)
             track_deg = math.degrees(math.atan2(gnd_e_kt, gnd_n_kt)) % 360.0
+            # Expose the simulated wind so the WIND strip field populates in sim
+            # (meteorological "from" convention, knots).
+            state["wind_dir"] = SIM_WIND_FROM_DEG
+            state["wind_kt"]  = SIM_WIND_KT
 
             nm_s           = gs_kt / 3600.0
             track_rad      = math.radians(track_deg)
@@ -13975,6 +13986,41 @@ def _mfd_strip_ctx(lat, lon, alt, hdg, track, gs_kt, d2):
     return ctx
 
 
+def _strip_wind(ctx):
+    """(from_deg, speed_kt) for the WIND strip field, or None when there's no
+    usable wind (on the ground / no IAS / no GPS track).
+
+    Source ladder: prefer a firmware- or sim-provided solution (disp
+    wind_dir/wind_kt — best when an OAT sensor feeds density-corrected TAS);
+    otherwise compute it on the display from IAS + pressure-altitude ISA-TAS
+    and the GPS track/heading triangle, so it still reads without an OAT
+    sensor (TAS just assumes standard temperature for the current altitude)."""
+    wd = disp.get("wind_dir", 0.0) or 0.0
+    wk = disp.get("wind_kt", 0.0) or 0.0
+    if wk > 0.0:
+        return (wd % 360.0, wk)
+    # Display-side fallback — needs live IAS and a valid GPS track (in flight).
+    ias = ctx.get("ias", 0.0)
+    gs  = ctx.get("gs_kt", 0.0)
+    if ias <= 0.0 or gs < HDG_TRK_MIN_KT:
+        return None
+    # ISA true airspeed from IAS + pressure altitude (no OAT needed): the
+    # standard-atmosphere density ratio σ = (1 − 6.8756e-6·h_ft)^4.2559;
+    # TAS = IAS / √σ.
+    h = max(0.0, ctx.get("alt", 0.0))
+    sigma = (1.0 - 6.8756e-6 * h) ** 4.2559
+    tas = ias / math.sqrt(sigma) if sigma > 0.0 else ias
+    hd = math.radians(ctx.get("hdg", 0.0))
+    tk = math.radians(ctx.get("track", 0.0))
+    wn = gs * math.cos(tk) - tas * math.cos(hd)
+    we = gs * math.sin(tk) - tas * math.sin(hd)
+    spd = math.hypot(wn, we)
+    if spd < 1.0:                       # sub-knot → call it calm, show nothing
+        return None
+    frm = (math.degrees(math.atan2(we, wn)) + 180.0) % 360.0
+    return (frm, spd)
+
+
 def _mfd_strip_format(kind, ctx):
     d2 = ctx.get("d2")
     gs_kt = ctx["gs_kt"]
@@ -14001,8 +14047,8 @@ def _mfd_strip_format(kind, ctx):
         return ("AGL", f"{int(round(v / 10.0) * 10):5d}", WHITE)
     if kind == "vs":
         return ("VS", f"{int(round(ctx['vs'])):+5d}", WHITE)
-    # OAT / DA / PA / WIND — placeholders (parity with pi_zero; no sensor wiring
-    # yet).  Shown dim so they read as "available but no data".
+    # OAT / DA / PA — placeholders (parity with pi_zero; no sensor wiring yet).
+    # Shown dim so they read as "available but no data".
     if kind == "oat":
         return ("OAT", "--", (140, 140, 140))
     if kind == "da":
@@ -14010,7 +14056,11 @@ def _mfd_strip_format(kind, ctx):
     if kind == "pa":
         return ("PA", "----", (140, 140, 140))
     if kind == "wind":
-        return ("WIND", "---/--", (140, 140, 140))
+        w = _strip_wind(ctx)
+        if w is None:
+            return ("WIND", "---/--", (140, 140, 140))
+        return ("WIND", f"{int(round(w[0])) % 360:03d}/{int(round(w[1])):02d}",
+                WHITE)
     if kind == "time":
         return ("UTC", time.strftime("%H:%MZ", time.gmtime()), WHITE)
     if kind == "baro":
