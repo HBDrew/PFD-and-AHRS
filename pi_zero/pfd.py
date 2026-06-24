@@ -95,7 +95,7 @@ state = {
     "alt": 0.0, "gps_alt": 0.0, "vspeed": 0.0,
     "baro_src": "gps", "baro_hpa": BARO_DEFAULT_HPA,
     "pitch_trim": 0.0, "roll_trim": 0.0, "yaw_trim": 0.0,
-    "ahrs_ok": False, "gps_ok": False, "baro_ok": False,
+    "ahrs_ok": False, "gps_ok": False, "gps_comm": False, "baro_ok": False,
 }
 
 # ── Display values (smoothed) ─────────────────────────────────────────────────
@@ -644,6 +644,11 @@ def _ssync_publish_gps():
         "speed":       float(disp.get("speed", 0.0)),
         "track":       float(disp.get("track", 0.0)),
         "gps_ok":      bool(disp.get("gps_ok", False)),
+        # gps_comm = GPS hardware responding (NMEA flowing) even with no fix.
+        # A shadowing screen needs this to tell "acquiring" (amber NO FIX) from
+        # "dead" (red NO SIGNAL): without it a peer with a live GPS but no
+        # satellite lock (e.g. indoors) reads as total failure.
+        "gps_comm":    bool(disp.get("gps_comm", False)),
         "fix":         int(disp.get("fix", 0)),
         "sats":        int(disp.get("sats", 0)),
         # Altitude / vertical
@@ -670,6 +675,8 @@ def _ssync_apply_gps(data):
                     state[k] = float(data[k])
             if "gps_ok" in data:
                 state["gps_ok"] = bool(data["gps_ok"])
+            if "gps_comm" in data:
+                state["gps_comm"] = bool(data["gps_comm"])
             if "fix" in data:
                 state["fix"] = int(data["fix"])
             if "sats" in data:
@@ -1203,7 +1210,7 @@ def smooth_state():
     # whenever the SSE stream carried a stale QNH echo back from the firmware.
     for k in ("lat", "lon", "track", "fix", "sats",
               "gps_alt", "baro_src",
-              "ahrs_ok", "gps_ok", "baro_ok", "airdata_ok",
+              "ahrs_ok", "gps_ok", "gps_comm", "baro_ok", "airdata_ok",
               "pitch_trim", "roll_trim", "yaw_trim", "fw_ver"):
         if k in snap:
             disp[k] = snap[k]
