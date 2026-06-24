@@ -5542,6 +5542,11 @@ _active_fingers = {}     # finger_id → touch-down time (ms)
 _multitouch_t0  = None   # time when 2nd finger touched down
 _multitouch_max_fingers = 0  # peak finger count this gesture — 2 = setup,
                              # 3 = PFD↔MFD swap (same scheme as pi_zero)
+# Set when a 2/3-finger gesture FIRES (enter setup / swap MFD); blocks taps
+# until every finger of that gesture has lifted, so the finger-lift (or SDL
+# re-synthesising the mouse as a finger leaves) doesn't land as a tap on
+# whatever's now under the finger on the freshly-opened screen.
+_gesture_tap_lockout = False
 
 # Moving-map inset state.  _last_map_rect is updated each frame by the
 # render loop so the touch handler can hit-test against it for the
@@ -5594,6 +5599,7 @@ def _open_numpad(target):
 
 def handle_event(event, demo_mode):
     global _bug_dragging, _active_fingers, _multitouch_t0, _sim_state
+    global _gesture_tap_lockout
     global _multitouch_max_fingers
 
     if event.type == pygame.QUIT:
@@ -5668,6 +5674,8 @@ def handle_event(event, demo_mode):
         if len(_active_fingers) < 2:        # ghost(s) cleared → resync gesture
             _multitouch_t0 = None
             _multitouch_max_fingers = 0
+        if not _active_fingers:             # a genuinely fresh touch → the
+            _gesture_tap_lockout = False    # gesture fingers are gone; accept taps
         _active_fingers[event.finger_id] = _now_ms
         if len(_active_fingers) >= 2 and _multitouch_t0 is None:
             _multitouch_t0 = _now_ms
@@ -5679,6 +5687,8 @@ def handle_event(event, demo_mode):
         if len(_active_fingers) < 2:
             _multitouch_t0 = None
             _multitouch_max_fingers = 0
+        if not _active_fingers:             # all fingers lifted → end the lockout
+            _gesture_tap_lockout = False
 
     # ── Drag-to-scroll on setup screens ──────────────────────────────────────
     # We defer the tap-fire on BUTTONDOWN inside a drag-capable setup
@@ -5864,8 +5874,10 @@ def handle_event(event, demo_mode):
 
     # ── Single-touch / mouse ──────────────────────────────────────────────────
     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
-        # Skip if this is part of a multi-touch gesture
-        if len(_active_fingers) >= 2:
+        # Skip if this is part of a multi-touch gesture, or while a just-fired
+        # gesture's fingers are still down (lockout) — so entering setup / swap
+        # doesn't tap whatever's under the finger as it lifts.
+        if len(_active_fingers) >= 2 or _gesture_tap_lockout:
             return True
 
         pos = event.pos if hasattr(event, "pos") else (
@@ -18185,6 +18197,7 @@ def main():
     connected  = False
     data_stale = False
     global _link_lost_t, _multitouch_t0, _active_fingers, _multitouch_max_fingers
+    global _gesture_tap_lockout
 
     if not demo_mode:
         global _sse_client
@@ -18397,12 +18410,14 @@ def main():
                     "mfd" if disp.get("display_mode", "pfd") == "pfd"
                     else "pfd")
                 _settings.mark_dirty()
-                _active_fingers.clear()
+                # Lock taps out until the fingers lift; keep _active_fingers so
+                # the FINGERUP path clears the lockout on full release.
+                _gesture_tap_lockout = True
                 _multitouch_t0 = None
                 _multitouch_max_fingers = 0
             elif _multitouch_max_fingers == 2 and dt >= LONG_PRESS_MS:
                 disp["mode"] = "setup"
-                _active_fingers.clear()
+                _gesture_tap_lockout = True
                 _multitouch_t0 = None
                 _multitouch_max_fingers = 0
 
