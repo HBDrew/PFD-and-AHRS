@@ -8,6 +8,27 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### MAGVAR  Display magnetic courses/headings (add magnetic variation)
+Status: **OPEN — committed to doing it; not started**
+Context: the whole system is currently TRUE-referenced and self-consistent —
+the mag-cal wizard calibrates the magnetometer against TRUE cardinals (so
+MAG-mode heading reads true), GPS track is true, and stored courses (incl.
+approach `course_deg`) are true.  Nothing is internally broken.  BUT the outside
+world is magnetic: charts, ATC, runway numbers, approach courses.  In AZ
+(KFLG/KDVT/Sedona) variation is ~10–11°E, so e.g. RWY "03" (030° mag) shows
+~041°T and a 030°(mag) approach course shows ~040°T — a standing ~10° offset vs
+every plate/clearance.  Decision made: adopt magnetic.
+Scope:
+  - Add a `magvar(lat, lon)` source.  Cleanest: the FAA nav-data build already
+    has per-airport/navaid variation (NASR) — surface it in the cache; or drop
+    in a WMM model for variation anywhere.
+  - Apply true→magnetic at the DISPLAY layer everywhere courses/headings show:
+    heading tape, track, CDI/approach course, runway/approach course labels,
+    FPL leg course (`draw_fpl`, now `°T`), bug readouts.
+  - Recalibrate the mag wizard against MAGNETIC cardinals (or just subtract
+    magvar from the existing true-cal).  Reference-wide flip, mechanically
+    straightforward once `magvar()` exists.
+
 ### PIZ-APPROACHES  Port loaded approaches to the Pi Zero
 Status: **OPEN — spec'd, not started**
 Context: the Pi Zero has NO published-approach support today — only a synthetic
