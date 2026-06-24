@@ -77,6 +77,91 @@ def _gc_interp(la1, lo1, la2, lo2, f):
     return (math.degrees(math.atan2(z, math.hypot(x, y))),
             math.degrees(math.atan2(y, x)))
 
+
+def _dashed_polyline(surf, color, pts, dash=9, gap=6, width=2):
+    """Draw a dashed line through screen-space points (ints)."""
+    if not pts or len(pts) < 2:
+        return
+    for (x0, y0), (x1, y1) in zip(pts[:-1], pts[1:]):
+        seg = math.hypot(x1 - x0, y1 - y0)
+        if seg < 1:
+            continue
+        ux, uy = (x1 - x0) / seg, (y1 - y0) / seg
+        d = 0.0
+        while d < seg:
+            a = d
+            b = min(d + dash, seg)
+            pygame.draw.line(surf, color,
+                             (int(x0 + ux * a), int(y0 + uy * a)),
+                             (int(x0 + ux * b), int(y0 + uy * b)), width)
+            d += dash + gap
+
+
+def _place_label(surf, font, text, color, ax, ay, placed):
+    """Blit ``text`` to the SIDE of the anchor (ax, ay) — never centred over it,
+    which would sit on the course line.  Labels are right- or left-justified and
+    staggered side-to-side for consecutive fixes; the first candidate that
+    doesn't overlap an already-placed rect wins.  Appends the chosen rect to
+    ``placed`` so clustered fixes (RWY 03 / FAF / IF near the airport) don't
+    stack."""
+    if not text or font is None:
+        return
+    img = font.render(text, True, color)
+    w, h = img.get_size()
+    d = 6
+    step = h + 2
+    rights, lefts = [], []
+    for m in (0, 1, -1, 2, -2, 3, -3):
+        rights.append((ax + d, ay - h // 2 + m * step))
+        lefts.append((ax - w - d, ay - h // 2 + m * step))
+    cands = []
+    first, second = (rights, lefts) if (len(placed) % 2 == 0) else (lefts, rights)
+    for a, b in zip(first, second):
+        cands.append(a)
+        cands.append(b)
+    for cx, cy in cands:
+        r = pygame.Rect(cx, cy, w, h)
+        if not any(r.colliderect(pr) for pr in placed):
+            surf.blit(img, (cx, cy))
+            placed.append(r)
+            return
+    cx, cy = cands[0]
+    surf.blit(img, (cx, cy))
+    placed.append(pygame.Rect(cx, cy, w, h))
+
+
+def _hold_racetrack_pts(la, lo, course_deg, turn, leg_nm, cos_lat):
+    """Lat/lon points tracing a holding racetrack at (la, lo): inbound on
+    ``course_deg`` to the fix, ``turn`` ('R'/'L') onto the parallel outbound
+    leg, joined by 180° arcs.  Returned as a closed loop of (lat, lon)."""
+    c = math.radians(course_deg)
+    ue, un = math.sin(c), math.cos(c)
+    if (turn or "R").upper().startswith("L"):       # left turns
+        se, sn = -math.cos(c), math.sin(c)
+    else:                                           # right turns (default)
+        se, sn = math.cos(c), -math.sin(c)
+    leg = max(1.0, float(leg_nm or 4.0))
+    r = max(0.5, leg * 0.32)                        # turn radius (visual)
+    en = []
+    N = 12
+    en.append((-leg * ue, -leg * un))
+    en.append((0.0, 0.0))
+    c1e, c1n = r * se, r * sn
+    for k in range(N + 1):
+        ph = math.pi * k / N
+        en.append((c1e + r * (-se * math.cos(ph) + ue * math.sin(ph)),
+                   c1n + r * (-sn * math.cos(ph) + un * math.sin(ph))))
+    c2e, c2n = -leg * ue + r * se, -leg * un + r * sn
+    for k in range(N + 1):
+        ph = math.pi * k / N
+        en.append((c2e + r * (se * math.cos(ph) - ue * math.sin(ph)),
+                   c2n + r * (sn * math.cos(ph) - un * math.sin(ph))))
+    out = []
+    for e, n in en:
+        out.append((la + n / _NM_PER_DEG_LAT,
+                    lo + e / (_NM_PER_DEG_LAT * max(0.05, cos_lat))))
+    return out
+
 # Inset chrome
 _BG          = (0, 0, 0)
 _FRAME       = (60, 80, 110)
@@ -91,6 +176,7 @@ _APT_WATER   = (80, 160, 220)
 _APT_OTHER   = (200, 160, 80)
 _D2_MAGENTA  = (220, 0, 220)
 _HITS_CYAN   = (0, 200, 255)        # matches HITS palette in hits.py
+_MISSED_AMBER = (255, 170, 60)      # missed-approach path / hold (dashed)
 # ADS-B traffic symbol colours, TCAS-style: red resolution-class alert,
 # amber proximate, cyan everything else with a position.
 _TFC_ALERT     = (255, 60, 60)
@@ -1083,7 +1169,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
            fpl_remaining=None, airspaces=None, airspace_visible=None,
            traffic=None, metars=None, nexrad=None, fast=False,
            ground_stations=None, wx_graphics=None, winds_barbs=None,
-           nexrad_cells=None):
+           nexrad_cells=None, approach_path=None, runway_marker=None,
+           missed_path=None, holds=None):
     """Draw the moving-map inset into ``surf`` at ``rect = (x, y, w, h)``.
 
     ``orient`` is "trk" or "nrth"; ``range_nm`` is the half-extent shown
@@ -1561,6 +1648,75 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                 if len(_apt_label_cache) > _APT_LABEL_CACHE_MAX:
                     _apt_label_cache.popitem(last=False)
             surf.blit(d2_lbl, (int(wpx) + d + 3, int(wpy) - d - 2))
+
+    # ── Loaded published approach path (cyan) ──────────────────────────────
+    # The transition + final legs of a loaded CIFP approach (received over
+    # screen-sync — the Pi Zero has no SVT/HITS, so the inset polyline IS the
+    # approach picture here), drawn as a cyan polyline with fix diamonds +
+    # idents.  Mirrors the Pi 4 inset so both screens read identically.
+    _appr_label_rects = []                     # de-conflict approach labels
+    if approach_path is not None and len(approach_path) >= 2:
+        d2 = 4
+
+        def _appr_fix(la, lo, ident):
+            px, py = _project(la, lo)
+            pygame.draw.polygon(surf, _HITS_CYAN,
+                                [(int(px), int(py) - d2), (int(px) + d2, int(py)),
+                                 (int(px), int(py) + d2), (int(px) - d2, int(py))])
+            # Skip the label for the runway/MAP fix when the runway bar already
+            # labels it (avoids the redundant "RW03" over "RWY 03").
+            if ident and not (
+                    runway_marker is not None and ident[:2] == "RW"
+                    and ident[2:3].isdigit()):
+                _place_label(surf, font, ident, _HITS_CYAN,
+                             int(px), int(py), _appr_label_rects)
+
+        fla, flo, fid = approach_path[0]
+        _appr_fix(fla, flo, fid)               # the first fix (IAF) too
+        for nla, nlo, nident in approach_path[1:]:
+            pygame.draw.line(surf, _HITS_CYAN,
+                             (int(_project(fla, flo)[0]), int(_project(fla, flo)[1])),
+                             (int(_project(nla, nlo)[0]), int(_project(nla, nlo)[1])), 2)
+            _appr_fix(nla, nlo, nident)
+            fla, flo = nla, nlo
+
+    # ── Runway marker — the physical runway the approach lands on ───────────
+    # ((le_lat, le_lon), (he_lat, he_lon), label): a single clean white bar.
+    # Explicit (not the runway-DB layer, which piZ doesn't carry) so it shows
+    # at any zoom; the Pi 4 sends the threshold + final course, off which piZ
+    # synthesises a short stub.
+    if runway_marker is not None:
+        (a_la, a_lo), (b_la, b_lo), rlabel = runway_marker
+        ax2, ay2 = _project(a_la, a_lo)
+        bx2, by2 = _project(b_la, b_lo)
+        pygame.draw.line(surf, (245, 245, 250),
+                         (int(ax2), int(ay2)), (int(bx2), int(by2)), 5)
+        if rlabel:
+            _place_label(surf, font, rlabel, (210, 220, 235),
+                         int(bx2), int(by2), _appr_label_rects)  # de-conflicted
+
+    # ── Missed approach (dashed amber) + holding patterns ───────────────────
+    # missed_path: [(la, lo, ident), …]; per the plate it starts at the climb
+    # point off the MAP (a gap ahead of the runway).  holds: list of
+    # (la, lo, course, turn, leg_nm) racetracks (HILPT at the IF, missed hold…).
+    if missed_path is not None and len(missed_path) >= 2:
+        scr = [(_project(p[0], p[1])) for p in missed_path]
+        _dashed_polyline(surf, _MISSED_AMBER,
+                         [(int(sx), int(sy)) for sx, sy in scr], width=2)
+        d2 = 4
+        for (la_m, lo_m, ident), (sx, sy) in list(zip(missed_path, scr))[1:]:
+            px, py = int(sx), int(sy)
+            pygame.draw.polygon(surf, _MISSED_AMBER,
+                                [(px, py - d2), (px + d2, py),
+                                 (px, py + d2), (px - d2, py)], 1)
+            _place_label(surf, font, ident, _MISSED_AMBER,
+                         px, py, _appr_label_rects)
+    for hld in (holds or []):
+        h_la, h_lo, h_crs, h_turn, h_leg = hld
+        loop = _hold_racetrack_pts(h_la, h_lo, h_crs, h_turn, h_leg, cos_lat)
+        _dashed_polyline(surf, _MISSED_AMBER,
+                         [(int(_project(a, b)[0]), int(_project(a, b)[1]))
+                          for a, b in loop], width=2)
 
     # ── Weather (METAR station dots) ───────────────────────────────────────
     # Ground stations first so the flight-category dots always sit on top of

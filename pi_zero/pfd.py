@@ -110,6 +110,9 @@ disp["mode"]          = "pfd"       # "pfd"|"setup"|"flight_profile"|"numpad"|"k
 disp["numpad_target"] = ""          # "alt_bug"|"hdg_bug"|"spd_bug"|fp key
 disp["numpad_buf"]    = ""          # digits entered so far
 disp["numpad_prev"]   = "pfd"       # mode to return to on cancel/enter
+disp["approach"]      = {"loaded": False}  # published approach received over
+                                    # screen-sync (KIND_APPR) — piZ draws but
+                                    # does not load approaches itself
 disp["kbd_target"]    = ""          # field being edited in keyboard mode
 disp["kbd_buf"]       = ""          # text entered so far
 disp["kbd_prev"]      = "flight_profile"  # mode to return to on DONE/CANCEL
@@ -465,6 +468,11 @@ def _ssync_kinds_from_cs(direction):
     if cs.get("sync_fpl_enabled", True):
         out.add(_ssync_mod.KIND_FPL)
         out.add(_ssync_mod.KIND_FPLLIB)
+        out.add(_ssync_mod.KIND_APPR)        # a loaded approach rides with the
+                                             # plan — piZ consumes it (it has no
+                                             # approach loader, so it never
+                                             # publishes one) to draw a peer's
+                                             # approach on its inset.
     # Winds-aloft zones always sync both ways when screen-sync is on — a screen
     # with internet feeds the others so they don't each hit Open-Meteo's
     # shared-per-IP rate limit.
@@ -737,6 +745,79 @@ def _ssync_apply_fpl(data):
             disp["nav"]["lon"]     = 0.0
             disp["nav"]["elev_ft"] = 0.0
         _settings.mark_dirty()
+    finally:
+        _ssync_suppress_publish -= 1
+
+
+def _ssync_apply_approach(data):
+    """Adopt a peer's loaded/active published approach so this screen draws it
+    on the moving-map inset (and, when active, mirrors the active leg into
+    disp['nav'] so the CDI / magenta course track it — same pattern as
+    _ssync_apply_fpl).  The Pi Zero has no approach loader of its own; this is
+    a display-only consumer (it never re-publishes KIND_APPR)."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        if not data.get("loaded"):
+            disp["approach"] = {"loaded": False}
+            return
+
+        def _legs(key):
+            out = []
+            for l in (data.get(key) or []):
+                try:
+                    out.append((
+                        float(l[0]), float(l[1]), str(l[2]),
+                        str(l[3]) if len(l) > 3 and l[3] is not None else "",
+                        l[4] if len(l) > 4 else None,
+                        l[5] if len(l) > 5 else None))
+                except (TypeError, ValueError, IndexError):
+                    continue
+            return out
+
+        disp["approach"] = {
+            "loaded":         True,
+            "active":         bool(data.get("active")),
+            "missed":         bool(data.get("missed")),
+            "published":      bool(data.get("published")),
+            "airport":        str(data.get("airport", "")),
+            "procedure":      str(data.get("procedure", "")),
+            "transition":     str(data.get("transition", "")),
+            "runway":         str(data.get("runway", "")),
+            "legs":           _legs("legs"),
+            "final_idx":      int(data.get("final_idx", 0)),
+            "missed_legs":    _legs("missed_legs"),
+            "thresh_lat":     data.get("thresh_lat"),
+            "thresh_lon":     data.get("thresh_lon"),
+            "thresh_elev_ft": data.get("thresh_elev_ft"),
+            "course_deg":     data.get("course_deg"),
+            "leg_idx":        int(data.get("leg_idx", 0)),
+        }
+        # Mirror the active leg into disp["nav"] so the CDI / magenta course
+        # line track it.  Prefer the EXACT nav the publisher sent (so a D2's
+        # course origin is the aircraft, matching the originating screen's
+        # XTK/magenta); fall back to the active leg fix for older peers.
+        ap = disp["approach"]
+        nv = data.get("nav")
+        if ap.get("active") and nv and nv.get("ident"):
+            disp["nav"]["ident"]   = str(nv.get("ident", ""))
+            disp["nav"]["lat"]     = float(nv.get("lat", 0.0))
+            disp["nav"]["lon"]     = float(nv.get("lon", 0.0))
+            disp["nav"]["elev_ft"] = float(nv.get("elev_ft", 0.0))
+            disp["nav"]["act_lat"] = float(nv.get("act_lat", 0.0))
+            disp["nav"]["act_lon"] = float(nv.get("act_lon", 0.0))
+        elif ap.get("active"):
+            legs = (ap.get("missed_legs") if ap.get("missed")
+                    else ap.get("legs")) or []
+            idx = max(0, min(ap.get("leg_idx", 0), len(legs) - 1))
+            if legs:
+                la, lo, ident = legs[idx][0], legs[idx][1], legs[idx][2]
+                disp["nav"]["ident"]   = str(ident)
+                disp["nav"]["lat"]     = float(la)
+                disp["nav"]["lon"]     = float(lo)
+                disp["nav"]["elev_ft"] = 0.0
+                disp["nav"]["act_lat"] = float(la)
+                disp["nav"]["act_lon"] = float(lo)
     finally:
         _ssync_suppress_publish -= 1
 
@@ -6531,6 +6612,121 @@ def _fpl_total_remaining_nm(lat, lon):
     return total
 
 
+# ── Published-approach render helpers (screen-sync consumer) ────────────────
+# The Pi Zero receives a loaded approach over KIND_APPR (no approach loader of
+# its own) and draws it on the moving-map inset.  These mirror the Pi 4
+# _approach_render_* helpers but read only the synced disp["approach"] + the
+# local nav-data cache (holds re-derive from piZ's own _navdata).
+_HOLD_LEG_TYPES = ("HM", "HF", "HA")
+
+
+def _appr_project(lat, lon, brg_deg, dist_nm):
+    """Destination lat/lon from a point along a bearing (equirectangular —
+    fine for the short runway/marker distances here)."""
+    br = math.radians(brg_deg)
+    dlat = (dist_nm / 60.0) * math.cos(br)
+    dlon = (dist_nm / 60.0) * math.sin(br) / max(0.2, math.cos(math.radians(lat)))
+    return lat + dlat, lon + dlon
+
+
+def _approach_render_path():
+    """[(lat, lon, ident), ...] of a loaded published approach's legs for the
+    moving-map inset, or None (nothing loaded, or a synthetic single-point
+    approach with no leg list)."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return None
+    legs = ap.get("legs") or []
+    if len(legs) < 2:
+        return None
+    return [(la, lo, ident) for (la, lo, ident, _lt, _alt, _at) in legs]
+
+
+def _approach_raw_proc():
+    """The raw procedure dict ({type,transitions,final,missed}) for the loaded
+    approach, or None — used to read per-leg leg_type/course/turn the rendered
+    6-tuples don't carry."""
+    ap = disp.get("approach") or {}
+    if _navdata is None or not ap.get("published"):
+        return None
+    return _navdata.procedure(ap.get("airport", ""), ap.get("procedure", ""))
+
+
+def _approach_render_missed():
+    """[(lat, lon, ident), ...] for the missed approach.  Per the plate it does
+    NOT touch the runway: it begins at the climb-ahead point off the MAP (final
+    course) and continues to the missed fixes.  None when nothing to draw."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return None
+    missed = ap.get("missed_legs") or []
+    if not missed or ap.get("thresh_lat") is None:
+        return None
+    thr_la, thr_lo = float(ap["thresh_lat"]), float(ap["thresh_lon"])
+    crs = float(ap.get("course_deg", 0.0))
+    cl_la, cl_lo = _appr_project(thr_la, thr_lo, crs, 2.0)
+    pts = [(cl_la, cl_lo, "")]
+    pts += [(la, lo, ident) for (la, lo, ident, _lt, _alt, _at) in missed]
+    return pts if len(pts) >= 2 else None
+
+
+def _approach_render_holds():
+    """All holding patterns in the loaded approach → [(la, lo, course, turn,
+    leg_nm), …].  Reads the raw legs (transition + final + missed) so the hold
+    inbound course/turn come from the actual HM/HF/HA leg.  Re-derives off
+    piZ's own _navdata; empty when nothing loaded or no nav-data."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return []
+    p = _approach_raw_proc()
+    raw = []
+    if p:
+        for tlegs in (p.get("transitions") or {}).values():
+            raw += tlegs
+        raw += p.get("final") or []
+        raw += p.get("missed") or []
+    out, seen, prev = [], set(), None
+    for lg in raw:
+        la, lo, ident = lg.get("lat"), lg.get("lon"), (lg.get("fix") or "")
+        if la is None or lo is None or not ident:
+            continue
+        lt = (lg.get("leg_type") or "").upper()
+        hd = _navdata.hold(ident) if _navdata is not None else None
+        if (lt in _HOLD_LEG_TYPES or hd) and ident not in seen:
+            crs = lg.get("course")
+            turn = (lg.get("turn") or "").upper()
+            leg_nm = 4.0
+            if hd:
+                if crs is None:
+                    crs = hd.get("course")
+                if turn not in ("L", "R"):
+                    turn = (hd.get("turn") or "").upper()
+                leg_nm = hd.get("leg_nm") or 4.0
+            if turn not in ("L", "R"):
+                turn = "R"
+            if crs is None and prev is not None:        # last resort: arrival brg
+                _d, crs = _nav_geo_dist_brg(prev[0], prev[1], la, lo)
+            if crs is not None:
+                out.append((float(la), float(lo), float(crs), turn, float(leg_nm)))
+                seen.add(ident)
+        prev = (la, lo)
+    return out
+
+
+def _appr_runway_marker():
+    """((thr_la, thr_lo), (far_la, far_lo), 'RWY 03') — a short runway stub for
+    the inset, built from the synced threshold + final course.  The Pi Zero has
+    no runway DB, so (unlike the Pi 4) this is always the course-stub fallback;
+    None when no threshold was synced."""
+    ap = disp.get("approach") or {}
+    if ap.get("thresh_lat") is None:
+        return None
+    rwy = (ap.get("runway") or "").upper()
+    la, lo = float(ap["thresh_lat"]), float(ap["thresh_lon"])
+    fla, flo = _appr_project(la, lo, float(ap.get("course_deg", 0.0)), 1.0)
+    return ((la, lo), (fla, flo), (f"RWY {rwy}" if rwy else "RWY"))
+
+
 def draw_cdi(surf):
     """Course Deviation Indicator strip above the heading readout box.
     Always painted when GPS_OK so the strip is tappable; bare bar + a
@@ -11053,6 +11249,14 @@ def draw_mfd(surf, connected=True, data_stale=False):
         nexrad=_nexrad_render_arg(),
         nexrad_cells=(_fisb_nexrad_cells()
                       if disp["ds"].get("map_show_nexrad") else None),
+        # Published approach received over screen-sync (KIND_APPR): the legs as
+        # a cyan polyline, the runway stub, the dashed-amber missed approach,
+        # and any holding racetracks.  piZ has no SVT/HITS, so this inset
+        # overlay IS the approach picture (the PFD shows the raw CDI/VDI).
+        approach_path=_approach_render_path(),
+        runway_marker=_appr_runway_marker(),
+        missed_path=_approach_render_missed(),
+        holds=_approach_render_holds(),
         # While dragging a pan, skip the heavy layers so the map tracks the
         # finger; they repaint on release.
         fast=bool(_mfd_drag is not None and _mfd_drag.get("is_drag")),
@@ -13805,6 +14009,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_BARO, _ssync_apply_baro)
     _screen_sync.on(_ssync_mod.KIND_NAV,  _ssync_apply_nav)
     _screen_sync.on(_ssync_mod.KIND_FPL,  _ssync_apply_fpl)
+    _screen_sync.on(_ssync_mod.KIND_APPR, _ssync_apply_approach)
     _screen_sync.on(_ssync_mod.KIND_FPLLIB, _ssync_apply_fpl_lib)
     _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
     _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)

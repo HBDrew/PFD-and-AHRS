@@ -46,15 +46,15 @@ Scope:
     straightforward once `magvar()` exists.
 
 ### PIZ-APPROACHES  Port loaded approaches to the Pi Zero
-Status: **OPEN — spec'd, not started**
-Context: the Pi Zero has NO published-approach support today — only a synthetic
-cyan final-course stub on the inset (`pi_zero/moving_map.py`), no leg list / no
-procedure loading.  When added, per pilot: **NO HITS boxes** (there's no SVT on
-the Zero) — show the **raw CDI / VDI** guidance on the PFD, and the **approach
-path overlay on the MFD inset** (the legs drawn as a polyline, like the Pi 4
-inset).  Needs the approach-loading / navdata path ported plus the 2D inset
-approach renderer; reuse the Pi 4 `_approach_*` machinery + `_approach_render_path`
-as the model.
+Status: **RECEIVE/DRAW DONE — see the fuller PIZ-APPROACHES entry below**
+Context: the Pi Zero had NO published-approach support — only a synthetic cyan
+final-course stub on the inset (`pi_zero/moving_map.py`), no leg list / no
+procedure loading.  Per pilot: **NO HITS boxes** (there's no SVT on the Zero) —
+show the **raw CDI / VDI** guidance on the PFD, and the **approach path overlay
+on the MFD inset** (the legs drawn as a polyline, like the Pi 4 inset).  Now
+implemented as a screen-sync consumer + 2D inset renderer (the active leg drives
+the existing CDI); approach-loading ON piZ is the remaining stretch.  Details +
+status in the "Published approaches on pi_zero (parity with pi4)" entry below.
 
 ### APPR-FINAL-FLYBY  Fly-by (lead) turn onto the final approach course
 Status: **OPEN — fly-over works; the final-course intercept should anticipate**
@@ -812,20 +812,28 @@ Work items:
     existing distance-gated sequencer needs a real state change.
 
 ### PIZ-APPROACHES  Published approaches on pi_zero (parity with pi4)
-Status: **OPEN — pi4 + pi5 (pi4 code) have approaches; pi_zero does not**
+Status: **RECEIVE/DRAW DONE — piZ now consumes + renders a synced approach;
+LOAD-on-piZ (stretch) still open**
 Context: the published-approach work (LOAD APPR picker, transition/IAF picker,
 preview, leg sequencing, missed + holds, HITS/VDI) lives in `pi4/pfd.py`.  A
-pi_zero MFD on the same network now RECEIVES the approach over screen sync
-(KIND_APPR is in shared/screen_sync.py) but `pi_zero/pfd.py` has no consumer or
-renderer for it, so the approach (path, missed, holds, active leg) doesn't draw
-on piZ and can't be loaded/flown from piZ.  To reach parity:
-  - Add `_ssync_apply_approach` (mirror pi4) + register KIND_APPR on piZ, store
-    into `disp["approach"]`.
-  - Teach `pi_zero/moving_map.py` to draw `approach_path` / `missed_path` /
-    `holds` / `runway_marker` (port the pi4 moving_map additions — they're 2D
-    and renderer-agnostic, so mostly a copy).
-  - (Stretch) the LOAD APPR flow itself on piZ so an approach can be selected
-    there, not just received.  Holds re-derive from piZ's own nav-data.
+pi_zero MFD on the same network RECEIVES the approach over screen sync
+(KIND_APPR is in shared/screen_sync.py); previously `pi_zero/pfd.py` had no
+consumer or renderer, so the approach didn't draw on piZ.  Done this session:
+  - **Consumer**: `_ssync_apply_approach` (mirrors pi4) stores the synced
+    procedure into `disp["approach"]`; KIND_APPR is registered on piZ and added
+    to the FPL-gated consume set (piZ has no approach loader, so it only
+    consumes — it never re-publishes KIND_APPR and can't clobber pi4's load).
+    When the approach is active the active leg is mirrored into `disp["nav"]`
+    so the existing **raw CDI** tracks it (no SVT/HITS on piZ, per pilot).
+  - **Renderer**: `pi_zero/moving_map.py` now draws `approach_path` (cyan
+    polyline + fix diamonds/labels), `runway_marker` (a course stub — piZ
+    carries no runway DB), `missed_path` (dashed amber), and `holds`
+    (racetracks).  Ported the pi4 helpers (`_dashed_polyline`, `_place_label`,
+    `_hold_racetrack_pts`, `_MISSED_AMBER`).  Holds re-derive from piZ's own
+    `_navdata`.  Render-arg builders (`_approach_render_path/_missed/_holds`,
+    `_appr_runway_marker`) mirror pi4 and read only the synced state.
+  - **(Stretch, still OPEN)** the LOAD APPR flow itself on piZ so an approach
+    can be selected there, not just received.
 Lower priority than the build-data cleanup; the pi4/pi5 PFD is the approach
 display and piZ is a secondary map.
 
