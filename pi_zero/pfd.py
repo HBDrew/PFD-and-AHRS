@@ -800,6 +800,18 @@ def _ssync_apply_approach(data):
             "course_deg":     data.get("course_deg"),
             "leg_idx":        int(data.get("leg_idx", 0)),
         }
+        # Pre-computed holds from the publisher — only set the key when the peer
+        # actually sent them (an older peer that didn't → fall back to
+        # re-deriving from piZ's own nav-data in _approach_render_holds).
+        if "holds" in data:
+            sh = []
+            for h in (data.get("holds") or []):
+                try:
+                    sh.append((float(h[0]), float(h[1]), float(h[2]),
+                               str(h[3]), float(h[4])))
+                except (TypeError, ValueError, IndexError):
+                    continue
+            disp["approach"]["synced_holds"] = sh
         # Mirror the active leg into disp["nav"] so the CDI / magenta course
         # line track it.  Prefer the EXACT nav the publisher sent (so a D2's
         # course origin is the aircraft, matching the originating screen's
@@ -6685,6 +6697,10 @@ def _approach_render_holds():
     ap = disp.get("approach") or {}
     if not ap.get("loaded"):
         return []
+    # A peer (pi4/pi5) sent its pre-computed holds (key present even if empty) —
+    # use them verbatim so piZ draws the racetracks even with no local nav-data.
+    if "synced_holds" in ap:
+        return [tuple(h) for h in (ap.get("synced_holds") or [])]
     p = _approach_raw_proc()
     raw = []
     if p:

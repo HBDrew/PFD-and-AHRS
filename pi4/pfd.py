@@ -1030,6 +1030,10 @@ def _approach_render_holds():
     ap = disp.get("approach") or {}
     if not ap.get("loaded"):
         return []
+    # A peer sent its pre-computed holds (key present even if empty) — use them
+    # verbatim so a screen without nav-data still draws the racetracks.
+    if "synced_holds" in ap:
+        return [tuple(h) for h in (ap.get("synced_holds") or [])]
     p = _approach_raw_proc()
     raw = []
     if p:
@@ -1493,9 +1497,11 @@ def _ssync_apply_fpl(data):
 
 def _ssync_publish_approach():
     """Broadcast the loaded/active published approach so peer screens draw the
-    same approach (legs, missed, threshold, course) and re-derive the holds
-    from their own nav data.  Gated by the FPL share toggle — an approach is
-    part of the plan.  Called whenever the approach state changes."""
+    same approach (legs, missed, threshold, course, holds).  Holds are sent
+    pre-computed (not re-derived on the peer) so a screen without its own
+    nav-data — e.g. the Pi Zero — still draws them.  Gated by the FPL share
+    toggle — an approach is part of the plan.  Called whenever the approach
+    state changes."""
     if _screen_sync is None or _ssync_suppress_publish:
         return
     ap = disp.get("approach") or {}
@@ -1520,6 +1526,9 @@ def _ssync_publish_approach():
         "thresh_elev_ft": ap.get("thresh_elev_ft"),
         "course_deg":     ap.get("course_deg"),
         "leg_idx":        int(ap.get("leg_idx", 0)),
+        # Pre-computed holds [(la, lo, course, turn, leg_nm), …] so a peer
+        # without nav-data (piZ) draws the racetracks too.
+        "holds":          [list(h) for h in _approach_render_holds()],
         # The EXACT active nav (course origin included) so the peer draws the
         # identical magenta course / CDI — a D2 anchors at the aircraft, not the
         # previous leg, so the consumer must not re-derive the origin.
@@ -1576,6 +1585,18 @@ def _ssync_apply_approach(data):
             "course_deg":     data.get("course_deg"),
             "leg_idx":        int(data.get("leg_idx", 0)),
         }
+        # Pre-computed holds from the publisher — only set the key when the peer
+        # actually sent them (an older peer that didn't → we fall back to
+        # re-deriving from local nav-data in _approach_render_holds).
+        if "holds" in data:
+            sh = []
+            for h in (data.get("holds") or []):
+                try:
+                    sh.append((float(h[0]), float(h[1]), float(h[2]),
+                               str(h[3]), float(h[4])))
+                except (TypeError, ValueError, IndexError):
+                    continue
+            disp["approach"]["synced_holds"] = sh
         # Mirror the active leg into disp["nav"] so the CDI / magenta course line
         # track it (the peer screen has no sim engine; this is display only).
         # Prefer the EXACT nav the publisher sent (so a D2's course origin is
