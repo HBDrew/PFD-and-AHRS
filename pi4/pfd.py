@@ -1252,17 +1252,21 @@ def _draw_approach_signpost_labels(surf, ai_rect, lat, lon, alt_ft,
     px_per_deg = ah / 48.0
     old_clip = surf.get_clip()
     surf.set_clip(pygame.Rect(ax, ay_r, aw, ah))
+    half = _SIGNPOST_SIDE_FT / 2.0
     for fla, flo, falt, ident, ialt in data:
         if str(ident).strip().upper() != next_ident:
             continue
+        # Project the TOP of the diamond (falt + half), not its centre, and
+        # stack the label just above it — so the text always sits OUTSIDE the
+        # box and rises with it as the box grows on approach, instead of
+        # cluttering the middle of an already-busy space.
         pt = _project_latlon(float(fla), float(flo), lat, lon, alt_ft,
-                             float(falt), hdg, pitch, roll, cx_ai, cy_ai,
+                             float(falt) + half, hdg, pitch, roll, cx_ai, cy_ai,
                              px_per_deg, max_fov_deg=None, ground_only=False)
         if pt is not None:
             sx, sy = int(pt[0]), int(pt[1])
-            # Above and right of the diamond so it doesn't sit on the box.
-            _text(surf, ident, 13, (255, 200, 0), bold=True, x=sx + 14, y=sy - 34)
-            _text(surf, f"{ialt:,}", 12, (255, 200, 0), x=sx + 14, y=sy - 20)
+            _text(surf, ident, 13, (255, 200, 0), bold=True, x=sx + 6, y=sy - 30)
+            _text(surf, f"{ialt:,}", 12, (255, 200, 0), x=sx + 6, y=sy - 16)
         break
     surf.set_clip(old_clip)
 

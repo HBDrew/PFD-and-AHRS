@@ -8,6 +8,17 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### PIZ-APPROACHES  Port loaded approaches to the Pi Zero
+Status: **OPEN — spec'd, not started**
+Context: the Pi Zero has NO published-approach support today — only a synthetic
+cyan final-course stub on the inset (`pi_zero/moving_map.py`), no leg list / no
+procedure loading.  When added, per pilot: **NO HITS boxes** (there's no SVT on
+the Zero) — show the **raw CDI / VDI** guidance on the PFD, and the **approach
+path overlay on the MFD inset** (the legs drawn as a polyline, like the Pi 4
+inset).  Needs the approach-loading / navdata path ported plus the 2D inset
+approach renderer; reuse the Pi 4 `_approach_*` machinery + `_approach_render_path`
+as the model.
+
 ### APPR-FINAL-FLYBY  Fly-by (lead) turn onto the final approach course
 Status: **OPEN — fly-over works; the final-course intercept should anticipate**
 Context: approach leg sequencing is now fly-OVER (cross the fix, then turn) —
