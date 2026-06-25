@@ -111,6 +111,11 @@ SCENES = [
     # behind the extended centreline at the 3-NM scene above.
     ("preview_hits_boxes",         0,  -2,  33, 5100,  80, -500,   0,
                                    34.842, -111.811),
+    # Approach WITH fixes — HITS corridor + an amber fix sign-post ahead + the
+    # magenta course line.  Setup hook seeds the legs and overrides the position
+    # (~7 NM out, above the profile) relative to the real KSEZ threshold.
+    ("preview_approach_fixes",     0,  -3,  33, 7300,  90, -400,   0,
+                                   34.78, -111.86),
     # Unusual-attitude recovery — 75° right bank, +25° pitch.  Trips
     # both EXTREME thresholds so the chevron stack + roll-recovery arc
     # render simultaneously, plus the declutter strips overlays.
@@ -176,6 +181,11 @@ def _setup_synthetic_approach():
         "thresh_lon":     thr_lon,
         "thresh_elev_ft": thr_elev,
         "course_deg":     course,
+        # HITS boxes only build when the approach is flagged loaded — the
+        # box-refresh fallback (pfd._approach_hits_refresh) gates on it. Without
+        # this the corridor renders empty, which is why earlier approach
+        # previews showed no boxes.
+        "loaded":         True,
     }
     pfd.disp["ds"]["map_enabled"] = True
     pfd.disp["ds"]["map_zoom_nm"] = 5
@@ -257,9 +267,72 @@ def _setup_hits_boxes():
         "thresh_lon":     thr_lon,
         "thresh_elev_ft": thr_elev,
         "course_deg":     course,
+        "loaded":         True,   # required or the HITS box fallback stays empty
     }
     # Inset hidden for this shot so the boxes own the frame.
     pfd.disp["ds"]["map_enabled"] = False
+
+
+def _setup_approach_fixes():
+    """Approach WITH fixes — HITS ON + an amber fix sign-post + the magenta
+    course line in one frame.  The other approach scenes seed only a threshold,
+    so they have no legs and therefore no fix sign-posts; this one seeds a real
+    KSEZ RWY 03 leg list (IAF -> runway with published crossing altitudes),
+    viewed ~7 NM out and ~250 ft above the 3 deg profile so the cyan HITS
+    corridor stacks toward the runway with the next step-down fix's amber diamond
+    ahead."""
+    import math
+
+    thr_lat, thr_lon, thr_elev, course = _find_ksez_rwy_03()
+
+    # Fixes back along the published course: (ident, distance_nm, crossing_alt).
+    # Alts sit on a ~3 deg profile so the sign-posts and HITS path line up.
+    fix_defs = [
+        ("JAKLY", 9.0, 7700),    # IAF (behind the aircraft)
+        ("DARTS", 6.0, 6700),    # IF  (just ahead - its amber box reads in-frame)
+        ("WULPI", 4.0, 6100),    # FAF
+        ("RW03",  0.0, float(thr_elev)),
+    ]
+    legs = []
+    for ident, dist, alt in fix_defs:
+        fl, fo = (_back_along_course(thr_lat, thr_lon, course, dist)
+                  if dist > 0 else (thr_lat, thr_lon))
+        legs.append((fl, fo, ident, "TF", float(alt), "@"))
+
+    ac_lat, ac_lon = _back_along_course(thr_lat, thr_lon, course, 7.0)
+    gs_alt = thr_elev + 7.0 * 6076.12 * math.tan(math.radians(3.0))
+    ac_alt = gs_alt + 250.0
+    act_lat, act_lon = _back_along_course(thr_lat, thr_lon, course, 10.0)
+
+    snap = {
+        "lat": ac_lat, "lon": ac_lon,
+        "alt": ac_alt, "gps_alt": ac_alt,
+        "yaw": course, "track": course,
+    }
+    with pfd._state_lock:
+        pfd.state.update(snap)
+    pfd.disp.update(snap)
+
+    pfd.disp["nav"] = {
+        "ident":   "KSEZ",
+        "lat":     thr_lat, "lon": thr_lon, "elev_ft": thr_elev,
+        "act_lat": act_lat, "act_lon": act_lon,
+    }
+    pfd.disp["approach"] = {
+        "active":         True,
+        "loaded":         True,
+        "airport":        "KSEZ",
+        "runway":         "03",
+        "procedure":      "RNAV (GPS) RWY 03",
+        "thresh_lat":     thr_lat,
+        "thresh_lon":     thr_lon,
+        "thresh_elev_ft": thr_elev,
+        "course_deg":     course,
+        "legs":           legs,
+        "leg_idx":        1,        # flying to DARTS -> that fix gets the label
+    }
+    pfd.disp["ds"]["hits_enabled"] = True    # HITS corridor ON for this shot
+    pfd.disp["ds"]["map_enabled"]  = False   # boxes own the frame
 
 
 def _setup_sim_running():
