@@ -448,11 +448,11 @@ Tap either box to edit. Tap **APPLY WIFI** to write the config and switch networ
 
 The **WIFI NETWORKS** scan lists nearby networks with signal-strength bars and a **WPA / OPEN** tag; tap one to fill the SSID, or tap **RESCAN** to refresh.
 
-### NOTAM CLIENT ID / SECRET
-Optional. Paste a free FAA NOTAM API key (**client_id** / **client_secret**, from **api.faa.gov**) to enable NOTAMs in the MET readout picker (§16B). The secret is masked; the poller reads them live (no reboot). Blank = NOTAMs off, rest of weather unaffected.
+### NOTAM KEY / SECRET / ENV
+Optional. Paste an **FAA NMS-API** credential — **client_id** into **NOTAM KEY**, **client_secret** into **NOTAM SECRET** (masked) — and leave **NOTAM ENV** at `preprod` (`prod` only with production credentials). Enables NOTAMs in the MET readout picker (§16B); the poller reads them live (no reboot). Blank = NOTAMs off, rest of weather unaffected. You only need to enter the key on **one** display: the NOTAMs **and** the key are shared to the others over the cabin network (see Screen Sync below).
 
 ### Screen Sync
-Like the Pi 4/5, the Zero peer-syncs with other displays on the cabin network — bugs, baro, direct-to, flight plans, **and winds aloft** — over UDP, peer-to-peer. Master enable, the AUTO/USB/NET transport selector, per-category TX/RX toggles, the SHARE FPL toggle, and the peer/links diagnostics are all on the **Screen Sync** setup screen. See **Pi 4 manual §12A** for the full description; behaviour is identical. (Winds sharing is automatic — one display with internet feeds the rest.)
+Like the Pi 4/5, the Zero peer-syncs with other displays on the cabin network — bugs, baro, direct-to, flight plans, **winds aloft, and NOTAMs** — over UDP, peer-to-peer. Master enable, the AUTO/USB/NET transport selector, per-category TX/RX toggles, the SHARE FPL toggle, and the peer/links diagnostics are all on the **Screen Sync** setup screen. See **Pi 4 manual §12A** for the full description; behaviour is identical. (Winds and NOTAM sharing are automatic — one display with internet/key feeds the rest, and entering the NOTAM key on one display pushes it to the others.)
 
 ![Screen Sync setup — master enable, AUTO/USB/NET transport, per-category TX/RX toggles, SHARE FPL, and peers/links diagnostics](../pi_zero/previews/preview_setup_screen_sync.png)
 
@@ -682,7 +682,7 @@ The Pi Zero shows the same internet + FIS-B weather as the Pi 4 — METARs, TAFs
 
 - **Source toggle** — tap the **WX** status line to cycle **RADIO / AUTO / INET** (a parallel **ADS-B** line does the same for traffic). Status reads e.g. `WX AUTO R3 I12 2m` (mode · radio count · internet count · age; green = receiving, amber = none yet). Readouts are tagged `FIS-B` / `INET` with a data-age.
 - **OVLY cycle** — tap the **OVLY** label to step the single active overlay: **ASP → TFC → MET → WND → NEX**.
-- **MET page** — station dots coloured by category (**green VFR · blue MVFR · red IFR · magenta LIFR**); tap a dot for the **METAR / TAF / AIRMET / SIGMET / NOTAM** readout picker (nearest-first, scrollable, ON-ROUTE flags). Graphical AIRMET/SIGMET areas are tappable.
+- **MET page** — station dots coloured by category (**green VFR · blue MVFR · red IFR · magenta LIFR**), **labelled with the station ident when zoomed in below 160 NM**; tap a dot for the **METAR / TAF / AIRMET / SIGMET / NOTAM** readout picker (nearest-first, scrollable, ON-ROUTE flags). Graphical AIRMET/SIGMET areas are tappable.
 
 ![MET overlay — flight-category station dots on the MFD](../pi_zero/previews/preview_metar.png)
 ![WND overlay — wind barbs + temperatures with the alt / time buttons](../pi_zero/previews/preview_winds.png)
@@ -691,7 +691,7 @@ The Pi Zero shows the same internet + FIS-B weather as the Pi 4 — METARs, TAFs
 ![NEX overlay — green→yellow→red NEXRAD reflectivity cell over the moving map](../pi_zero/previews/preview_mfd_nexrad.png)
 - **Winds (WND)** — see §10.
 
-NOTAMs need the free FAA key entered in Connectivity (§12).
+NOTAMs need an FAA NMS-API key entered in Connectivity on **one** display (§12); they're scoped to a tight zoom-following radius (~10–40 nm) and shared (with the key) to the other displays over the cabin network.
 
 ## 16C. Traffic (ADS-B / FIS-B IN)
 

@@ -424,7 +424,7 @@ The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and 
 | MAP | **WINDS ALT** | 3k / 6k / 9k / 12k / 18k ft | 9k | Winds-aloft level shown on the WND overlay. See §16. |
 | MAP | **TFC ALT** | ALL / ±2k / ±5k / ±10k ft | ALL | Hide traffic outside this relative-altitude band. See §16G. |
 | MAP | **TFC RANGE** | ALL / 5 / 10 / 20 / 40 NM | ALL | Hide traffic beyond this range. |
-| MAP | **MAP LAYERS** | TER · WTR · APT · RWY · OBS · TFC · MET · NEX · STA · CTRY · ASP (independent pills) | all ON | Per-layer visibility for the moving-map inset. **TER** terrain tint; **WTR** ocean/lake water mask; **APT** airport / heliport / seaplane symbols; **RWY** runway outlines; **OBS** FAA DOF obstacles; **TFC** traffic; **MET** METAR station dots; **NEX** NEXRAD; **STA** state / province boundary lines (Natural Earth admin_1, slate-blue, fades in at ≥ 20 NM); **CTRY** country boundary lines (Natural Earth admin_0, tan, also ≥ 20 NM); **ASP** airspace. Toggles are independent and persist in `data/settings.json`. |
+| MAP | **MAP LAYERS** | TER · WTR · APT · RWY · OBS · TFC · MET · NEX · STA · CTRY · ASP (independent pills) | all ON | Per-layer visibility for the moving-map inset. **TER** terrain tint; **WTR** ocean/lake water mask; **APT** airport / heliport / seaplane symbols; **RWY** runway outlines; **OBS** FAA DOF obstacles; **TFC** traffic; **MET** METAR station dots (idents labelled when zoomed in below 160 NM range); **NEX** NEXRAD; **STA** state / province boundary lines (Natural Earth admin_1, slate-blue, fades in at ≥ 20 NM); **CTRY** country boundary lines (Natural Earth admin_0, tan, also ≥ 20 NM); **ASP** airspace. Toggles are independent and persist in `data/settings.json`. |
 
 ### Backlight transports
 
@@ -553,8 +553,9 @@ Tap any value box to open the keyboard and edit.
 | **AHRS URL** | Pico W access-point address | `http://192.168.4.1` |
 | **WiFi SSID** | Network name the Pi should join (for downloads) | `AHRS-Link` |
 | **WiFi PASSWORD** | WPA2 passphrase | (blank; not persisted) |
-| **NOTAM CLIENT ID** | FAA NOTAM API key | (blank) |
-| **NOTAM SECRET** | FAA NOTAM API secret (masked) | (blank) |
+| **NOTAM KEY** | FAA NMS-API client_id | (blank) |
+| **NOTAM SECRET** | FAA NMS-API client_secret (masked) | (blank) |
+| **NOTAM ENV** | NMS environment: `preprod` (default) or `prod` | `preprod` |
 
 The Wi-Fi password is intentionally **not** stored in `settings.json` and must be re-entered when you switch networks — see §13.
 
@@ -562,7 +563,14 @@ Rather than type the SSID by hand, tap the WiFi SSID field to open the **WIFI NE
 
 ![WIFI NETWORKS scan list — networks with signal-strength bars and WPA / OPEN tags plus a RESCAN button](../pi4/previews/preview_wifi_scan.png)
 
-**NOTAMs** require a free developer key from **api.faa.gov** — register an app there and paste the **client_id** / **client_secret** into these two fields (the secret is masked with bullets). The NOTAM poller reads them live, so entering a key enables NOTAMs (in the MET readout picker, §17) on the next fetch with **no reboot**; leave them blank and the rest of the weather suite is unaffected.
+**NOTAMs** come from the **FAA NMS-API**. Paste your **client_id** into **NOTAM KEY** and your **client_secret** into **NOTAM SECRET** (masked with bullets), and leave **NOTAM ENV** at `preprod` (switch to `prod` only when you hold production credentials — it selects the NMS host). The poller reads them live, so entering a key enables NOTAMs (in the MET readout picker, §17) on the next fetch with **no reboot**; leave them blank and the rest of the weather suite is unaffected.
+
+**One key for the whole panel.** You only need to enter the key on *one* display:
+
+- *NOTAM data* is shared over the cabin network (screen-sync) — any display on the LAN shows NOTAMs even with **no key entered**, as long as one keyed display is feeding them.
+- *The key itself* is **pushed to the other displays** the moment you finish entering it here, so each stores its own copy (persisted locally) and can fetch independently. See §12A.
+
+NOTAMs are scoped to a tight, **zoom-following radius** (~10–40 nm), so the list stays local to what you're looking at rather than returning every NOTAM for hundreds of miles. (Entering the secret on a touchscreen is tedious — you can instead set it over SSH; see the FAQ in `Docs/BENCH_TEST_PI5_ADSB.md`.)
 
 ### STATUS row
 
@@ -612,7 +620,12 @@ When you run more than one display (e.g. a Pi 5 PFD + a Pi Zero MFD), they keep 
 | **GPS** | position / alt / speed / track — **OFF / TX / RX** (same mutex) |
 | **SHARE FPL** | the active flight plan **and** the saved-plan / user-waypoint library — a single bidirectional toggle |
 
-Bugs / baro / nav publish only when *you* edit them, so they don't echo. **Winds aloft are also shared automatically** whenever sync is enabled (a display with internet feeds the winds grid to the others — see §17), and don't need a toggle. All choices persist in `data/settings.json`.
+Bugs / baro / nav publish only when *you* edit them, so they don't echo. **Winds aloft and NOTAMs are also shared automatically** whenever sync is enabled, and don't need a toggle:
+
+- **Winds aloft** — a display with internet feeds the winds grid to the others (see §17).
+- **NOTAMs** — a display with a NOTAM key feeds its fetched NOTAMs to the others, so a display with no key still shows them (§12). Entering the NOTAM key/secret on one display also **pushes the credentials** to the others, which store their own copy so they can fetch independently. The secret travels the LAN only when you enter it, and shows masked everywhere.
+
+All choices persist in `data/settings.json`.
 
 ---
 
@@ -1162,7 +1175,7 @@ The map shows **one** weather/airspace overlay at a time, selected by the **OVLY
 |-------|---------|
 | **ASP** | Airspace (Class B/C/D, MOA, Restricted/Prohibited boundaries) — needs an airspace file (§12 data notes). |
 | **TFC** | Traffic-focus — lifts the nearby-only clamp and shows all ADS-B traffic (§17). |
-| **MET** | METAR station dots + the tap-for-readout weather picker. |
+| **MET** | METAR station dots (idents labelled when zoomed in < 160 NM) + the tap-for-readout weather picker. |
 | **WND** | Winds aloft (§17). |
 | **NEX** | NEXRAD reflectivity. |
 
@@ -1172,12 +1185,12 @@ The map shows **one** weather/airspace overlay at a time, selected by the **OVLY
 
 ![MET page — flight-category station dots and a decoded METAR readout](../pi4/previews/pfd_gl/preview_metar.png)
 
-On **MET**, each reporting station is a dot coloured by flight category: **green VFR · blue MVFR · red IFR · magenta LIFR**. Tap a dot (or an airport) and choose **Weather *ICAO*** to open the readout, which has tabs for:
+On **MET**, each reporting station is a dot coloured by flight category: **green VFR · blue MVFR · red IFR · magenta LIFR**. When you're zoomed in (map range below 160 NM) each dot is **labelled with its station ident** (hidden at wider zoom so the map stays a clean dot field). Tap a dot (or an airport) and choose **Weather *ICAO*** to open the readout, which has tabs for:
 
 - **METAR** — wind, visibility, ceiling, altimeter, temp/dew, and the raw line, with the observation age.
 - **TAF** — the forecast broken into INITIAL / FROM / BECMG / TEMPO / PROB periods.
 - **AIRMET / SIGMET** — scrollable bulletins, **nearest-first**, flagged **ON ROUTE** when the hazard is within ~30 NM of your active leg.
-- **NOTAM** — scrollable, nearest-first (needs the FAA key, §12).
+- **NOTAM** — scrollable, nearest-first, scoped to a tight zoom-following radius (~10–40 nm) so the list stays local rather than returning every NOTAM for hundreds of miles. Needs the FAA key on **one** display (§12); both the NOTAMs and the key are shared to the other displays over the cabin network.
 
 A tab is greyed out when there's no data for it. If the field you tapped has no METAR/TAF/winds of its own, the display falls back to the **nearest** reporting station and labels it with the distance/bearing. Long readouts scroll (drag, with a scrollbar); tap outside to close.
 

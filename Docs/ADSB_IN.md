@@ -29,9 +29,9 @@ the lingua franca of portable ADS-B receivers (Stratux, Sentry, GDL90
 bridges). Nothing in the PFD knows about SDR dongles.
 
 ```
- 1090ES  ── NESDR ──►  dump1090-fa ──┐
+ 1090ES  ── NESDR ──►  readsb ───────┐
                                      ├─ SBS-1 :30003 ─► adsb_gdl90_bridge.py ──┐
- 978 UAT ── NESDR ──►  dump978-fa  ──┘                                         │
+ 978 UAT ── NESDR ──►  dump978-fa  ──┘  (978 traffic folds into readsb too)    │
                                                                               GDL90/UDP :4000
  Internet aggregator  ──►  adsb_internet_feed.py  ───────────────────────────►│  (any/all
  (airplanes.live / opensky, via Wi-Fi / Starlink)                             │   sources fan in)
@@ -52,12 +52,12 @@ bridges). Nothing in the PFD knows about SDR dongles.
 |------|------|-----------|
 | `shared/gdl90.py` | GDL90 framing (0x7E / byte-stuffing / CRC-16) + message decoders (Traffic 0x14, Ownship 0x0A/0x0B, Heartbeat 0x00, FIS-B uplink 0x07). Also an encoder for tests/bridges. | `shared/test_gdl90.py` |
 | `shared/adsb.py` | `ADSBClient` threaded UDP listener (SSEClient-style counters), target table with aging, `relative()` range/bearing/rel-alt, `threat_level()`, `demo_targets()`. | `shared/test_adsb.py` |
-| `tools/adsb_gdl90_bridge.py` | dump1090 SBS-1 (TCP 30003) → GDL90/UDP bridge using the encoder above. | `--selftest` |
+| `tools/adsb_gdl90_bridge.py` | readsb/dump1090 SBS-1 (TCP 30003) → GDL90/UDP bridge using the encoder above. | `--selftest` |
 | `tools/adsb_internet_feed.py` | Internet ADS-B aggregator → GDL90/UDP feed (test source + Starlink in-flight source). | `--selftest` |
-| `tools/install_adsb.sh` | Installs rtl-sdr + dump1090/dump978 + the bridge systemd unit. | — |
+| `tools/install_adsb.sh` | Installs rtl-sdr + **readsb** (1090) + the GDL90 bridge systemd unit. (978 via `install_dump978.sh`.) | — |
 
 Because every source emits the same GDL90/UDP, they are interchangeable and
-can even run side by side — a local SDR receiver, the dump1090 bridge, and
+can even run side by side — a local SDR receiver, the SBS→GDL90 bridge, and
 the internet feed all just fan into the one listener on :4000.
 
 ### Display wiring
@@ -79,8 +79,10 @@ on the display Pi, a dedicated Pi (a Pi 5 has ample headroom), or point the
 display at an existing Stratux on the network.
 
 ```bash
-sudo bash tools/install_adsb.sh
-sudo reboot                      # so the DVB-T driver blacklist takes effect
+sudo bash tools/install_adsb.sh       # rtl-sdr + readsb (1090) + GDL90 bridge
+sudo bash tools/install_dump978.sh    # 978 UAT decoder + FIS-B weather bridge
+sudo bash tools/enable_978_traffic.sh # fold 978 traffic into readsb's :30003
+sudo reboot                           # so the DVB-T driver blacklist takes effect
 ```
 
 Give each dongle a distinct USB serial so the decoders grab the right band:
@@ -90,9 +92,15 @@ rtl_eeprom -d 0 -s 1090          # dongle on the 1090 antenna
 rtl_eeprom -d 1 -s 978           # dongle on the 978 antenna
 ```
 
-Then set `RECEIVER_SERIAL` in `/etc/default/dump1090-fa` (=1090) and
-`/etc/default/dump978-fa` (=978). dump1090-fa publishes SBS-1 on TCP 30003;
-fold 978 traffic into the same feed so one bridge covers both bands.
+The 1090 decoder is **readsb** (wiedehopf's installer) — `dump1090-fa` isn't
+reliably packaged for current Raspberry Pi OS (Debian trixie / Pi 5). readsb is
+pinned to the 1090 dongle via `RECEIVER_OPTIONS="--device 1090 …"` in
+`/etc/default/readsb` and publishes SBS-1 on TCP 30003, which the bridge turns
+into GDL90/UDP :4000. dump978 (serial `978`) decodes the 978 band.
+
+> **Bringing up a fresh / dedicated receiver Pi?** See `BENCH_TEST_PI5_ADSB.md`
+> for the full layered procedure (hardware → decoders → bridge → display), the
+> LAN-broadcast gotcha, and the two failures seen on a real Pi 5 bring-up.
 
 Verify:
 
@@ -204,9 +212,17 @@ courtesy to the free aggregators.
   the MET page opens a picker with **METAR / TAF / AIRMET / SIGMET / NOTAM**
   tabs (scrollable, nearest-first, ON-ROUTE flags). TAFs + AIRMET/SIGMET come
   from aviationweather.gov (AWC); graphical AIRMET/SIGMET hazard polygons are
-  shaded and tappable. NOTAMs come from the FAA NOTAM API
-  (`external-api.faa.gov`) — needs a free `client_id`/`client_secret` entered
-  on the Connectivity screen; absent a key the NOTAM fetch is a harmless no-op.
+  shaded and tappable. NOTAMs come from the **FAA NMS-API** (two-step OAuth2;
+  preprod `api-staging.cgifederal-aim.com`, prod `api-nms.aim.faa.gov`) — needs
+  a `client_id`/`client_secret` (**NOTAM KEY** / **NOTAM SECRET**) plus a
+  **NOTAM ENV** (preprod default) entered on the Connectivity screen; absent a
+  key the NOTAM fetch is a harmless no-op. NOTAMs use their own **tight,
+  zoom-following query radius** (`NOTAM_MIN/MAX_RADIUS_NM`, ~10–40 nm) rather
+  than the wide weather radius, so a tap over a metro returns a local handful
+  rather than every NOTAM for hundreds of miles. **Shared over screen-sync**
+  (`KIND_NOTAMS`): one keyed display feeds NOTAMs to peers that have no key, and
+  the key itself can be **pushed to every display** (`KIND_NOTAMCREDS`) by
+  entering it once in Connectivity — same model as winds aloft.
 - **Weather — winds aloft (WND).** GFS pressure-level winds from Open-Meteo
   (`gfs025`, free, no key), capped at 18,000 ft. Cached as a national grid
   split into 6 zones, fetched on the ground one zone at a time, written to disk
