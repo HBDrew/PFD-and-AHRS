@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
 # install_adsb.sh – ADS-B IN receiver stack for the PFD (Nooelec NESDR Nano 2).
 #
-# Installs the RTL-SDR tooling, the dump1090 (1090ES) / dump978 (978 UAT)
-# decoders, and the GDL90 bridge service that feeds the PFD's traffic
-# listener on UDP 4000.  The display itself needs no changes — it already
-# listens for GDL90 (see shared/adsb.py); this script just stands up a
-# source on the same Pi.
+# Installs the RTL-SDR tooling, the readsb (1090ES) decoder, and the GDL90
+# bridge service that feeds the PFD's traffic listener on UDP 4000.  The
+# display itself needs no changes — it already listens for GDL90 (see
+# shared/adsb.py); this script just stands up a source on the same Pi (or a
+# dedicated receiver Pi, e.g. a Pi 5).
 #
 # Run:  sudo bash tools/install_adsb.sh
 #
 # Hardware: Nooelec NESDR Nano 2 dual-band bundle = two RTL-SDR dongles
 # (one per band) + 978/1090 MHz antennas.  Each dongle is addressed by a
-# USB serial string so dump1090 and dump978 each grab the right one.
+# USB serial string so the 1090 and 978 decoders each grab the right one.
+#
+# Bands:
+#   1090ES traffic .......... readsb (this script)         → SBS :30003 → bridge
+#   978 UAT weather/traffic   tools/install_dump978.sh      → dump978 :30978
+#                             tools/enable_978_traffic.sh   folds 978 traffic in
+#
+# Note: this used to install FlightAware's dump1090-fa from apt, but that
+# package isn't reliably available on current Raspberry Pi OS (Debian trixie /
+# Pi 5 — the pinned piaware-repository .deb 404s).  readsb (wiedehopf's
+# installer) builds for the running OS and serves the same SBS feed on :30003,
+# so the bridge below is unchanged.
 
 set -e
 
@@ -35,7 +46,7 @@ apt-get install -y --no-install-recommends rtl-sdr librtlsdr0 python3 2>/dev/nul
 
 # ── 2. Free the dongles from the DVB-T kernel driver ──────────────────────────
 # The stock dvb_usb_rtl28xxu driver claims the RTL2832U as a TV tuner and
-# blocks rtl-sdr.  Blacklist it so dump1090/dump978 can open the devices.
+# blocks rtl-sdr.  Blacklist it so the decoders can open the devices.
 echo "[2/6] Blacklisting DVB-T kernel modules…"
 cat > /etc/modprobe.d/blacklist-rtlsdr.conf <<'EOF'
 blacklist dvb_usb_rtl28xxu
@@ -44,35 +55,33 @@ blacklist rtl2830
 blacklist rtl2838
 EOF
 
-# ── 3. dump1090 (1090ES) + dump978 (978 UAT) ─────────────────────────────────
-echo "[3/6] Installing dump1090-fa / dump978-fa…"
-if apt-get install -y dump1090-fa dump978-fa 2>/dev/null; then
-  echo "      installed from apt."
+# ── 3. readsb (1090ES decoder) ────────────────────────────────────────────────
+echo "[3/6] Installing the readsb 1090 decoder (wiedehopf installer)…"
+if command -v readsb >/dev/null 2>&1; then
+  echo "      readsb already installed — skipping."
 else
-  cat <<'EOF'
-      dump1090-fa / dump978-fa not in your apt sources.
-      Add FlightAware's package feed, then re-run this script:
-
-        wget -O /tmp/piaware.deb \
-          https://www.flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-repository/piaware-repository_8.2_all.deb
-        sudo dpkg -i /tmp/piaware.deb
-        sudo apt-get update
-
-      (Or build readsb/dump978 from source.)  The bridge service below
-      will start regardless and simply wait for a SBS feed on :30003.
-EOF
+  # Builds readsb for the running OS, installs readsb.service + the tar1090 web
+  # map, and serves the SBS-1 feed on TCP :30003 by default — what the bridge
+  # consumes.  (readsb is also built with UAT support, so enable_978_traffic.sh
+  # can later fold 978 traffic into the same SBS output.)
+  bash -c "$(wget -nv -O - https://github.com/wiedehopf/adsb-scripts/raw/master/readsb-install.sh)"
 fi
 
-# ── 4. Dongle serials (informational) ─────────────────────────────────────────
+# ── 4. Pin readsb to the 1090 dongle ──────────────────────────────────────────
+echo "[4/6] Pinning readsb to the 1090 dongle (serial 1090)…"
+RD=/etc/default/readsb
+if [ -f "$RD" ]; then
+  sed -i 's|^RECEIVER_OPTIONS=.*|RECEIVER_OPTIONS="--device 1090 --device-type rtlsdr --gain auto --ppm 0"|' "$RD"
+  systemctl restart readsb || true
+else
+  echo "      WARNING: $RD not found — set --device 1090 in readsb's options by hand."
+fi
 cat <<EOF
-[4/6] Dual-dongle addressing
-      The bundle ships two dongles.  Give each a distinct USB serial once:
+      Give each dongle a distinct USB serial once (so each decoder grabs its band):
         rtl_eeprom -d 0 -s 1090       # the dongle on the 1090 antenna
         rtl_eeprom -d 1 -s 978        # the dongle on the 978 antenna
-      then point dump1090-fa at serial 1090 and dump978-fa at serial 978
-      (RECEIVER_SERIAL in /etc/default/dump1090-fa and dump978-fa).
-      dump1090-fa publishes the SBS-1 feed on TCP 30003 by default; fold
-      978 traffic into it so one bridge covers both bands.
+      For the 978 band: tools/install_dump978.sh (decoder + FIS-B weather bridge),
+      then tools/enable_978_traffic.sh to fold 978 *traffic* into readsb's :30003.
 EOF
 
 # ── 5. GDL90 bridge systemd service ───────────────────────────────────────────
@@ -80,8 +89,8 @@ echo "[5/6] Installing adsb-gdl90.service…"
 cat > /etc/systemd/system/adsb-gdl90.service <<EOF
 [Unit]
 Description=ADS-B SBS-1 -> GDL90/UDP bridge for the PFD
-After=network.target dump1090-fa.service
-Wants=dump1090-fa.service
+After=network.target readsb.service
+Wants=readsb.service
 
 [Service]
 Type=simple
@@ -101,7 +110,8 @@ systemctl enable --now adsb-gdl90.service || true
 
 echo ""
 echo "Done.  Verify with:"
-echo "  systemctl status adsb-gdl90.service"
-echo "  python3 $BRIDGE --selftest          # bridge smoke test"
+echo "  systemctl status readsb adsb-gdl90.service"
+echo "  sudo ss -tlnp | grep 30003           # readsb SBS feed listening"
+echo "  python3 $BRIDGE --selftest           # bridge smoke test"
 echo "The PFD picks up traffic automatically (Setup → Display → MAP LAYERS → TFC)."
 echo "A reboot is recommended so the DVB-T blacklist takes effect."

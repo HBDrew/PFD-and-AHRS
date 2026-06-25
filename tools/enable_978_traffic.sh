@@ -47,14 +47,18 @@ fi
 
 cp -a "$DEFAULT" "$DEFAULT.bak.$(date +%Y%m%d%H%M%S)"
 
-# Append a line that EXTENDS NET_OPTIONS (the file is sourced as shell), so we
-# never have to parse/rewrite the existing value — whatever it was, we just add
-# our connector to it.
-cat >> "$DEFAULT" <<EOF
+# Heal leftovers from the previous version of this script, which appended a
+# self-referential  NET_OPTIONS="$NET_OPTIONS …"  line.  readsb's systemd unit
+# loads this file with EnvironmentFile=, which (unlike a shell `source`) does
+# NOT expand $NET_OPTIONS — so that line passed a literal "$NET_OPTIONS" token
+# to readsb, which dropped the real --net-sbs-port options and crash-looped.
+sed -i "\|$MARKER|d" "$DEFAULT"
+sed -i '/^NET_OPTIONS="\$NET_OPTIONS/d' "$DEFAULT"
 
-$MARKER
-NET_OPTIONS="\$NET_OPTIONS $CONNECTOR"
-EOF
+# Add the connector to the existing NET_OPTIONS line, IN PLACE, before its
+# closing quote.  Editing the real value — rather than re-referencing it — is
+# what makes this work under systemd's EnvironmentFile parser.
+sed -i "s|^\(NET_OPTIONS=\"[^\"]*\)\"|\1 $CONNECTOR\"|" "$DEFAULT"
 
 echo "Added uat_in connector to $DEFAULT (backup saved alongside)."
 systemctl restart readsb
@@ -68,6 +72,6 @@ Verify:
   # the existing adsb-gdl90 bridge — check the MFD ADS-B 'R' count climbs when
   # UAT traffic is around (it shares the radio 'R' tally with 1090).
 
-Revert: remove the two added lines at the bottom of $DEFAULT (or restore the
-.bak file) and 'systemctl restart readsb'.
+Revert: restore the .bak file saved alongside $DEFAULT (or delete the
+'$CONNECTOR' from its NET_OPTIONS line) and 'systemctl restart readsb'.
 EOF
