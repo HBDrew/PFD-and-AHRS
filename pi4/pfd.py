@@ -702,22 +702,14 @@ def _ssync_publish_notams(texts):
         chunks.append(cur)
     for c in chunks:
         _screen_sync.publish(_ssync_mod.KIND_NOTAMS, {"notams": c})
-    print(f"[NOTAM-SYNC] tx {sum(len(c) for c in chunks)} in {len(chunks)} chunks",
-          flush=True)
 
 
 def _ssync_apply_notams(data):
     """Screen-sync KIND_NOTAMS callback — adopt a peer's fetched NOTAMs so a
     display without its own FAA key still shows them."""
     store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
-    n = len(data.get("notams", []))
     if store is not None:
         store.add_notams(data.get("notams", []))
-        print(f"[NOTAM-SYNC] rx {n} -> store now "
-              f"{len(store.advisories('NOTAM'))}", flush=True)
-    else:
-        print(f"[NOTAM-SYNC] rx {n} DROPPED — no weather store "
-              f"(_adsb_client={_adsb_client is not None})", flush=True)
 
 
 def _ssync_push_notam_creds():
