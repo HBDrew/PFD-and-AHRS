@@ -60,10 +60,14 @@ KIND_NOTAMS = "notams"  # the fetched FAA NOTAM list (advisory strings) — lets
                         # screen with the FAA key feed NOTAMs to peers that have
                         # no key (same model as winds).  One full snapshot per
                         # packet, LWW like the normal kinds.
+KIND_NOTAMCREDS = "notamcreds"  # FAA NOTAM credentials (client_id/secret/env) —
+                        # pushed on demand so the key is entered once and stored
+                        # on every display.  Sent only when a cred field is
+                        # committed, not continuously.
 KIND_HELLO = "hello"  # heartbeat, no payload — keeps peer-status live
 
 ALL_KINDS = (KIND_BUGS, KIND_BARO, KIND_NAV, KIND_AHRS, KIND_GPS, KIND_FPL,
-             KIND_APPR, KIND_FPLLIB, KIND_WINDS, KIND_NOTAMS)
+             KIND_APPR, KIND_FPLLIB, KIND_WINDS, KIND_NOTAMS, KIND_NOTAMCREDS)
 
 # Transport selectors.  "auto" sends on every usable interface (USB
 # and network alike); "usb" / "net" restrict sends to one category.

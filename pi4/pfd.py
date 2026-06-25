@@ -658,8 +658,10 @@ def _ssync_kinds_from_cs(direction):
     # Open-Meteo's shared-per-IP rate limit).
     out.add(_ssync_mod.KIND_WINDS)
     # NOTAMs ride the same always-on, both-ways model as winds: a screen with the
-    # FAA key feeds the fetched NOTAMs to peers that have no key.
+    # FAA key feeds the fetched NOTAMs to peers that have no key.  NOTAM creds
+    # ride along too so the key can be entered once and pushed to every display.
     out.add(_ssync_mod.KIND_NOTAMS)
+    out.add(_ssync_mod.KIND_NOTAMCREDS)
     return out
 
 
@@ -694,6 +696,38 @@ def _ssync_apply_notams(data):
     store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
     if store is not None:
         store.add_notams(data.get("notams", []))
+
+
+def _ssync_push_notam_creds():
+    """Broadcast the FAA NOTAM credentials to peer screens — entered once,
+    stored on every display.  Called when a NOTAM cred field is committed."""
+    if _screen_sync is None:
+        return
+    cs = disp.get("cs", {})
+    _screen_sync.publish(_ssync_mod.KIND_NOTAMCREDS, {
+        "client_id":     cs.get("notam_client_id", ""),
+        "client_secret": cs.get("notam_client_secret", ""),
+        "env":           cs.get("notam_env", "preprod"),
+    })
+
+
+def _ssync_apply_notamcreds(data):
+    """Screen-sync KIND_NOTAMCREDS callback — adopt pushed FAA NOTAM creds and
+    persist locally.  Only non-empty fields overwrite, so a partial push (key
+    entered before secret) never clears a value already on a peer."""
+    cs = disp.get("cs", {})
+    changed = False
+    for fld, src in (("notam_client_id", "client_id"),
+                     ("notam_client_secret", "client_secret"),
+                     ("notam_env", "env")):
+        v = (data.get(src) or "").strip()
+        if fld == "notam_env":
+            v = v.lower()
+        if v and v != cs.get(fld, ""):
+            cs[fld] = v
+            changed = True
+    if changed:
+        _settings.mark_dirty()
 
 
 def _ssync_refresh_kinds():
@@ -6999,6 +7033,11 @@ def handle_event(event, demo_mode):
                             # Changing AHRS URL live-restarts the SSE stream
                             if target == "ahrs_url":
                                 _restart_sse(buf)
+                            # Entering a NOTAM cred pushes it to peer screens so
+                            # the key is stored on every display, not just here.
+                            if target in ("notam_client_id",
+                                          "notam_client_secret", "notam_env"):
+                                _ssync_push_notam_creds()
                         else:
                             disp["fp"][target] = buf
                         _settings.mark_dirty()
@@ -17748,6 +17787,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
     _screen_sync.on(_ssync_mod.KIND_WINDS, _ssync_apply_winds)
     _screen_sync.on(_ssync_mod.KIND_NOTAMS, _ssync_apply_notams)
+    _screen_sync.on(_ssync_mod.KIND_NOTAMCREDS, _ssync_apply_notamcreds)
     _screen_sync.start()
     print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
           f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
