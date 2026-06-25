@@ -1845,11 +1845,15 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     if ground_stations and settings.get("map_show_metar", False) and not fast:
         _draw_ground_stations(surf, ground_stations, _project, font, rect,
                               symbol_scale)
-    # Always-on flight-category dots — except on the winds / NEXRAD focus pages,
-    # where they'd fight the barbs / radar for the same pixels (keep those clean).
+    # Flight-category dots — drawn on every page, but auto-suppressed on the
+    # winds / NEXRAD focus pages so they don't fight the barbs / radar — UNLESS
+    # MET is explicitly enabled (its own layer pill), in which case the pilot
+    # asked for the dots, so show them anyway (with the same zoom-gated ident
+    # labels as the MET page).
     if (metars and not fast
-            and not settings.get("map_show_winds", False)
-            and not settings.get("map_show_nexrad", False)):
+            and (settings.get("map_show_metar", False)
+                 or not (settings.get("map_show_winds", False)
+                         or settings.get("map_show_nexrad", False)))):
         _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
                      sin_r, cos_r, font=font, range_nm=range_nm)
     # Winds-aloft barbs — their own overlay (WND).
