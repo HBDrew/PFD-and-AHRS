@@ -8,6 +8,28 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### HITS-PREVIEW  Recapture approach previews (HITS fix + orange fix boxes)
+Status: **OPEN — queued for tomorrow; code fix already in, captures pending**
+Context: the recurring "no HITS boxes in previews" bug was the scenes setting
+`active:True` but not `loaded:True` — `_approach_hits_refresh`'s fallback gates
+on `loaded` (fixed in `render_pfd_offline.py`: `_setup_synthetic_approach` /
+`_setup_hits_boxes` now set `loaded:True`).  A new `_setup_approach_fixes` scene
++ `preview_approach_fixes` was added (KSEZ RWY 03 legs JAKLY/DARTS/WULPI/RW03,
+aircraft ~7 NM out) to show the **amber approach-fix sign-post diamonds**.
+To do on the displays (pfd5 for pi4/pi5, the Zero for piZ):
+  - Run `./tools/regen_previews.sh pi4` (and piZ) and confirm the HITS boxes
+    actually render now (the `loaded:True` fix) — last time they were absent
+    even though the approach was "active".
+  - Frame/verify the new `preview_approach_fixes` orange-box scene.
+  - Want a shot with **HITS ON + an approach with a fix (orange box) + the
+    magenta course line** all visible together.
+  - §16 manual wording: approach-fix sign-posts show even when HITS is OFF
+    (the orange boxes are independent of the cyan HITS corridor).
+  - While regenerating: also refresh the previews touched by the MAG/TRUE work
+    — UNITS settings tab (new HDG/CRS REF row), FPL editor (SAVE/REVERSE/LOAD +
+    magnetic leg courses), and the heading-tape shots (now show the `MAG` tag
+    and magnetic numbers).
+
 ### TZ-HITCH  Timezone lookup blocks the render thread (~1.7 s freeze)
 Status: **OPEN — found via MFD cProfile (moving sim); not started**
 Context: the MFD strip local time (`_localtime.offset_hours`, pfd.py:14688), its
