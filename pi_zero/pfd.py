@@ -11988,7 +11988,11 @@ def _wx_menu_items():
              ("WINDS", winds_lbl, winds_on)]
     for kind in ("AIRMET", "SIGMET", "NOTAM"):
         n = len(store.advisories(kind)) if store else 0
-        items.append((kind, f"{kind}" + (f"  ({n})" if n else ""), n > 0))
+        # NOTAM list is capped to NOTAM_LIST_MAX in the readout, so badge it as
+        # "100+" when more exist — the count then matches what the list shows.
+        cnt = (f"  ({NOTAM_LIST_MAX}+)" if kind == "NOTAM" and n > NOTAM_LIST_MAX
+               else (f"  ({n})" if n else ""))
+        items.append((kind, f"{kind}{cnt}", n > 0))
     return items
 
 
