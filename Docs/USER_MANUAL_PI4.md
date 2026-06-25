@@ -303,8 +303,8 @@ Blank during normal flight. Appear only when attention required.
 | `TER INH APR` | Amber | TAWS callouts auto-inhibited because the aircraft is inside the approach corridor of an active synthetic approach (§16). Clears automatically when you leave the corridor or cancel the approach. |
 | `GPS TRK` | Magenta | GPS TRK heading mode active |
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
-| `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites |
-| `NO GPS` | Red | No GPS signal |
+| `NO FIX` | Amber | GPS hardware responding (NMEA flowing) but no satellite lock yet — acquiring. A shadow/peer display mirrors the source's GPS, so it too shows **NO FIX** (not NO SIGNAL) while the source is still acquiring. |
+| `NO SIGNAL` | Red | GPS hardware not responding (no NMEA at all). If GPS is the only position source, airspeed/altitude also show a red ✕. |
 
 ---
 
@@ -419,6 +419,7 @@ The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and 
 | DISPLAY | **ALERT VOLUME** | 1 – 10 | 8 | Callout volume scale. 0 is effectively muted; 10 is unity. Applied live to the pygame mixer; takes effect on the next callout. |
 | DISPLAY | **SUN POSITION** | FIXED / REAL | REAL | SVT terrain lighting: FIXED uses a SE mid-morning sun; REAL pulls UTC + GPS lat/lon through the NOAA solar formulas. |
 | DISPLAY | **FLIGHT PATH** | OFF / ON | ON | Flight-path vector (velocity-vector) marker on the AI. See §4. |
+| DISPLAY | **HITS BOXES** | OFF / ON | ON | Highway-in-the-sky approach corridor — the cyan 3D boxes drawn on the AI during an active synthetic approach (§16). Turn off to declutter the AI on approach; the VDI / CDI still work. |
 | MAP | **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §17. |
 | MAP | **MAP RANGE** | 1/2/5/10/20/40/80/160 NM · AUTO | 5 NM | Default inset radius; AUTO fits to the active direct-to. |
 | MAP | **WINDS ALT** | 3k / 6k / 9k / 12k / 18k ft | 9k | Winds-aloft level shown on the WND overlay. See §16. |
@@ -847,6 +848,7 @@ The full set of assignable fields:
 | Altitude | **ALT** | Baro altitude, ft |
 | Above-ground | **AGL** | Height above terrain, ft (needs terrain data) |
 | Vertical speed | **VS** | Climb/descent, ft/min |
+| Wind | **WIND** | Wind direction/speed, `DDD/SS` — from the AHRS/sim wind solution, else computed on the display from TAS + GPS track (assumes ISA temperature until an OAT sensor is fitted); `---/--` on the ground or with no IAS / GPS track |
 | Time | **UTC** | Zulu clock, HH:MMZ |
 | Baro setting | **BARO** | Altimeter setting (inHg or hPa per units) |
 | Satellites | **SAT** | GPS satellites in solution |
@@ -934,7 +936,7 @@ When no waypoint is active the strip is still drawn but reads **"DIRECT  →"** 
 
 ### Flight plan (multi-waypoint)
 
-Tap **FPL** (top-right on the MFD, §15) to open the flight-plan editor — an ordered list of waypoints where each leg is one ICAO ident. Tap a row to **activate that leg** as the direct-to (the active leg is highlighted green with an **● ACTIVE** badge and its waypoint turns magenta); auto-sequencing advances to the next leg as you pass each waypoint.
+Tap **FPL** (top-right on the MFD, §15) to open the flight-plan editor — an ordered list of waypoints where each leg is one ICAO ident, and each row shows that leg's **distance and course (°T)**. Tap a row to **activate that leg** as the direct-to (the active leg is highlighted green with an **● ACTIVE** badge and its waypoint turns magenta); auto-sequencing advances to the next leg as you pass each waypoint, **leading the turn (fly-by)** — it sequences early using a groundspeed-based turn-anticipation distance so the aircraft rolls onto the next course without overshooting the fix (the final approach leg stays fly-over). Vertical step-downs on an approach are distance-to-threshold based, so leading the lateral turn never advances the altitude profile early.
 
 ![Flight-plan editor — KPRC → KSEZ → KFLG with the KSEZ leg active, +ICAO/+LAT-LON/+USER add buttons, SAVE / LOAD, and a DEACTIVATE button](../pi4/previews/preview_fpl_editor.png)
 
@@ -1274,7 +1276,7 @@ Setup → System → **FLIGHT SIMULATOR**. The setup screen lets you pick:
 |---------|---------|
 | Airport preset grid | 12 US airports covering mountain, coastal, plains, and desert terrain. Tap to highlight (cyan border). Starts the simulator parked on the field at the runway elevation. |
 | **ALT / HDG / SPEED** tiles | Tap a tile to open the numpad and set the initial cruise altitude, heading, and indicated airspeed that the autopilot will fly to once airborne. |
-| **GPS / BARO / AHRS** ON / FAIL pairs | Inject a sensor failure before the sim starts. FAIL makes the corresponding badge appear (`NO GPS`, `GPS ALT`, `AHRS FAIL`) and disables that sensor's contribution to the flight model so you can practice partial-panel scenarios. |
+| **GPS / BARO / AHRS** ON / FAIL pairs | Inject a sensor failure before the sim starts. FAIL makes the corresponding badge appear (`NO SIGNAL`, `GPS ALT`, `AHRS FAIL`) and disables that sensor's contribution to the flight model so you can practice partial-panel scenarios. |
 | **START SIM** / **CANCEL** | Start drops you at the selected airport and immediately commands a takeoff; the autopilot holds the initial ALT/HDG/SPD. |
 
 ### 12 airport presets
@@ -1290,7 +1292,7 @@ KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA — chose
 
 | Row / button | What it does |
 |--------------|--------------|
-| **GPS / BARO / AHRS** ON / FAIL pairs | Toggle individual sensor failures mid-flight. Effects mirror SIM SETUP — `NO GPS` / `GPS ALT` / `AHRS FAIL` badges appear, the affected instruments fall back the same way they would in the aircraft. Failures revert as soon as you toggle back to ON. |
+| **GPS / BARO / AHRS** ON / FAIL pairs | Toggle individual sensor failures mid-flight. Effects mirror SIM SETUP — `NO SIGNAL` / `GPS ALT` / `AHRS FAIL` badges appear, the affected instruments fall back the same way they would in the aircraft. Failures revert as soon as you toggle back to ON. |
 | **FOLLOW** — BUGS / FLT PLAN | AP source. BUGS = pure bug-tracker (heading bug + alt bug + speed bug). FLT PLAN = couples the AP to the active direct-to or synthetic approach with a 45° intercept; on an approach it slides down the GS once you're above it. See below for the full intercept logic. |
 | **PAUSE** (amber) / **RESUME** (green) | Freezes `_sim_state.tick()` while keeping the rest of the UI live — bugs, baro, units, menus all stay responsive. Useful when you want to set up a scenario without the aircraft drifting away from you. The button label flips to RESUME when paused so the next tap obviously starts time again. |
 | **EXIT SETUP** (neutral) | Closes the SIM CONTROLS overlay. **The simulator keeps running** — you're just dismissing the modal. |
@@ -1332,7 +1334,7 @@ Inject a sensor failure either before start (SIM SETUP) or mid-flight (SIM CONTR
 
 | Failure | Effect |
 |---------|--------|
-| **GPS** | `NO GPS` badge, magenta ground-track tick hidden, GPS-TRK mode forced off, airport and runway overlays dim. |
+| **GPS** | `NO SIGNAL` badge, magenta ground-track tick hidden, GPS-TRK mode forced off, airport and runway overlays dim. |
 | **BARO** | `GPS ALT` badge; altitude tape falls back to GPS altitude; baro setting shows `GPS ALT` in magenta. |
 | **AHRS** | `AHRS FAIL` badge; attitude freezes (classic AI fail). Tapes still work from GPS. |
 

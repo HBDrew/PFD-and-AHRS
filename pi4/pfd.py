@@ -13872,7 +13872,7 @@ _MFD_STRIP_AVAILABLE = (
     ("oat",  "OAT",  False, "Outside air temperature (not yet wired)"),
     ("da",   "DA",   False, "Density altitude (not yet wired)"),
     ("pa",   "PA",   False, "Pressure altitude (not yet wired)"),
-    ("wind", "WIND", False, "Wind direction / speed (not yet wired)"),
+    ("wind", "WIND", False, "Wind direction / speed"),
     ("time", "UTC",  False, "Current Zulu (UTC) clock time"),
     ("baro", "BARO", False, "Altimeter setting"),
     ("sat",  "SAT",  False, "GPS satellites in use"),

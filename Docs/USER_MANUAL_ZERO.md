@@ -196,8 +196,8 @@ Badges appear **only when something requires attention** — the strip is blank 
 | `EXP APT` | Orange | Airport data older than expiry |
 | `GPS TRK` | Magenta | GPS TRK heading mode active |
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
-| `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites |
-| `NO GPS` | Red | No GPS signal |
+| `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites visible, no fix yet |
+| `NO GPS` | Red | GPS hardware not responding / no satellites |
 
 ---
 
@@ -605,6 +605,8 @@ Within 8 nm of an airport, a tan polygon is drawn for each runway, projected fro
 Extended centerlines (dashed) project 10 nm outward from each threshold along the runway bearing, visible within 15 nm of the airport. At night, lit runways are distinguishable from unlit by the runway edge colour. The centerlines give an at-a-glance final-approach reference for visual approaches without requiring a flight plan.
 
 Runway data comes from OurAirports `runways.csv` (~14,700 runways worldwide) and is downloaded alongside the airport CSV in a single UPDATE action.
+
+**Published approaches (shared from a Pi 4/5).** The Pi Zero can't load an instrument approach itself, but when a Pi 4/5 on the cabin network loads one, the Zero **receives it over screen-sync** (KIND_APPR) and draws the approach as a cyan course line on the moving map; while it's active the approach's current leg drives the raw CDI. There are no HITS boxes or synthetic-vision approach cues on the Zero — those stay on the Pi 4/5.
 
 ### Downloading
 
