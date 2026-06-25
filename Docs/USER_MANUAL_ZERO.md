@@ -48,9 +48,11 @@ The display is divided into five fixed zones:
 | Right tape | 82 px wide | Altitude + VSI |
 | Centre AI | remainder | Attitude (plain horizon) |
 | Bottom strip | 44 px tall | Heading tape |
-| Top strip | 22 px tall | Bug readouts |
+| Top ribbon | 22 px tall | Bug readouts + a configurable data ribbon (see below) |
 
 Everything is rendered at 30 fps directly on the framebuffer — there is no operating-system UI underneath.
+
+The band across the top of the AI (between the groundspeed and altitude bug boxes) is a **configurable 5-slot readout ribbon**, default **AGL · TAS · OAT · WIND · ETAD**. Tap it to choose fields — it keeps its own selection, separate from the MFD data strip (§16A), and persists in `data/settings.json`. Alert annunciations paint over it.
 
 ---
 
@@ -634,11 +636,11 @@ The Pi Zero has a full-screen moving-map MFD in addition to the PFD.
 
 - **Swap PFD ↔ MFD:** a **3-finger hold (~2 s)** (the 2-finger 0.8 s hold opens the setup menu — §8). The swap is gated by **ENABLE MFD** (§13); the unit boots to the PFD.
 - **Chrome:** **D→** (direct-to) top-left, **FPL** top-right, the **TRK↑/N↑** orientation label, **OVLY** overlay cycle, the **RNG** label, **−/+** zoom buttons, and a **CTR** recenter button that appears when the map is panned. Drag the map to pan; tap **CTR** (or the own-ship chevron) to recenter.
-- **Data strip:** a bottom row of **8 readout slots** (GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA by default). Tap a slot to open the picker, then tap a field to assign it — the selection advances to the next slot so you can fill the row with successive taps. Persists in `data/settings.json`. Assignable fields: **GS** (groundspeed), **AS** (indicated airspeed), **TAS**, **TRK** (track), **HDG**, **ALT**, **AGL** (above terrain), **VS**, **UTC**, **BARO**, **SAT**, and the nav-derived **WPT · BTW · DTK · DIST · DISW · XTE · ETE · ETEW · ETA · ETW**. The nav fields render magenta and show `--` until a Direct-To or flight-plan leg is active.
+- **Data strip:** a bottom row of **8 readout slots** (GS · TRK · ALT · WPT · BTW · DIST · ETE · ETA by default). Tap a slot to open the picker, then tap a field to assign it — the selection advances to the next slot so you can fill the row with successive taps. Persists in `data/settings.json`. Assignable fields: **GS** (groundspeed), **AS** (indicated airspeed), **TAS**, **TRK** (track), **HDG**, **ALT**, **AGL** (above terrain), **VS**, **WIND** (direction/speed, `DDD/SS`), **UTC**, **BARO**, **SAT**, and the nav-derived **WPT · BTW · DTK · DIST · DISTD · XTE · ETE · ETED · ETA · ETAD**. The nav fields render magenta and show `--` until a Direct-To or flight-plan leg is active; the `…D` fields are to the **final destination** (whole route) versus the plain fields to the active waypoint. **ETA / ETAD show local time by default** (`HH:MM`) or Zulu (`HH:MMZ`) per an **ARRIVAL TIME (LOCAL / ZULU)** toggle in the picker.
 
 ![MFD data-field picker — eight slot pills across the top (selected WPT ringed cyan) over the assignable-field grid; nav-derived fields tagged "needs D2" in magenta](../pi_zero/previews/preview_mfd_strip_setup.png)
 
-The picker shows the eight slot pills across the top (the one being edited is ringed cyan) above a grid of assignable fields; nav-derived fields are tagged **needs D2** in magenta because they read `--` until a Direct-To or flight-plan leg is active.
+The picker shows the eight slot pills across the top (the one being edited is ringed cyan) above a grid of assignable fields; nav-derived fields are tagged **needs D2** in magenta because they read `--` until a Direct-To or flight-plan leg is active. An **ARRIVAL TIME** toggle (**LOCAL / ZULU**, default LOCAL) flips every ETA / ETAD readout between the destination's local time and Zulu.
 
 The map's **MAP LAYERS** (§10) and the **winds (WND)** overlay (§10) render here, plus the weather and traffic overlays below.
 

@@ -67,9 +67,13 @@ The display is divided into five fixed zones (sizes shown for 1024×600 default)
 | Right tape | 131 px wide | Altitude + VSI |
 | Centre AI | remainder (~775 px) | Attitude + synthetic vision terrain |
 | Bottom strip | 55 px tall | Heading tape |
-| Top strip | 28 px tall | Bug readouts |
+| Top ribbon | 28 px tall | Bug readouts + a configurable data ribbon (see below) |
 
 Everything is rendered at 30 fps using OpenGL ES vector graphics directly on the framebuffer.
+
+### PFD top ribbon
+
+The band across the top of the AI — between the groundspeed and altitude bug boxes — is a **configurable 5-slot readout ribbon**, default **AGL · TAS · OAT · WIND · ETAD**. **Tap the ribbon** to open its picker and assign any of the same fields the MFD data strip offers (§15); the PFD ribbon keeps its **own** selection, separate from the MFD strip, and both persist in `data/settings.json`. Alert annunciations paint over the ribbon when they fire, so a warning is never hidden by it.
 
 ---
 
@@ -856,16 +860,16 @@ The full set of assignable fields:
 | Bearing-to | **BTW** | Bearing to the active waypoint, ° |
 | Desired track | **DTK** | Course of the active leg, ° |
 | Distance | **DIST** | Distance to the active waypoint, NM |
-| Distance (dest.) | **DISW** | Distance through all remaining legs, NM |
+| Distance (dest.) | **DISTD** | Distance to the final destination through all remaining legs, NM |
 | Cross-track | **XTE** | Cross-track error off the active leg, NM |
 | Time en route | **ETE** | Time to the active waypoint, MM:SS / H:MM |
-| ETE (dest.) | **ETEW** | Time through all remaining legs |
-| Arrival | **ETA** | Estimated arrival at the active waypoint, Zulu |
-| Arrival (dest.) | **ETW** | Estimated arrival at the final waypoint, Zulu |
+| ETE (dest.) | **ETED** | Time enroute to the final destination |
+| Arrival | **ETA** | Arrival clock at the active waypoint — **local time by default** (`HH:MM`), or Zulu (`HH:MMZ`) per the ARRIVAL TIME toggle |
+| Arrival (dest.) | **ETAD** | Arrival clock at the final destination — local by default, Zulu per the ARRIVAL TIME toggle |
 
-The seven nav-derived fields (**WPT, BTW, DTK, DIST, DISW, XTE, ETE, ETEW, ETA, ETW**) render magenta and show `--` when there's no active Direct-To or flight-plan leg; once a waypoint is active they fill in live.
+The nav-derived fields (**WPT, BTW, DTK, DIST, DISTD, XTE, ETE, ETED, ETA, ETAD**) render magenta and show `--` when there's no active Direct-To or flight-plan leg; once a waypoint is active they fill in live. The `…D` fields (DISTD / ETED / ETAD) are to the **final destination** (the whole route), versus the plain fields to the **active waypoint**.
 
-**Tap any slot** to open the field picker. The eight current slots show as pills across the top (the selected one ringed cyan); tap a field in the grid below to assign it to the selected slot — the selection then auto-advances to the next slot so you can fill the whole row with successive taps. Nav-derived fields are tagged **needs D2** and render magenta.
+**Tap any slot** to open the field picker. The eight current slots show as pills across the top (the selected one ringed cyan); tap a field in the grid below to assign it to the selected slot — the selection then auto-advances to the next slot so you can fill the whole row with successive taps. Nav-derived fields are tagged **needs D2** and render magenta. The picker also carries an **ARRIVAL TIME** toggle (**LOCAL / ZULU**, default **LOCAL**) that flips every ETA / ETAD readout between the destination's local time and Zulu.
 
 ![MFD data-field picker — eight slot pills on top (WPT selected) over a grid of assignable fields; nav fields tagged "needs D2" in magenta](../pi4/previews/preview_mfd_strip_setup.png)
 
@@ -999,13 +1003,16 @@ Reuses the same SRTM lookup the SVT renderer does for the camera-floor clamp, so
 
 ### Synthetic Approach (HITS + VDI)
 
-The PFD can load a synthetic 3° approach to any runway in the airport database. While an approach is active you get three coordinated cues:
+The PFD can load a synthetic approach to any runway in the airport database. While an approach is active you get a set of coordinated cues:
 
-- **HITS boxes** (cyan, 3D) along the extended centreline — fly through them.
+- **HITS boxes** (cyan, 3D) along the approach path — fly through them.
 - **VDI** (vertical glideslope diamond) on the right side of the AI — fly to the diamond.
 - **CDI** scaled to ±0.3 NM full-scale (see §16) — fly to the diamond.
+- **Approach-fix sign-posts** — an **amber** 3D diamond at each approach fix, floating at that fix's **published crossing altitude** with a vertical post dropping to the terrain, so you can eyeball whether you're high or low on the step-down profile.
+- **Next-fix label** — the fix you're currently flying to is labelled (amber) with its **ident + crossing altitude** above its diamond; only the active fix is labelled, to keep the view clear.
+- **Magenta approach course line** — the whole approach (initial fix → threshold, every leg) is drawn on the SVT as a bright-magenta terrain-draped course line, alongside the cyan HITS corridor.
 
-The trace on the moving-map inset turns cyan to match while approach is active; the magenta direct-to line and HITS boxes are mutually exclusive — when you load an approach the magenta D2 trace is hidden.
+The trace on the moving-map inset turns cyan to match while the approach is active. The PFD also previews the **next flight-plan leg** as a **faded-magenta** 3D trace (the same colour the MFD uses for remaining legs) so you can see the upcoming turn before you get there.
 
 ### Loading an approach
 
@@ -1024,7 +1031,7 @@ The trace on the moving-map inset turns cyan to match while approach is active; 
 
 ### HITS boxes
 
-Cyan rectangles drawn along the published 3° glideslope at the runway centreline. Defaults: 300 ft wide × 200 ft tall, spaced 1000 ft apart, starting at 1000 ft out and continuing to 5 NM final. Boxes are depth-tested against the SVT terrain so they're occluded correctly by intervening ridges.
+Cyan rectangles drawn along the approach path at the runway centreline. The corridor spans **threshold → the initial fix (IAF)** and follows the approach's **published step-down crossing altitudes** — not a fixed 3° / 5 NM final (that's only the fallback when a procedure has no published altitudes). Box geometry is unchanged: 300 ft wide × 200 ft tall, spaced 1000 ft apart, capped in count, and depth-tested against the SVT terrain so they're occluded correctly by intervening ridges.
 
 The box centreline is the pilot's eye-line — fly the centre of the box, not the bottom. Each box is one closed-loop polyline (TL → TR → BR → BL → TL), so the geometry is light enough to add zero measurable cost to the SVT render.
 
@@ -1068,7 +1075,7 @@ The magenta direct-to line is drawn as a polyline along the **great circle** fro
 
 ### When an approach is active
 
-The magenta D2 line is replaced by a cyan line drawn from the **threshold along the reciprocal of the published course** (the actual extended centreline) for the same 5 NM final length the HITS boxes cover. The ETE label in the corner also turns cyan to match the HITS / VDI / cyan-CDI colour cluster (§16).
+The magenta D2 line is replaced by a cyan line drawn from the **threshold along the reciprocal of the published course** (the actual extended centreline), following the published final-approach course that the HITS corridor covers. The ETE label in the corner also turns cyan to match the HITS / VDI / cyan-CDI colour cluster (§16).
 
 ### Zoom ranges + orientation
 
@@ -1287,7 +1294,7 @@ KSEZ, KPHX, KDEN, KLAX, KSFO, KLAS, KSEA, KOSH, KJFK, KORD, KDFW, KMIA — chose
 
 ![PFD inside a running sim — red SIM ✕ button at the top centre of the AI, full instrumentation live behind it](../pi4/previews/pfd_gl/preview_sim_running.png)
 
-- A small red **SIM ✕** button appears just above the AI centre. It serves a dual role: it tells you the simulator is active, and it's the tap target that opens the **SIM CONTROLS** overlay on top of the live PFD. (Without the button it's easy to forget the sim is running and end up killing the PFD process to escape it — the red ✕ is intentional.)
+- A small red **SIM ✕** button appears just under the slip/skid bar at the top of the AI (kept clear of the approach corridor below). It serves a dual role: it tells you the simulator is active, and it's the tap target that opens the **SIM CONTROLS** overlay on top of the live PFD. (Without the button it's easy to forget the sim is running and end up killing the PFD process to escape it — the red ✕ is intentional.)
 - Tap the SIM ✕ button to open **SIM CONTROLS**:
 
 | Row / button | What it does |
