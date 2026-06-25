@@ -137,6 +137,12 @@ WINDS_DISK_MAX_AGE_S  = 3 * 3600   # a zone is "stale" after 3 h — GFS only re
                                    # (when connected); within the hour we read disk.
 WINDS_ROUTE_WIDTH_NM  = 25         # (legacy) winds corridor half-width — unused by the national grid
 NOTAM_INTERVAL_S = 600    # NOTAM refresh cadence (FAA API; only polled with a key)
+# NOTAMs are far denser than METAR stations, so they use their own — much
+# tighter — radius than the weather layers: a 60-100 nm weather ring over a
+# metro returns hundreds of mostly-irrelevant NOTAMs.  Follows map zoom.
+NOTAM_MIN_RADIUS_NM = 10   # floor — keep the local field(s) covered when zoomed in
+NOTAM_MAX_RADIUS_NM = 40   # cap — biggest NOTAM query (keeps the list readable)
+NOTAM_RADIUS_ZOOM_K = 1.5  # query radius = map range × this (clamped min/max)
 NEXRAD_INTERVAL_S = 300   # radar refresh cadence (NEXRAD updates ~5 min)
 NEXRAD_MAX_PX     = 480   # fetched raster long-side px (decode/scale cost)
 

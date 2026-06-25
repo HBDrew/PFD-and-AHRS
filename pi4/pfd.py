@@ -2469,6 +2469,23 @@ def _wx_view():
     return float(clat), float(clon), float(radius)
 
 
+def _notam_view():
+    """(center_lat, center_lon, radius_nm) for the NOTAM query — same center as
+    _wx_view but a far tighter radius.  NOTAMs are much denser than METAR
+    stations, so the 60-100 nm weather radius pulls hundreds of mostly-
+    irrelevant items (one metro returns the whole region's NOTAMs).  Scope them
+    to the immediate area and follow zoom (NOTAM_MIN/MAX_RADIUS_NM)."""
+    if disp.get("display_mode") == "mfd":
+        clat, clon = _mfd_effective_center()          # pan-aware
+        rng = _mfd_last_range or 10                    # AUTO-resolved range
+    else:
+        clat = float(disp.get("lat", DEMO_LAT))
+        clon = float(disp.get("lon", DEMO_LON))
+        rng = int(disp["ds"].get("map_zoom_nm", 5)) or 5
+    radius = max(NOTAM_MIN_RADIUS_NM, min(NOTAM_MAX_RADIUS_NM, rng * NOTAM_RADIUS_ZOOM_K))
+    return float(clat), float(clon), float(radius)
+
+
 def _notam_fetch(lat, lon, radius_nm):
     """Poller fetch shim: NOTAMs using the FAA credentials entered in
     Connectivity (cs) — falls back to the env vars, no-ops without either."""
@@ -18369,7 +18386,7 @@ def main():
         # no-ops returning [] until a key is present — so typing one in enables
         # NOTAMs without a restart.
         global _notam_client
-        _notam_client = _wx.AwcPoller(view_fn=_wx_view,
+        _notam_client = _wx.AwcPoller(view_fn=_notam_view,
                                       fetch_fn=_notam_fetch,
                                       interval_s=NOTAM_INTERVAL_S,
                                       name="NotamPoller")

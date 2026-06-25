@@ -6455,6 +6455,18 @@ def _wx_view():
     return float(clat), float(clon), float(radius)
 
 
+def _notam_view():
+    """(center_lat, center_lon, radius_nm) for the NOTAM query — same center as
+    _wx_view but a far tighter radius.  NOTAMs are much denser than METAR
+    stations, so the wide weather radius pulls hundreds of mostly-irrelevant
+    items; scope them to the immediate area and follow zoom
+    (NOTAM_MIN/MAX_RADIUS_NM)."""
+    clat, clon = _mfd_effective_center()
+    rng = int(disp["ds"].get("map_zoom_nm", 10)) or 10
+    radius = max(NOTAM_MIN_RADIUS_NM, min(NOTAM_MAX_RADIUS_NM, rng * NOTAM_RADIUS_ZOOM_K))
+    return float(clat), float(clon), float(radius)
+
+
 def _notam_fetch(lat, lon, radius_nm):
     """Poller shim: NOTAMs using the FAA credentials entered in Connectivity
     (cs), falling back to the env vars; no-ops without either."""
