@@ -136,6 +136,7 @@ import screen_sync as _ssync_mod
 import moving_map as _map_mod
 import sun as _sun_mod
 import hits as _hits_mod
+import magvar as _magvar
 import audio_alerts
 
 DEG = math.pi / 180
@@ -331,6 +332,11 @@ disp["ds"] = {                      # display settings
     # clocks between local time and Zulu.
     "mfd_strip_kinds":  ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "etad"],
     "eta_local":        True,    # ETA/ETAD shown in local time (False = Zulu)
+    # Heading / course reference.  Everything is computed TRUE internally
+    # (GPS track, true-calibrated compass, true great-circle courses); this
+    # flips the PILOT-FACING display to MAGNETIC (charts/plates/ATC norm) via
+    # the WMM2025 variation at ownship position.  True == every bearing as-is.
+    "hdg_ref":          "mag",   # "mag" | "true"
     # PFD top readout ribbon — 5 slots in the band above the AI (tap it to
     # configure).  Same readout kinds as the MFD strip; defaults to fields that
     # complement the tapes rather than duplicate them.
@@ -558,6 +564,38 @@ def _resolve_hdg_source(hdg_src_pref, gps_ok, ahrs_ok, speed_kt):
     if mag_ok:
         return False, "M", WHITE
     return False, "?", AMBER
+
+
+def _hdg_ref():
+    """Pilot-selected heading/course reference: "mag" (default) or "true"."""
+    return disp["ds"].get("hdg_ref", "mag")
+
+
+def _to_disp_brg(true_deg, lat=None, lon=None):
+    """Convert a TRUE bearing/heading to the pilot-selected display reference.
+
+    Everything is TRUE internally (GPS track, true-calibrated compass, true
+    great-circle courses).  In MAG mode we subtract the WMM2025 variation at
+    the reference point (ownship by default); in TRUE mode the value passes
+    through.  Returns the display value in [0, 360).  Pass the position the
+    bearing is *measured from* (e.g. a far waypoint) so variation is local to
+    where the pilot reads it; falls back to ownship.
+    """
+    if true_deg is None:
+        return true_deg
+    if _hdg_ref() == "true":
+        return true_deg % 360.0
+    if lat is None:
+        lat = disp.get("lat")
+    if lon is None:
+        lon = disp.get("lon")
+    return _magvar.true_to_mag(true_deg, lat, lon)
+
+
+def _brg_suffix():
+    """Suffix for a course/bearing readout: "T" in true mode, "" in mag mode
+    (magnetic bearings are shown bare, matching charts and ATC)."""
+    return "T" if _hdg_ref() == "true" else ""
 
 # ── Module-level SSE handle (set in main, restarted by handle_event) ─────────
 _sse_client  = None
@@ -1463,6 +1501,18 @@ def _fpl_swap(i, j):
         _fpl_apply_active()
     _settings.mark_dirty()
     _ssync_publish_fpl()
+
+
+def _fpl_reverse_route():
+    """Reverse the flight-plan order (A→…→Z becomes Z→…→A) — typically to set
+    up the return trip.  Deactivates any active leg: the previous leg's course
+    has no meaning on the reversed route, so the pilot re-activates a leg
+    intentionally.  No-op with fewer than two waypoints."""
+    wps = disp["fpl"]["waypoints"]
+    if len(wps) < 2:
+        return
+    wps.reverse()
+    _fpl_deactivate()   # clears active leg, marks dirty, syncs the reversed order
 
 
 def _fpl_plan_save(name):
@@ -3815,7 +3865,7 @@ _CARDINALS = {0: "N", 45: "NE", 90: "E", 135: "SE",
 
 def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, yaw=None,
                       gps_ok=False, ahrs_ok=True, use_track=False,
-                      hdg_label="M", hdg_color=WHITE):
+                      hdg_label="M", hdg_color=WHITE, ref_label="MAG"):
     """Bottom heading strip with bug, current-heading box, and a
     cross-source diamond showing the *other* heading source's value.
 
@@ -3914,6 +3964,11 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, yaw=None,
     # Source subscript ("M" / "G" / "M?" / "G?" / "?") — outboard of ° glyph
     deg_right = CX + _hw // 2 + 3
     _text(surf, hdg_label, 8, hdg_col, x=deg_right, y=by2 + bh - 12)
+    # Reference annunciation (MAG / TRU) — small tag at the box's top-left so
+    # the pilot always knows whether the numbers are magnetic or true.  Amber
+    # for TRU to flag the non-default (charts/ATC are magnetic).
+    _ref_col = AMBER if ref_label == "TRU" else (150, 170, 190)
+    _text(surf, ref_label, 8, _ref_col, x=bx + 3, y=by2 + 2)
 
 
 # ── Terrain / obstacle proximity alert ───────────────────────────────────────
@@ -6478,6 +6533,8 @@ def handle_event(event, demo_mode):
             elif act == "load":
                 if disp.get("fpl_saved", {}).get("plans", []):
                     disp["mode"] = "fpl_plan_picker"
+            elif act == "reverse":
+                _fpl_reverse_route()
             elif act == "deact":
                 _fpl_deactivate()
             elif act == "load_appr":
@@ -7994,6 +8051,8 @@ _DSP_ROWS_UNITS = [
      ["ft","m"],         ["FT","M"],         100),
     ("baro_unit",  "PRESSURE",     "Inches Hg or hPa",
      ["inhg","hpa"],     ["inHg","hPa"],     100),
+    ("hdg_ref",    "HDG / CRS REF", "Magnetic (charts, plates, ATC) or True",
+     ["mag","true"],     ["MAG","TRUE"],     90),
 ]
 _DSP_ROWS_DISPLAY = [
     ("brightness", "BRIGHTNESS",   "Screen brightness 1–10",
@@ -13385,7 +13444,8 @@ def draw_cdi(surf):
         else:
             ident_lbl = ident
             read_col = MAGENTA
-        readout = f"{ident_lbl}  {int(round(brg)) % 360:03d}°  {dist_nm:.1f}NM"
+        readout = (f"{ident_lbl}  {int(round(_to_disp_brg(brg, lat, lon))) % 360:03d}°"
+                   f"  {dist_nm:.1f}NM")
         _text(surf, readout, 16, read_col, bold=True, cx=CX, cy=bar_y - 20)
     else:
         # No active waypoint — leave the bar empty (no diamond) and show
@@ -14146,11 +14206,11 @@ def _mfd_strip_format(kind, ctx):
         v = ctx["tas"]
         return ("TAS", f"{int(round(v)):3d}" if v > 0 else "---", WHITE)
     if kind == "trk":
-        s = (f"{int(round(ctx['track'])) % 360:03d}°"
+        s = (f"{int(round(_to_disp_brg(ctx['track']))) % 360:03d}°"
              if gs_kt >= HDG_TRK_MIN_KT else "---°")
         return ("TRK", s, WHITE)
     if kind == "hdg":
-        return ("HDG", f"{int(round(ctx['hdg'])) % 360:03d}°", WHITE)
+        return ("HDG", f"{int(round(_to_disp_brg(ctx['hdg']))) % 360:03d}°", WHITE)
     if kind == "alt":
         return ("ALT", f"{int(round(ctx['alt'] / 20.0) * 20):5d}", WHITE)
     if kind == "agl":
@@ -14172,7 +14232,8 @@ def _mfd_strip_format(kind, ctx):
         w = _strip_wind(ctx)
         if w is None:
             return ("WIND", "---/--", (140, 140, 140))
-        return ("WIND", f"{int(round(w[0])) % 360:03d}/{int(round(w[1])):02d}",
+        return ("WIND",
+                f"{int(round(_to_disp_brg(w[0]))) % 360:03d}/{int(round(w[1])):02d}",
                 WHITE)
     if kind == "time":
         return ("UTC", time.strftime("%H:%MZ", time.gmtime()), WHITE)
@@ -14190,9 +14251,9 @@ def _mfd_strip_format(kind, ctx):
     if kind == "wpt":
         return (caption, d2.get("ident", "----"), MAGENTA)
     if kind == "btw":
-        return (caption, f"{int(round(ctx['brg'])) % 360:03d}°", MAGENTA)
+        return (caption, f"{int(round(_to_disp_brg(ctx['brg']))) % 360:03d}°", MAGENTA)
     if kind == "dtk":
-        return (caption, f"{int(round(ctx['dtk'])) % 360:03d}°", MAGENTA)
+        return (caption, f"{int(round(_to_disp_brg(ctx['dtk']))) % 360:03d}°", MAGENTA)
     # Nav convention: bare = to the ACTIVE WAYPOINT (ctx["dist_nm"]); the
     # "…D" variant = to the FINAL DESTINATION (whole remaining route).
     def _fmt_dist(d_nm):
@@ -15977,12 +16038,14 @@ def _fpl_add_buttons():
 
 
 def _fpl_saveload_btns():
+    """Three equal buttons on the route-management row: SAVE | REVERSE | LOAD."""
     ax, ay, aw, _ = _fpl_actions_rect()
     by = ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
     gap = _FPL_ACTIONS_GAP
-    bw = (aw - gap) // 2
+    bw = (aw - 2 * gap) // 3
     return ((ax, by, bw, _FPL_SAVELOAD_H),
-            (ax + bw + gap, by, aw - bw - gap, _FPL_SAVELOAD_H))
+            (ax + bw + gap, by, bw, _FPL_SAVELOAD_H),
+            (ax + 2 * (bw + gap), by, aw - 2 * (bw + gap), _FPL_SAVELOAD_H))
 
 
 def _fpl_deact_btn_rect():
@@ -16091,7 +16154,7 @@ def draw_fpl(surf):
     for (ax, ay, aw, ah), lbl, st in zip(add_rects, labels, styles):
         _action_btn(surf, ax, ay, aw, ah, lbl, st, r=6)
 
-    save_r, load_r = _fpl_saveload_btns()
+    save_r, rev_r, load_r = _fpl_saveload_btns()
     n_saved = len(disp.get("fpl_saved", {}).get("plans", []))
     if wps:
         _action_btn(surf, *save_r, "SAVE", "ok", r=6)
@@ -16101,6 +16164,15 @@ def draw_fpl(surf):
         pygame.draw.rect(surf, (40, 48, 62), save_r, width=1, border_radius=6)
         _text(surf, "SAVE", 15, (80, 90, 110), bold=True,
               cx=sx + sw // 2, cy=sy + sh // 2)
+    # REVERSE — flips the leg order (A→Z ⇒ Z→A); needs ≥2 waypoints.
+    if len(wps) >= 2:
+        _action_btn(surf, *rev_r, "REVERSE", "normal", r=6)
+    else:
+        rx, ry, rw, rh = rev_r
+        pygame.draw.rect(surf, (10, 14, 22), rev_r, border_radius=6)
+        pygame.draw.rect(surf, (40, 48, 62), rev_r, width=1, border_radius=6)
+        _text(surf, "REVERSE", 14, (80, 90, 110), bold=True,
+              cx=rx + rw // 2, cy=ry + rh // 2)
     if n_saved:
         _action_btn(surf, *load_r, f"LOAD ({n_saved})", "normal", r=6)
     else:
@@ -16174,21 +16246,24 @@ def draw_fpl(surf):
             sub_col = (130, 150, 180)
         # Leg distance — from the previous waypoint (from the aircraft for the
         # first leg) — shown at the row's bottom-right, before the icons.
-        # Leg course (true) + distance, e.g. "123°T  4.5 nm".  No magvar model
-        # in the codebase, so all courses here are true — same as the stored
-        # approach course_deg.
+        # Leg course + distance, e.g. "123°  4.5 nm" (magnetic) or "123°T …"
+        # (true).  Courses are computed true and converted to the display
+        # reference at the leg's START point, where the variation is read.
+        _sfx = _brg_suffix()
         if i == 0:
             if disp.get('gps_ok') and disp.get('lat') is not None:
                 _ld, _lb = _nav_geo_dist_brg(disp['lat'], disp['lon'],
                                              wp['lat'], wp['lon'])
-                leg_txt = f"{int(round(_lb)) % 360:03d}°T  {_ld:.1f} nm"
+                _lb = _to_disp_brg(_lb, disp['lat'], disp['lon'])
+                leg_txt = f"{int(round(_lb)) % 360:03d}°{_sfx}  {_ld:.1f} nm"
             else:
                 leg_txt = ""
         else:
             _pv = wps[i - 1]
             _ld, _lb = _nav_geo_dist_brg(_pv['lat'], _pv['lon'],
                                          wp['lat'], wp['lon'])
-            leg_txt = f"{int(round(_lb)) % 360:03d}°T  {_ld:.1f} nm"
+            _lb = _to_disp_brg(_lb, _pv['lat'], _pv['lon'])
+            leg_txt = f"{int(round(_lb)) % 360:03d}°{_sfx}  {_ld:.1f} nm"
         dist_right = bx + bw - 3 * _FPL_ICON_W - 2 * _FPL_ICON_GAP - 14
         dist_w = _get_font(15, bold=True).size(leg_txt)[0] if leg_txt else 0
         if leg_txt:
@@ -16227,10 +16302,12 @@ def draw_fpl(surf):
                       bold=True, x=lbx + 40, y=hy)
             leg_idx = int(_ap.get("leg_idx", -1)) if _phase == "active" else -1
             prev_la, prev_lo = wps[-1]["lat"], wps[-1]["lon"]
+            _asfx = _brg_suffix()
             rh = 28
             for k, (la, lo, ident, _lt, _alt, _at) in enumerate(_legs):
                 ry = hy + 22 + k * (rh + 3)
-                ld = _nav_geo_dist_brg(prev_la, prev_lo, la, lo)[0]
+                ld, lb = _nav_geo_dist_brg(prev_la, prev_lo, la, lo)
+                lb = _to_disp_brg(lb, prev_la, prev_lo)
                 prev_la, prev_lo = la, lo
                 if ry > list_bot:
                     _text(surf, f"+{len(_legs) - k} more", 11, col,
@@ -16250,8 +16327,13 @@ def draw_fpl(surf):
                 if alt_lbl:
                     _text(surf, alt_lbl, 15, (210, 200, 120), bold=True,
                           x=rc.right - 210, cy=rc.centery)
-                _text(surf, f"{ld:.1f} nm", 14, (90, 205, 225),
-                      x=rc.right - 92, cy=rc.centery)
+                # Leg track + distance, right-aligned, e.g. "123°  4.5 nm".
+                # The TRK to each approach fix is what a pilot cross-checks
+                # against the plate, so show it alongside the distance.
+                _legtxt = f"{int(round(lb)) % 360:03d}°{_asfx}  {ld:.1f} nm"
+                _lw = _get_font(14).size(_legtxt)[0]
+                _text(surf, _legtxt, 14, (90, 205, 225),
+                      x=rc.right - 12 - _lw, cy=rc.centery)
         elif list_top <= hy <= list_bot:
             ph = 36
             pygame.draw.rect(surf, (0, 14, 28), (lbx + 40, hy, lbw - 40, ph),
@@ -16283,8 +16365,8 @@ def fpl_hit(x, y):
         ax, ay, aw, ah = rect
         if ax <= x <= ax + aw and ay <= y <= ay + ah:
             return (kind, None)
-    save_r, load_r = _fpl_saveload_btns()
-    for rect, kind in ((save_r, "save"), (load_r, "load")):
+    save_r, rev_r, load_r = _fpl_saveload_btns()
+    for rect, kind in ((save_r, "save"), (rev_r, "reverse"), (load_r, "load")):
         ax, ay, aw, ah = rect
         if ax <= x <= ax + aw and ay <= y <= ay + ah:
             return (kind, None)
@@ -17388,9 +17470,22 @@ def render(surf, demo_mode, connected, data_stale=False):
     # mode shows the track bug, MAG mode shows the heading bug.  Setting
     # one doesn't disturb the other so flipping sources preserves both.
     active_bug = trk_bug if use_track else hdg_bug
-    draw_heading_tape(surf, hdg, active_bug, track=track, yaw=disp["yaw"],
+    # Convert all four true-referenced values by the SAME variation so the
+    # tape, bug, and cross-source pointer stay mutually consistent; the tape
+    # then reads magnetic (default) or true per the pilot's hdg_ref setting.
+    _hr = _hdg_ref()
+    if _hr == "true":
+        _hdg_d, _bug_d, _trk_d, _yaw_d = hdg, active_bug, track, disp["yaw"]
+    else:
+        _var = _magvar.declination(lat, lon)
+        _hdg_d = (hdg - _var) % 360.0
+        _bug_d = None if active_bug is None else (active_bug - _var) % 360.0
+        _trk_d = None if track is None else (track - _var) % 360.0
+        _yaw_d = None if disp["yaw"] is None else (disp["yaw"] - _var) % 360.0
+    draw_heading_tape(surf, _hdg_d, _bug_d, track=_trk_d, yaw=_yaw_d,
                       gps_ok=gps_ok, ahrs_ok=ahrs_ok, use_track=use_track,
-                      hdg_label=hdg_label, hdg_color=hdg_color)
+                      hdg_label=hdg_label, hdg_color=hdg_color,
+                      ref_label=("TRU" if _hr == "true" else "MAG"))
 
     # 5b. CDI — direct-to course deviation indicator above the heading box.
     # No-op when no waypoint is active.
