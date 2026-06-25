@@ -16,6 +16,7 @@
 4. [Attitude Indicator](#4-attitude-indicator)
 5. [Heading Tape](#5-heading-tape)
 6. [Status Badges](#6-status-badges)
+6A. [PFD Top Ribbon](#6a-pfd-top-ribbon)
 7. [Setting Bugs](#7-setting-bugs)
 8. [Setup Menu](#8-setup-menu)
 9. [Flight Profile — V-Speeds and Callsign](#9-flight-profile--v-speeds-and-callsign)
@@ -67,13 +68,9 @@ The display is divided into five fixed zones (sizes shown for 1024×600 default)
 | Right tape | 131 px wide | Altitude + VSI |
 | Centre AI | remainder (~775 px) | Attitude + synthetic vision terrain |
 | Bottom strip | 55 px tall | Heading tape |
-| Top ribbon | 28 px tall | Bug readouts + a configurable data ribbon (see below) |
+| Top ribbon | 28 px tall | Bug readouts + a configurable 5-slot data ribbon (§6A) |
 
 Everything is rendered at 30 fps using OpenGL ES vector graphics directly on the framebuffer.
-
-### PFD top ribbon
-
-The band across the top of the AI — between the groundspeed and altitude bug boxes — is a **configurable 5-slot readout ribbon**, default **AGL · TAS · OAT · WIND · ETAD**. **Tap the ribbon** to open its picker and assign any of the same fields the MFD data strip offers (§15); the PFD ribbon keeps its **own** selection, separate from the MFD strip, and both persist in `data/settings.json`. Alert annunciations paint over the ribbon when they fire, so a warning is never hidden by it.
 
 ---
 
@@ -309,6 +306,24 @@ Blank during normal flight. Appear only when attention required.
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
 | `NO FIX` | Amber | GPS hardware responding (NMEA flowing) but no satellite lock yet — acquiring. A shadow/peer display mirrors the source's GPS, so it too shows **NO FIX** (not NO SIGNAL) while the source is still acquiring. |
 | `NO SIGNAL` | Red | GPS hardware not responding (no NMEA at all). If GPS is the only position source, airspeed/altitude also show a red ✕. |
+
+---
+
+## 6A. PFD Top Ribbon
+
+The band across the top of the attitude indicator — between the **groundspeed** bug box (top-left) and the **altitude** bug box (top-right) — is a **configurable 5-slot readout ribbon**. It gives you a row of glanceable numbers on the PFD itself, separate from the MFD's bottom data strip (§15).
+
+![PFD top ribbon — AGL · TAS · OAT · WIND · ETAD across the top of the AI, between the GS and ALT bug boxes](../pi4/previews/pfd_gl/preview_sedona_level.png)
+
+**Default fields:** **AGL · TAS · OAT · WIND · ETAD** — height above terrain, true airspeed, outside air temperature, wind direction/speed, and estimated arrival at the final destination.
+
+**Configuring it.** **Tap the ribbon** to open its field picker: the five current slots show as pills across the top (the selected one ringed cyan); tap a field in the grid to assign it, and the selection auto-advances to the next slot so you can fill the row with successive taps. It draws from the **same field set as the MFD data strip** — groundspeed, airspeed, TAS, track, heading, altitude, AGL, VS, WIND, UTC, baro, satellites, and the nav-derived WPT · BTW · DTK · DIST · DISTD · XTE · ETE · ETED · ETA · ETAD. See **§15** for the full field table and the **ARRIVAL TIME (LOCAL / ZULU)** toggle that governs the ETA/ETAD readouts.
+
+**Independent of the MFD strip.** The PFD ribbon keeps its **own** 5-slot selection — changing it doesn't touch the MFD's 8-slot strip, and vice-versa. Both persist in `data/settings.json` across power cycles.
+
+**Values fill when their source is live.** A field reads `--` (or `---/--` for WIND) until its data is available: AGL needs terrain data, TAS/OAT/WIND need air-data (WIND is computed from the TAS + GPS-track triangle when there's no OAT sensor), and ETAD needs an active flight plan or Direct-To.
+
+**Alerts win.** When an annunciation fires (terrain, traffic, etc.) it paints over the ribbon, so a warning is never hidden behind a readout.
 
 ---
 

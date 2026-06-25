@@ -16,6 +16,7 @@
 4. [Attitude Indicator](#4-attitude-indicator)
 5. [Heading Tape](#5-heading-tape)
 6. [Status Badges](#6-status-badges)
+6A. [PFD Top Ribbon](#6a-pfd-top-ribbon)
 7. [Setting Bugs](#7-setting-bugs)
 8. [Setup Menu](#8-setup-menu)
 9. [Flight Profile — V-Speeds and Callsign](#9-flight-profile--v-speeds-and-callsign)
@@ -48,11 +49,9 @@ The display is divided into five fixed zones:
 | Right tape | 82 px wide | Altitude + VSI |
 | Centre AI | remainder | Attitude (plain horizon) |
 | Bottom strip | 44 px tall | Heading tape |
-| Top ribbon | 22 px tall | Bug readouts + a configurable data ribbon (see below) |
+| Top ribbon | 22 px tall | Bug readouts + a configurable 5-slot data ribbon (§6A) |
 
 Everything is rendered at 30 fps directly on the framebuffer — there is no operating-system UI underneath.
-
-The band across the top of the AI (between the groundspeed and altitude bug boxes) is a **configurable 5-slot readout ribbon**, default **AGL · TAS · OAT · WIND · ETAD**. Tap it to choose fields — it keeps its own selection, separate from the MFD data strip (§16A), and persists in `data/settings.json`. Alert annunciations paint over it.
 
 ---
 
@@ -200,6 +199,16 @@ Badges appear **only when something requires attention** — the strip is blank 
 | `GPS ALT` | Amber | Altitude from GPS (baro failed) |
 | `GPS` *N*`sat` | Amber | GPS acquiring — *N* satellites visible, no fix yet |
 | `NO GPS` | Red | GPS hardware not responding / no satellites |
+
+---
+
+## 6A. PFD Top Ribbon
+
+The band across the top of the attitude indicator — between the groundspeed (top-left) and altitude (top-right) bug boxes — is a **configurable 5-slot readout ribbon**, separate from the MFD's bottom data strip (§16A).
+
+**Default fields:** **AGL · TAS · OAT · WIND · ETAD** (height above terrain, true airspeed, outside air temperature, wind direction/speed, and arrival at the final destination). **Tap the ribbon** to open its picker and assign any of the same fields the MFD data strip offers (§16A); it keeps its **own** 5-slot selection, separate from the MFD strip, and both persist in `data/settings.json`.
+
+A field reads `--` (or `---/--` for WIND) until its source is live — AGL needs terrain data, TAS/OAT/WIND need air-data (WIND is computed from the TAS + GPS-track triangle without an OAT sensor), and ETAD needs a flight plan or Direct-To. Alert annunciations paint over the ribbon, so a warning is never hidden behind a readout. Behaviour matches the Pi 4 — see **Pi 4 manual §6A** for the full field table and the ARRIVAL LOCAL/ZULU toggle.
 
 ---
 
