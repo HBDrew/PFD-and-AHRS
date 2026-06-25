@@ -7839,7 +7839,7 @@ _SS_DRAG_THRESHOLD = 8
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         10,
     "system_setup":       9,
-    "connectivity_setup": 6,
+    "connectivity_setup": 9,
     "flight_profile":     8,
     "ahrs_firmware":      5,
     "screen_sync_setup": 10,    # enable + transport + peer + ifaces + 6 categories
@@ -9629,7 +9629,10 @@ _CS_FIELDS = [
     ("notam_client_secret", "NOTAM SECRET", "FAA NMS-API secret (client_secret) — on device"),
     ("notam_env",           "NOTAM ENV",    "preprod (default) or prod"),
 ]
-_CS_BTN_Y  = _ss_row_y(len(_CS_FIELDS) + 2) + 4   # below fields + STATUS + AHRS LINK rows
+def _cs_btn_y():
+    # Live button-row Y (scrolls with the content) so the SCAN/APPLY/TEST row is
+    # reachable once the NOTAM fields push it past the screen's bottom edge.
+    return _ss_row_y(len(_CS_FIELDS) + 2) + 4
 _CS_BTN_H  = 50
 
 
@@ -9706,16 +9709,16 @@ def draw_connectivity_setup(surf, cs):
 
     # Status messages from last apply / test
     for msg, col, y_off in [
-            (cs.get("apply_msg",""), (100,180,80), _CS_BTN_Y - 20),
-            (cs.get("test_msg",""),  (100,160,220), _CS_BTN_Y - 8)]:
+            (cs.get("apply_msg",""), (100,180,80), _cs_btn_y() - 20),
+            (cs.get("test_msg",""),  (100,160,220), _cs_btn_y() - 8)]:
         if msg:
             _text(surf, msg, 10, col, cx=DISPLAY_W//2, y=y_off)
 
     # Action buttons (SCAN / APPLY / TEST)
     third = (bw - 20) // 3
-    _action_btn(surf, bx,                _CS_BTN_Y, third, _CS_BTN_H, "SCAN WIFI",  "normal")
-    _action_btn(surf, bx+third+10,       _CS_BTN_Y, third, _CS_BTN_H, "APPLY WIFI", "warn")
-    _action_btn(surf, bx+2*(third+10),   _CS_BTN_Y, third, _CS_BTN_H, "TEST AHRS",  "ok")
+    _action_btn(surf, bx,                _cs_btn_y(), third, _CS_BTN_H, "SCAN WIFI",  "normal")
+    _action_btn(surf, bx+third+10,       _cs_btn_y(), third, _CS_BTN_H, "APPLY WIFI", "warn")
+    _action_btn(surf, bx+2*(third+10),   _cs_btn_y(), third, _CS_BTN_H, "TEST AHRS",  "ok")
     surf.set_clip(_prev_clip)
 
 
@@ -9732,7 +9735,7 @@ def connectivity_setup_hit(x, y, cs):
                 return f"edit:{key}"
     # Action buttons
     third = (bw - 20) // 3
-    if _CS_BTN_Y <= y <= _CS_BTN_Y+_CS_BTN_H:
+    if _cs_btn_y() <= y <= _cs_btn_y()+_CS_BTN_H:
         if bx <= x <= bx+third:
             return "scan_wifi"
         if bx+third+10 <= x <= bx+2*third+10:
