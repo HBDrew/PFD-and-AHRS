@@ -11707,7 +11707,7 @@ def _active_route_pts():
     return None
 
 
-def _advisory_list(kind):
+def _advisory_list(kind, ref_lat=None, ref_lon=None):
     """Advisory bulletins for ``kind``, ranked nearest-first with an on-route
     tag (graphical-paired located by polygon; NOTAMs by airport id; text-only
     last).  Nothing is hidden."""
@@ -11729,8 +11729,16 @@ def _advisory_list(kind):
             if loc:
                 item["point"] = loc
         items.append(item)
-    ranked = _fisb.rank_advisories(items, disp.get("lat"), disp.get("lon"),
+    # Rank relative to the TAPPED station (the picker is about that field), not
+    # ownship; fall back to the aircraft when there's no station context.
+    if ref_lat is None or ref_lon is None:
+        ref_lat, ref_lon = disp.get("lat"), disp.get("lon")
+    ranked = _fisb.rank_advisories(items, ref_lat, ref_lon,
                                    route_pts=_active_route_pts())
+    extra = 0
+    if kind == "NOTAM" and len(ranked) > NOTAM_LIST_MAX:
+        extra = len(ranked) - NOTAM_LIST_MAX   # ranked nearest-first already, so
+        ranked = ranked[:NOTAM_LIST_MAX]       # the cap keeps the closest fields
     out = []
     for e in ranked:
         parts = []
@@ -11742,6 +11750,8 @@ def _advisory_list(kind):
         if v:
             parts.append(f"valid {v}")
         out.append(f"[{' · '.join(parts) or 'area n/a'}]  {e['text']}")
+    if extra:
+        out.append(f"… +{extra} more — showing the nearest {NOTAM_LIST_MAX}")
     return out
 
 
@@ -12046,7 +12056,8 @@ def _wx_menu_hit(x, y):
                                         "brg": nw[2]}
         elif store:
             disp["wx_text"] = {"title": f"{kind} — nearest first",
-                               "bulletins": _advisory_list(kind)}
+                               "bulletins": _advisory_list(
+                                   kind, menu.get("lat"), menu.get("lon"))}
         return
     disp["wx_menu"] = None
 
