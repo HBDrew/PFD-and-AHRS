@@ -1048,12 +1048,18 @@ def _draw_nexrad_cells(surf, cells, project, rect):
 
 # ── Weather (METAR) layer ───────────────────────────────────────────────────
 _METAR_MAX_DRAW = 160      # cap dots per frame; at wide zoom the rest are clutter
+_METAR_LABEL_MAX_NM = 160  # show station idents only when map range is below this
+_METAR_LABEL_COL = (215, 215, 215)   # neutral — the dot already carries category
+_METAR_LABEL_CACHE_MAX = 256
+_metar_label_cache: "_collections_mm.OrderedDict" = _collections_mm.OrderedDict()
 
 
 def _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
-                 sin_r, cos_r, max_draw=_METAR_MAX_DRAW):
+                 sin_r, cos_r, max_draw=_METAR_MAX_DRAW, font=None,
+                 range_nm=None):
     """Draw METAR stations as flight-category-coloured dots (green/blue/red/
-    magenta).
+    magenta), with the ICAO ident labelled when zoomed in (range below
+    _METAR_LABEL_MAX_NM).
 
     Vectorised: at wide zoom the WX poller pulls a ~250 nm radius (hundreds of
     stations), and the old per-station projection closure loop dominated the
@@ -1063,6 +1069,8 @@ def _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
     x, y, w, h = rect
     if not metars:
         return
+    do_labels = (font is not None and range_nm is not None
+                 and range_nm < _METAR_LABEL_MAX_NM)
     if not HAS_NUMPY:                       # always present on the Pi builds
         for m in metars:
             la, lo = m.get("lat"), m.get("lon")
@@ -1076,6 +1084,8 @@ def _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
                 continue
             _metar_dot(surf, int(sx), int(sy),
                        _WX_CAT_COLORS.get(m.get("fltcat"), _WX_UNKNOWN))
+            if do_labels:
+                _metar_label(surf, int(sx), int(sy), m.get("icao", ""), font)
         return
 
     rows = [m for m in metars
@@ -1103,8 +1113,11 @@ def _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
     sxi = sx.astype(np.int32)
     syi = sy.astype(np.int32)
     for i in idx:
-        _metar_dot(surf, int(sxi[i]), int(syi[i]),
+        ix, iy = int(sxi[i]), int(syi[i])
+        _metar_dot(surf, ix, iy,
                    _WX_CAT_COLORS.get(rows[i].get("fltcat"), _WX_UNKNOWN))
+        if do_labels:
+            _metar_label(surf, ix, iy, rows[i].get("icao", ""), font)
 
 
 def _metar_dot(surf, ix, iy, col):
@@ -1113,6 +1126,29 @@ def _metar_dot(surf, ix, iy, col):
     pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 8)
     pygame.draw.circle(surf, col, (ix, iy), 6)
     pygame.draw.circle(surf, (5, 5, 5), (ix, iy), 6, 1)
+
+
+def _metar_label(surf, ix, iy, icao, font):
+    """Blit the station ICAO ident just above-right of its dot.  Renders are
+    cached (LRU) with a 1 px dark backing baked in for contrast over terrain —
+    font.render every frame for a screenful of stations is the cost to avoid."""
+    if not icao:
+        return
+    ck = (icao, id(font))
+    lbl = _metar_label_cache.get(ck)
+    if lbl is None:
+        fg = font.render(icao, True, _METAR_LABEL_COL)
+        sh = font.render(icao, True, (0, 0, 0))
+        lbl = pygame.Surface((fg.get_width() + 1, fg.get_height() + 1),
+                             pygame.SRCALPHA)
+        lbl.blit(sh, (1, 1))
+        lbl.blit(fg, (0, 0))
+        _metar_label_cache[ck] = lbl
+        if len(_metar_label_cache) > _METAR_LABEL_CACHE_MAX:
+            _metar_label_cache.popitem(last=False)
+    else:
+        _metar_label_cache.move_to_end(ck)
+    surf.blit(lbl, (ix + 9, iy - 6))
 
 
 _GND_STATION = (90, 210, 230)    # FIS-B ground station: teal, distinct from
@@ -1815,7 +1851,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
             and not settings.get("map_show_winds", False)
             and not settings.get("map_show_nexrad", False)):
         _draw_metars(surf, metars, rect, lat, lon, cos_lat, cx, cy, px_per_nm,
-                     sin_r, cos_r)
+                     sin_r, cos_r, font=font, range_nm=range_nm)
     # Winds-aloft barbs — their own overlay (WND).
     if winds_barbs and settings.get("map_show_winds", False) and not fast:
         # Smaller than the full symbol scale so the denser barb grid stays
