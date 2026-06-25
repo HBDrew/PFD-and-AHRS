@@ -143,6 +143,9 @@ NOTAM_INTERVAL_S = 600    # NOTAM refresh cadence (FAA API; only polled with a k
 NOTAM_MIN_RADIUS_NM = 10   # floor — keep the local field(s) covered when zoomed in
 NOTAM_MAX_RADIUS_NM = 40   # cap — biggest NOTAM query (keeps the list readable)
 NOTAM_RADIUS_ZOOM_K = 1.5  # query radius = map range × this (clamped min/max)
+NOTAM_CHUNK_BYTES = 1000   # max NOTAM text per screen-sync packet — keep each
+                           # datagram under the network MTU so it doesn't IP-
+                           # fragment (fragmented UDP broadcast drops on WiFi)
 NOTAM_REBROADCAST_S = 30   # re-broadcast NOTAMs to peers this often (not just on
                            # the ~10 min fetch) so a peer that joins/restarts in
                            # between is fed promptly

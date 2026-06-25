@@ -686,13 +686,24 @@ _NOTAM_SHARE_MAX = 120
 def _ssync_publish_notams(texts):
     """Broadcast our fetched NOTAM list to peer screens (one keyed display feeds
     the LAN — same model as winds).  Only the fetcher has a non-empty list."""
-    if _screen_sync is not None and texts:
-        _screen_sync.publish(_ssync_mod.KIND_NOTAMS,
-                             {"notams": list(texts)[:_NOTAM_SHARE_MAX]})
-        print(f"[NOTAM-SYNC] tx {min(len(texts), _NOTAM_SHARE_MAX)} "
-              f"(publish_kinds has NOTAMS="
-              f"{_ssync_mod.KIND_NOTAMS in _screen_sync._publish_kinds})",
-              flush=True)
+    if _screen_sync is None or not texts:
+        return
+    # Send in SMALL chunks: a single 100-NOTAM datagram is ~12 KB, which IP-
+    # fragments and gets dropped on WiFi broadcast (winds work because each zone
+    # is a small packet).  Each chunk fits one unfragmented datagram; the store
+    # accumulates + dedupes, missed chunks fill on the next re-broadcast, and
+    # KIND_NOTAMS is LWW-exempt so reordered chunks all apply.
+    chunks, cur, size = [], [], 0
+    for t in list(texts)[:_NOTAM_SHARE_MAX]:
+        if cur and size + len(t) > NOTAM_CHUNK_BYTES:
+            chunks.append(cur); cur, size = [], 0
+        cur.append(t); size += len(t)
+    if cur:
+        chunks.append(cur)
+    for c in chunks:
+        _screen_sync.publish(_ssync_mod.KIND_NOTAMS, {"notams": c})
+    print(f"[NOTAM-SYNC] tx {sum(len(c) for c in chunks)} in {len(chunks)} chunks",
+          flush=True)
 
 
 def _ssync_apply_notams(data):

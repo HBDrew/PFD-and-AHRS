@@ -357,9 +357,10 @@ class ScreenSync:
             ts  = float(msg.get("ts", 0.0))
             seq = int(msg.get("seq", 0))
             # LWW: only accept if (ts, seq, src) is newer than what we have on
-            # file for this kind.  Winds is EXEMPT — each packet is a different
-            # zone under the one kind, so LWW would drop all but the latest.
-            if kind != KIND_WINDS:
+            # file for this kind.  Winds + NOTAMs are EXEMPT — they send many
+            # packets (zones / chunks) under one kind, so LWW would drop all but
+            # the latest (and any reordered UDP chunk).
+            if kind not in (KIND_WINDS, KIND_NOTAMS):
                 with self._lock:
                     last = self._last_accepted.get(kind)
                     if last is not None:
