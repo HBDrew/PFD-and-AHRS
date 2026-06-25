@@ -434,6 +434,7 @@ _airsig_fed_at = 0.0  # updated_s of last AIRMET/SIGMET snapshot folded in
 _winds_fed_at = 0.0   # updated_s of last winds snapshot folded in
 _notam_fed_at = 0.0   # updated_s of last NOTAM snapshot folded in
 _notam_pub_at = 0.0   # monotonic time of last NOTAM re-broadcast to peers
+_notam_pub_src = -1.0 # _notam_client.updated_s last published (publish on change)
 _nexrad_client = None # NexradClient (internet radar poller) when enabled
 _sim_state   = None   # SimFlyState instance when sim is running, else None
 # Decoded NEXRAD image cache (pygame surface).  Re-decoded only when the
@@ -6634,7 +6635,7 @@ def _update_weather():
     # FIS-B ground stations we're hearing (cue + diagnostic) + graphical hazard
     # areas (G-AIRMET/SIGMET polygons for the MET overlay).
     _store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
-    global _taf_fed_at, _airsig_fed_at, _winds_fed_at, _notam_fed_at, _notam_pub_at
+    global _taf_fed_at, _airsig_fed_at, _winds_fed_at, _notam_fed_at, _notam_pub_at, _notam_pub_src
     # Winds always feeds the store — internet-only product, shown in every source
     # mode (see the enable carve-out above), so it isn't gated on radio_only.
     if (_store is not None and _winds_client is not None
@@ -6655,16 +6656,21 @@ def _update_weather():
         if _notam_client is not None and _notam_client.updated_s != _notam_fed_at:
             _notam_fed_at = _notam_client.updated_s
             _store.add_notams(_notam_client.snapshot())
-        # Re-broadcast our NOTAM snapshot to peer screens periodically — not only
-        # on a fresh fetch (~10 min apart), so a peer that joins or restarts
-        # between our fetches is fed within a broadcast interval instead of
-        # waiting.  No-op without a key (empty snapshot); deduped on the store.
-        if (_notam_client is not None
-                and time.monotonic() - _notam_pub_at >= NOTAM_REBROADCAST_S):
-            _notams = _notam_client.snapshot()
-            if _notams:
-                _ssync_publish_notams(_notams)
-                _notam_pub_at = time.monotonic()
+        # Re-broadcast our NOTAM snapshot to peer screens.  Publish IMMEDIATELY
+        # when a fetch changes the data (updated_s moves); otherwise only a slow
+        # keepalive (NOTAM_REBROADCAST_S) so a peer that joins/restarts between
+        # our ~10 min fetches is still fed, without resending unchanged data
+        # every few seconds.  No-op without a key (empty snapshot); deduped on
+        # the store at the receiver.
+        if _notam_client is not None:
+            _now = time.monotonic()
+            _fresh = _notam_client.updated_s != _notam_pub_src
+            if _fresh or _now - _notam_pub_at >= NOTAM_REBROADCAST_S:
+                _notams = _notam_client.snapshot()
+                if _notams:
+                    _ssync_publish_notams(_notams)
+                    _notam_pub_at = _now
+                    _notam_pub_src = _notam_client.updated_s
     w["stations"] = _store.ground_stations() if _store is not None else []
     w["graphics"] = _store.graphics() if _store is not None else []
     cs = disp["cs"]

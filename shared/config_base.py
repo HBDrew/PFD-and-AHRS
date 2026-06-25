@@ -146,9 +146,12 @@ NOTAM_RADIUS_ZOOM_K = 1.5  # query radius = map range × this (clamped min/max)
 NOTAM_CHUNK_BYTES = 1000   # max NOTAM text per screen-sync packet — keep each
                            # datagram under the network MTU so it doesn't IP-
                            # fragment (fragmented UDP broadcast drops on WiFi)
-NOTAM_REBROADCAST_S = 30   # re-broadcast NOTAMs to peers this often (not just on
-                           # the ~10 min fetch) so a peer that joins/restarts in
-                           # between is fed promptly
+NOTAM_REBROADCAST_S = 120  # keepalive floor for re-broadcasting NOTAMs to peers.
+                           # We publish IMMEDIATELY whenever a fetch changes our
+                           # data; this is only the redundant resend cadence so a
+                           # peer that joins/restarts between our ~10 min fetches
+                           # is still fed within this window.  Kept long because a
+                           # resend of unchanged data is pure dedupe churn.
 NOTAM_LIST_MAX = 100       # cap the NOTAM readout to the nearest N to the tapped
                            # station (the store keeps them all; the picker shows
                            # the nearest, with a "+N more" footer — nothing hidden)
