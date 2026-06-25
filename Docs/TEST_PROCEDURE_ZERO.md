@@ -353,6 +353,8 @@ Behaviour mirrors the Pi 4 — see **TEST_PROCEDURE_PI4 Phases 9–12** for the 
 | # | Step | Expected | Pass | Notes |
 |---|------|----------|------|-------|
 | 8.1 | OVLY cycle ASP→TFC→MET→WND→NEX | Each overlay draws; status line shows source mode + age | | |
+| 8.1a | MET overlay, zoom in below 160 NM | Station dots show ICAO ident labels; hidden again at wider zoom | | |
+| 8.1b | NOTAMs: key one display only (NMS KEY/SECRET/ENV), both on SYNC | Keyless piZ shows fed NOTAMs (local ~10–40 nm radius); pushed key auto-populates NOTAM KEY/SECRET here and persists | | |
 | 8.2 | WND page: altitude/time buttons, 40/80/160 zoom, status line | Barbs update; only 40/80/160 offered; `WINDS n/N · age` shown | | |
 | 8.3 | Two displays (piZ + pi4/5), one with internet | piZ adopts winds zones over screen-sync, makes no Open-Meteo calls | | |
 | 8.4 | Traffic alert-envelope entry | Flashing TRAFFIC banner — **visual only, no voice callout** (piZ has no audio) | | |

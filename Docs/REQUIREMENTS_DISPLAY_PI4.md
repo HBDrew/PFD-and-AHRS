@@ -487,17 +487,19 @@ When the aircraft enters an extreme attitude, the PFD shall declutter to a minim
 
 ## 14C. Weather (internet + FIS-B)
 
-> **REQ-DISP-PI4-WX-001** The display shall present METAR, TAF, AIRMET/SIGMET, NEXRAD, and NOTAM weather from two blended sources — internet (aviationweather.gov, Open-Meteo, FAA NOTAM API) and FIS-B 978 UAT radio — selectable per product family via a RADIO / AUTO / INET toggle (AUTO: radio wins per station, internet backfills).
+> **REQ-DISP-PI4-WX-001** The display shall present METAR, TAF, AIRMET/SIGMET, NEXRAD, and NOTAM weather from two blended sources — internet (aviationweather.gov, Open-Meteo, FAA NMS-API for NOTAMs) and FIS-B 978 UAT radio — selectable per product family via a RADIO / AUTO / INET toggle (AUTO: radio wins per station, internet backfills).
 
 > **REQ-DISP-PI4-WX-002** Each readout shall be tagged with its origin (FIS-B / INET) and a data-age, and the map status strip shall show source mode + per-source counts + age.
 
 > **REQ-DISP-PI4-WX-003** A single on-map overlay control (OVLY) shall cycle the heavy overlays one at a time: Airspace → Traffic → METAR → Winds → NEXRAD. Traffic shall render on every page regardless.
 
-> **REQ-DISP-PI4-WX-004** The MET page shall show flight-category station dots (VFR/MVFR/IFR/LIFR) and a tap-to-open readout with METAR/TAF/AIRMET/SIGMET/NOTAM tabs (nearest-first, scrollable, ON-ROUTE flagged), falling back to the nearest reporting station when the tapped field has none.
+> **REQ-DISP-PI4-WX-004** The MET page shall show flight-category station dots (VFR/MVFR/IFR/LIFR) and a tap-to-open readout with METAR/TAF/AIRMET/SIGMET/NOTAM tabs (nearest-first, scrollable, ON-ROUTE flagged), falling back to the nearest reporting station when the tapped field has none. When the map range is below 160 NM the station dots shall be labelled with their ICAO ident (hidden at wider zoom).
 
 > **REQ-DISP-PI4-WX-005** NEXRAD shall badge both the receipt age and the radar mosaic valid-age (green <10 min / amber <20 / red beyond).
 
-> **REQ-DISP-PI4-WX-006** NOTAMs shall require FAA NOTAM API credentials entered on the Connectivity screen; absent a key the NOTAM fetch shall be a no-op leaving the rest of the suite unaffected.
+> **REQ-DISP-PI4-WX-006** NOTAMs shall require FAA NMS-API credentials — client_id / client_secret and an environment selector — entered on the Connectivity screen as **NOTAM KEY / NOTAM SECRET / NOTAM ENV** (preprod default); absent a key the NOTAM fetch shall be a no-op leaving the rest of the suite unaffected. NOTAM queries shall use a dedicated tight, zoom-following radius (≈10–40 NM), narrower than the weather radius, so a query over a busy area returns a local set rather than the whole region.
+
+> **REQ-DISP-PI4-WX-007** With multiple displays on the network, fetched NOTAMs shall be shared over the screen-sync link (one keyed display feeds peers that hold no key), and the NOTAM credentials shall be pushable to every display by entering them once on any display (each persisting its own copy). The secret shall be transmitted only on entry and shown masked everywhere.
 
 ---
 
@@ -533,7 +535,7 @@ When the aircraft enters an extreme attitude, the PFD shall declutter to a minim
 
 ## 14G. Screen Sync (multi-display)
 
-> **REQ-DISP-PI4-SYNC-001** Displays on a shared network shall peer-sync (no master) over UDP broadcast, with per-category TX/RX control for bugs, baro, nav, AHRS, GPS, the flight plan/library, and winds-aloft zones, plus an AUTO/USB/NET transport selector and a live peer/links status.
+> **REQ-DISP-PI4-SYNC-001** Displays on a shared network shall peer-sync (no master) over UDP broadcast, with per-category TX/RX control for bugs, baro, nav, AHRS, GPS, and the flight plan/library, plus always-on sharing of winds-aloft zones and NOTAMs (with on-demand NOTAM-credential push), an AUTO/USB/NET transport selector, and a live peer/links status.
 
 ---
 

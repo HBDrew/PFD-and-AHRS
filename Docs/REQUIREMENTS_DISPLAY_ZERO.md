@@ -296,7 +296,9 @@ Demo mode provides a self-contained, scripted demonstration of the PFD that can 
 
 The Pi Zero implements the same weather suite, winds aloft, traffic, full-screen MFD, and screen-sync features as the Pi 4 — see **REQUIREMENTS_DISPLAY_PI4 §14C–14G** for the detailed requirements; they apply equally here. Pi-Zero-specific points:
 
-> **REQ-DISP-ZERO-WX-001** The Pi Zero shall present the same internet + FIS-B weather products, OVLY overlay cycle, RADIO/AUTO/INET source toggle, MET readout picker, NEXRAD, and NOTAM key entry as the Pi 4.
+> **REQ-DISP-ZERO-WX-001** The Pi Zero shall present the same internet + FIS-B weather products, OVLY overlay cycle, RADIO/AUTO/INET source toggle, MET readout picker (with ICAO station-ident labels when the map range is below 160 NM), NEXRAD, and NOTAM (FAA NMS-API KEY/SECRET/ENV) key entry as the Pi 4.
+
+> **REQ-DISP-ZERO-WX-002** The Pi Zero shall share/adopt NOTAMs over the screen-sync link (one keyed display feeds keyless peers) and shall accept a pushed NOTAM credential set from a peer, persisting its own copy — matching Pi 4 §14C (REQ-DISP-PI4-WX-007).
 
 > **REQ-DISP-ZERO-WND-001** The Pi Zero shall display winds aloft (national disk-cached GFS grid, altitude/forecast-time selectors, 40/80/160 zoom, status line) and shall share/adopt winds zones over the screen-sync link with peer displays.
 

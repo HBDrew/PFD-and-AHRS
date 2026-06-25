@@ -530,10 +530,11 @@ Requires the simulator running with a direct-to or synthetic approach active.
 |---|------|----------|------|-------|
 | 9.1 | On the map, tap the WX status line | Cycles RADIO / AUTO / INET; status shows mode + R/I counts + age | | |
 | 9.2 | OVLY → MET (internet up) | Flight-category station dots (green/blue/red/magenta) appear | | |
+| 9.2a | Zoom in below 160 NM range on MET, then back out | Station dots show ICAO ident labels when < 160 NM; labels hidden at wider zoom | | |
 | 9.3 | Tap a station → Weather *ICAO* | Readout opens with METAR/TAF/AIRMET/SIGMET/NOTAM tabs; unavailable tabs greyed | | |
 | 9.4 | Tap a field with no METAR | Falls back to nearest station, labelled with distance/bearing | | |
 | 9.5 | OVLY → NEX | NEXRAD raster draws; status shows receipt-age and `NEX RDR valid` age (green/amber/red) | | |
-| 9.6 | Enter FAA NOTAM key in Connectivity, open a NOTAM tab | NOTAMs list (nearest-first); blank key = no NOTAMs, rest of WX unaffected | | |
+| 9.6 | Enter NOTAM KEY/SECRET (NMS-API) + ENV=preprod in Connectivity, open a NOTAM tab | NOTAMs list (nearest-first), scoped to a local ~10–40 nm radius; blank key = no NOTAMs, rest of WX unaffected. 401 = auth issue, 200+empty = none in view | | |
 
 ## Phase 10 — Winds Aloft (WND)
 
@@ -568,6 +569,7 @@ Requires the simulator running with a direct-to or synthetic approach active.
 | 12.4 | Tap a data-strip slot | Picker opens; reassigned slot persists | | |
 | 12.5 | Two displays, SCREEN SYNC on; set a bug / D2 / FPL on one | Appears on the other; PEER badge green; per-category TX/RX honoured | | |
 | 12.6 | Toggle TRANSPORT USB / NET / AUTO | LINKS row shows eligible interfaces; peer still seen on an active link | | |
+| 12.7 | Key NOTAMs on one display only, both on SYNC | Keyless display shows the same NOTAMs; entering the key on one display auto-populates NOTAM KEY/SECRET on the other (secret masked) and persists across reboot | | |
 
 ## Phase 13 — Hard-Iron (TUMBLE) Compass Cal
 
