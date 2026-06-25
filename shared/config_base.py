@@ -143,6 +143,9 @@ NOTAM_INTERVAL_S = 600    # NOTAM refresh cadence (FAA API; only polled with a k
 NOTAM_MIN_RADIUS_NM = 10   # floor — keep the local field(s) covered when zoomed in
 NOTAM_MAX_RADIUS_NM = 40   # cap — biggest NOTAM query (keeps the list readable)
 NOTAM_RADIUS_ZOOM_K = 1.5  # query radius = map range × this (clamped min/max)
+NOTAM_LIST_MAX = 100       # cap the NOTAM readout to the nearest N to the tapped
+                           # station (the store keeps them all; the picker shows
+                           # the nearest, with a "+N more" footer — nothing hidden)
 NEXRAD_INTERVAL_S = 300   # radar refresh cadence (NEXRAD updates ~5 min)
 NEXRAD_MAX_PX     = 480   # fetched raster long-side px (decode/scale cost)
 

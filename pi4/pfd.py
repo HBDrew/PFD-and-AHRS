@@ -14486,6 +14486,10 @@ def _advisory_list(kind, ref_lat=None, ref_lon=None):
         ref_lat, ref_lon = disp.get("lat"), disp.get("lon")
     ranked = _fisb.rank_advisories(items, ref_lat, ref_lon,
                                    route_pts=_active_route_pts())
+    extra = 0
+    if kind == "NOTAM" and len(ranked) > NOTAM_LIST_MAX:
+        extra = len(ranked) - NOTAM_LIST_MAX   # ranked nearest-first already, so
+        ranked = ranked[:NOTAM_LIST_MAX]       # the cap keeps the closest fields
     out = []
     for e in ranked:
         parts = []
@@ -14497,6 +14501,8 @@ def _advisory_list(kind, ref_lat=None, ref_lon=None):
         if v:
             parts.append(f"valid {v}")
         out.append(f"[{' · '.join(parts) or 'area n/a'}]  {e['text']}")
+    if extra:
+        out.append(f"… +{extra} more — showing the nearest {NOTAM_LIST_MAX}")
     return out
 
 
