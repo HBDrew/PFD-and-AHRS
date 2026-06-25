@@ -657,6 +657,9 @@ def _ssync_kinds_from_cs(direction):
     # benefit (a screen with internet feeds the others so they don't each hit
     # Open-Meteo's shared-per-IP rate limit).
     out.add(_ssync_mod.KIND_WINDS)
+    # NOTAMs ride the same always-on, both-ways model as winds: a screen with the
+    # FAA key feeds the fetched NOTAMs to peers that have no key.
+    out.add(_ssync_mod.KIND_NOTAMS)
     return out
 
 
@@ -670,6 +673,27 @@ def _winds_publish(packed):
     """publish_fn for WindsUSCache — broadcast a zone to peer screens."""
     if _screen_sync is not None:
         _screen_sync.publish(_ssync_mod.KIND_WINDS, packed)
+
+
+# Cap the NOTAM list shared per packet — screen_sync sends one UDP datagram with
+# no chunking, and the tight NOTAM radius already keeps the count modest.
+_NOTAM_SHARE_MAX = 120
+
+
+def _ssync_publish_notams(texts):
+    """Broadcast our fetched NOTAM list to peer screens (one keyed display feeds
+    the LAN — same model as winds).  Only the fetcher has a non-empty list."""
+    if _screen_sync is not None and texts:
+        _screen_sync.publish(_ssync_mod.KIND_NOTAMS,
+                             {"notams": list(texts)[:_NOTAM_SHARE_MAX]})
+
+
+def _ssync_apply_notams(data):
+    """Screen-sync KIND_NOTAMS callback — adopt a peer's fetched NOTAMs so a
+    display without its own FAA key still shows them."""
+    store = getattr(_adsb_client, "fisb", None) if _adsb_client else None
+    if store is not None:
+        store.add_notams(data.get("notams", []))
 
 
 def _ssync_refresh_kinds():
@@ -2600,7 +2624,11 @@ def _update_weather():
             _store.add_airsigmets(_airsig_client.snapshot())
         if _notam_client is not None and _notam_client.updated_s != _notam_fed_at:
             _notam_fed_at = _notam_client.updated_s
-            _store.add_notams(_notam_client.snapshot())
+            _notams = _notam_client.snapshot()
+            _store.add_notams(_notams)
+            # Share our fetched NOTAMs with peer screens (no-op on displays
+            # without a key — their snapshot is empty).
+            _ssync_publish_notams(_notams)
     w["stations"] = _store.ground_stations() if _store is not None else []
     w["graphics"] = _store.graphics() if _store is not None else []
     cs = disp["cs"]
@@ -17719,6 +17747,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_AHRS, _ssync_apply_ahrs)
     _screen_sync.on(_ssync_mod.KIND_GPS,  _ssync_apply_gps)
     _screen_sync.on(_ssync_mod.KIND_WINDS, _ssync_apply_winds)
+    _screen_sync.on(_ssync_mod.KIND_NOTAMS, _ssync_apply_notams)
     _screen_sync.start()
     print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
           f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
