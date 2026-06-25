@@ -180,6 +180,15 @@ When GPS fix is valid and in MAG mode, a **magenta** tick mark shows GPS ground 
 
 A chevron marker tracks the HDG bug. Tap the readout button (bottom-left) to enter a new heading. Colour-coded: CYAN (MAG mode) / MAGENTA (GPS TRK mode).
 
+### Magnetic vs True reference
+
+A small **`MAG`** / **`TRU`** tag at the top-left of the heading box shows which reference all headings and courses use:
+
+- **`MAG` (default):** Magnetic — matches charts, plates, runway numbers and ATC. The system computes everything in **true** internally and subtracts the local **WMM2025** magnetic variation at your GPS position (≈10–11° east in Arizona).
+- **`TRU` (amber):** True — values shown exactly as computed, no variation applied.
+
+Toggle it at **Setup → Display → UNITS → HDG / CRS REF**. It's one global setting covering the heading tape, the data-strip `TRK` / `HDG` / `BTW` / `DTK` / `WIND` fields, the CDI bearing, and flight-plan leg courses. Persists across power cycles, per-display. Without a GPS fix, MAG shows true until a fix is acquired. The magnetometer is still calibrated to *true* cardinals — MAG is purely a display conversion.
+
 ---
 
 ## 6. Status Badges
@@ -351,6 +360,9 @@ The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and 
 
 ### Pressure units
 **inHg** or **hPa**.
+
+### Heading / course reference
+**MAG** (default) or **TRUE** — the reference for every displayed heading and course (heading tape, `TRK` / `HDG` / `BTW` / `DTK` / `WIND` strip fields, CDI bearing, flight-plan leg courses). MAG applies the WMM2025 magnetic variation at GPS position so the numbers match charts/plates/ATC; TRUE shows the raw computed values with a `T` suffix. The heading box carries a `MAG` / `TRU` tag. See §5.
 
 ### Brightness
 Tap **−** or **+** to step between levels 1–10. Routed to a hardware-PWM channel on **GPIO 18** (configured by the `dtoverlay=pwm,pin=18,func=2` line in `/boot/firmware/config.txt`); `pfd.service`'s `ExecStartPre` block runs as root once at boot to export the channel, set the period (1 kHz) and polarity (inversed — the Waveshare 3.5" DPI backlight is active-low), and hand a group-writable `duty_cycle` node to the unprivileged PFD process. The slider value is persisted in `data/settings.json` and restored on every boot.
@@ -669,9 +681,9 @@ The **ASP** stop in the **OVLY** cycle draws airspace boundaries on the moving m
 
 ### Flight plan (multi-waypoint)
 
-![Flight-plan editor — ordered waypoint list KPRC → KSEZ → KFLG with the KSEZ leg active (green highlight, ● ACTIVE badge, magenta ident), + ICAO / + LAT/LON / + USER buttons, SAVE / LOAD row, DEACTIVATE, and per-row ↑ / ↓ / ✕ controls](../pi_zero/previews/preview_fpl_editor.png)
+![Flight-plan editor — ordered waypoint list KPRC → KSEZ → KFLG with the KSEZ leg active (green highlight, ● ACTIVE badge, magenta ident), + ICAO / + LAT/LON / + USER buttons, SAVE / REVERSE / LOAD row, DEACTIVATE, and per-row ↑ / ↓ / ✕ controls](../pi_zero/previews/preview_fpl_editor.png)
 
-Tap **FPL** on the MFD to open the flight-plan editor. Build an ordered list with **+ ICAO**, **+ LAT/LON**, or **+ USER**; reorder or remove rows with the per-row **↑ / ↓ / ✕** buttons. Tapping a row activates that leg as the direct-to (green highlight, **● ACTIVE** badge, magenta ident); the plan auto-sequences to the next leg as you pass each waypoint. **DEACTIVATE** clears the active leg.
+Tap **FPL** on the MFD to open the flight-plan editor. Build an ordered list with **+ ICAO**, **+ LAT/LON**, or **+ USER**; reorder or remove rows with the per-row **↑ / ↓ / ✕** buttons. Tapping a row activates that leg as the direct-to (green highlight, **● ACTIVE** badge, magenta ident); the plan auto-sequences to the next leg as you pass each waypoint. **DEACTIVATE** clears the active leg. **REVERSE** (on the SAVE / REVERSE / LOAD row) flips the whole route end-for-end — A→…→Z becomes Z→…→A — to fly the return trip; it needs at least two waypoints and deactivates the active leg, and the reversed order syncs to the other displays.
 
 ### Saving and loading plans
 

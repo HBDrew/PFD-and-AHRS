@@ -25,25 +25,22 @@ destination position every few seconds to keep the cache hot.  Unknown whether
 the 1.7 s is a one-time data-load or per-query — the off-thread warmer covers both.
 
 ### MAGVAR  Display magnetic courses/headings (add magnetic variation)
-Status: **OPEN — committed to doing it; not started**
-Context: the whole system is currently TRUE-referenced and self-consistent —
-the mag-cal wizard calibrates the magnetometer against TRUE cardinals (so
-MAG-mode heading reads true), GPS track is true, and stored courses (incl.
-approach `course_deg`) are true.  Nothing is internally broken.  BUT the outside
-world is magnetic: charts, ATC, runway numbers, approach courses.  In AZ
-(KFLG/KDVT/Sedona) variation is ~10–11°E, so e.g. RWY "03" (030° mag) shows
-~041°T and a 030°(mag) approach course shows ~040°T — a standing ~10° offset vs
-every plate/clearance.  Decision made: adopt magnetic.
-Scope:
-  - Add a `magvar(lat, lon)` source.  Cleanest: the FAA nav-data build already
-    has per-airport/navaid variation (NASR) — surface it in the cache; or drop
-    in a WMM model for variation anywhere.
-  - Apply true→magnetic at the DISPLAY layer everywhere courses/headings show:
-    heading tape, track, CDI/approach course, runway/approach course labels,
-    FPL leg course (`draw_fpl`, now `°T`), bug readouts.
-  - Recalibrate the mag wizard against MAGNETIC cardinals (or just subtract
-    magvar from the existing true-cal).  Reference-wide flip, mechanically
-    straightforward once `magvar()` exists.
+Status: **DONE** — MAG is now the default reference; TRUE is a toggle.
+Implementation:
+  - `shared/magvar.py`: self-contained **WMM2025** declination model (degree-12
+    Gauss coefficients embedded, no data file / no network).  Vendored and
+    trimmed to declination-only from pygeomag (MIT); validated bit-exact vs
+    pygeomag worldwide.  `declination(lat, lon)` / `true_to_mag()` with a coarse
+    spatial+temporal cache so it's cheap per frame.
+  - Display-layer conversion only (internal nav math stays TRUE).  Applied at:
+    heading tape (+ `MAG`/`TRU` annunciation on the box), TRK/HDG/BTW/DTK/WIND
+    data-strip fields, CDI bearing, and FPL leg courses (regular + approach;
+    `draw_fpl` now shows mag bare / true with a `T` suffix).
+  - New **HDG / CRS REF** row on Setup → Display → UNITS (pi4 + pi_zero), default
+    MAG, persisted per-display in `settings.json`.
+  - Mag-cal wizard left calibrating against TRUE cardinals — MAG is a pure
+    display conversion, so no recalibration was needed.
+  - Winds-aloft map barbs intentionally left TRUE (forecast-wind convention).
 
 ### PIZ-APPROACHES  Port loaded approaches to the Pi Zero
 Status: **RECEIVE/DRAW DONE — see the fuller PIZ-APPROACHES entry below**

@@ -285,6 +285,17 @@ In MAG mode with GPS fix, a **magenta** tick shows GPS ground track (wind/crab i
 
 Chevron on the tape. CYAN (MAG) / MAGENTA (GPS TRK). Settable via numpad or tap on tape.
 
+### Magnetic vs True reference
+
+A small **`MAG`** / **`TRU`** tag sits at the top-left of the heading box telling you which reference *all* headings and courses are shown in:
+
+- **`MAG` (default, grey):** Magnetic — matches charts, plates, runway numbers and ATC clearances. The system computes everything internally in **true** and subtracts the local magnetic variation from the **WMM2025** world magnetic model at your GPS position. In Arizona that's about 10–11° east, so a runway labelled "03" reads ~030°, not the ~041° true it actually points.
+- **`TRU` (amber):** True — every heading/course shown exactly as computed, no variation applied. The amber tag flags that you're off the charted (magnetic) convention.
+
+The toggle is **Setup → Display → UNITS → HDG / CRS REF**. It is one global setting: the heading tape, the data-strip `TRK` / `HDG` / `BTW` / `DTK` / `WIND` fields, the CDI/direct-to bearing, and the flight-plan leg courses all follow it. The choice persists across power cycles and is per-display (each screen can differ). Without a GPS fix the system can't look up variation, so MAG mode shows true until a fix is acquired.
+
+> The magnetometer is still calibrated against *true* cardinals (the compass-cal wizard is unchanged); MAG mode is purely a display conversion, so the internal navigation math is unaffected.
+
 ---
 
 ## 6. Status Badges
@@ -433,6 +444,7 @@ The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and 
 | UNITS | **SPEED UNITS** | KT / MPH / KPH | KT | Speed tape + bug numpad units. |
 | UNITS | **ALTITUDE** | FT / M | FT | Altitude tape, bug, AGL readout. |
 | UNITS | **PRESSURE** | inHg / hPa | inHg | Baro setting; numpad title and entry mode follow this. |
+| UNITS | **HDG / CRS REF** | MAG / TRUE | MAG | Reference for *all* displayed headings and courses (heading tape, TRK/HDG/BTW/DTK/WIND strip fields, CDI bearing, FPL leg courses). MAG applies WMM2025 magnetic variation at GPS position so the numbers match charts/plates/ATC; TRUE shows the raw computed values. The heading box carries a `MAG` / `TRU` tag. See §5. |
 | DISPLAY | **BRIGHTNESS** | 1 – 10 | 8 | Backlight level. Routed to the active backlight transport (see below). |
 | DISPLAY | **ALERT AUDIO** | OFF / ON | ON | Master mute for the voice-callout pipeline. When OFF, terrain / obstacle / sink-rate / bank-angle callouts are suppressed and any in-flight clip is cut. The visual banners stay on regardless. |
 | DISPLAY | **ALERT VOLUME** | 1 – 10 | 8 | Callout volume scale. 0 is effectively muted; 10 is unity. Applied live to the pygame mixer; takes effect on the next callout. |
@@ -955,19 +967,20 @@ When no waypoint is active the strip is still drawn but reads **"DIRECT  →"** 
 
 ### Flight plan (multi-waypoint)
 
-Tap **FPL** (top-right on the MFD, §15) to open the flight-plan editor — an ordered list of waypoints where each leg is one ICAO ident, and each row shows that leg's **distance and course (°T)**. Tap a row to **activate that leg** as the direct-to (the active leg is highlighted green with an **● ACTIVE** badge and its waypoint turns magenta); auto-sequencing advances to the next leg as you pass each waypoint, **leading the turn (fly-by)** — it sequences early using a groundspeed-based turn-anticipation distance so the aircraft rolls onto the next course without overshooting the fix (the final approach leg stays fly-over). Vertical step-downs on an approach are distance-to-threshold based, so leading the lateral turn never advances the altitude profile early.
+Tap **FPL** (top-right on the MFD, §15) to open the flight-plan editor — an ordered list of waypoints where each leg is one ICAO ident, and each row shows that leg's **course and distance** (e.g. `123°  4.5 nm`). The course follows the **HDG / CRS REF** setting (§10): magnetic by default — bare degrees, matching charts — or true, shown with a `T` suffix (`123°T`). Tap a row to **activate that leg** as the direct-to (the active leg is highlighted green with an **● ACTIVE** badge and its waypoint turns magenta); auto-sequencing advances to the next leg as you pass each waypoint, **leading the turn (fly-by)** — it sequences early using a groundspeed-based turn-anticipation distance so the aircraft rolls onto the next course without overshooting the fix (the final approach leg stays fly-over). Vertical step-downs on an approach are distance-to-threshold based, so leading the lateral turn never advances the altitude profile early.
 
-![Flight-plan editor — KPRC → KSEZ → KFLG with the KSEZ leg active, +ICAO/+LAT-LON/+USER add buttons, SAVE / LOAD, and a DEACTIVATE button](../pi4/previews/preview_fpl_editor.png)
+![Flight-plan editor — KPRC → KSEZ → KFLG with the KSEZ leg active, +ICAO/+LAT-LON/+USER add buttons, SAVE / REVERSE / LOAD, and a DEACTIVATE button](../pi4/previews/preview_fpl_editor.png)
 
 - **+ ICAO** — add a waypoint by ident (opens the keyboard; unknown idents are rejected with a red hint).
 - **+ LAT/LON** — add a custom point by coordinates.
 - **+ USER** — pick from your saved user-waypoint library.
 - **↑ / ↓ / ✕** on each row — reorder or delete that waypoint.
+- **REVERSE** — flip the whole route end-for-end (A→…→Z becomes Z→…→A), e.g. to fly the return trip. Needs at least two waypoints. Reversing **deactivates** the active leg (the old leg's course no longer applies to the reversed route), so re-tap a row to activate; the reversed order syncs to the other displays.
 - **DEACTIVATE** — stop navigating the plan without deleting it.
 
 ### Saving and loading plans
 
-**SAVE** stores the current waypoint list under a name you type; **LOAD (*n*)** opens the saved-plan picker. Each saved plan shows its leg count and first → last idents; tap **LOAD** to recall it into the editor or **DEL** to remove it. Saved plans (and the user-waypoint library) persist across power cycles and sync to the other displays when **SHARE FPL** is on (§12A).
+**SAVE** stores the current waypoint list under a name you type; **REVERSE** flips the leg order (above); **LOAD (*n*)** opens the saved-plan picker. Each saved plan shows its leg count and first → last idents; tap **LOAD** to recall it into the editor or **DEL** to remove it. Saved plans (and the user-waypoint library) persist across power cycles and sync to the other displays when **SHARE FPL** is on (§12A).
 
 ![Load-plan picker — saved plans (SEDONA LOOP, RIM TOUR) each with a leg count, first → last idents, and LOAD / DEL buttons](../pi4/previews/preview_fpl_load.png)
 
@@ -1043,6 +1056,8 @@ The trace on the moving-map inset turns cyan to match while the approach is acti
 ![Short final to KSEZ RWY 03 — cyan HITS boxes stack along the centreline, VDI on the right, KSEZ/03 readout, ±0.3 NM CDI scale](../pi4/previews/pfd_gl/preview_hits_boxes.png)
 
 6. Tap **CANCEL APPROACH** at the bottom of the runway picker (only present when an approach is active) to clear the approach and revert to plain D2 to the airport.
+
+Once an approach is loaded, the **FPL page** lists its legs in a read-only block indented under the destination — one row per fix (`↳ IDENT`) showing the published **crossing altitude** plus the **inbound track and distance** to that fix (e.g. `031°  2.4 nm`), in the selected HDG / CRS REF. Cross-check those tracks against the plate; the active leg is boxed green.
 
 ### HITS boxes
 
