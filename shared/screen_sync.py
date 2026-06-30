@@ -64,10 +64,14 @@ KIND_NOTAMCREDS = "notamcreds"  # FAA NOTAM credentials (client_id/secret/env) �
                         # pushed on demand so the key is entered once and stored
                         # on every display.  Sent only when a cred field is
                         # committed, not continuously.
+KIND_FP = "fp"        # flight profile: tail/type + V-speeds (vs0/vs1/vfe/vno/
+                      # vne/va/vy/vx).  One aircraft → every display must agree,
+                      # so an edit on any screen pushes to all.  Sent on change.
 KIND_HELLO = "hello"  # heartbeat, no payload — keeps peer-status live
 
 ALL_KINDS = (KIND_BUGS, KIND_BARO, KIND_NAV, KIND_AHRS, KIND_GPS, KIND_FPL,
-             KIND_APPR, KIND_FPLLIB, KIND_WINDS, KIND_NOTAMS, KIND_NOTAMCREDS)
+             KIND_APPR, KIND_FPLLIB, KIND_WINDS, KIND_NOTAMS, KIND_NOTAMCREDS,
+             KIND_FP)
 
 # Transport selectors.  "auto" sends on every usable interface (USB
 # and network alike); "usb" / "net" restrict sends to one category.

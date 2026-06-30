@@ -490,6 +490,9 @@ def _ssync_kinds_from_cs(direction):
     # ride along too so the key can be entered once and pushed to every display.
     out.add(_ssync_mod.KIND_NOTAMS)
     out.add(_ssync_mod.KIND_NOTAMCREDS)
+    # Flight profile (tail/type + V-speeds) always syncs both ways: one
+    # aircraft, so every display must agree.  Edit on any screen pushes to all.
+    out.add(_ssync_mod.KIND_FP)
     return out
 
 
@@ -569,6 +572,38 @@ def _ssync_apply_notamcreds(data):
             changed = True
     if changed:
         _settings.mark_dirty()
+
+
+# Flight-profile fields that sync across displays (one aircraft → all agree).
+_FP_SYNC_KEYS = ("tail", "actype", "vs0", "vs1", "vfe", "vno", "vne",
+                 "va", "vy", "vx")
+
+
+def _ssync_publish_fp():
+    """Broadcast the flight profile (tail/type + V-speeds) so every display
+    holds the same aircraft.  Called whenever a profile field is committed."""
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    fp = disp.get("fp", {})
+    _screen_sync.publish(_ssync_mod.KIND_FP,
+                         {k: fp[k] for k in _FP_SYNC_KEYS if k in fp})
+
+
+def _ssync_apply_fp(data):
+    """Screen-sync KIND_FP callback — adopt a peer's flight profile + persist."""
+    global _ssync_suppress_publish
+    _ssync_suppress_publish += 1
+    try:
+        fp = disp.setdefault("fp", {})
+        changed = False
+        for k in _FP_SYNC_KEYS:
+            if k in data and data[k] != fp.get(k):
+                fp[k] = data[k]
+                changed = True
+        if changed:
+            _settings.mark_dirty()
+    finally:
+        _ssync_suppress_publish -= 1
 
 
 def _ssync_refresh_kinds():
@@ -3954,6 +3989,8 @@ def handle_event(event, demo_mode):
                 disp["ds"].update(spd_unit="kt", alt_unit="ft", baro_unit="inhg",
                                    brightness=8, night_mode=False)
                 disp["ss"].update(pitch_trim=0.0, roll_trim=0.0)
+                _settings.mark_dirty()
+                _ssync_publish_fp()      # push reset V-speeds to peer displays
             return True
 
         # ── Sim setup screen taps ─────────────────────────────────────────
@@ -4299,6 +4336,7 @@ def handle_event(event, demo_mode):
                                 _ssync_push_notam_creds()
                         else:
                             disp["fp"][target] = buf
+                            _ssync_publish_fp()   # tail/type → peer displays
                         _settings.mark_dirty()
                     disp["kbd_buf"] = ""
                     disp["mode"] = disp["kbd_prev"]
@@ -4359,6 +4397,7 @@ def handle_event(event, demo_mode):
                             disp["sim"]["init_spd"] = float(val)
                         elif target in disp["fp"]:   # V-speed field (always kt)
                             disp["fp"][target] = val
+                            _ssync_publish_fp()       # V-speed → peer displays
                         _settings.mark_dirty()
                     disp["mode"] = disp["numpad_prev"]
                     disp["numpad_buf"] = ""
@@ -15229,6 +15268,7 @@ def main():
     _screen_sync.on(_ssync_mod.KIND_WINDS, _ssync_apply_winds)
     _screen_sync.on(_ssync_mod.KIND_NOTAMS, _ssync_apply_notams)
     _screen_sync.on(_ssync_mod.KIND_NOTAMCREDS, _ssync_apply_notamcreds)
+    _screen_sync.on(_ssync_mod.KIND_FP, _ssync_apply_fp)
     _screen_sync.start()
     print(f"[PFD] Screen sync listening on UDP {_ssync_mod.DEFAULT_PORT}"
           f" (instance {_ssync_mod.INSTANCE_ID[:8]})")
