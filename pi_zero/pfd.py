@@ -3776,6 +3776,17 @@ def handle_event(event, demo_mode):
                         disp["appr_from_fpl"] = True
                         _prc_reset()
                         disp["mode"] = "appr_proc_select"
+            elif act == "appr_reload":
+                # Tap the loaded-approach header (CHANGE ▸) → reopen the picker
+                # to swap it for a different approach.  The current approach
+                # stays loaded until a new one is picked (BACK keeps it).
+                dest = _fpl_dest_approach_ident() or \
+                    (disp.get("approach") or {}).get("airport", "")
+                if dest:
+                    disp["approach"]["airport"] = dest
+                    disp["appr_from_fpl"] = True
+                    _prc_reset()
+                    disp["mode"] = "appr_proc_select"
             elif act == "activate":
                 _fpl_activate(payload, reset_activation=True)
             elif act == "up" and payload > 0:
@@ -13413,6 +13424,18 @@ def _fpl_appr_row_rect(k):
     return (bx + _FPL_APPR_INDENT, ry, bw - _FPL_APPR_INDENT, _FPL_ROW_H)
 
 
+def _fpl_appr_header_rect():
+    """Tappable rect of the 'APPROACH · … · CHANGE ▸' header — reopens the
+    picker to swap the loaded approach.  None when none loaded / no plan."""
+    if _approach_phase() == "none":
+        return None
+    hy = _fpl_appr_header_y()
+    if hy is None:
+        return None
+    bx, _by, bw, _bh = _fpl_row_rect(0)
+    return (bx + _FPL_APPR_INDENT, hy - 4, bw - _FPL_APPR_INDENT, _FPL_APPR_HDR_H)
+
+
 def _appr_section_h():
     """Extra scroll height for the loaded-approach section under the plan."""
     ap = disp.get("approach") or {}
@@ -13636,10 +13659,13 @@ def draw_fpl(surf):
                "missed": "MISSED"}.get(_phase, "")
         lbx = _fpl_row_rect(0)[0]
         hy = _fpl_appr_header_y()
+        _chg_w = _get_font(14, bold=True).size("CHANGE ▸")[0]
         if _legs:
             if list_top <= hy <= list_bot:
                 _text(surf, f"APPROACH · {_approach_label()} · {tag}", 14, col,
                       bold=True, x=lbx + _FPL_APPR_INDENT, y=hy)
+                _text(surf, "CHANGE ▸", 14, (120, 200, 255), bold=True,
+                      x=DISPLAY_W - 6 - _chg_w, y=hy)
             leg_idx = int(_ap.get("leg_idx", -1)) if _phase == "active" else -1
             prev_la, prev_lo = wps[-1]["lat"], wps[-1]["lon"]
             _asfx = _brg_suffix()
@@ -13667,6 +13693,10 @@ def draw_fpl(surf):
                 _text(surf, sub, 17, (140, 200, 225),
                       x=rc.right - 14 - _sw, cy=rc.centery)
         elif hy is not None and list_top <= hy <= list_bot:
+            _text(surf, f"APPROACH · {_approach_label()} · {tag}", 14, col,
+                  bold=True, x=lbx + _FPL_APPR_INDENT, y=hy)
+            _text(surf, "CHANGE ▸", 14, (120, 200, 255), bold=True,
+                  x=DISPLAY_W - 6 - _chg_w, y=hy)
             rc = pygame.Rect(*_fpl_appr_row_rect(0))
             pygame.draw.rect(surf, (0, 14, 28), rc, border_radius=5)
             pygame.draw.rect(surf, col, rc, width=1, border_radius=5)
@@ -13730,6 +13760,13 @@ def fpl_hit(x, y):
     dx, dy, dw, dh = deact_r
     if dx <= x <= dx + dw and dy <= y <= dy + dh:
         return ("deact", None)
+    # Loaded-approach header (CHANGE ▸) → reopen the picker to swap it.
+    if _approach_phase() != "none" and disp.get("fpl", {}).get("waypoints", []):
+        hr = _fpl_appr_header_rect()
+        if hr is not None:
+            hx, hy2, hw, hh = hr
+            if hx <= x <= hx + hw and hy2 <= y <= hy2 + hh:
+                return ("appr_reload", None)
     wps = disp.get("fpl", {}).get("waypoints", [])
     for i in range(len(wps)):
         bx, by, bw, bh = _fpl_row_rect(i)

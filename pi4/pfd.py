@@ -6587,6 +6587,20 @@ def handle_event(event, demo_mode):
                         disp["mode"] = ("appr_proc_select"
                                         if _appr_published(dest)
                                         else "approach_select")
+            elif act == "appr_reload":
+                # Tap the loaded-approach header (CHANGE ▸) → reopen the picker
+                # to swap it for a different approach to the same destination.
+                # The old approach stays loaded until a new one is chosen (BACK
+                # keeps it), so this can't accidentally clear guidance.
+                dest = _fpl_dest_approach_ident() or \
+                    (disp.get("approach") or {}).get("airport", "")
+                if dest:
+                    disp["approach"]["airport"] = dest
+                    disp["appr_from_fpl"] = True
+                    _prc_scroll = 0
+                    disp["mode"] = ("appr_proc_select"
+                                    if _appr_published(dest)
+                                    else "approach_select")
             elif act == "legmenu":
                 _legmenu_open("fpl", payload)
             elif act == "appr_legmenu":
@@ -16147,6 +16161,19 @@ def _fpl_appr_row_rect(k):
     return (bx + _FPL_APPR_INDENT, ry, bw - _FPL_APPR_INDENT, _FPL_ROW_H)
 
 
+def _fpl_appr_header_rect():
+    """Tappable rect of the 'APPROACH · … · CHANGE ▸' header — reopens the
+    picker to swap the loaded approach for a different one.  None when no
+    approach is loaded or there's no plan."""
+    if _approach_phase() == "none":
+        return None
+    hy = _fpl_appr_header_y()
+    if hy is None:
+        return None
+    bx, _by, bw, _bh = _fpl_row_rect(0)
+    return (bx + _FPL_APPR_INDENT, hy - 4, bw - _FPL_APPR_INDENT, _FPL_APPR_HDR_H)
+
+
 def _appr_section_h():
     """Extra scroll height for the loaded-approach section under the plan."""
     ap = disp.get("approach") or {}
@@ -16350,10 +16377,13 @@ def draw_fpl(surf):
                "missed": "MISSED"}.get(_phase, "")
         lbx = _fpl_row_rect(0)[0]
         hy = _fpl_appr_header_y()
+        _chg_w = _get_font(13).size("CHANGE ▸")[0]
         if _legs:
             if list_top <= hy <= list_bot:
                 _text(surf, f"APPROACH · {_approach_label()} · {tag}", 13, col,
                       bold=True, x=lbx + _FPL_APPR_INDENT, y=hy)
+                _text(surf, "CHANGE ▸", 13, (120, 200, 255), bold=True,
+                      x=DISPLAY_W - 6 - _chg_w, y=hy)
             leg_idx = int(_ap.get("leg_idx", -1)) if _phase == "active" else -1
             prev_la, prev_lo = wps[-1]["lat"], wps[-1]["lon"]
             _asfx = _brg_suffix()
@@ -16381,6 +16411,10 @@ def draw_fpl(surf):
                 _text(surf, sub, 16, (140, 200, 225),
                       x=rc.right - 14 - _sw, cy=rc.centery)
         elif hy is not None and list_top <= hy <= list_bot:
+            _text(surf, f"APPROACH · {_approach_label()} · {tag}", 13, col,
+                  bold=True, x=lbx + _FPL_APPR_INDENT, y=hy)
+            _text(surf, "CHANGE ▸", 13, (120, 200, 255), bold=True,
+                  x=DISPLAY_W - 6 - _chg_w, y=hy)
             rc = pygame.Rect(*_fpl_appr_row_rect(0))
             pygame.draw.rect(surf, (0, 14, 28), rc, border_radius=5)
             pygame.draw.rect(surf, col, rc, width=1, border_radius=5)
@@ -16438,7 +16472,14 @@ def fpl_hit(x, y):
         if rx <= x <= rx + rw and ry <= y <= ry + rh:
             return ("delete", i)
         return ("legmenu", i)
-    # Approach-section leg rows (read-only display, but tappable to fly).
+    # Approach section: the header (CHANGE ▸) reopens the picker to swap the
+    # loaded approach; each leg row is tappable to fly it.
+    if wps and _approach_phase() != "none":
+        hr = _fpl_appr_header_rect()
+        if hr is not None:
+            hx, hy2, hw, hh = hr
+            if hx <= x <= hx + hw and hy2 <= y <= hy2 + hh:
+                return ("appr_reload", None)
     ap = disp.get("approach") or {}
     legs = ap.get("legs") or []
     if wps and legs and _approach_phase() != "none":
