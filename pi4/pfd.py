@@ -16059,7 +16059,7 @@ _FPL_ICON_W     = 56
 _FPL_ICON_GAP   = 6
 _FPL_ACTIONS_GAP = 6
 _FPL_SAVELOAD_H  = 44
-_FPL_DEACT_H     = 36
+_FPL_DEACT_H     = 44      # bottom action row — finger height, matches the rows above
 _fpl_scroll = 0
 _fpl_drag = None
 _FPL_DRAG_THRESHOLD = 8
@@ -16112,18 +16112,27 @@ def _fpl_dest_approach_ident():
 
 
 def _fpl_deact_row_rects():
-    """(load_appr_rect | None, deact_rect).  When the FPL destination can take
-    a synthetic approach, the bottom row splits into LOAD APPR | DEACTIVATE;
-    otherwise DEACTIVATE spans the full width."""
+    """Bottom action row rects: (appr_rect|None, change_rect|None, deact_rect).
+      • approach loaded      → three thirds: [approach][CHANGE][DEACTIVATE]
+      • destination has appr → two halves:   [LOAD APPR][DEACTIVATE]
+      • otherwise            → DEACTIVATE spans the full width."""
     ax, ay, aw, _ = _fpl_actions_rect()
     by = (ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
           + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP)
-    if _fpl_dest_approach_ident():
-        gap = _FPL_ACTIONS_GAP
+    gap = _FPL_ACTIONS_GAP
+    h = _FPL_DEACT_H
+    show_appr   = bool(_fpl_dest_approach_ident()) or _approach_phase() != "none"
+    show_change = _approach_phase() != "none"
+    if show_appr and show_change:
+        bw = (aw - 2 * gap) // 3
+        return ((ax, by, bw, h),
+                (ax + bw + gap, by, bw, h),
+                (ax + 2 * (bw + gap), by, aw - 2 * (bw + gap), h))
+    if show_appr:
         bw = (aw - gap) // 2
-        return ((ax, by, bw, _FPL_DEACT_H),
-                (ax + bw + gap, by, aw - bw - gap, _FPL_DEACT_H))
-    return (None, (ax, by, aw, _FPL_DEACT_H))
+        return ((ax, by, bw, h), None,
+                (ax + bw + gap, by, aw - bw - gap, h))
+    return (None, None, (ax, by, aw, h))
 
 
 def _fpl_list_y0():
@@ -16159,19 +16168,6 @@ def _fpl_appr_row_rect(k):
     hy = (_fpl_appr_header_y() or 0) + _FPL_APPR_HDR_H
     ry = hy + k * (_FPL_ROW_H + _FPL_ROW_GAP)
     return (bx + _FPL_APPR_INDENT, ry, bw - _FPL_APPR_INDENT, _FPL_ROW_H)
-
-
-def _fpl_appr_header_rect():
-    """Tappable rect of the 'APPROACH · … · CHANGE ▸' header — reopens the
-    picker to swap the loaded approach for a different one.  None when no
-    approach is loaded or there's no plan."""
-    if _approach_phase() == "none":
-        return None
-    hy = _fpl_appr_header_y()
-    if hy is None:
-        return None
-    bx, _by, bw, _bh = _fpl_row_rect(0)
-    return (bx + _FPL_APPR_INDENT, hy - 4, bw - _FPL_APPR_INDENT, _FPL_APPR_HDR_H)
 
 
 def _appr_section_h():
@@ -16263,7 +16259,7 @@ def draw_fpl(surf):
         _text(surf, "LOAD", 15, (80, 90, 110), bold=True,
               cx=lx + lw // 2, cy=ly + lh // 2)
 
-    appr_r, (dx, dy, dw, dh) = _fpl_deact_row_rects()
+    appr_r, change_r, (dx, dy, dw, dh) = _fpl_deact_row_rects()
     if appr_r is not None:
         _ap = disp.get("approach") or {}
         _rwy = _ap.get("runway", "")
@@ -16276,6 +16272,8 @@ def draw_fpl(surf):
             _action_btn(surf, *appr_r, f"ACTIVATE {_rwy}", "warn", r=6)
         else:
             _action_btn(surf, *appr_r, "LOAD APPR", "ok", r=6)
+    if change_r is not None:
+        _action_btn(surf, *change_r, "CHANGE APPR", "normal", r=6)
     if is_active:
         _action_btn(surf, dx, dy, dw, dh, "DEACTIVATE", "warn", r=6)
     else:
@@ -16377,13 +16375,10 @@ def draw_fpl(surf):
                "missed": "MISSED"}.get(_phase, "")
         lbx = _fpl_row_rect(0)[0]
         hy = _fpl_appr_header_y()
-        _chg_w = _get_font(13).size("CHANGE ▸")[0]
         if _legs:
             if list_top <= hy <= list_bot:
                 _text(surf, f"APPROACH · {_approach_label()} · {tag}", 13, col,
                       bold=True, x=lbx + _FPL_APPR_INDENT, y=hy)
-                _text(surf, "CHANGE ▸", 13, (120, 200, 255), bold=True,
-                      x=DISPLAY_W - 6 - _chg_w, y=hy)
             leg_idx = int(_ap.get("leg_idx", -1)) if _phase == "active" else -1
             prev_la, prev_lo = wps[-1]["lat"], wps[-1]["lon"]
             _asfx = _brg_suffix()
@@ -16413,8 +16408,6 @@ def draw_fpl(surf):
         elif hy is not None and list_top <= hy <= list_bot:
             _text(surf, f"APPROACH · {_approach_label()} · {tag}", 13, col,
                   bold=True, x=lbx + _FPL_APPR_INDENT, y=hy)
-            _text(surf, "CHANGE ▸", 13, (120, 200, 255), bold=True,
-                  x=DISPLAY_W - 6 - _chg_w, y=hy)
             rc = pygame.Rect(*_fpl_appr_row_rect(0))
             pygame.draw.rect(surf, (0, 14, 28), rc, border_radius=5)
             pygame.draw.rect(surf, col, rc, width=1, border_radius=5)
@@ -16448,11 +16441,15 @@ def fpl_hit(x, y):
         ax, ay, aw, ah = rect
         if ax <= x <= ax + aw and ay <= y <= ay + ah:
             return (kind, None)
-    appr_r, deact_r = _fpl_deact_row_rects()
+    appr_r, change_r, deact_r = _fpl_deact_row_rects()
     if appr_r is not None:
         ax2, ay2, aw2, ah2 = appr_r
         if ax2 <= x <= ax2 + aw2 and ay2 <= y <= ay2 + ah2:
             return ("load_appr", None)
+    if change_r is not None:
+        cx2, cy2, cw2, ch2 = change_r
+        if cx2 <= x <= cx2 + cw2 and cy2 <= y <= cy2 + ch2:
+            return ("appr_reload", None)
     dx, dy, dw, dh = deact_r
     if dx <= x <= dx + dw and dy <= y <= dy + dh:
         return ("deact", None)
@@ -16472,14 +16469,7 @@ def fpl_hit(x, y):
         if rx <= x <= rx + rw and ry <= y <= ry + rh:
             return ("delete", i)
         return ("legmenu", i)
-    # Approach section: the header (CHANGE ▸) reopens the picker to swap the
-    # loaded approach; each leg row is tappable to fly it.
-    if wps and _approach_phase() != "none":
-        hr = _fpl_appr_header_rect()
-        if hr is not None:
-            hx, hy2, hw, hh = hr
-            if hx <= x <= hx + hw and hy2 <= y <= hy2 + hh:
-                return ("appr_reload", None)
+    # Approach-section leg rows (read-only display, but tappable to fly).
     ap = disp.get("approach") or {}
     legs = ap.get("legs") or []
     if wps and legs and _approach_phase() != "none":
