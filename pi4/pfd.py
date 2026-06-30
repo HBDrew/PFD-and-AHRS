@@ -16370,14 +16370,16 @@ def draw_fpl(surf):
                 pygame.draw.rect(surf, col if on_leg else (50, 70, 95), rc,
                                  width=2 if on_leg else 1, border_radius=5)
                 _text(surf, f"↳ {ident}", 28, (90, 240, 130) if on_leg else WHITE,
-                      bold=True, x=rc.x + 16, y=rc.y + 12)
-                # Sub-line: leg TRK + distance (cross-checked against the plate),
-                # plus any crossing altitude.
+                      bold=True, x=rc.x + 16, cy=rc.centery)
+                # TRK · distance (cross-checked against the plate) · crossing
+                # altitude — right side of the cell, vertically centred.
                 sub = f"{int(round(lb)) % 360:03d}°{_asfx}  ·  {ld:.1f} nm"
                 alt_lbl = _appr_alt_label(_alt, _at)
                 if alt_lbl:
                     sub += f"  ·  {alt_lbl}"
-                _text(surf, sub, 16, (140, 200, 225), x=rc.x + 18, y=rc.y + 46)
+                _sw = _get_font(16).size(sub)[0]
+                _text(surf, sub, 16, (140, 200, 225),
+                      x=rc.right - 14 - _sw, cy=rc.centery)
         elif hy is not None and list_top <= hy <= list_bot:
             rc = pygame.Rect(*_fpl_appr_row_rect(0))
             pygame.draw.rect(surf, (0, 14, 28), rc, border_radius=5)
