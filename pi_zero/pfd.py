@@ -60,6 +60,7 @@ from terrain import (
 _srtm_set_resolution_preference("srtm3")
 import obstacles as obs_mod
 import airports as apt_mod
+import runways as rwy_mod
 import airspaces as asp_mod
 import navdata as nd_mod
 import water as water_mod
@@ -154,6 +155,8 @@ disp["od"] = {                      # obstacle download/parse state
 }
 _obstacles = None           # loaded obstacle array (module-level)
 _airports  = None           # loaded airport array (module-level)
+_runways   = None           # loaded runway array — used only to resolve
+                            # approach landing thresholds (NOT drawn on the map)
 _airspaces = None           # list of airspace records, or None until loaded
 _navdata   = None           # NavData (fixes/navaids/procedures), or None
 # disp["nd"] mirrors disp["ad"]: download/status fields surfaced on the
@@ -475,10 +478,9 @@ def _ssync_kinds_from_cs(direction):
         out.add(_ssync_mod.KIND_FPL)
         out.add(_ssync_mod.KIND_FPLLIB)
         out.add(_ssync_mod.KIND_APPR)        # a loaded approach rides with the
-                                             # plan — piZ consumes it (it has no
-                                             # approach loader, so it never
-                                             # publishes one) to draw a peer's
-                                             # approach on its inset.
+                                             # plan — bidirectional: piZ now
+                                             # loads approaches itself AND draws
+                                             # a peer's, last-write-wins.
     # Winds-aloft zones always sync both ways when screen-sync is on — a screen
     # with internet feeds the others so they don't each hit Open-Meteo's
     # shared-per-IP rate limit.
@@ -580,6 +582,35 @@ def _ssync_refresh_kinds():
     _screen_sync.set_transport(cs.get("sync_transport", "auto"))
     _screen_sync.set_publish_kinds(_ssync_kinds_from_cs("publish"))
     _screen_sync.set_consume_kinds(_ssync_kinds_from_cs("consume"))
+
+
+_ssync_keepalive_last = 0.0
+_SSYNC_KEEPALIVE_S    = 4.0     # re-announce authoritative state this often
+
+
+def _ssync_state_keepalive():
+    """Periodically re-broadcast our authoritative shared state (loaded
+    approach, active flight plan, or a bare direct-to) so a peer that just
+    powered up / rebooted re-aligns within a few seconds.
+
+    Only sends state we ACTUALLY HAVE.  LWW resolves on publish-time ts, so a
+    freshly-booted blank screen broadcasting "nothing" would carry a newer ts
+    and wipe a peer's loaded approach — therefore a screen with no state stays
+    silent here and simply adopts whatever a peer keeps announcing."""
+    global _ssync_keepalive_last
+    if _screen_sync is None:
+        return
+    now = time.monotonic()
+    if now - _ssync_keepalive_last < _SSYNC_KEEPALIVE_S:
+        return
+    _ssync_keepalive_last = now
+    sent = False
+    if (disp.get("approach") or {}).get("loaded"):
+        _ssync_publish_approach(); sent = True
+    if _fpl_is_active():
+        _ssync_publish_fpl(); sent = True
+    if not sent and (disp.get("nav") or {}).get("ident"):
+        _ssync_publish_nav()
 
 
 def _ssync_publish_bugs():
@@ -843,8 +874,9 @@ def _ssync_apply_approach(data):
     """Adopt a peer's loaded/active published approach so this screen draws it
     on the moving-map inset (and, when active, mirrors the active leg into
     disp['nav'] so the CDI / magenta course track it — same pattern as
-    _ssync_apply_fpl).  The Pi Zero has no approach loader of its own; this is
-    a display-only consumer (it never re-publishes KIND_APPR)."""
+    _ssync_apply_fpl).  The Zero can also load approaches itself now; this
+    consumer adopts a peer's load (last-write-wins).  _ssync_suppress_publish
+    guards against echoing a consumed update straight back out."""
     global _ssync_suppress_publish
     _ssync_suppress_publish += 1
     try:
@@ -3729,6 +3761,21 @@ def handle_event(event, demo_mode):
                 _fpl_reverse_route()
             elif act == "deact":
                 _fpl_deactivate()
+            elif act == "load_appr":
+                # 3-state machine (mirrors the Pi 4): nothing loaded → open the
+                # approach picker; armed → ACTIVATE; active/missed → CANCEL.
+                _ph = _approach_phase()
+                if _ph in ("active", "missed"):
+                    _approach_cancel()
+                elif _ph == "armed":
+                    _approach_engage()
+                else:
+                    dest = _fpl_dest_approach_ident()
+                    if dest:
+                        disp["approach"]["airport"] = dest
+                        disp["appr_from_fpl"] = True
+                        _prc_reset()
+                        disp["mode"] = "appr_proc_select"
             elif act == "activate":
                 _fpl_activate(payload, reset_activation=True)
             elif act == "up" and payload > 0:
@@ -3737,6 +3784,59 @@ def handle_event(event, demo_mode):
                 _fpl_swap(payload, payload + 1)
             elif act == "delete":
                 _fpl_remove(payload)
+            return True
+
+        # ── Approach: procedure picker taps ───────────────────────────────
+        if mode == "appr_proc_select":
+            act, payload = appr_proc_select_hit(x, y)
+            if act == "back":
+                disp["mode"] = "pfd"
+            elif act == "scroll":
+                procs = _appr_published((disp.get("approach") or {}).get("airport", ""))
+                _prc_scroll_by(len(procs), payload)
+            elif act == "pick":
+                airport = (disp.get("approach") or {}).get("airport", "")
+                p = (_navdata.procedure(airport, payload)
+                     if _navdata is not None else None)
+                if p and (p.get("transitions") or {}):
+                    disp["approach"]["pending_proc"] = payload
+                    _prc_reset()
+                    disp["mode"] = "appr_trans_select"
+                else:
+                    from_fpl = bool(disp.get("appr_from_fpl"))
+                    if _approach_load_published(airport, payload, "",
+                                                activate=not from_fpl):
+                        disp["mode"] = "appr_preview" if from_fpl else "pfd"
+            return True
+
+        # ── Approach: transition picker taps ──────────────────────────────
+        if mode == "appr_trans_select":
+            act, payload = appr_trans_select_hit(x, y)
+            if act == "back":
+                _prc_reset()
+                disp["mode"] = "appr_proc_select"
+            elif act == "scroll":
+                _prc_scroll_by(len(_appr_pending_transitions()), payload)
+            elif act == "pick":
+                ap = disp.get("approach") or {}
+                airport = ap.get("airport", "")
+                proc = ap.get("pending_proc", "")
+                from_fpl = bool(disp.get("appr_from_fpl"))
+                trans = "" if payload == "VECTORS" else payload
+                if _approach_load_published(airport, proc, trans,
+                                            activate=not from_fpl):
+                    disp["mode"] = "appr_preview" if from_fpl else "pfd"
+            return True
+
+        # ── Approach: preview taps ────────────────────────────────────────
+        if mode == "appr_preview":
+            action = appr_preview_hit(x, y)
+            if action == "back":
+                _approach_cancel()
+                _prc_reset()
+                disp["mode"] = "appr_proc_select"
+            elif action == "load":
+                disp["mode"] = "pfd"
             return True
 
         # ── MFD strip-setup chooser taps ──────────────────────────────────
@@ -6911,6 +7011,697 @@ def _appr_runway_marker():
     return ((la, lo), (fla, flo), (f"RWY {rwy}" if rwy else "RWY"))
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Published-approach LOADING (FAA CIFP, via shared/navdata).  Ported from the
+# Pi 4 so an approach can be SELECTED + loaded on the Zero itself — not only
+# received over screen-sync.  The Zero flies it on its raw CDI (no SVT / HITS /
+# VDI — that stays a Pi 4/5 feature) and PUBLISHES the load to peers so all
+# three screens mirror it (last-write-wins).  Threshold lat/lon/elevation
+# resolve from the runway DB now loaded on the Zero; the map still draws only
+# the course stub (no runway overlay), per the pilot's "secondary map" choice.
+# ═══════════════════════════════════════════════════════════════════════════
+import re as _re_appr
+
+_prc_scroll = 0     # shared scroll offset for the approach / transition pickers
+
+
+def _back_hit(x, y):
+    """Tap on the standard header BACK button (matches _screen_header)."""
+    return 8 <= x <= 80 and 6 <= y <= 37
+
+
+def _ssync_publish_approach():
+    """Broadcast the loaded/active approach so peer screens mirror it (legs,
+    missed, threshold, course, holds, exact active nav).  Holds are sent pre-
+    computed so a peer without nav-data still draws them.  Suppressed while we
+    are applying a peer's update (so a consume never echoes)."""
+    if _screen_sync is None or _ssync_suppress_publish:
+        return
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        _screen_sync.publish(_ssync_mod.KIND_APPR, {"loaded": False})
+        return
+    nv = disp.get("nav") or {}
+    _screen_sync.publish(_ssync_mod.KIND_APPR, {
+        "loaded":         True,
+        "active":         bool(ap.get("active")),
+        "missed":         bool(ap.get("missed")),
+        "published":      bool(ap.get("published")),
+        "airport":        str(ap.get("airport", "")),
+        "procedure":      str(ap.get("procedure", "")),
+        "transition":     str(ap.get("transition", "")),
+        "runway":         str(ap.get("runway", "")),
+        "legs":           [list(l) for l in (ap.get("legs") or [])],
+        "final_idx":      int(ap.get("final_idx", 0)),
+        "missed_legs":    [list(l) for l in (ap.get("missed_legs") or [])],
+        "thresh_lat":     ap.get("thresh_lat"),
+        "thresh_lon":     ap.get("thresh_lon"),
+        "thresh_elev_ft": ap.get("thresh_elev_ft"),
+        "course_deg":     ap.get("course_deg"),
+        "leg_idx":        int(ap.get("leg_idx", 0)),
+        "holds":          [list(h) for h in _approach_render_holds()],
+        "nav": ({
+            "ident":   str(nv.get("ident", "")),
+            "lat":     float(nv.get("lat", 0.0)),
+            "lon":     float(nv.get("lon", 0.0)),
+            "elev_ft": float(nv.get("elev_ft", 0.0)),
+            "act_lat": float(nv.get("act_lat", 0.0)),
+            "act_lon": float(nv.get("act_lon", 0.0)),
+        } if ap.get("active") and nv.get("ident") else None),
+    })
+
+
+def _rwy_ident_eq(a, b):
+    """Runway-ident equality tolerant of zero-padding ('3' == '03')."""
+    def norm(s):
+        s = (s or "").upper().strip()
+        i = 0
+        while i < len(s) and s[i] == "0":
+            i += 1
+        return s[i:] if i < len(s) else s
+    return norm(a) == norm(b) and bool(norm(a))
+
+
+def _appr_landing_threshold(airport, rwy):
+    """(lat, lon, elev_ft) of the landing threshold for `rwy` at `airport` from
+    the runway DB, or None.  The elevation is authoritative — the CIFP RW leg
+    often carries no altitude."""
+    if not rwy or _runways is None or not hasattr(_runways, "dtype"):
+        return None
+    for r in _runways[_runways["airport"] == airport]:
+        if _rwy_ident_eq(rwy, str(r["le_ident"])):
+            return (float(r["le_lat"]), float(r["le_lon"]), float(r["le_elev_ft"]))
+        if _rwy_ident_eq(rwy, str(r["he_ident"])):
+            return (float(r["he_lat"]), float(r["he_lon"]), float(r["he_elev_ft"]))
+    return None
+
+
+def _appr_runway_from_name(name):
+    """'RNAV (GPS) RWY 03' → '03'; '' if none."""
+    m = _re_appr.search(r"RWY\s*(\d{1,2}[LRC]?)", name or "")
+    return m.group(1) if m else ""
+
+
+_APPR_NAME_RE = _re_appr.compile(
+    r"\b(?:RWY|RNAV|ILS|LOC|VOR|NDB|GPS|GLS|LDA|TACAN|RNP|SDF|MLS)\b", _re_appr.I)
+
+
+def _appr_published(airport):
+    """Published APPROACH idents for an airport (SIDs/STARs filtered out by type
+    AND name), or [] when no nav data is loaded."""
+    if _navdata is None or not airport:
+        return []
+    out = []
+    for pid in _navdata.procedures_for(airport):
+        p = _navdata.procedure(airport, pid)
+        if not p or p.get("type") in ("SID", "STAR"):
+            continue
+        if _APPR_NAME_RE.search(pid):
+            out.append(pid)
+    return out
+
+
+def _appr_leg_pts(legs):
+    """Filter a leg list to those with resolved coords →
+    [(lat, lon, ident, leg_type, alt_ft, alt_type), ...]."""
+    out = []
+    for lg in legs or []:
+        la, lo = lg.get("lat"), lg.get("lon")
+        if la is None or lo is None:
+            continue
+        out.append((float(la), float(lo), str(lg.get("fix", "")),
+                    str(lg.get("leg_type", "")), lg.get("alt_ft"),
+                    lg.get("alt_type")))
+    return out
+
+
+def _appr_alt_label(alt_ft, alt_type):
+    if alt_ft is None:
+        return ""
+    suffix = {"AB": "A", "BL": "B", "WN": "W"}.get(alt_type, "")
+    return f"{int(alt_ft):,}{suffix}"
+
+
+def _appr_dedupe(pts):
+    """Drop consecutive same-ident legs, keeping a crossing altitude if the
+    survivor lacked one."""
+    out = []
+    for p in pts:
+        if out and out[-1][2] == p[2]:
+            if out[-1][4] is None and p[4] is not None:
+                out[-1] = p
+            continue
+        out.append(p)
+    return out
+
+
+def _appr_path_dedupe(pts):
+    """Dedupe an approach path: drop consecutive same-ident legs AND an earlier
+    occurrence of a fix that recurs later (keeps the last)."""
+    last = {}
+    for i, p in enumerate(pts):
+        if p[2]:
+            last[p[2]] = i
+    out = []
+    for i, p in enumerate(pts):
+        if p[2] and last.get(p[2]) != i:
+            continue
+        if out and out[-1][2] and out[-1][2] == p[2]:
+            continue
+        out.append(p)
+    return out
+
+
+def _approach_load_published(airport, proc_ident, transition="", activate=False):
+    """Load a published approach (transition + final + missed) into
+    disp["approach"].  The Zero flies the legs on its raw CDI.  Returns False
+    when the procedure can't be resolved."""
+    p = _navdata.procedure(airport, proc_ident) if _navdata is not None else None
+    if not p:
+        return False
+    legs = []
+    if transition and transition in (p.get("transitions") or {}):
+        legs.extend(p["transitions"][transition])
+    legs.extend(p.get("final") or [])
+    final_pts = _appr_leg_pts(p.get("final") or [])
+    if not final_pts:
+        return False
+    _CLIMB = ("CA", "FA", "VA", "VM", "FM")
+    missed_start = None
+    for i, lg in enumerate(legs):
+        lt = (lg.get("leg_type") or "").upper()
+        if lt in _CLIMB or lt == "HM":
+            missed_start = i
+            break
+    if missed_start is None:
+        rw = [i for i, lg in enumerate(legs)
+              if _re_appr.match(r"RW\d", lg.get("fix") or "")]
+        missed_start = (rw[-1] + 1) if rw else len(legs)
+    all_pts = _appr_path_dedupe(_appr_leg_pts(legs[:missed_start]))
+    missed_pts = _appr_dedupe(_appr_leg_pts(legs[missed_start:] + (p.get("missed") or [])))
+    if not all_pts:
+        return False
+    first_final = final_pts[0][2]
+    final_idx = next((i for i, q in enumerate(all_pts) if q[2] == first_final), 0)
+    rwy = _appr_runway_from_name(proc_ident)
+    thr = _appr_landing_threshold(airport, rwy)
+    if thr is not None:
+        if _re_appr.match(r"RW\d", all_pts[-1][2] or ""):
+            la0, lo0, idn, lt0, alt0, at0 = all_pts[-1]
+            all_pts[-1] = (float(thr[0]), float(thr[1]), idn, lt0, alt0, at0)
+        else:
+            all_pts.append((float(thr[0]), float(thr[1]), "", "TF", None, None))
+    final_idx = min(final_idx, len(all_pts) - 1)
+    th_lat, th_lon, _thid, _tht, th_alt, _that = all_pts[-1]
+    th_elev = float(thr[2]) if (thr is not None and len(thr) > 2) else float(th_alt or 0.0)
+    if len(all_pts) >= 2:
+        _d, course = _nav_geo_dist_brg(all_pts[-2][0], all_pts[-2][1],
+                                       th_lat, th_lon)
+    else:
+        course = 0.0
+    disp["approach"] = {
+        "loaded":         True,
+        "active":         bool(activate),
+        "missed":         False,
+        "published":      True,
+        "airport":        airport,
+        "procedure":      proc_ident,
+        "transition":     transition,
+        "runway":         rwy,
+        "legs":           all_pts,
+        "final_idx":      final_idx,
+        "missed_legs":    missed_pts,
+        "thresh_lat":     float(th_lat),
+        "thresh_lon":     float(th_lon),
+        "thresh_elev_ft": th_elev,
+        "course_deg":     float(course or 0.0),
+        "leg_idx":        0,
+    }
+    if activate:
+        _approach_begin_guidance()
+    _ssync_publish_approach()
+    return True
+
+
+def _approach_apply_leg(from_present=False):
+    """Drive disp["nav"] from the active approach leg.  The final leg targets
+    the threshold; earlier legs fly direct fix-to-fix."""
+    ap = disp.get("approach") or {}
+    legs = ap.get("legs") or []
+    if not legs:
+        return
+    idx = max(0, min(int(ap.get("leg_idx", 0)), len(legs) - 1))
+    ap["leg_idx"] = idx
+    la, lo, ident, _lt, _alt, _at = legs[idx]
+    prev = None if from_present else (legs[idx - 1] if idx > 0 else None)
+    act_lat = float(prev[0]) if prev else float(disp.get("lat", la))
+    act_lon = float(prev[1]) if prev else float(disp.get("lon", lo))
+    if idx == len(legs) - 1:
+        disp["nav"] = {
+            "ident":   ap.get("airport", ""),
+            "lat":     float(ap.get("thresh_lat", la)),
+            "lon":     float(ap.get("thresh_lon", lo)),
+            "elev_ft": float(ap.get("thresh_elev_ft", 0.0)),
+            "act_lat": act_lat, "act_lon": act_lon,
+        }
+    else:
+        disp["nav"] = {
+            "ident": ident, "lat": float(la), "lon": float(lo), "elev_ft": 0.0,
+            "act_lat": act_lat, "act_lon": act_lon,
+        }
+
+
+def _approach_begin_guidance():
+    """Engage guidance for the now-active approach: sequence from leg 0.  A
+    published approach supersedes the flight plan, so drop the FPL active leg."""
+    ap = disp.get("approach") or {}
+    if ap.get("published") and (ap.get("legs") or []):
+        ap["leg_idx"] = 0
+        if _fpl_is_active():
+            disp["fpl"]["active_idx"] = -1
+            _ssync_publish_fpl()
+        _approach_apply_leg()
+
+
+_APPR_FLYBY_BANK_DEG = 18.0    # nominal bank for turn-anticipation sizing
+
+
+def _approach_check_advance(lat, lon):
+    """Per-frame approach leg sequencing — fly-by turn anticipation (mirrors the
+    Pi 4, so a load on the Zero sequences identically).  The final leg is never
+    sequenced here — the CDI flies it to the threshold."""
+    ap = disp.get("approach") or {}
+    if not (ap.get("active") and ap.get("published") and not ap.get("missed")):
+        return
+    legs = ap.get("legs") or []
+    idx = int(ap.get("leg_idx", 0))
+    if idx >= len(legs) - 1:
+        return
+    la, lo, _ident, _lt, _alt, _at = legs[idx]
+    if idx > 0:
+        pla, plo = float(legs[idx - 1][0]), float(legs[idx - 1][1])
+    else:
+        pla, plo = lat, lon
+    _d, course_in = _nav_geo_dist_brg(pla, plo, la, lo)
+    nla, nlo = float(legs[idx + 1][0]), float(legs[idx + 1][1])
+    _dn, course_out = _nav_geo_dist_brg(la, lo, nla, nlo)
+    turn = abs(((course_out - course_in + 180.0) % 360.0) - 180.0)
+    gs = max(20.0, float(disp.get("speed", 0.0)))
+    v_fps = gs * 1.6878
+    R_ft = v_fps * v_fps / (32.174 * math.tan(math.radians(_APPR_FLYBY_BANK_DEG)))
+    lead_ft = R_ft * math.tan(math.radians(min(turn, 170.0) / 2.0))
+    lead_nm = max(0.10, min(2.0, lead_ft / 6076.12))
+    dist_nm, brg_fix_ac = _nav_geo_dist_brg(la, lo, lat, lon)
+    ahead = abs(((brg_fix_ac - course_in + 180.0) % 360.0) - 180.0) < 90.0
+    if dist_nm <= lead_nm or ahead:
+        ap["leg_idx"] = idx + 1
+        _approach_apply_leg()
+        _ssync_publish_approach()
+
+
+def _approach_phase():
+    """'none' | 'armed' | 'active' | 'missed' — single source of truth for the
+    approach controls."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return "none"
+    if ap.get("missed"):
+        return "missed"
+    if ap.get("active"):
+        return "active"
+    return "armed"
+
+
+def _approach_label():
+    ap = disp.get("approach") or {}
+    if ap.get("published") and ap.get("procedure"):
+        return ap["procedure"]
+    rwy = ap.get("runway", "")
+    return f"RWY {rwy}" if rwy else "APPR"
+
+
+def _approach_cancel():
+    """Clear the loaded/active approach; restore the CDI to the active FPL leg
+    if one is still active."""
+    ap = disp.get("approach")
+    if ap:
+        ap["loaded"] = False
+        ap["active"] = False
+        ap["missed"] = False
+    _ssync_publish_approach()
+    if _fpl_is_active():
+        _fpl_apply_active()
+
+
+def _approach_engage():
+    """Pilot deliberately activates a loaded approach — engage leg-by-leg
+    guidance.  No-op if nothing is loaded."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return
+    ap["active"] = True
+    ap["missed"] = False
+    _approach_begin_guidance()
+    _ssync_publish_approach()
+
+
+def _fpl_dest_approach_ident():
+    """Final FPL waypoint's ident if it has a published approach, else ''."""
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    if not wps:
+        return ""
+    ident = (wps[-1].get("ident") or "").upper()
+    if ident and _appr_published(ident):
+        return ident
+    return ""
+
+
+def _appr_pending_transitions():
+    """['VECTORS', <iaf>, …] for the procedure picked in appr_proc_select."""
+    ap = disp.get("approach") or {}
+    p = (_navdata.procedure(ap.get("airport", ""), ap.get("pending_proc", ""))
+         if _navdata is not None else None)
+    return ["VECTORS"] + sorted((p.get("transitions") or {}).keys()) if p else ["VECTORS"]
+
+
+def _appr_trans_kind(tid):
+    """'VOR'/'NDB'/… when the ident resolves to a navaid feeder, else 'IAF'."""
+    if _navdata is not None:
+        nv = _navdata.navaid(tid)
+        if nv:
+            nt = (nv[1] or "").upper().strip()
+            if nt.startswith("VOR") or nt in ("DME", "TAC", "VT"):
+                return "VOR"
+            if nt.startswith("NDB"):
+                return "NDB"
+            return nt or "VOR"
+    return "IAF"
+
+
+# ── Scrollable picker list (▲/▼ buttons + position bar) — ported from Pi 4 ──────
+_PRC_TOP   = 100
+_PRC_MX    = 14
+_PRC_ROW_H = 52
+_PRC_GY    = 8
+_PRC_SB_W  = 84            # reserved right column for ▲/▼ scroll buttons
+_PRC_BTN_H = 76
+
+
+def _prc_list_bot():
+    return DISPLAY_H - 12
+
+
+def _prc_row_rect(i):
+    by = _PRC_TOP + i * (_PRC_ROW_H + _PRC_GY) - _prc_scroll
+    return pygame.Rect(_PRC_MX, by, DISPLAY_W - _PRC_MX - _PRC_SB_W, _PRC_ROW_H)
+
+
+def _prc_max_scroll(n):
+    content = n * (_PRC_ROW_H + _PRC_GY) - _PRC_GY
+    return max(0, content - (_prc_list_bot() - _PRC_TOP))
+
+
+def _prc_clamp_scroll(n):
+    global _prc_scroll
+    _prc_scroll = max(0, min(_prc_scroll, _prc_max_scroll(n)))
+
+
+def _prc_reset():
+    global _prc_scroll
+    _prc_scroll = 0
+
+
+def _prc_page_step():
+    return max(_PRC_ROW_H + _PRC_GY,
+               (_prc_list_bot() - _PRC_TOP) - (_PRC_ROW_H + _PRC_GY))
+
+
+def _prc_up_btn_rect():
+    bx = DISPLAY_W - _PRC_SB_W + 6
+    return pygame.Rect(bx, _PRC_TOP, _PRC_SB_W - 12, _PRC_BTN_H)
+
+
+def _prc_down_btn_rect():
+    bx = DISPLAY_W - _PRC_SB_W + 6
+    return pygame.Rect(bx, _prc_list_bot() - _PRC_BTN_H, _PRC_SB_W - 12, _PRC_BTN_H)
+
+
+def _prc_scroll_btn_hit(n, x, y):
+    if _prc_max_scroll(n) <= 0:
+        return None
+    if _prc_scroll > 0 and _prc_up_btn_rect().collidepoint(x, y):
+        return "up"
+    if _prc_scroll < _prc_max_scroll(n) and _prc_down_btn_rect().collidepoint(x, y):
+        return "down"
+    return None
+
+
+def _prc_scroll_by(n, direction):
+    global _prc_scroll
+    _prc_scroll += _prc_page_step() * (1 if direction == "down" else -1)
+    _prc_clamp_scroll(n)
+
+
+def _prc_scrollbar(surf, n):
+    max_s = _prc_max_scroll(n)
+    if max_s <= 0:
+        return
+    top, bot = _PRC_TOP, _prc_list_bot()
+    bx = DISPLAY_W - _PRC_SB_W
+    th = bot - top
+    thumb = max(24, int(th * th / (th + max_s)))
+    ty = top + int((th - thumb) * _prc_scroll / max_s)
+    pygame.draw.rect(surf, (40, 50, 70), (bx, top, 4, th), border_radius=2)
+    pygame.draw.rect(surf, (120, 150, 190), (bx, ty, 4, thumb), border_radius=2)
+    row = _PRC_ROW_H + _PRC_GY
+    above = int(round(_prc_scroll / row))
+    below = int(round((max_s - _prc_scroll) / row))
+
+    def _btn(rect, glyph, count, live):
+        col_bg = (24, 40, 64) if live else (16, 20, 28)
+        col_ln = (90, 130, 180) if live else (45, 55, 70)
+        col_tx = (210, 230, 255) if live else (70, 80, 95)
+        pygame.draw.rect(surf, col_bg, rect, border_radius=10)
+        pygame.draw.rect(surf, col_ln, rect, width=2, border_radius=10)
+        _text(surf, glyph, 30, col_tx, bold=True, cx=rect.centerx,
+              cy=rect.centery - 9)
+        _text(surf, (f"{count}" if live else "—"), 14, col_tx,
+              cx=rect.centerx, cy=rect.centery + 18)
+
+    _btn(_prc_up_btn_rect(),   "▲", above, _prc_scroll > 0)
+    _btn(_prc_down_btn_rect(), "▼", below, _prc_scroll < max_s)
+    if below > 0:
+        _text(surf, f"{below} MORE ▼", 14, (255, 210, 90), bold=True,
+              cx=DISPLAY_W - _PRC_SB_W // 2,
+              cy=(_prc_up_btn_rect().bottom + _prc_down_btn_rect().top) // 2)
+
+
+def _prc_draw_rows(surf, items, accent=(60, 90, 130), label_color=WHITE,
+                   suffix="▶"):
+    _prc_clamp_scroll(len(items))
+    clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, _PRC_TOP, DISPLAY_W, _prc_list_bot() - _PRC_TOP))
+    for i, it in enumerate(items):
+        rect = _prc_row_rect(i)
+        if rect.bottom < _PRC_TOP or rect.top > _prc_list_bot():
+            continue
+        for j in range(rect.height):
+            t = 1.0 - j / rect.height
+            pygame.draw.line(surf, (int(t * 10), int(14 + t * 22), int(30 + t * 42)),
+                             (rect.x, rect.y + j), (rect.right, rect.y + j))
+        pygame.draw.rect(surf, accent, rect, width=1, border_radius=6)
+        _text(surf, it, 19, label_color, bold=True, x=rect.x + 16, cy=rect.centery)
+        if suffix:
+            _text(surf, suffix, 18, (70, 100, 140), x=rect.right - 30,
+                  cy=rect.centery)
+    surf.set_clip(clip)
+    _prc_scrollbar(surf, len(items))
+
+
+def _prc_row_hit(n, x, y):
+    for i in range(n):
+        r = _prc_row_rect(i)
+        if r.top >= _PRC_TOP - 1 and r.bottom <= _prc_list_bot() + 1 \
+                and r.collidepoint(x, y):
+            return i
+    return None
+
+
+def draw_appr_proc_select(surf):
+    """List the published approaches for disp["approach"]["airport"]; tap to load."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "SELECT APPROACH")
+    airport = (disp.get("approach") or {}).get("airport", "")
+    _text(surf, airport or "—", 20, WHITE, bold=True, cx=DISPLAY_W // 2, cy=72)
+    procs = _appr_published(airport)
+    if not procs:
+        _text(surf, f"No published approaches for {airport}", 15, YELLOW,
+              cx=DISPLAY_W // 2, cy=_PRC_TOP + 30)
+        return
+    _prc_draw_rows(surf, procs)
+
+
+def appr_proc_select_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    procs = _appr_published((disp.get("approach") or {}).get("airport", ""))
+    sb = _prc_scroll_btn_hit(len(procs), x, y)
+    if sb:
+        return ("scroll", sb)
+    i = _prc_row_hit(len(procs), x, y)
+    return ("pick", procs[i]) if i is not None else (None, None)
+
+
+def draw_appr_trans_select(surf):
+    """Pick a transition (IAF) or VECTORS for the chosen procedure."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "TRANSITION")
+    ap = disp.get("approach") or {}
+    _text(surf, f"{ap.get('airport','')}  {ap.get('pending_proc','')}", 18, WHITE,
+          bold=True, cx=DISPLAY_W // 2, cy=72)
+    trans = _appr_pending_transitions()
+    _prc_clamp_scroll(len(trans))
+    clip = surf.get_clip()
+    surf.set_clip(pygame.Rect(0, _PRC_TOP, DISPLAY_W, _prc_list_bot() - _PRC_TOP))
+    for i, tid in enumerate(trans):
+        rect = _prc_row_rect(i)
+        if rect.bottom < _PRC_TOP or rect.top > _prc_list_bot():
+            continue
+        vectors = (tid == "VECTORS")
+        for j in range(rect.height):
+            t = 1.0 - j / rect.height
+            base = ((int(t * 8), int(10 + t * 16), int(20 + t * 30)) if vectors
+                    else (int(t * 10), int(14 + t * 22), int(30 + t * 42)))
+            pygame.draw.line(surf, base, (rect.x, rect.y + j), (rect.right, rect.y + j))
+        pygame.draw.rect(surf, (90, 110, 80) if vectors else (60, 90, 130),
+                         rect, width=1, border_radius=6)
+        lbl = "VECTORS (final only)" if vectors else tid
+        _text(surf, lbl, 19, (200, 210, 180) if vectors else WHITE, bold=True,
+              x=rect.x + 16, cy=rect.centery)
+        if not vectors:
+            kind = _appr_trans_kind(tid)
+            is_iaf = (kind == "IAF")
+            kcol = (120, 140, 170) if is_iaf else (255, 200, 110)
+            _text(surf, f"{kind} ▶", 14, kcol, x=rect.right - 84, cy=rect.centery)
+    surf.set_clip(clip)
+    _prc_scrollbar(surf, len(trans))
+
+
+def appr_trans_select_hit(x, y):
+    if _back_hit(x, y):
+        return ("back", None)
+    trans = _appr_pending_transitions()
+    sb = _prc_scroll_btn_hit(len(trans), x, y)
+    if sb:
+        return ("scroll", sb)
+    i = _prc_row_hit(len(trans), x, y)
+    return ("pick", trans[i]) if i is not None else (None, None)
+
+
+# ── Approach preview (schematic top-down of the loaded approach) ────────────────
+_APRV_BTN_H = 56
+
+
+def _appr_preview_pts():
+    """Every (lat, lon) that should frame the preview: approach legs, threshold,
+    missed, and hold racetracks."""
+    ap = disp.get("approach") or {}
+    pts = [(p[0], p[1]) for p in (ap.get("legs") or [])]
+    if ap.get("thresh_lat") is not None:
+        pts.append((float(ap["thresh_lat"]), float(ap["thresh_lon"])))
+    pts += [(p[0], p[1]) for p in (_approach_render_missed() or [])]
+    for h in _approach_render_holds():
+        pts.append((h[0], h[1]))
+    return pts
+
+
+def draw_appr_preview(surf):
+    """Schematic top-down preview of the loaded approach with LOAD / BACK.  A
+    self-contained vector diagram (no terrain map) — clearer on the panel and
+    independent of the moving-map renderer."""
+    surf.fill((0, 0, 0))
+    _screen_header(surf, "APPROACH PREVIEW")
+    ap = disp.get("approach") or {}
+    via = (f"via {ap.get('transition')}" if ap.get("transition") else "VECTORS")
+    _text(surf, f"{ap.get('airport','')}   {ap.get('procedure','')}   ·   {via}",
+          15, WHITE, bold=True, cx=DISPLAY_W // 2, cy=62)
+
+    rx, ry, rw, rh = 12, 82, DISPLAY_W - 24, DISPLAY_H - 82 - (_APRV_BTN_H + 24)
+    pygame.draw.rect(surf, (0, 8, 18), (rx, ry, rw, rh), border_radius=6)
+    pygame.draw.rect(surf, (40, 55, 80), (rx, ry, rw, rh), width=1, border_radius=6)
+
+    pts = _appr_preview_pts()
+    legs = ap.get("legs") or []
+    if not pts or len(legs) < 1:
+        _text(surf, "No flyable legs to preview", 14, YELLOW,
+              cx=DISPLAY_W // 2, cy=ry + rh // 2)
+    else:
+        lats = [p[0] for p in pts]; lons = [p[1] for p in pts]
+        clat = (min(lats) + max(lats)) / 2.0
+        clon = (min(lons) + max(lons)) / 2.0
+        cosl = max(0.2, math.cos(math.radians(clat)))
+        span_y = max(1e-4, (max(lats) - min(lats)))
+        span_x = max(1e-4, (max(lons) - min(lons)) * cosl)
+        pad = 26
+        sx = (rw - 2 * pad) / span_x
+        sy = (rh - 2 * pad) / span_y
+        scale = min(sx, sy)
+
+        def _xy(la, lo):
+            px = rx + rw / 2 + (lo - clon) * cosl * scale
+            py = ry + rh / 2 - (la - clat) * scale
+            return int(px), int(py)
+
+        # Missed approach (dashed amber).
+        missed = _approach_render_missed() or []
+        if len(missed) >= 2:
+            mpx = [_xy(p[0], p[1]) for p in missed]
+            for a, b in zip(mpx, mpx[1:]):
+                pygame.draw.line(surf, (255, 190, 30), a, b, 1)
+        # Hold racetracks (small circles at the hold fix).
+        for h in _approach_render_holds():
+            hx, hy = _xy(h[0], h[1])
+            pygame.draw.circle(surf, (200, 160, 60), (hx, hy), 8, 1)
+        # Approach path (cyan polyline + fix diamonds + idents).
+        ppx = [_xy(p[0], p[1]) for p in legs]
+        if len(ppx) >= 2:
+            pygame.draw.lines(surf, CYAN, False, ppx, 2)
+        fidx = int(ap.get("final_idx", 0))
+        for i, (px, py) in enumerate(ppx):
+            col = MAGENTA if i >= fidx else CYAN
+            pygame.draw.polygon(surf, col,
+                                [(px, py - 5), (px + 5, py), (px, py + 5), (px - 5, py)])
+            ident = str(legs[i][2] or "")
+            if ident:
+                _text(surf, ident, 10, (200, 215, 235), x=px + 8, cy=py - 8)
+        # Threshold marker.
+        if ap.get("thresh_lat") is not None:
+            tx, ty2 = _xy(float(ap["thresh_lat"]), float(ap["thresh_lon"]))
+            pygame.draw.circle(surf, WHITE, (tx, ty2), 4)
+            _text(surf, f"RWY {ap.get('runway','')}", 11, WHITE, bold=True,
+                  x=tx + 8, cy=ty2 + 8)
+
+    by = DISPLAY_H - _APRV_BTN_H - 12
+    half = (DISPLAY_W - 24 - 12) // 2
+    _action_btn(surf, 12, by, half, _APRV_BTN_H, "‹ BACK", "warn")
+    _action_btn(surf, 12 + half + 12, by, DISPLAY_W - 24 - half - 12,
+                _APRV_BTN_H, "LOAD APPROACH", "ok")
+
+
+def appr_preview_hit(x, y):
+    if _back_hit(x, y):
+        return "back"
+    by = DISPLAY_H - _APRV_BTN_H - 12
+    if not (by <= y <= by + _APRV_BTN_H):
+        return None
+    half = (DISPLAY_W - 24 - 12) // 2
+    if 12 <= x <= 12 + half:
+        return "back"
+    if 12 + half + 12 <= x <= DISPLAY_W - 12:
+        return "load"
+    return None
+
+
 def draw_cdi(surf):
     """Course Deviation Indicator strip above the heading readout box.
     Always painted when GPS_OK so the strip is tappable; bare bar + a
@@ -9290,18 +10081,22 @@ def obstacle_data_hit(x, y, od):
 _AD_MX = 12
 
 def _ad_load_airports():
-    """(Re-)load the airport cache into the module-level array.
+    """(Re-)load the airport + runway caches into the module-level arrays.
 
-    pi_zero deliberately omits the runway cache (and the runway / extended-
-    centerline AI overlays) — the small panel is too cluttered to make use
-    of them.  Obstacles + airport symbols / signposts remain.
+    The runway cache is loaded for DATA use only — it resolves published-
+    approach landing thresholds (lat/lon + authoritative field elevation).
+    pi_zero still does NOT draw runway polygons / extended centerlines on the
+    map (the small panel stays uncluttered); only the approach loader reads it.
     """
-    global _airports
+    global _airports, _runways
     os.makedirs(AIRPORT_DIR, exist_ok=True)
     _airports = apt_mod.load(AIRPORT_DIR)
+    _runways  = rwy_mod.load(AIRPORT_DIR)
     cnt, mb = apt_mod.disk_stats(AIRPORT_DIR)
+    rcnt, rmb = rwy_mod.disk_stats(AIRPORT_DIR)
     disp["ad"]["records"] = cnt
-    disp["ad"]["used_mb"] = mb
+    disp["ad"]["used_mb"] = mb + rmb
+    disp["ad"]["runway_count"] = rcnt
     dl_date = apt_mod.download_date(AIRPORT_DIR)
     disp["ad"]["dl_date"] = dl_date
     if dl_date is not None:
@@ -9347,16 +10142,23 @@ def _ad_download_thread():
         return True
 
     csv_apt   = os.path.join(AIRPORT_DIR, apt_mod.CSV_FILENAME)
+    csv_rwy   = os.path.join(AIRPORT_DIR, rwy_mod.CSV_FILENAME)
     cache_apt = os.path.join(AIRPORT_DIR, apt_mod.CACHE_FILENAME)
+    cache_rwy = os.path.join(AIRPORT_DIR, rwy_mod.CACHE_FILENAME)
 
     try:
         if not _download_file(apt_mod.AIRPORTS_CSV_URL, csv_apt, "airports.csv"):
             ad["dl_status"]   = "Cancelled"
             ad["downloading"] = False
             return
-        try: os.remove(cache_apt)
-        except Exception: pass
-        ad["dl_status"] = "Parsing airport records\u2026"
+        if not _download_file(rwy_mod.RUNWAYS_CSV_URL, csv_rwy, "runways.csv"):
+            ad["dl_status"]   = "Cancelled"
+            ad["downloading"] = False
+            return
+        for p in (cache_apt, cache_rwy):
+            try: os.remove(p)
+            except Exception: pass
+        ad["dl_status"] = "Parsing airport + runway records\u2026"
         ad["parsing"]   = True
         _ad_load_airports()
         ad["parsing"]   = False
@@ -12572,6 +13374,21 @@ def _fpl_deact_btn_rect():
     return (ax, by, aw, _FPL_DEACT_H)
 
 
+def _fpl_deact_row_rects():
+    """(load_appr_rect | None, deact_rect).  When the FPL destination has a
+    published approach, the bottom row splits into LOAD APPR | DEACTIVATE;
+    otherwise DEACTIVATE spans the full width."""
+    ax, ay, aw, _ = _fpl_actions_rect()
+    by = (ay + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
+          + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP)
+    if _fpl_dest_approach_ident():
+        gap = _FPL_ACTIONS_GAP
+        bw = (aw - gap) // 2
+        return ((ax, by, bw, _FPL_DEACT_H),
+                (ax + bw + gap, by, aw - bw - gap, _FPL_DEACT_H))
+    return (None, (ax, by, aw, _FPL_DEACT_H))
+
+
 def _fpl_list_y0():
     return (_FPL_HEADER_H + 6 + _FPL_ACTIONS_H + _FPL_ACTIONS_GAP
             + _FPL_SAVELOAD_H + _FPL_ACTIONS_GAP
@@ -12680,8 +13497,22 @@ def draw_fpl(surf):
         _text(surf, "LOAD", 15, (80, 90, 110), bold=True,
               cx=lx + lw // 2, cy=ly + lh // 2)
 
-    # ── Action row 3: DEACTIVATE ──────────────────────────────────────
-    dx, dy, dw, dh = _fpl_deact_btn_rect()
+    # ── Action row 3: [LOAD APPR] DEACTIVATE ──────────────────────────
+    # When the destination has a published approach the row splits: a
+    # 3-state approach button (LOAD APPR → ACTIVATE → CANCEL) beside DEACT.
+    appr_r, (dx, dy, dw, dh) = _fpl_deact_row_rects()
+    if appr_r is not None:
+        _ap   = disp.get("approach") or {}
+        _rwy  = _ap.get("runway", "")
+        _ph   = _approach_phase()
+        if _ph == "active":
+            _action_btn(surf, *appr_r, f"CANCEL APPR {_rwy}", "danger", r=6)
+        elif _ph == "missed":
+            _action_btn(surf, *appr_r, f"CANCEL APPR {_rwy}", "danger", r=6)
+        elif _ph == "armed":
+            _action_btn(surf, *appr_r, f"ACTIVATE {_rwy}", "warn", r=6)
+        else:
+            _action_btn(surf, *appr_r, "LOAD APPR", "ok", r=6)
     if is_active:
         _action_btn(surf, dx, dy, dw, dh, "DEACTIVATE", "warn", r=6)
     else:
@@ -12797,6 +13628,7 @@ def fpl_hit(x, y):
         ("add_lib",   None)
         ("save",      None)
         ("load",      None)
+        ("load_appr", None)
         ("deact",     None)
         ("activate",  idx)
         ("up",        idx)
@@ -12816,7 +13648,12 @@ def fpl_hit(x, y):
         ax, ay, aw, ah = rect
         if ax <= x <= ax + aw and ay <= y <= ay + ah:
             return (kind, None)
-    dx, dy, dw, dh = _fpl_deact_btn_rect()
+    appr_r, deact_r = _fpl_deact_row_rects()
+    if appr_r is not None:
+        ax2, ay2, aw2, ah2 = appr_r
+        if ax2 <= x <= ax2 + aw2 and ay2 <= y <= ay2 + ah2:
+            return ("load_appr", None)
+    dx, dy, dw, dh = deact_r
     if dx <= x <= dx + dw and dy <= y <= dy + dh:
         return ("deact", None)
     wps = disp.get("fpl", {}).get("waypoints", [])
@@ -13858,6 +14695,12 @@ def render(surf, demo_mode, connected, data_stale=False):
         draw_mfd_strip_setup(surf); return
     if mode == "fpl":
         draw_fpl(surf); return
+    if mode == "appr_proc_select":
+        draw_appr_proc_select(surf); return
+    if mode == "appr_trans_select":
+        draw_appr_trans_select(surf); return
+    if mode == "appr_preview":
+        draw_appr_preview(surf); return
     if mode == "fpl_latlon_entry":
         draw_fpl_latlon_entry(surf); return
     if mode == "user_wpt_picker":
@@ -14021,6 +14864,15 @@ def render(surf, demo_mode, connected, data_stale=False):
     # bad fix can't blip us through the plan.
     if gps_ok and _fpl_is_active():
         _fpl_check_advance(lat, lon)
+
+    # Auto-sequence the active approach leg (fly-by turn anticipation).
+    if gps_ok:
+        _approach_check_advance(lat, lon)
+
+    # Periodically re-broadcast our authoritative shared state so a peer that
+    # just powered up / rebooted re-aligns within a few seconds.  Only fires
+    # when we actually HAVE state — a blank screen never clobbers a peer.
+    _ssync_state_keepalive()
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground
     _full_ai = (0, 0, DISPLAY_W, HDG_Y)

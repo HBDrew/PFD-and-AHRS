@@ -65,7 +65,7 @@ Implementation:
   - Winds-aloft map barbs intentionally left TRUE (forecast-wind convention).
 
 ### PIZ-APPROACHES  Port loaded approaches to the Pi Zero
-Status: **RECEIVE/DRAW DONE — see the fuller PIZ-APPROACHES entry below**
+Status: **DONE — receive/draw + LOAD-on-piZ both shipped; see the fuller entry below**
 Context: the Pi Zero had NO published-approach support — only a synthetic cyan
 final-course stub on the inset (`pi_zero/moving_map.py`), no leg list / no
 procedure loading.  Per pilot: **NO HITS boxes** (there's no SVT on the Zero) —
@@ -834,8 +834,25 @@ Work items:
     existing distance-gated sequencer needs a real state change.
 
 ### PIZ-APPROACHES  Published approaches on pi_zero (parity with pi4)
-Status: **RECEIVE/DRAW DONE — piZ now consumes + renders a synced approach;
-LOAD-on-piZ (stretch) still open**
+Status: **DONE — piZ consumes + renders a synced approach AND loads its own**
+LOAD-on-piZ shipped this session:
+  - **Runway DB on the Zero**: `pi_zero/pfd.py` now loads `runways.csv` (same
+    OurAirports source as the Pi 4) into `_runways` and downloads it alongside
+    `airports.csv` on the AIRPORT DATA screen.  Data-only — used to resolve the
+    landing threshold (lat/lon + authoritative field elevation); the map still
+    does NOT draw runway polygons / centerlines (panel stays uncluttered).
+  - **Loader + pickers**: ported `_approach_load_published`, the leg dedupe /
+    missed-split helpers, fly-by `_approach_check_advance` sequencing, and the
+    SELECT APPROACH → TRANSITION pickers (`_prc_*` scroll list) + a self-
+    contained schematic **APPROACH PREVIEW** (no terrain map).  Entry is the
+    3-state LOAD APPR / ACTIVATE / CANCEL button on the FPL screen (off the
+    destination).  Flies the legs on the existing raw CDI (no SVT/HITS/VDI).
+  - **Publish parity**: the Zero now PUBLISHES `KIND_APPR` (was consume-only),
+    so a load on ANY screen mirrors to the others (last-write-wins).
+  - **Re-alignment after resets**: a low-rate `_ssync_state_keepalive()` on both
+    pi4 + piZ re-announces the loaded approach / active FPL / bare direct-to so a
+    screen that just powered up re-syncs within a few seconds.  Only screens that
+    HAVE state announce (a blank booted screen can't clobber a peer under LWW).
 Context: the published-approach work (LOAD APPR picker, transition/IAF picker,
 preview, leg sequencing, missed + holds, HITS/VDI) lives in `pi4/pfd.py`.  A
 pi_zero MFD on the same network RECEIVES the approach over screen sync

@@ -848,6 +848,35 @@ def _ssync_apply_baro(data):
         _ssync_suppress_publish -= 1
 
 
+_ssync_keepalive_last = 0.0
+_SSYNC_KEEPALIVE_S    = 4.0     # re-announce authoritative state this often
+
+
+def _ssync_state_keepalive():
+    """Periodically re-broadcast our authoritative shared state (loaded
+    approach, active flight plan, or a bare direct-to) so a peer that just
+    powered up / rebooted re-aligns within a few seconds.
+
+    Only sends state we ACTUALLY HAVE.  LWW resolves on publish-time ts, so a
+    freshly-booted blank screen broadcasting "nothing" would carry a newer ts
+    and wipe a peer's loaded approach — therefore a screen with no state stays
+    silent here and simply adopts whatever a peer keeps announcing."""
+    global _ssync_keepalive_last
+    if _screen_sync is None:
+        return
+    now = time.monotonic()
+    if now - _ssync_keepalive_last < _SSYNC_KEEPALIVE_S:
+        return
+    _ssync_keepalive_last = now
+    sent = False
+    if (disp.get("approach") or {}).get("loaded"):
+        _ssync_publish_approach(); sent = True
+    if _fpl_is_active():
+        _ssync_publish_fpl(); sent = True
+    if not sent and (disp.get("nav") or {}).get("ident"):
+        _ssync_publish_nav()
+
+
 def _ssync_publish_nav():
     if _screen_sync is None or _ssync_suppress_publish:
         return
@@ -17056,6 +17085,11 @@ def render(surf, demo_mode, connected, data_stale=False):
         elif not (_ap_seq.get("active") or _ap_seq.get("missed")) \
                 and _fpl_is_active():
             _fpl_check_advance(lat, lon)             # no approach engaged → FPL
+
+    # Periodically re-broadcast our authoritative shared state so a peer that
+    # just powered up / rebooted re-aligns within a few seconds.  Only fires
+    # when we actually HAVE state — a blank screen never clobbers a peer.
+    _ssync_state_keepalive()
 
     # 1. AI background — draw full-width so tapes are transparent over sky/ground.
     # Shared-GL composite path renders sky+terrain directly into the default
