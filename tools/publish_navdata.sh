@@ -9,6 +9,10 @@
 # changes from one 28-day cycle to the next.  Run it on your laptop after
 # building the cache; it needs the `gh` CLI authenticated to this repo.
 #
+# No laptop handy?  The same build+publish runs server-side from a browser
+# (phone/iPad) via .github/workflows/publish-navdata.yml — Actions tab →
+# "Publish nav data" → Run workflow (paste the FAA NASR + CIFP ZIP URLs).
+#
 # Usage:
 #   tools/publish_navdata.sh [CACHE_DIR]
 #       CACHE_DIR   dir holding the built cache  (default: pi4/data/navdata)

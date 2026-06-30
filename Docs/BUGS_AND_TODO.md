@@ -700,9 +700,12 @@ Done:
     until set, since the cache is built off-aircraft).  `navdata.cache_stats()`
     feeds the status line; cache loaded at startup + on entry.  Both renderers
     verified headless (`--ss-mode`).
-Still TODO: host the prebuilt cache so DOWNLOAD has a default source; a
-real-data build to validate CIFP offsets; then the UI consumers
+Still TODO: a real-data build to validate CIFP offsets; then the UI consumers
 (see NAV-FIXES-AIRWAYS-DISPLAY / FPL-APPROACHES / FPL-HOLDS below).
+Publishing path DONE: `tools/publish_navdata.sh` (laptop + `gh`) or the new
+`.github/workflows/publish-navdata.yml` (browser/iPad — Actions → "Publish nav
+data" → Run workflow, paste the FAA NASR + CIFP ZIP URLs) build the cache and
+push it to the fixed `navdata` release the in-app DOWNLOAD button pulls from.
 Target: new `tools/build_navdata_us.py` (28-day converter, mirrors
 `tools/build_airspaces_us.py`), new `shared/navdata.py` parser + spatial
 query (mirrors `shared/airports.py`), runtime cache under

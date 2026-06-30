@@ -1,0 +1,140 @@
+# Build + publish the FAA nav-data cache to the "navdata" release — from a
+# phone or iPad, no laptop or `gh` CLI needed.
+#
+# The in-app NAV DATA screen (pi4/pi5 + Pi Zero) downloads its three cache
+# files from a FIXED release tag ("navdata"); see DOWNLOAD_BASE_URL in
+# shared/navdata.py.  Normally you'd build the cache on a laptop and run
+# tools/publish_navdata.sh.  This workflow does the same thing server-side so
+# the whole 28-day refresh can be driven from a browser.
+#
+# ── How to run it from an iPad ──────────────────────────────────────────────
+#   1. In Safari, open github.com/HBDrew/PFD-and-AHRS (use the desktop site —
+#      tap "aA" → Request Desktop Website if it serves mobile).  The GitHub
+#      iOS app does NOT expose workflow inputs, so use Safari.
+#   2. Actions tab → "Publish nav data" (left list) → "Run workflow".
+#   3. Grab the two current download links on the iPad and paste them in:
+#        • NASR CSV ZIP:
+#          https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data/NASR_Subscription/
+#          (open the current "28 Day NASR Subscription", copy the CSV ZIP link)
+#        • CIFP ZIP:
+#          https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/cifp/download/
+#          (copy the current cycle's ZIP link)
+#   4. Tap "Run workflow".  When it finishes (green check), open NAV DATA on
+#      each Pi and tap DOWNLOAD/UPDATE — they'll pull the new cycle.
+#
+# NOTE: GitHub only shows the "Run workflow" button for a workflow that lives
+# on the repo's DEFAULT branch (main).  Merge this file to main first, then it
+# appears in the Actions tab.
+
+name: Publish nav data
+
+on:
+  workflow_dispatch:
+    inputs:
+      nasr_url:
+        description: "FAA NASR 28-Day Subscription CSV ZIP URL (fixes/navaids/airways)"
+        required: true
+      cifp_url:
+        description: "FAA CIFP ZIP URL (contains FAACIFP18 — approaches/holds)"
+        required: true
+      cycle:
+        description: "Cycle stamp e.g. 2606 (optional — auto-detected from CIFP header if blank)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # needed to create/update the "navdata" release
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: python3 -m pip install --upgrade numpy
+
+      - name: Download FAA data
+        env:
+          NASR_URL: ${{ inputs.nasr_url }}
+          CIFP_URL: ${{ inputs.cifp_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p faa/nasr faa/cifp build/navdata
+          echo "Downloading NASR ZIP…"
+          curl -fSL --retry 3 "$NASR_URL" -o faa/nasr.zip
+          echo "Downloading CIFP ZIP…"
+          curl -fSL --retry 3 "$CIFP_URL" -o faa/cifp.zip
+          unzip -q faa/nasr.zip -d faa/nasr
+          unzip -q faa/cifp.zip -d faa/cifp
+          # NASR has historically shipped as a zip-of-zips — expand any inner
+          # archives once so FIX_BASE.csv etc. surface.
+          find faa/nasr -iname '*.zip' -exec unzip -q -o {} -d faa/nasr \; || true
+
+      - name: Locate input files
+        id: locate
+        run: |
+          set -euo pipefail
+          fix_csv="$(find faa/nasr -iname 'FIX_BASE.csv' | head -n1)"
+          if [ -z "$fix_csv" ]; then
+            echo "::error::FIX_BASE.csv not found in the NASR ZIP — is the URL the CSV subscription?" >&2
+            exit 1
+          fi
+          nasr_dir="$(dirname "$fix_csv")"
+          cifp_file="$(find faa/cifp -iname 'FAACIFP18' | head -n1)"
+          if [ -z "$cifp_file" ]; then
+            echo "::error::FAACIFP18 not found in the CIFP ZIP." >&2
+            exit 1
+          fi
+          echo "nasr_dir=$nasr_dir" >> "$GITHUB_OUTPUT"
+          echo "cifp_file=$cifp_file" >> "$GITHUB_OUTPUT"
+          echo "NASR dir: $nasr_dir"
+          echo "CIFP file: $cifp_file"
+
+      - name: Build nav-data cache
+        env:
+          CYCLE: ${{ inputs.cycle }}
+          NASR_DIR: ${{ steps.locate.outputs.nasr_dir }}
+          CIFP_FILE: ${{ steps.locate.outputs.cifp_file }}
+        run: |
+          set -euo pipefail
+          cycle_arg=()
+          if [ -n "$CYCLE" ]; then cycle_arg=(--cycle "$CYCLE"); fi
+          python3 tools/build_navdata_us.py \
+            --nasr "$NASR_DIR" \
+            --cifp "$CIFP_FILE" \
+            --out  build/navdata \
+            "${cycle_arg[@]}"
+          echo "── verify ──"
+          python3 tools/build_navdata_us.py --verify build/navdata
+
+      - name: Publish to the "navdata" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CYCLE="$(python3 -c "import json;print(json.load(open('build/navdata/navdata.json')).get('cycle') or 'unknown')")"
+          TODAY="$(date -u +%Y-%m-%d)"
+          ASSETS=(
+            build/navdata/navdata_fixes.npy
+            build/navdata/navdata_navaids.npy
+            build/navdata/navdata.json
+          )
+          TITLE="Nav data (cycle ${CYCLE})"
+          NOTES="FAA NASR + CIFP cache · cycle ${CYCLE} · ${TODAY}"
+          if gh release view navdata >/dev/null 2>&1; then
+            echo "Updating existing 'navdata' release (cycle ${CYCLE})…"
+            gh release upload navdata "${ASSETS[@]}" --clobber
+            gh release edit   navdata --title "$TITLE" --notes "$NOTES"
+          else
+            echo "Creating 'navdata' release (cycle ${CYCLE})…"
+            gh release create navdata "${ASSETS[@]}" --title "$TITLE" --notes "$NOTES"
+          fi
+          echo "Done — devices download cycle ${CYCLE} from:"
+          echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/navdata/"
