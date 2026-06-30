@@ -1318,15 +1318,23 @@ def _approach_hits_refresh():
 # distinct from the cyan HITS corridor and the magenta course line.
 _SIGNPOST_COLOR    = (1.0, 200 / 255.0, 0.0, 1.0)   # amber
 _SIGNPOST_SIDE_FT  = 400.0
+_SIGNPOST_MAX_NM   = 30.0    # only show a fix sign-post within this range of the
+                            # aircraft (so a loaded approach 100s of nm away
+                            # doesn't float its fixes onto the PFD)
 _appr_signpost_cache = {"key": None, "polylines": [], "labels": []}
 
 
 def _approach_signpost_refresh():
     ap = disp.get("approach") or {}
+    # Coarse aircraft-position bucket in the key so the range gate below
+    # re-evaluates as we close on the approach (rebuild ~every 0.1° ≈ 6 nm).
+    _alat = float(disp.get("lat", 0.0))
+    _alon = float(disp.get("lon", 0.0))
     key = (ap.get("airport"), ap.get("procedure"), ap.get("transition"),
            bool(ap.get("loaded")), bool(ap.get("active")),
            len(ap.get("legs") or []),
-           ap.get("thresh_lat"), ap.get("thresh_lon"))
+           ap.get("thresh_lat"), ap.get("thresh_lon"),
+           round(_alat, 1), round(_alon, 1))
     if _appr_signpost_cache["key"] == key:
         return
     _appr_signpost_cache["key"] = key
@@ -1347,6 +1355,10 @@ def _approach_signpost_refresh():
             for (la, lo, alt), leg in zip(path, legs):
                 ident = str(leg[2] or "").strip()
                 if not ident:
+                    continue
+                # Range gate — don't float a fix's box/label onto the PFD until
+                # the aircraft is reasonably close to it.
+                if _nav_geo_dist_brg(_alat, _alon, la, lo)[0] > _SIGNPOST_MAX_NM:
                     continue
                 cos_lat = max(1e-6, math.cos(math.radians(la)))
                 dpf_lon = dpf_lat / cos_lat
@@ -4628,16 +4640,25 @@ class SimFlyState:
                         leg_d, leg_course = _nav_geo_dist_brg(
                             ax_lat, ax_lon, wp_lat, wp_lon)
                         course_deg, xtk = brg, 0.0          # default: direct
-                        if appr_active and leg_d > 0.3:
+                        # Track the LEG centreline (act→wp) with cross-track
+                        # intercept for ANY real leg — enroute FPL, plain D2, or
+                        # an approach feeder — so the sim flies the magenta course
+                        # instead of pure-pursuing the fix.  Pure pursuit barely
+                        # corrects when far out (a 0.2 nm offset 1000+ nm from the
+                        # fix is a ~0° bearing change), leaving a steady parallel
+                        # offset; XTK tracking re-centres on the line.  Tight PID
+                        # only on an active approach; enroute uses the gentler
+                        # intercept.
+                        if leg_d > 0.3:
                             leg_xtk = _nav_xtk_nm(ax_lat, ax_lon,
                                                   wp_lat, wp_lon,
                                                   cur_lat, cur_lon)
                             cand = _sim_intercept_heading(
-                                leg_course, leg_xtk, approach=True)
+                                leg_course, leg_xtk, approach=appr_active)
                             if abs(((cand - brg + 180.0) % 360.0)
                                    - 180.0) <= 80.0:        # converges to the fix
                                 course_deg, xtk = leg_course, leg_xtk
-                                lateral_gain = True
+                                lateral_gain = appr_active
 
                     # Lateral guidance.  On an approach course (final centreline
                     # or a tracked feeder leg) use a full PID on cross-track so it
