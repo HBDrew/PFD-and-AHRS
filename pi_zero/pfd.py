@@ -7598,89 +7598,77 @@ def appr_trans_select_hit(x, y):
     return ("pick", trans[i]) if i is not None else (None, None)
 
 
-# ── Approach preview (schematic top-down of the loaded approach) ────────────────
+# ── Approach preview (terrain map of the loaded approach) ───────────────────────
 _APRV_BTN_H = 56
+_appr_preview_font = None
 
 
-def _appr_preview_pts():
-    """Every (lat, lon) that should frame the preview: approach legs, threshold,
-    missed, and hold racetracks."""
+def _appr_preview_get_font():
+    """Bold label font for the approach preview — a touch larger than the inset
+    default so the fix idents read clearly on the panel."""
+    global _appr_preview_font
+    if _appr_preview_font is None:
+        _appr_preview_font = pygame.font.SysFont("DejaVu Sans", 20, bold=True)
+    return _appr_preview_font
+
+
+def _appr_preview_extent(rect):
+    """(center_lat, center_lon, range_nm) that frames every approach fix +
+    threshold + missed + hold racetrack inside ``rect``.  range_nm is the
+    vertical half-extent; the wide rect shows range*aspect across, so fit both
+    axes (mirrors the Pi 4)."""
     ap = disp.get("approach") or {}
     pts = [(p[0], p[1]) for p in (ap.get("legs") or [])]
     if ap.get("thresh_lat") is not None:
         pts.append((float(ap["thresh_lat"]), float(ap["thresh_lon"])))
+    rwm = _appr_runway_marker()
+    if rwm is not None:
+        pts.extend([rwm[0], rwm[1]])
     pts += [(p[0], p[1]) for p in (_approach_render_missed() or [])]
-    for h in _approach_render_holds():
-        pts.append((h[0], h[1]))
-    return pts
+    for h_la, h_lo, h_crs, h_turn, h_leg in _approach_render_holds():
+        pts += _mfd_map._hold_racetrack_pts(
+            h_la, h_lo, h_crs, h_turn, h_leg, math.cos(math.radians(h_la)))
+    if not pts:
+        return (float(disp.get("lat", DEMO_LAT)),
+                float(disp.get("lon", DEMO_LON)), 10.0)
+    lats = [p[0] for p in pts]; lons = [p[1] for p in pts]
+    clat = (min(lats) + max(lats)) / 2.0
+    clon = (min(lons) + max(lons)) / 2.0
+    half_n = (max(lats) - min(lats)) / 2.0 * 60.0
+    half_e = (max(lons) - min(lons)) / 2.0 * 60.0 * max(0.2, math.cos(math.radians(clat)))
+    _x, _y, rw, rh = rect
+    aspect = max(0.1, rw / float(rh))
+    rng = max(half_n, half_e / aspect) * 1.35 + 1.0
+    return clat, clon, max(3.0, rng)
 
 
 def draw_appr_preview(surf):
-    """Schematic top-down preview of the loaded approach with LOAD / BACK.  A
-    self-contained vector diagram (no terrain map) — clearer on the panel and
-    independent of the moving-map renderer."""
+    """Map preview of the loaded approach — terrain + water behind, fix diamonds
+    + idents, racetrack holds, dashed-amber missed — with LOAD / BACK.  Uses the
+    same moving-map renderer as the MFD inset (and the Pi 4 preview) so the
+    picture reads identically; airports/obstacles/traffic/wx are decluttered."""
     surf.fill((0, 0, 0))
     _screen_header(surf, "APPROACH PREVIEW")
     ap = disp.get("approach") or {}
     via = (f"via {ap.get('transition')}" if ap.get("transition") else "VECTORS")
     _text(surf, f"{ap.get('airport','')}   {ap.get('procedure','')}   ·   {via}",
           15, WHITE, bold=True, cx=DISPLAY_W // 2, cy=62)
-
-    rx, ry, rw, rh = 12, 82, DISPLAY_W - 24, DISPLAY_H - 82 - (_APRV_BTN_H + 24)
-    pygame.draw.rect(surf, (0, 8, 18), (rx, ry, rw, rh), border_radius=6)
-    pygame.draw.rect(surf, (40, 55, 80), (rx, ry, rw, rh), width=1, border_radius=6)
-
-    pts = _appr_preview_pts()
-    legs = ap.get("legs") or []
-    if not pts or len(legs) < 1:
-        _text(surf, "No flyable legs to preview", 14, YELLOW,
-              cx=DISPLAY_W // 2, cy=ry + rh // 2)
-    else:
-        lats = [p[0] for p in pts]; lons = [p[1] for p in pts]
-        clat = (min(lats) + max(lats)) / 2.0
-        clon = (min(lons) + max(lons)) / 2.0
-        cosl = max(0.2, math.cos(math.radians(clat)))
-        span_y = max(1e-4, (max(lats) - min(lats)))
-        span_x = max(1e-4, (max(lons) - min(lons)) * cosl)
-        pad = 26
-        sx = (rw - 2 * pad) / span_x
-        sy = (rh - 2 * pad) / span_y
-        scale = min(sx, sy)
-
-        def _xy(la, lo):
-            px = rx + rw / 2 + (lo - clon) * cosl * scale
-            py = ry + rh / 2 - (la - clat) * scale
-            return int(px), int(py)
-
-        # Missed approach (dashed amber).
-        missed = _approach_render_missed() or []
-        if len(missed) >= 2:
-            mpx = [_xy(p[0], p[1]) for p in missed]
-            for a, b in zip(mpx, mpx[1:]):
-                pygame.draw.line(surf, (255, 190, 30), a, b, 1)
-        # Hold racetracks (small circles at the hold fix).
-        for h in _approach_render_holds():
-            hx, hy = _xy(h[0], h[1])
-            pygame.draw.circle(surf, (200, 160, 60), (hx, hy), 8, 1)
-        # Approach path (cyan polyline + fix diamonds + idents).
-        ppx = [_xy(p[0], p[1]) for p in legs]
-        if len(ppx) >= 2:
-            pygame.draw.lines(surf, CYAN, False, ppx, 2)
-        fidx = int(ap.get("final_idx", 0))
-        for i, (px, py) in enumerate(ppx):
-            col = MAGENTA if i >= fidx else CYAN
-            pygame.draw.polygon(surf, col,
-                                [(px, py - 5), (px + 5, py), (px, py + 5), (px - 5, py)])
-            ident = str(legs[i][2] or "")
-            if ident:
-                _text(surf, ident, 10, (200, 215, 235), x=px + 8, cy=py - 8)
-        # Threshold marker.
-        if ap.get("thresh_lat") is not None:
-            tx, ty2 = _xy(float(ap["thresh_lat"]), float(ap["thresh_lon"]))
-            pygame.draw.circle(surf, WHITE, (tx, ty2), 4)
-            _text(surf, f"RWY {ap.get('runway','')}", 11, WHITE, bold=True,
-                  x=tx + 8, cy=ty2 + 8)
-
+    rect = (12, 82, DISPLAY_W - 24, DISPLAY_H - 82 - (_APRV_BTN_H + 24))
+    clat, clon, rng = _appr_preview_extent(rect)
+    ds = dict(disp.get("ds", {}))
+    ds.update({"map_show_airports": False, "map_show_obstacles": False,
+               "map_show_traffic": False, "map_show_metar": False,
+               "map_show_winds": False, "map_show_nexrad": False,
+               "map_show_airspaces": False})
+    _mfd_map.render(surf, rect, clat, clon, 0.0, 0.0, 0.0, "nrth", rng, ds,
+                    srtm_dir=SRTM_DIR, water_dir=WATER_DIR,
+                    font=_appr_preview_get_font(),
+                    state_lines=_state_lines, country_lines=_country_lines,
+                    approach_path=_approach_render_path(),
+                    runway_marker=_appr_runway_marker(),
+                    missed_path=_approach_render_missed(),
+                    holds=_approach_render_holds(),
+                    draw_corner_labels=False)
     by = DISPLAY_H - _APRV_BTN_H - 12
     half = (DISPLAY_W - 24 - 12) // 2
     _action_btn(surf, 12, by, half, _APRV_BTN_H, "‹ BACK", "warn")

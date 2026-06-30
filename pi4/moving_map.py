@@ -118,35 +118,45 @@ def _dashed_polyline(surf, color, pts, dash=9, gap=6, width=2):
             d += dash + gap
 
 
-def _place_label(surf, font, text, color, ax, ay, placed):
-    """Blit ``text`` to the SIDE of the anchor (ax, ay) — never centred over it,
-    which would sit on the course line.  Labels are right- or left-justified and
-    staggered side-to-side for consecutive fixes; the first candidate that
-    doesn't overlap an already-placed rect wins.  Appends the chosen rect to
-    ``placed`` so clustered fixes (RWY 03 / FAF / IF near the airport) don't
-    stack."""
+def _place_label(surf, font, text, color, ax, ay, placed, avoid_segs=()):
+    """Blit ``text`` ABOVE or BELOW the anchor (ax, ay) — never level with it
+    (that sits on a horizontal course line).  Candidates stack outward and
+    alternate side; the first that clears BOTH already-placed labels AND the
+    course / runway / missed line segments in ``avoid_segs`` wins.  Falls back
+    to the first candidate when everything is crowded.  ``avoid_segs`` is a list
+    of ((x1,y1),(x2,y2)) screen segments; empty keeps the old label-only
+    de-confliction for non-approach callers."""
     if not text or font is None:
         return
     img = font.render(text, True, color)
     w, h = img.get_size()
     d = 6
     step = h + 2
-    # Side-anchored candidates, stepped vertically so a crowded cluster can
-    # stack labels up/down beside it instead of overlapping.  Never centred
-    # over the fix (that sits on the course line).
-    rights, lefts = [], []
-    for m in (0, 1, -1, 2, -2, 3, -3):
-        rights.append((ax + d, ay - h // 2 + m * step))
-        lefts.append((ax - w - d, ay - h // 2 + m * step))
-    # Stagger: alternate which side we try first so neighbours land opposite.
+    # Offset above / below the fix (clearing a horizontal leg), to the right or
+    # left, stepping further out each ring so a cluster fans out.
+    ups, downs = [], []
+    for m in range(0, 6):
+        oy_up = ay - h - d - m * step
+        oy_dn = ay + d + m * step
+        ups.append((ax + d, oy_up));   ups.append((ax - w - d, oy_up))
+        downs.append((ax + d, oy_dn)); downs.append((ax - w - d, oy_dn))
+    first, second = (ups, downs) if (len(placed) % 2 == 0) else (downs, ups)
     cands = []
-    first, second = (rights, lefts) if (len(placed) % 2 == 0) else (lefts, rights)
     for a, b in zip(first, second):
         cands.append(a)
         cands.append(b)
+
+    def _clear(r):
+        if any(r.colliderect(pr) for pr in placed):
+            return False
+        for (x1, y1), (x2, y2) in avoid_segs:
+            if r.clipline(int(x1), int(y1), int(x2), int(y2)):
+                return False
+        return True
+
     for cx, cy in cands:
         r = pygame.Rect(cx, cy, w, h)
-        if not any(r.colliderect(pr) for pr in placed):
+        if _clear(r):
             surf.blit(img, (cx, cy))
             placed.append(r)
             return
@@ -1764,6 +1774,18 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
     # procedure (the final-approach course line is the last leg).  Independent
     # of direct_to so it also draws on the approach preview (no D2 set).
     _appr_label_rects = []                     # de-conflict approach labels
+    # Screen-space line segments labels must avoid so an ident never lands on a
+    # course / runway / missed line (built up front so every label sees them).
+    _appr_avoid = []
+    if approach_path is not None and len(approach_path) >= 2:
+        _ap_scr = [_project(a, b) for a, b, _ in approach_path]
+        _appr_avoid += list(zip(_ap_scr, _ap_scr[1:]))
+    if runway_marker is not None:
+        _appr_avoid.append((_project(runway_marker[0][0], runway_marker[0][1]),
+                            _project(runway_marker[1][0], runway_marker[1][1])))
+    if missed_path is not None and len(missed_path) >= 2:
+        _ms_scr = [_project(p[0], p[1]) for p in missed_path]
+        _appr_avoid += list(zip(_ms_scr, _ms_scr[1:]))
     if approach_path is not None and len(approach_path) >= 2:
         d2 = 4
 
@@ -1778,7 +1800,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                     runway_marker is not None and ident[:2] == "RW"
                     and ident[2:3].isdigit()):
                 _place_label(surf, font, ident, _HITS_CYAN,
-                             int(px), int(py), _appr_label_rects)
+                             int(px), int(py), _appr_label_rects,
+                             avoid_segs=_appr_avoid)
 
         fla, flo, fid = approach_path[0]
         _appr_fix(fla, flo, fid)               # the first fix (IAF) too
@@ -1801,7 +1824,8 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                          (int(ax), int(ay)), (int(bx), int(by)), 5)
         if rlabel:
             _place_label(surf, font, rlabel, (210, 220, 235),
-                         int(bx), int(by), _appr_label_rects)  # de-conflicted
+                         int(bx), int(by), _appr_label_rects,
+                         avoid_segs=_appr_avoid)
 
     # ── Missed approach (dashed amber) + holding patterns ───────────────────
     # missed_path: [(la, lo, ident), …].  Per the plate it does NOT touch the
@@ -1818,7 +1842,7 @@ def render(surf, rect, lat, lon, alt_ft, hdg_deg, track_deg, orient,
                                 [(px, py - d2), (px + d2, py),
                                  (px, py + d2), (px - d2, py)], 1)
             _place_label(surf, font, ident, _MISSED_AMBER,
-                         px, py, _appr_label_rects)
+                         px, py, _appr_label_rects, avoid_segs=_appr_avoid)
     for h in (holds or []):
         h_la, h_lo, h_crs, h_turn, h_leg = h
         loop = _hold_racetrack_pts(h_la, h_lo, h_crs, h_turn, h_leg, cos_lat)
