@@ -13390,11 +13390,46 @@ def _fpl_row_rect(idx):
             DISPLAY_W - 2 * pad, _FPL_ROW_H)
 
 
+_FPL_APPR_INDENT = 40       # loaded-approach legs indent in under the destination
+_FPL_APPR_HDR_H  = 26       # the "APPROACH · …" header line above the leg rows
+
+
+def _fpl_appr_header_y():
+    """Screen y of the loaded-approach header line (just under the last waypoint
+    row), or None when there's no plan."""
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    if not wps:
+        return None
+    _bx, by, _bw, bh = _fpl_row_rect(len(wps) - 1)
+    return by + bh + 6
+
+
+def _fpl_appr_row_rect(k):
+    """Indented, FULL-HEIGHT rect for approach leg k — same height as the
+    waypoint rows so the loaded approach reads as part of the plan."""
+    bx, _by, bw, _bh = _fpl_row_rect(0)
+    hy = (_fpl_appr_header_y() or 0) + _FPL_APPR_HDR_H
+    ry = hy + k * (_FPL_ROW_H + _FPL_ROW_GAP)
+    return (bx + _FPL_APPR_INDENT, ry, bw - _FPL_APPR_INDENT, _FPL_ROW_H)
+
+
+def _appr_section_h():
+    """Extra scroll height for the loaded-approach section under the plan."""
+    ap = disp.get("approach") or {}
+    if not ap.get("loaded"):
+        return 0
+    legs = ap.get("legs") or []
+    if legs:
+        return _FPL_APPR_HDR_H + len(legs) * (_FPL_ROW_H + _FPL_ROW_GAP) + 6
+    return _FPL_APPR_HDR_H + _FPL_ROW_H + 6      # synthetic placeholder row
+
+
 def _fpl_max_scroll(n_rows):
     """Maximum scroll offset given n_rows in the list.  Zero when the
     list fits entirely in the visible area."""
     visible_h = DISPLAY_H - _fpl_list_y0() - 6
     content_h = n_rows * (_FPL_ROW_H + _FPL_ROW_GAP) - _FPL_ROW_GAP
+    content_h += _appr_section_h()
     return max(0, content_h - visible_h)
 
 
@@ -13587,6 +13622,53 @@ def draw_fpl(surf):
         _fpl_icon_btn(surf, up_r, "↑", dim=(i == 0))
         _fpl_icon_btn(surf, dn_r, "↓", dim=(i == len(wps) - 1))
         _fpl_icon_btn(surf, del_r, "✕")
+
+    # ── Loaded approach — indented read-only section under the destination ──
+    # One full-height row per leg (matches the waypoint rows) for a published
+    # approach, or a single placeholder line for a synthetic one.  Mirrors pi4.
+    _ap = disp.get("approach") or {}
+    _phase = _approach_phase()
+    _legs = _ap.get("legs") or []
+    if _phase != "none" and wps:
+        col = {"armed": (225, 185, 80), "active": (60, 220, 100),
+               "missed": (240, 140, 60)}.get(_phase, (200, 200, 200))
+        tag = {"armed": "ARMED · tap ACTIVATE", "active": "ACTIVE",
+               "missed": "MISSED"}.get(_phase, "")
+        lbx = _fpl_row_rect(0)[0]
+        hy = _fpl_appr_header_y()
+        if _legs:
+            if list_top <= hy <= list_bot:
+                _text(surf, f"APPROACH · {_approach_label()} · {tag}", 14, col,
+                      bold=True, x=lbx + _FPL_APPR_INDENT, y=hy)
+            leg_idx = int(_ap.get("leg_idx", -1)) if _phase == "active" else -1
+            prev_la, prev_lo = wps[-1]["lat"], wps[-1]["lon"]
+            _asfx = _brg_suffix()
+            for k, (la, lo, ident, _lt, _alt, _at) in enumerate(_legs):
+                rc = pygame.Rect(*_fpl_appr_row_rect(k))
+                ld, lb = _nav_geo_dist_brg(prev_la, prev_lo, la, lo)
+                lb = _to_disp_brg(lb, prev_la, prev_lo)
+                prev_la, prev_lo = la, lo
+                if rc.top > list_bot or rc.bottom < list_top:
+                    continue
+                on_leg = (_phase == "active" and k == leg_idx)
+                pygame.draw.rect(surf, (0, 36, 18) if on_leg else (0, 14, 28),
+                                 rc, border_radius=5)
+                pygame.draw.rect(surf, col if on_leg else (60, 80, 110), rc,
+                                 width=2 if on_leg else 1, border_radius=5)
+                _text(surf, f"↳ {ident}", 30, (90, 240, 130) if on_leg else WHITE,
+                      bold=True, x=rc.x + 16, y=rc.y + 12)
+                sub = f"{int(round(lb)) % 360:03d}°{_asfx}  ·  {ld:.1f} nm"
+                alt_lbl = _appr_alt_label(_alt, _at)
+                if alt_lbl:
+                    sub += f"  ·  {alt_lbl}"
+                _text(surf, sub, 17, (140, 200, 225), x=rc.x + 18, y=rc.y + 48)
+        elif hy is not None and list_top <= hy <= list_bot:
+            rc = pygame.Rect(*_fpl_appr_row_rect(0))
+            pygame.draw.rect(surf, (0, 14, 28), rc, border_radius=5)
+            pygame.draw.rect(surf, col, rc, width=1, border_radius=5)
+            _text(surf, f"↳  {_approach_label()}", 24, col, bold=True,
+                  x=rc.x + 18, y=rc.y + 16)
+            _text(surf, tag, 17, col, x=rc.x + 18, y=rc.y + 50)
 
     # Lift the clip and paint a scroll indicator on the right edge
     # when the list overflows.

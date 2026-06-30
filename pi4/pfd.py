@@ -16124,13 +16124,38 @@ def _fpl_row_rect(idx):
             DISPLAY_W - 2 * pad, _FPL_ROW_H)
 
 
+_FPL_APPR_INDENT = 40       # loaded-approach legs indent in under the destination
+_FPL_APPR_HDR_H  = 26       # the "APPROACH · …" header line above the leg rows
+
+
+def _fpl_appr_header_y():
+    """Screen y of the loaded-approach header line (just under the last waypoint
+    row), or None when there's no plan."""
+    wps = disp.get("fpl", {}).get("waypoints", [])
+    if not wps:
+        return None
+    _bx, by, _bw, bh = _fpl_row_rect(len(wps) - 1)
+    return by + bh + 6
+
+
+def _fpl_appr_row_rect(k):
+    """Indented, FULL-HEIGHT rect for approach leg k — same height as the
+    waypoint rows so the loaded approach reads as part of the plan."""
+    bx, _by, bw, _bh = _fpl_row_rect(0)
+    hy = (_fpl_appr_header_y() or 0) + _FPL_APPR_HDR_H
+    ry = hy + k * (_FPL_ROW_H + _FPL_ROW_GAP)
+    return (bx + _FPL_APPR_INDENT, ry, bw - _FPL_APPR_INDENT, _FPL_ROW_H)
+
+
 def _appr_section_h():
     """Extra scroll height for the loaded-approach section under the plan."""
     ap = disp.get("approach") or {}
     if not ap.get("loaded"):
         return 0
     legs = ap.get("legs") or []
-    return (22 + len(legs) * 31 + 8) if legs else 42
+    if legs:
+        return _FPL_APPR_HDR_H + len(legs) * (_FPL_ROW_H + _FPL_ROW_GAP) + 6
+    return _FPL_APPR_HDR_H + _FPL_ROW_H + 6      # synthetic placeholder row
 
 
 def _fpl_max_scroll(n_rows):
@@ -16323,55 +16348,43 @@ def draw_fpl(surf):
                "missed": (240, 140, 60)}.get(_phase, (200, 200, 200))
         tag = {"armed": "ARMED · tap ACTIVATE", "active": "ACTIVE",
                "missed": "MISSED"}.get(_phase, "")
-        lbx, lby, lbw, lbh = _fpl_row_rect(len(wps) - 1)
-        hy = lby + lbh + 6
+        lbx = _fpl_row_rect(0)[0]
+        hy = _fpl_appr_header_y()
         if _legs:
             if list_top <= hy <= list_bot:
                 _text(surf, f"APPROACH · {_approach_label()} · {tag}", 13, col,
-                      bold=True, x=lbx + 40, y=hy)
+                      bold=True, x=lbx + _FPL_APPR_INDENT, y=hy)
             leg_idx = int(_ap.get("leg_idx", -1)) if _phase == "active" else -1
             prev_la, prev_lo = wps[-1]["lat"], wps[-1]["lon"]
             _asfx = _brg_suffix()
-            rh = 28
             for k, (la, lo, ident, _lt, _alt, _at) in enumerate(_legs):
-                ry = hy + 22 + k * (rh + 3)
+                rc = pygame.Rect(*_fpl_appr_row_rect(k))
                 ld, lb = _nav_geo_dist_brg(prev_la, prev_lo, la, lo)
                 lb = _to_disp_brg(lb, prev_la, prev_lo)
                 prev_la, prev_lo = la, lo
-                if ry > list_bot:
-                    _text(surf, f"+{len(_legs) - k} more", 11, col,
-                          x=lbx + 56, y=ry - 2)
-                    break
-                if ry + rh < list_top:
+                if rc.top > list_bot or rc.bottom < list_top:
                     continue
                 on_leg = (_phase == "active" and k == leg_idx)
-                rc = pygame.Rect(lbx + 40, ry, lbw - 40, rh)
                 pygame.draw.rect(surf, (0, 36, 18) if on_leg else (0, 14, 28),
-                                 rc, border_radius=4)
+                                 rc, border_radius=5)
                 pygame.draw.rect(surf, col if on_leg else (50, 70, 95), rc,
-                                 width=2 if on_leg else 1, border_radius=4)
-                _text(surf, f"↳ {ident}", 16, (90, 240, 130) if on_leg else WHITE,
-                      bold=True, x=rc.x + 14, cy=rc.centery)
+                                 width=2 if on_leg else 1, border_radius=5)
+                _text(surf, f"↳ {ident}", 28, (90, 240, 130) if on_leg else WHITE,
+                      bold=True, x=rc.x + 16, y=rc.y + 12)
+                # Sub-line: leg TRK + distance (cross-checked against the plate),
+                # plus any crossing altitude.
+                sub = f"{int(round(lb)) % 360:03d}°{_asfx}  ·  {ld:.1f} nm"
                 alt_lbl = _appr_alt_label(_alt, _at)
                 if alt_lbl:
-                    _text(surf, alt_lbl, 15, (210, 200, 120), bold=True,
-                          x=rc.right - 210, cy=rc.centery)
-                # Leg track + distance, right-aligned, e.g. "123°  4.5 nm".
-                # The TRK to each approach fix is what a pilot cross-checks
-                # against the plate, so show it alongside the distance.
-                _legtxt = f"{int(round(lb)) % 360:03d}°{_asfx}  {ld:.1f} nm"
-                _lw = _get_font(14).size(_legtxt)[0]
-                _text(surf, _legtxt, 14, (90, 205, 225),
-                      x=rc.right - 12 - _lw, cy=rc.centery)
-        elif list_top <= hy <= list_bot:
-            ph = 36
-            pygame.draw.rect(surf, (0, 14, 28), (lbx + 40, hy, lbw - 40, ph),
-                             border_radius=5)
-            pygame.draw.rect(surf, col, (lbx + 40, hy, lbw - 40, ph), width=1,
-                             border_radius=5)
-            _text(surf, f"↳  {_approach_label()}", 17, col,
-                  bold=True, x=lbx + 58, cy=hy + ph // 2)
-            _text(surf, tag, 14, col, x=lbx + lbw - 200, cy=hy + ph // 2)
+                    sub += f"  ·  {alt_lbl}"
+                _text(surf, sub, 16, (140, 200, 225), x=rc.x + 18, y=rc.y + 46)
+        elif hy is not None and list_top <= hy <= list_bot:
+            rc = pygame.Rect(*_fpl_appr_row_rect(0))
+            pygame.draw.rect(surf, (0, 14, 28), rc, border_radius=5)
+            pygame.draw.rect(surf, col, rc, width=1, border_radius=5)
+            _text(surf, f"↳  {_approach_label()}", 22, col, bold=True,
+                  x=rc.x + 18, y=rc.y + 14)
+            _text(surf, tag, 16, col, x=rc.x + 18, y=rc.y + 48)
 
     surf.set_clip(prev_clip)
     max_s = _fpl_max_scroll(len(wps))
@@ -16427,12 +16440,9 @@ def fpl_hit(x, y):
     ap = disp.get("approach") or {}
     legs = ap.get("legs") or []
     if wps and legs and _approach_phase() != "none":
-        lbx, lby, lbw, lbh = _fpl_row_rect(len(wps) - 1)
-        hy = lby + lbh + 6
-        rh = 28
         for k in range(len(legs)):
-            ry = hy + 22 + k * (rh + 3)
-            if lbx + 40 <= x <= lbx + lbw and ry <= y <= ry + rh:
+            rx, ry, rw, rh = _fpl_appr_row_rect(k)
+            if rx <= x <= rx + rw and ry <= y <= ry + rh:
                 return ("appr_legmenu", k)
     return (None, None)
 
