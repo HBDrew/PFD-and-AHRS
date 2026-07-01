@@ -16,7 +16,7 @@ canonical, and which to use as the revival baseline.
 | 1 | Vizion 380 (mixed) | `TT AP Sources` | none (loose) | ~A.43 / 2.44 era | ~2010–11 | VZ380 Flat, Round | GPS NMEA, ARINC-429, CDI |
 | 2 | **Vizion 380** (experimental) | `vizion380 VZ15` | **git** | **VZ.15** | 2015-03-17 | VZ380 Flat, Round | + SkyView, Xavion |
 | 3 | **PMA Vizion** (certified) | `vizion2hc12` (PV.40) | **git** | **PV.40** | 2019-05-07 | Vizion2 Flat, Round | + **Garmin G5, G3X, Aspen** |
-| 4 | Sorcerer | — | — | *pending* | — | — | — |
+| 4 | **Sorcerer / DFC gen2** | `Sorcerer_2` + `sorcerer_git` | **git** | **V3.66** | 2015-11-19 | Sorcerer, Sorcerer NG, DF-II (flat/round/tall ±ng), Model 100, RV-10, Sky Pilot (flat/round/tall) | GPS, ARINC, CDI |
 | 5 | Gemini | — | — | *pending* | — | — | — |
 
 **All three received drops share the same engine** (`DFCMain/DFC_IRQ/p20Hz/
@@ -64,6 +64,34 @@ reference, supersede with Drop 2/3 where they differ.
   behavior"*) — an experimental WIP, **not** the release. Analyze the `pv.40`
   branch, not the loose working-tree files.
 
+## Drop 4 — `Sorcerer_2` + `sorcerer_git` (DFC gen2 multi-product)
+
+- The big **multi-target "gen2"** CodeWarrior project. `Sorcerer_2` is the working
+  tree; `sorcerer_git` is its `.git` history (they pair).
+- **Git** (in `sorcerer_git`): branches `master`, `364` (checked out),
+  `Production`, `3.66`. History `3.60 → 3.61 → 3.62/A.62 → 3.63/A.63/B.63/C.63 →
+  3.64` (2014-03-31 batch) → 2015 work (virtual gyro for new gyro model, track
+  rollout rework, autocalibrate, servo reverses, new VNAV) → **V3.66 released**
+  (`26a3e83`, 2015-11-19), tagged in-message *"last software to work with old
+  hardware."*
+- **Targets** (`Sources/` + `dfc_gen2_Data/`): **Sorcerer** (PRODUCT_ID 22, "no
+  CAN hardware"), **Sorcerer NG** (next-gen), **DF-II** flat/round/tall and `_ng`
+  variants, **Model 100**, **RV-10**, **Sky Pilot** flat/round/tall.
+- This is the direct descendant of Drop 1's DF-II/Sorcerer/Model-100/RV-10 family —
+  the legacy experimental multi-product line, frozen at V3.66.
+- ⚠ Working tree checked out on branch **`364`**; canonical release is **`master`/
+  `3.66`** (`26a3e83`). Note "NG" targets imply a new-gyro/CAN hardware variant.
+
+---
+
+## Baseline decision
+
+See **[`BASELINE_COMPARISON_PV40_vs_VZ15.md`](BASELINE_COMPARISON_PV40_vs_VZ15.md)**
+— structured PV.40 vs VZ.15 diff. **Verdict: fork PV.40 (`pv.40`)** — newest, adds
+the `EFISTYPE` interface selector + AEP/ASPEN/EXT_ALT modes + more ARINC/CAN/Aspen,
+shares the engine + envelope. VZ.15 kept as experimental cross-reference (and for
+its richer audio/`Talker`).
+
 ---
 
 ## Lineage / timeline
@@ -71,8 +99,9 @@ reference, supersede with Drop 2/3 where they differ.
 ```
 2010–11  Drop 1  TT AP Sources        A.43 / 2.44        (spec v0.1 baseline)
    |     (SkyPilot Cessna cert branch diverges at v2.37, 2010)
+2014–15  Drop 4  Sorcerer/DFC gen2    3.60 → V3.66       legacy multi-product; "last for old hw"
 2014–15  Drop 2  Vizion 380 VZ15      VZ.08 → VZ.15      + SkyView, Xavion
-2017–19  Drop 3  PMA Vizion PV.40     PV.30 → PV.40      + G5, G3X, Aspen  ← newest
+2017–19  Drop 3  PMA Vizion PV.40     PV.30 → PV.40      + G5, G3X, Aspen, EFISTYPE  ← BASELINE
 ```
 
 ## Recommended baseline for the revival
@@ -90,7 +119,9 @@ reference, supersede with Drop 2/3 where they differ.
 
 ## Open items
 
-- [ ] Receive **Sorcerer** and **Gemini** drops; add rows + detail.
+- [x] Baseline decision: **PV.40** (`pv.40`) — see comparison doc.
+- [x] Sorcerer/gen2 received (Drop 4, V3.66).
+- [ ] Receive **Gemini** drop; add row + detail.
 - [ ] Decide whether to **vendor these trees into the repo** (they carry their own
       `.git` + build artifacts; IP/licensing owner-confirmed) or keep them
       external and cite by version.
