@@ -49,7 +49,7 @@ def wms_url(bbox, width, height, time_iso=None):
         "format": "image/png", "transparent": "true",
     }
     if time_iso:
-        q["time"] = time_iso
+        q["TIME"] = time_iso     # uppercase — IEM's CGI keys on TIME exactly
     return _WMS + "?" + urllib.parse.urlencode(q)
 
 

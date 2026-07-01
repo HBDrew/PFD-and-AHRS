@@ -6952,31 +6952,63 @@ def _wxloop_available():
     return internet or _wxloop.has_fisb()
 
 
-def _wxloop_start():
-    """Open playback: build the timeline; if internet radar is usable, pull the
-    last 60 min from the WMS-T archive in the background for the current view."""
+# Session cache of fetched WMS frames — archived radar for a given time+area is
+# immutable, so we never re-pull one we already have.  Keyed by quantised view.
+_wxloop_cache = {}                     # (qlat, qlon, qrad, iso) -> (png, bbox)
+_WXLOOP_CACHE_MAX = 96
+
+
+def _wxloop_iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:00Z", time.gmtime(t))
+
+
+def _wxloop_qview():
+    """Quantised (lat, lon, radius) so repeated opens near the same spot share a
+    bbox — max cache reuse, consistent overlay during playback."""
     lat, lon, radius = _wx_view()
+    return (round(lat / 0.1) * 0.1, round(lon / 0.1) * 0.1,
+            round(radius / 25.0) * 25.0)
+
+
+def _wxloop_start():
+    """Open playback: build the timeline; if internet radar is usable, fill from
+    cache immediately and pull any missing frames from the WMS-T archive."""
     wms_ok = (disp["cs"].get("wx_source", "auto") != "radio"
               and _nexrad_render_arg() is not None)
     ts = _wxloop.build(time.time(), wms_ok)
-    if wms_ok and ts:
-        threading.Thread(target=_wxloop_fetch, args=(lat, lon, radius, list(ts)),
-                         daemon=True, name="WxLoopFetch").start()
+    if not (wms_ok and ts):
+        return
+    qlat, qlon, qrad = _wxloop_qview()
+    for i, t in enumerate(ts):
+        hit = _wxloop_cache.get((qlat, qlon, qrad, _wxloop_iso(t)))
+        if hit:
+            _wxloop.set_wms(i, hit)
+    threading.Thread(target=_wxloop_fetch, args=(qlat, qlon, qrad, list(ts)),
+                     daemon=True, name="WxLoopFetch").start()
 
 
-def _wxloop_fetch(lat, lon, radius, ts):
-    """Background: fetch each timeline step's archived WMS frame (newest first)
-    and drop it into the loop."""
+def _wxloop_fetch(qlat, qlon, qrad, ts):
+    """Background: fetch each MISSING timeline frame (newest first) and cache
+    it.  Cached frames are reused, never re-pulled."""
     for i in range(len(ts) - 1, -1, -1):
         if not _wxloop.on:
             return
-        iso = time.strftime("%Y-%m-%dT%H:%M:00Z", time.gmtime(ts[i]))
+        iso = _wxloop_iso(ts[i])
+        ckey = (qlat, qlon, qrad, iso)
+        if ckey in _wxloop_cache:
+            _wxloop.set_wms(i, _wxloop_cache[ckey])
+            continue
         try:
-            png, bbox = _nexrad.fetch_png(lat, lon, radius, max_px=480,
+            png, bbox = _nexrad.fetch_png(qlat, qlon, qrad, max_px=480,
                                           time_iso=iso)
-            _wxloop.set_wms(i, (png, bbox))
         except Exception as e:                                 # noqa: BLE001
             print(f"[WXLOOP] frame {iso} fetch failed: {e}")
+            continue
+        _wxloop_cache[ckey] = (png, bbox)
+        if len(_wxloop_cache) > _WXLOOP_CACHE_MAX:
+            for k in list(_wxloop_cache)[:len(_wxloop_cache) - _WXLOOP_CACHE_MAX]:
+                del _wxloop_cache[k]
+        _wxloop.set_wms(i, (png, bbox))
 
 
 def _wxloop_wms_render_arg():
