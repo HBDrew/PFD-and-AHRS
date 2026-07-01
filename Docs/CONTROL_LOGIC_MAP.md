@@ -65,6 +65,27 @@ These constraints frame every entry in this document. The map exists to make a
 | D3 | **Keep the stepper servo drive.** Inherit the installed plant (stepper + clutch + cable + airframe) and harness/connector. | Required for true drop-in; the output stage ports over largely intact. |
 | D4 | **Talk to anything.** Preserve all existing steering/deviation inputs (RS‑232 NMEA, ARINC‑429, discrete/analog CDI). | Rate-command interoperates with any GPS/EFIS that emits a steering or deviation signal. |
 | D5 | **Preserve the tuned parameter set.** Gains encode years of flight tuning. | The port must carry gains + units forward verbatim, then re-scale deliberately. |
+| D6 | **Ship setup UNLOCKED.** Remove the `EnableSettings == 10` gate — all setup menus directly accessible (via a modern menu, no button-hold handshake). | Baseline is **PV.40**; drop the "secret code." See "Setup-mode access" below. |
+
+**Baseline: PV.40 (`pv.40` branch)** — chosen per
+[`BASELINE_COMPARISON_PV40_vs_VZ15.md`](BASELINE_COMPARISON_PV40_vs_VZ15.md).
+
+### Setup-mode access (the "secret code") — D6
+
+PV.40 gates the advanced setup menus behind a parameter `EnableSettings`
+(EEPROM `$0C`, def. `ENABLESETTINGS`). `DFCMain.asm:887` `enterSetup`:
+
+- Knob pressed → **basic** setup (`EM_OFF`).
+- `EnableSettings == 10` **and** hold **TRK/MODE** → lateral setup (`EM_LAT_FIRST`).
+- `EnableSettings == 10` **and** hold **ALT** → vertical setup (`EM_VERT_FIRST`).
+- `EnableSettings != 10` → locked (`noModeEvent`).
+
+Default builds ship `ENABLESETTINGS = 0` (locked); **RV10 & Cessna-172 (certified)
+ship `= 10` (unlocked from factory)** — hence those units felt "open." `S1_DIAG`
+(diagnostics, `EM_DIAG`) is a separate gate.
+
+**Revival:** delete the `CPD #10 / BNE` gate so setup is always reachable. (To
+unlock a stock PV.40 binary on the bench: write `10` to EEPROM `$0C`.)
 
 Target processing: modern Cortex‑M4F/M7 class MCU (FPU) → retire hand-rolled
 fixed-point and the assembly RTOS in favor of C + float + small RTOS/superloop,
