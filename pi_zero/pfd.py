@@ -3978,7 +3978,25 @@ def handle_event(event, demo_mode):
 
         if mode == "system_setup":
             action = system_setup_hit(x, y)
-            if action == "back":
+            # Any tap that isn't the matching power button disarms a pending
+            # SHUTDOWN/REBOOT confirm.
+            if action not in ("shutdown", "reboot"):
+                disp["sys_pending"] = None
+            if action == "shutdown":
+                if disp.get("sys_pending") == "shutdown":
+                    disp["sys_pending"] = None
+                    _system_power("poweroff")
+                else:
+                    disp["sys_pending"] = "shutdown"
+                    disp["sys_pending_t"] = time.monotonic()
+            elif action == "reboot":
+                if disp.get("sys_pending") == "reboot":
+                    disp["sys_pending"] = None
+                    _system_power("reboot")
+                else:
+                    disp["sys_pending"] = "reboot"
+                    disp["sys_pending_t"] = time.monotonic()
+            elif action == "back":
                 disp["mode"] = "setup"
             elif action == "terrain_data":
                 disp["mode"] = "terrain_data"
@@ -5185,7 +5203,7 @@ _ss_drag = None
 _SS_DRAG_THRESHOLD = 8     # px before tap becomes drag
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
     "ahrs_setup":         7,
-    "system_setup":       9,
+    "system_setup":       10,   # +1 row for the SHUTDOWN / REBOOT power buttons
     "connectivity_setup": 9,
     "flight_profile":     8,
     "ahrs_firmware":      5,
@@ -9022,6 +9040,29 @@ _SYS_MODE_Y    = _SYS_INFO_Y + _SYS_IH + 8        # ENABLE MFD row top
 # ENABLE MFD row directly now.
 _SYS_BTN_Y     = _SYS_MODE_Y + _SS_RH + 8         # action buttons top
 _SYS_BTN_H     = 54
+# Power buttons (SHUTDOWN / REBOOT) are arm-to-confirm: first tap arms (shows
+# CONFIRM), a second tap within this window executes — a stray tap can't halt
+# the panel in flight.
+_SYS_CONFIRM_S = 4.0
+
+
+def _system_power(action):
+    """Flush settings, then halt or reboot the host via `sudo -n systemctl
+    poweroff|reboot` (the setup script installs a NOPASSWD sudoers drop-in for
+    exactly these two).  Non-interactive so it can't hang on a password."""
+    try:
+        _settings.flush()
+    except Exception as e:
+        print(f"[PFD] settings flush before {action} failed: {e}")
+    cmd = {"poweroff": ["sudo", "-n", "systemctl", "poweroff"],
+           "reboot":   ["sudo", "-n", "systemctl", "reboot"]}.get(action)
+    if not cmd:
+        return
+    try:
+        subprocess.Popen(cmd)
+        print(f"[PFD] {action} requested")
+    except Exception as e:
+        print(f"[PFD] {action} failed: {e}")
 
 
 def _sys_data_tile(surf, bx, by, bw, bh, label, sub, active=True):
@@ -9104,15 +9145,29 @@ def draw_system_setup(surf):
     _seg_btn(surf, rx,              ry, btn_w_m, btn_h_m, "OFF", not enabled)
     _seg_btn(surf, rx+btn_w_m+gap_m, ry, btn_w_m, btn_h_m, "ON",  enabled)
 
+    # Auto-disarm a stale power-confirm (armed then left untouched).
+    if (disp.get("sys_pending")
+            and time.monotonic() - disp.get("sys_pending_t", 0.0) > _SYS_CONFIRM_S):
+        disp["sys_pending"] = None
+
     # (Data-download tiles moved to the DATA & MAPS setup page.)
     half_w = (bw - 10) // 2
-    # Layout: AHRS FIRMWARE (full-width), SIMULATOR+RESET (half-width), QUIT
-    sim_y  = btn_y + _SYS_BTN_H + 10
-    quit_y = sim_y + _SYS_BTN_H + 10
+    # Layout: AHRS FIRMWARE (full), SIMULATOR+RESET (half), QUIT, then the
+    # SHUTDOWN / REBOOT power row (arm-to-confirm).
+    sim_y   = btn_y + _SYS_BTN_H + 10
+    quit_y  = sim_y + _SYS_BTN_H + 10
+    power_y = quit_y + _SYS_BTN_H + 10
     _action_btn(surf, bx,           btn_y,  bw,     _SYS_BTN_H, "AHRS FIRMWARE",  "normal")
     _action_btn(surf, bx,           sim_y,  half_w, _SYS_BTN_H, "SIMULATOR",       "ok")
     _action_btn(surf, bx+half_w+10, sim_y,  half_w, _SYS_BTN_H, "RESET DEFAULTS",  "danger")
     _action_btn(surf, bx,           quit_y, bw,     _SYS_BTN_H, "QUIT PFD",        "danger")
+    _pending = disp.get("sys_pending")
+    sd_lbl = "TAP AGAIN — SHUT DOWN" if _pending == "shutdown" else "⏻ SHUTDOWN"
+    rb_lbl = "TAP AGAIN — REBOOT"    if _pending == "reboot"   else "↻ REBOOT"
+    _action_btn(surf, bx,           power_y, half_w, _SYS_BTN_H, sd_lbl,
+                "warn" if _pending == "shutdown" else "danger")
+    _action_btn(surf, bx+half_w+10, power_y, half_w, _SYS_BTN_H, rb_lbl,
+                "warn" if _pending == "reboot" else "normal")
     surf.set_clip(_prev_clip)
 
 
@@ -9133,8 +9188,9 @@ def system_setup_hit(x, y):
         if rx+btn_w_m+gap_m <= x <= rx+2*btn_w_m+gap_m:
             return "set:mfd_enabled:on"
     half_w = (bw - 10) // 2
-    sim_y  = _SYS_BTN_Y + _SYS_BTN_H + 10
-    quit_y = sim_y       + _SYS_BTN_H + 10
+    sim_y   = _SYS_BTN_Y + _SYS_BTN_H + 10
+    quit_y  = sim_y       + _SYS_BTN_H + 10
+    power_y = quit_y      + _SYS_BTN_H + 10
     # AHRS FIRMWARE (full-width, top button row)
     if _SYS_BTN_Y <= y <= _SYS_BTN_Y + _SYS_BTN_H and bx <= x <= bx + bw:
         return "ahrs_firmware"
@@ -9147,6 +9203,12 @@ def system_setup_hit(x, y):
     # QUIT PFD (full-width)
     if quit_y <= y <= quit_y + _SYS_BTN_H and bx <= x <= bx + bw:
         return "quit"
+    # SHUTDOWN + REBOOT (half-width, arm-to-confirm)
+    if power_y <= y <= power_y + _SYS_BTN_H:
+        if bx <= x <= bx + half_w:
+            return "shutdown"
+        if bx + half_w + 10 <= x <= bx + half_w + 10 + half_w:
+            return "reboot"
     return None
 
 

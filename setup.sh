@@ -95,6 +95,17 @@ systemctl daemon-reload
 systemctl enable pfd.service
 echo "  → pfd.service installed and enabled"
 
+# Let the (non-root) PFD user halt / reboot the Pi from the SYSTEM screen's
+# SHUTDOWN / REBOOT buttons — a graceful stop so an SD-booted Pi isn't only
+# ever power-pulled.  Scoped to exactly these two commands, nothing else.
+cat > /etc/sudoers.d/pfd-power << SUDOEOF
+$RUN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot
+SUDOEOF
+chmod 440 /etc/sudoers.d/pfd-power
+visudo -cf /etc/sudoers.d/pfd-power >/dev/null 2>&1 \
+    && echo "  → pfd-power sudoers rule installed (SHUTDOWN / REBOOT buttons)" \
+    || { echo "  ! pfd-power sudoers rule invalid — removing"; rm -f /etc/sudoers.d/pfd-power; }
+
 echo "[7/9] Disabling ModemManager (boots hang when AHRS USB-serial is plugged in)…"
 # ModemManager probes any USB CDC-ACM device on appearance, sending AT commands.
 # The Pico W AHRS doesn't respond, MM blocks for ~90 s, and the whole boot

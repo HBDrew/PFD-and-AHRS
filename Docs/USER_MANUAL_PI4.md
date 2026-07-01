@@ -674,9 +674,11 @@ All choices persist in `data/settings.json`.
 
 ![System screen](../pi4/previews/preview_setup_system.png)
 
-Version info, terrain/obstacle status, DIAGNOSTICS (future), RESET DEFAULTS, FLIGHT SIMULATOR.
+Version info, terrain/obstacle status, DIAGNOSTICS (future), RESET DEFAULTS, FLIGHT SIMULATOR, and the **SHUTDOWN / REBOOT** power buttons.
 
-All configurable settings — V-speeds, tail number, units, backlight brightness, colour scheme, heading-source mode, Wi-Fi SSID, airport display filters, and the runway/centerline overlay toggles — persist across power cycles in `pi4/data/settings.json`. The file is written atomically on a background thread with a 1.5 s debounce, so rapid successive taps produce a single write with no UI stutter. The Wi-Fi password is intentionally *not* stored — it must be re-entered when joining a new network.
+**SHUTDOWN / REBOOT (graceful stop).** The bottom button row halts or reboots the Pi cleanly instead of pulling power — which is what protects the SD card from corruption. Both are **arm‑to‑confirm**: the first tap turns the button amber and changes its label to *TAP AGAIN*; a second tap within 4 seconds executes (a single stray tap does nothing, and the arm auto‑clears after 4 s). SHUTDOWN flushes settings, halts the OS, and leaves the Pi in a safe powered‑off state — **wait for the activity LED to stop, then cut power.** REBOOT restarts it. (These need the small sudoers rule the setup script installs; on an already‑set‑up Pi, run `sudo bash tools/install_shutdown_sudoers.sh` once. A hardware power button can also be wired — see the README.)
+
+All configurable settings — V-speeds, tail number, units, backlight brightness, colour scheme, heading-source mode, Wi-Fi SSID, airport display filters, and the runway/centerline overlay toggles — persist across power cycles in `pi4/data/settings.json`. The file is written atomically (temp‑file + `fsync` + rename) on a background thread with a 1.5 s debounce, so rapid successive taps produce a single durable write with no UI stutter, and a power pull can't leave a truncated settings file. The Wi-Fi password is intentionally *not* stored — it must be re-entered when joining a new network.
 
 ---
 
@@ -1608,6 +1610,7 @@ Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pi
 | **Set callout volume** | Setup → DISPLAY → ALERT VOLUME − / + |
 | **Recapture SDP zero** | Setup → AHRS / SENSORS → SDP ZERO → CAPTURE (aircraft stationary, pitot capped) |
 | **Mute TAWS callouts for 2 minutes** | Setup → DISPLAY → TERRAIN INHIBIT → INHIBIT (auto-clears after 120 s) |
+| **Shut down / reboot cleanly** | Setup → SYSTEM → SHUTDOWN / REBOOT (tap once to arm, tap again within 4 s) |
 | Start sim | Setup → System → FLIGHT SIMULATOR → START |
 | SIM controls | Tap red SIM ✕ button at AI top-centre |
 | Pause / resume sim | SIM controls → PAUSE / RESUME |

@@ -8,6 +8,32 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### GRACEFUL-SHUTDOWN  Clean shutdown/reboot + durable settings (SD protection)
+Status: **DONE (pi4 + pi_zero) — code + setup + docs landed** (part 1 of 2)
+An SD-booted Pi that's always power-pulled will eventually corrupt its card.
+Part 1 (this change) adds a graceful stop + hardens the one file the app writes:
+  - **SHUTDOWN / REBOOT buttons** on the SYSTEM setup page (both displays),
+    arm-to-confirm (first tap arms → "TAP AGAIN", 2nd tap within 4 s executes,
+    auto-disarm after 4 s) so a stray tap can't halt the panel in flight.
+    `_system_power()` flushes settings then `sudo -n systemctl poweroff|reboot`.
+  - **sudoers drop-in** (`/etc/sudoers.d/pfd-power`) scoped to exactly those two
+    commands for the non-root PFD user — added to setup.sh / pi4/setup.sh /
+    pi_zero/setup.sh, plus `tools/install_shutdown_sudoers.sh` for existing
+    installs.
+  - **Durable settings write**: `shared/settings.py::save_from` now does
+    temp-file → `fsync(file)` → atomic `os.replace` → `fsync(dir)`, so a power
+    pull can't leave a truncated `settings.json`.
+  - Docs: README "Shutting down" (incl. optional `dtoverlay=gpio-shutdown`
+    hardware button), USER_MANUAL_PI4 §13, USER_MANUAL_ZERO §13.
+  - pi_zero SYSTEM drag-scroll clamp 9→10 for the extra button row.
+Part 2 (**TODO — do at KOSH**): **read-only root filesystem (overlayfs)** so a
+power pull can NEVER corrupt the OS, with a small writable partition for
+settings + downloaded nav/terrain data and a ground-only "maintenance" toggle
+to unlock writes for downloads. This is the real habit-free fix; the buttons
+above only help if you remember to use them.
+No firmware change. Files: `pi4/pfd.py`, `pi_zero/pfd.py`, `shared/settings.py`,
+`setup.sh`, `pi4/setup.sh`, `pi_zero/setup.sh`, `tools/install_shutdown_sudoers.sh`.
+
 ### UI-AHRS-ZERO-VS-TRIM-SPLIT  Separate the AHRS zero from the display zero
 Status: **DONE (pi4 + pi_zero) — code + manuals landed**
 Pilot note: "confusing to have an AHRS Zero and a display zero in the same

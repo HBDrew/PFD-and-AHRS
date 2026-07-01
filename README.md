@@ -487,6 +487,27 @@ The `pi4/setup.sh` and `setup.sh` installers both create and enable a `pfd.servi
 sudo bash tools/install_autostart.sh
 ```
 
+---
+
+## Shutting down (don't just pull power)
+
+An SD-booted Pi can corrupt its card if power is cut mid-write. The **SYSTEM** setup screen now has **SHUTDOWN** and **REBOOT** buttons (arm-to-confirm: tap once to arm, again within 4 s to execute). SHUTDOWN halts the OS cleanly — **wait for the green activity LED to stop blinking, then cut power.** Settings are also written durably (temp-file + `fsync` + atomic rename), so a hard pull can't truncate `settings.json`.
+
+The setup scripts install a scoped sudoers rule so the non-root PFD user can run *only* `systemctl poweroff` / `reboot`. On a Pi that was set up before this feature, install just that rule:
+
+```bash
+sudo bash tools/install_shutdown_sudoers.sh
+```
+
+**Optional hardware power button.** Wire a momentary switch across a GPIO and GND and add an overlay to `/boot/firmware/config.txt` — it halts the Pi cleanly on a short press *and* wakes it from halt:
+
+```
+# GPIO3 (pin 5) is the default; it also has hardware wake-from-halt
+dtoverlay=gpio-shutdown
+```
+
+A more robust "cut the master and walk away" option — read-only root filesystem so a power pull can never corrupt the OS — is planned; see `Docs/BUGS_AND_TODO.md`.
+
 This writes a clean unit, reloads systemd, and starts the service. Common control commands:
 
 ```bash

@@ -144,11 +144,28 @@ def save_from(disp: dict, path: str) -> bool:
     if not path:
         return False
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        d = os.path.dirname(path) or "."
+        os.makedirs(d, exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(_extract(disp), f, indent=2, sort_keys=True)
+            # Durability: flush the file's data to disk BEFORE the rename, so a
+            # power pull the instant after os.replace() can't leave a
+            # zero-length / half-written settings file (the classic ext4
+            # "rename gives you an empty file after a crash" trap).  Cheap — a
+            # settings write is a few KB, at most once every ~1.5 s.
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
+        # fsync the directory too so the rename itself is durable across a cut.
+        try:
+            dfd = os.open(d, os.O_DIRECTORY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass   # some filesystems don't support directory fsync
         return True
     except OSError as e:
         print(f"[settings] Failed to save {path}: {e}")

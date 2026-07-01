@@ -507,7 +507,9 @@ Issues a one-shot HTTP GET to the AHRS URL and reports success/failure. Use afte
 
 ![System screen](../pi_zero/previews/preview_setup_system.png)
 
-Shows firmware version, build date, display resolution, platform, terrain/obstacle status. Buttons for DIAGNOSTICS (future), RESET DEFAULTS, and FLIGHT SIMULATOR.
+Shows firmware version, build date, display resolution, platform, terrain/obstacle status. Buttons for DIAGNOSTICS (future), RESET DEFAULTS, FLIGHT SIMULATOR, and **SHUTDOWN / REBOOT**.
+
+**SHUTDOWN / REBOOT (graceful stop).** Halts or reboots the Pi cleanly instead of pulling power, which protects the SD card. Both are **arm-to-confirm**: first tap turns the button amber (*TAP AGAIN*), a second tap within 4 s executes; the arm auto-clears after 4 s. After SHUTDOWN, wait for the activity LED to stop, then cut power. (Scroll down if the buttons are below the fold. Needs the sudoers rule the setup script installs; on an older install run `sudo bash tools/install_shutdown_sudoers.sh` once.)
 
 ### ENABLE MFD
 
