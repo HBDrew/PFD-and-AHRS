@@ -21,7 +21,12 @@ import time
 import urllib.parse
 import urllib.request
 
-_WMS = "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi"
+# IEM serves the CURRENT mosaic from n0q.cgi (it ignores TIME); archived,
+# time-addressable frames come from the "-t" time-machine variant.  We hit the
+# time endpoint whenever a TIME is requested (loop playback), the plain one for
+# the live overlay.
+_WMS   = "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi"
+_WMS_T = "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi"
 _UA = "PFD-and-AHRS/nexrad (experimental EFB; contact via repo)"
 _NM_PER_DEG = 60.0
 
@@ -48,9 +53,11 @@ def wms_url(bbox, width, height, time_iso=None):
         "width": str(int(width)), "height": str(int(height)),
         "format": "image/png", "transparent": "true",
     }
+    base = _WMS
     if time_iso:
         q["TIME"] = time_iso     # uppercase — IEM's CGI keys on TIME exactly
-    return _WMS + "?" + urllib.parse.urlencode(q)
+        base = _WMS_T            # time-machine endpoint honours the archive
+    return base + "?" + urllib.parse.urlencode(q)
 
 
 def image_size(bbox, max_px=480):
