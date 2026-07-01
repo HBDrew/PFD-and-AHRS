@@ -8,21 +8,35 @@ notes with enough context to pick it up cold.
 
 ## Open
 
-### AHRS-LEVEL  One-tap flight-zero (LEVEL) button on the AHRS page
-Status: **DONE (pi4 + pi_zero) — code + manuals landed; verify in flight**
-Branch `claude/ahrs-level-traffic-dedup`. Adds a green **LEVEL** button on the
-PITCH TRIM row of the AHRS / SENSORS screen — a Sentry/ForeFlight-style cage.
-`_flight_zero()` captures the current filter attitude (`disp['pitch']` /
-`['roll']`, the value rendered *before* the Pi-local trim is added) and writes
-`ss['pitch_trim'] = -pitch`, `ss['roll_trim'] = -roll`, clamped to ±15°, so the
-shown horizon **and** the SVT terrain (both consume the trimmed pitch/roll)
-snap to level. Instant, per-display, reversible from the ± steppers; the AHRS
-firmware trim is untouched. This is the supported replacement for the
-encrypted-Sentry LEVEL experiment reverted earlier (see FOREFLIGHT-0X65 notes).
-Files: `pi4/pfd.py`, `pi_zero/pfd.py` (`_level_btn_rect` / `_flight_zero` +
-draw/hit/action on `ahrs_setup`). Docs: USER_MANUAL_PI4 §AHRS, USER_MANUAL_ZERO.
-Open: confirm on the bench/first flight that a level-cruise tap zeros both axes
-and that the ±15° clamp is roomy enough for the real mounting offset.
+### AHRS-LEVEL  One-tap AHRS flight-zero (LEVEL) button on the AHRS page
+Status: **DONE (pi4 + pi_zero + firmware) — code + tests + manuals landed; verify in flight**
+Branch `claude/ahrs-level-traffic-dedup`. Green **LEVEL** button on the PITCH
+TRIM row of the AHRS / SENSORS screen — a Sentry/ForeFlight-style cage that
+re-zeros **the AHRS itself**, NOT the display (per explicit pilot requirement:
+"MUST set the ZERO for the gyro/accelerometers, not a display zero").
+`_flight_zero()` captures the current body attitude (`disp['pitch']`/`['roll']`)
+and folds it into the AHRS **input-side axis alignment** (`pitch_align` /
+`roll_align` — the raw gyro/accel/mag rotation applied BEFORE the Mahony
+filter, `_apply_axis_align` in firmware/main.py), pushed over `$ALIGN` (USB)
+with an HTTP `/align` fallback (new firmware endpoint) for WiFi-only links.
+Persisted in AHRS flash (`_save_orient`), seen by all displays, and it also
+kills the mounting-tilt yaw→pitch/roll coupling that makes a small error
+compound in turns — the actual cause of "AHRS 100% unusable".
+  - Sign rule (safety-critical, wrong sign DOUBLES the error):
+    `align_new = clamp(align_old + sign·body, ±10°)`, `sign = -1 normal / +1
+    inverted`. The inverted flip is because align acts on RAW sensor data while
+    `_apply_remap` sign-flips the Euler output for inverted mounting. Verified
+    to converge for all 4 connectors × both mountings in
+    `firmware/test_flight_zero_sign.py` (replicates the main.py align+remap
+    math). LEVEL also zeros any leftover display-side trim.
+Files: `pi4/pfd.py`, `pi_zero/pfd.py` (`_level_btn_rect`, `_flight_zero`,
+`_push_align_to_pico` HTTP fallback, draw/hit/action on `ahrs_setup`);
+`firmware/web_server.py` (`/align` endpoint). Docs: USER_MANUAL_PI4 §AHRS,
+USER_MANUAL_ZERO. Supersedes the encrypted-Sentry LEVEL experiment reverted
+earlier (see FOREFLIGHT-0X65 notes) — now on the WT901 AHRS where it works.
+Open: bench/first-flight confirm a level-cruise tap zeros both axes and that
+±10° is roomy enough for the real mounting offset (raise the firmware ALIGN
+clamp if not).
 
 ### TRAFFIC-OWNSHIP-ECHO  Suppress ownship echo on the internet traffic feed
 Status: **DONE (pi4 + pi_zero) — code + tests + manuals landed**

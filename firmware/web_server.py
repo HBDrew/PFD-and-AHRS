@@ -246,6 +246,40 @@ async def _handle_trim(writer, params, state):
     await writer.wait_closed()
 
 
+async def _handle_align(writer, params, state):
+    """
+    GET /align?pitch=X&roll=Y
+    Input-side axis alignment (raw gyro/accel/mag rotation applied BEFORE the
+    Mahony filter).  Same offsets settable over USB serial via $ALIGN; this
+    HTTP route lets a WiFi-only display (Pi Zero on the AP) push them too — the
+    display's LEVEL / flight-zero button uses it to re-reference the sensors so
+    the current orientation reads level.  Range: ±10° each.  Persists to flash
+    via the _save_orient flag (same store as orientation/mounting/$ALIGN).
+    """
+    changed = False
+    for pkey, skey in (('pitch', 'pitch_align'), ('roll', 'roll_align')):
+        if pkey in params:
+            try:
+                v = float(params[pkey])
+                if v < -10.0:
+                    v = -10.0
+                elif v > 10.0:
+                    v = 10.0
+                state[skey] = round(v, 2)
+                changed = True
+            except ValueError:
+                pass
+    if changed:
+        state['_save_orient'] = True
+    body = b'OK'
+    await _send_headers(writer, '200 OK', 'text/plain',
+                        f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+    writer.write(body)
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def _handle_magcal(writer, params, state):
     """
     GET /magcal?action=get          → JSON {corrections:[...], active:bool}
@@ -456,6 +490,8 @@ async def _client_handler(reader, writer, state):
         await _handle_baro(writer, params, state)
     elif path == '/trim':
         await _handle_trim(writer, params, state)
+    elif path == '/align':
+        await _handle_align(writer, params, state)
     elif path == '/magcal':
         await _handle_magcal(writer, params, state)
     elif path == '/magoff':

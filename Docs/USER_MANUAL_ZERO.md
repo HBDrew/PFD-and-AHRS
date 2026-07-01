@@ -424,8 +424,8 @@ Corrects horizon pitch on level ground. ±0.1° steps. The green **LEVEL** butto
 ### Roll trim
 Corrects horizon tilt. ±0.1° steps.
 
-### LEVEL (flight zero)
-Tap **LEVEL** (on the PITCH TRIM row) while straight-and-level to capture the current attitude as the new zero for **both** pitch and roll — the Sentry/ForeFlight "Level" cage. The horizon and synthetic-vision terrain snap level. Use it when a full ground level wasn't possible and a small mounting offset has walked the horizon off. It's the display's own pitch/roll trim (instant, no AHRS round-trip, reversible with the ± steppers), clamped to ±15°, and set per-display; the AHRS firmware trim is left alone.
+### LEVEL (AHRS flight zero)
+Tap **LEVEL** (on the PITCH TRIM row) while straight-and-level to re-zero the **AHRS itself** to the current attitude — the Sentry/ForeFlight "Level" cage. Unlike the ± trim steppers (which are display-side), LEVEL folds the captured attitude into the AHRS **input-side axis alignment** (the raw gyro/accelerometer rotation applied *before* the attitude filter). It's pushed to the AHRS (USB `$ALIGN`, or HTTP `/align` on a WiFi-only link), **persisted in the AHRS flash**, and seen by every display — and because it fixes the mounting tilt at the sensor input, it also kills the yaw-into-pitch/roll coupling that makes a small error compound in turns. Clamped to the AHRS's ±10° alignment range; a bigger residual means the ORIENTATION/MOUNTING is wrong (fix those first). Tapping also clears any leftover display-side trim.
 
 ### Mounting orientation
 **NORMAL** (label up) or **INVERTED** (label down).

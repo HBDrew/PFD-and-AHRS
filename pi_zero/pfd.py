@@ -5606,27 +5606,48 @@ def _level_btn_rect(row_i=0):
 
 
 def _flight_zero():
-    """Flight-zero / 'cage' the AHRS: capture the current attitude as the new
-    level reference so the displayed pitch & roll read 0 from here on — the
-    Sentry/ForeFlight 'Level' button.  This re-zeros the whole attitude
-    solution (the AI horizon AND the synthetic-vision terrain both shift with
-    the trim), not just the drawn horizon bar.
+    """Flight-zero / 'cage' the AHRS at the SENSOR level — the Sentry/ForeFlight
+    'Level' button.  Captures the current attitude and folds it into the AHRS
+    **input-side axis alignment** (`pitch_align` / `roll_align` — the rotation
+    applied to the raw gyro / accelerometer / magnetometer BEFORE the Mahony
+    filter).  This is a true AHRS zero: it re-references the accelerometers so
+    the present orientation becomes the sensor's own 'level', it's pushed to
+    the Pico over `$ALIGN` and persisted in the AHRS flash, and every display
+    sees the same corrected attitude.  It is NOT a per-display cosmetic offset.
+    Because it corrects the mounting tilt at the sensor input, it also removes
+    the yaw→pitch/roll coupling that makes a small static error compound in
+    turns (the very thing that made the AHRS unusable).
 
-    Realised as the Pi-local pitch/roll trim: instant, no AHRS-link round-trip,
-    and reversible from the trim steppers.  disp['pitch']/['roll'] are the
-    filter output the display renders BEFORE this local trim is added, so
-    setting trim = -attitude drives the shown value to zero.  Clamped to a sane
-    cage range so a capture snatched mid-maneuver can't slew the horizon
-    off-scale.  The firmware trim (a permanent ground calibration) is left
-    untouched."""
-    p = float(disp.get("pitch", 0.0))
-    r = float(disp.get("roll", 0.0))
-    disp["ss"]["pitch_trim"] = max(-15.0, min(15.0, round(-p, 1)))
-    disp["ss"]["roll_trim"]  = max(-15.0, min(15.0, round(-r, 1)))
+    Math: the filter's body-frame output is (mounting_error + sign·align), so
+    to drive it to zero we set  align_new = align_old − sign·current_body_att.
+    The align rotation is applied to the RAW sensor vectors (before the Euler
+    remap), so an INVERTED mounting — which the remap sign-flips on output —
+    reverses the align→body sign; hence `sign` below (−1 normal, +1 inverted).
+    Verified to converge for all four connector orientations × both mountings.
+    disp['pitch']/['roll'] are that body attitude (pre Pi-local-trim);
+    subtracting them also absorbs any firmware output trim.  Clamped to the
+    firmware's ±10° alignment range."""
+    cur_pa = float(disp.get("pitch_align", disp["ss"].get("pitch_align", 0.0)))
+    cur_ra = float(disp.get("roll_align",  disp["ss"].get("roll_align",  0.0)))
+    body_p = float(disp.get("pitch", 0.0))
+    body_r = float(disp.get("roll", 0.0))
+    mounting = str(disp.get("mounting")
+                   or disp.get("ss", {}).get("mounting") or "normal")
+    sign = -1.0 if mounting == "normal" else 1.0
+    new_pa = max(-10.0, min(10.0, round(cur_pa + sign * body_p, 1)))
+    new_ra = max(-10.0, min(10.0, round(cur_ra + sign * body_r, 1)))
+    # Reflect immediately so any align read-back shows the pending value; the
+    # Pico echoes the confirmed value back in its next $AHRS broadcast.
+    disp["ss"]["pitch_align"] = new_pa
+    disp["ss"]["roll_align"]  = new_ra
+    # Clear any per-display trim so the sensor-side zero isn't double-counted
+    # on top of a stale display offset.
+    disp["ss"]["pitch_trim"] = 0.0
+    disp["ss"]["roll_trim"]  = 0.0
     _settings.mark_dirty()
-    print(f"[AHRS] flight-zero: captured pitch={p:+.1f}° roll={r:+.1f}° "
-          f"→ trim=({disp['ss']['pitch_trim']:+.1f},"
-          f"{disp['ss']['roll_trim']:+.1f})")
+    _push_align_to_pico(new_pa, new_ra)
+    print(f"[AHRS] flight-zero → align=({new_pa:+.1f},{new_ra:+.1f}) "
+          f"from body=({body_p:+.1f},{body_r:+.1f})")
 
 _SS_MAG_LABELS = {
     "idle":    ("IDLE",       (100,110,130)),
@@ -5658,7 +5679,7 @@ def draw_ahrs_setup(surf, ss):
     # Row 0: Pitch trim + LEVEL (flight-zero) button.  LEVEL captures the
     # current attitude as the new zero for BOTH axes (Sentry/ForeFlight cage).
     bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM",
-                                  "Horizon offset  ·  LEVEL = flight zero")
+                                  "Horizon offset  ·  LEVEL = AHRS flight zero")
     _trim_stepper(surf, bx, by, bw, bh, ss.get("pitch_trim", 0.0), "pitch_trim")
     _action_btn(surf, *_level_btn_rect(0), "LEVEL", "ok")
 
@@ -6167,20 +6188,32 @@ def _push_magoff_to_pico(offset):
 
 
 def _push_align_to_pico(pitch_align, roll_align):
-    """Send axis-alignment values to the Pico via $ALIGN.  Mirrors the
-    Pi4 helper — USB serial preferred, no HTTP fallback (alignment is
-    only ever pushed alongside a USB-attached cal session)."""
+    """Send axis-alignment values to the Pico via $ALIGN (USB serial) with an
+    HTTP /align fallback, so the flight-zero LEVEL button reaches the AHRS on a
+    WiFi-only link (the Pi Zero's usual path on the Pico W AP) as well as over
+    USB serial."""
     def _worker():
         client = _sse_client
-        if client is None or not hasattr(client, "write"):
-            print("[PFD] align push: no serial client available")
-            return
+        if client is not None and hasattr(client, "write"):
+            try:
+                cmd = f"$ALIGN,{pitch_align:.2f},{roll_align:.2f}\n".encode()
+                client.write(cmd)
+                print(f"[PFD] align sent via serial "
+                      f"({pitch_align:+.2f},{roll_align:+.2f})")
+                return
+            except Exception as e:
+                print(f"[PFD] align serial write failed: {e}")
+        # WiFi-only link — push over HTTP /align instead.
         try:
-            cmd = f"$ALIGN,{pitch_align:.2f},{roll_align:.2f}\n".encode()
-            client.write(cmd)
-            print(f"[PFD] align sent ({pitch_align:+.2f},{roll_align:+.2f})")
+            base = disp.get("cs", {}).get(
+                "ahrs_url", "http://192.168.4.1").rstrip("/")
+            url = f"{base}/align?pitch={pitch_align:.2f}&roll={roll_align:.2f}"
+            with urllib.request.urlopen(url, timeout=3) as resp:
+                resp.read()
+            print(f"[PFD] align sent via HTTP "
+                  f"({pitch_align:+.2f},{roll_align:+.2f})")
         except Exception as e:
-            print(f"[PFD] align serial write failed: {e}")
+            print(f"[PFD] align HTTP push failed: {e}")
 
     threading.Thread(target=_worker, daemon=True, name="AlignPush").start()
 
