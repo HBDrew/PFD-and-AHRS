@@ -253,7 +253,7 @@ async def _handle_align(writer, params, state):
     Mahony filter).  Same offsets settable over USB serial via $ALIGN; this
     HTTP route lets a WiFi-only display (Pi Zero on the AP) push them too — the
     display's LEVEL / flight-zero button uses it to re-reference the sensors so
-    the current orientation reads level.  Range: ±10° each.  Persists to flash
+    the current orientation reads level.  Range: ±15° each.  Persists to flash
     via the _save_orient flag (same store as orientation/mounting/$ALIGN).
     """
     changed = False
@@ -261,10 +261,10 @@ async def _handle_align(writer, params, state):
         if pkey in params:
             try:
                 v = float(params[pkey])
-                if v < -10.0:
-                    v = -10.0
-                elif v > 10.0:
-                    v = 10.0
+                if v < -15.0:
+                    v = -15.0
+                elif v > 15.0:
+                    v = 15.0
                 state[skey] = round(v, 2)
                 changed = True
             except ValueError:

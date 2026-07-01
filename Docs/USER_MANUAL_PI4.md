@@ -251,7 +251,7 @@ While the aircraft is in the corridor the look-ahead terrain / obstacle / pull-u
 
 A `TER INH APR` amber badge appears in the status strip whenever the auto-corridor is gating callouts, so you can see at a glance that the TAWS safety net is currently off and that it's the approach that turned it off (not a stuck manual inhibit). The badge clears the instant the aircraft leaves the corridor or the approach is cancelled.
 
-**Manual TERRAIN INHIBIT**: a pilot-controlled mute on the AHRS / Sensors screen (§11). Tap **INHIBIT** to silence terrain + obstacle + pull-up callouts for **120 seconds**, after which the safety net comes back on automatically. Use it at known false-positive locations (low passes, off-airport landings, charted approaches into airports surrounded by terrain where the auto-corridor doesn't catch it). The status badge `TER INH Xs` appears in the badge strip with the remaining countdown so you can never forget the inhibit is on. A second tap clears the inhibit immediately. Sink-rate also stays armed under manual inhibit.
+**Manual TERRAIN INHIBIT**: a pilot-controlled mute on the DISPLAY setup screen (§10). Tap **INHIBIT** to silence terrain + obstacle + pull-up callouts for **120 seconds**, after which the safety net comes back on automatically. Use it at known false-positive locations (low passes, off-airport landings, charted approaches into airports surrounded by terrain where the auto-corridor doesn't catch it). The status badge `TER INH Xs` appears in the badge strip with the remaining countdown so you can never forget the inhibit is on. A second tap clears the inhibit immediately. Sink-rate also stays armed under manual inhibit.
 
 Requires GPS fix and SRTM tiles (terrain) or FAA obstacle data (obstacles) loaded.
 
@@ -451,6 +451,7 @@ The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and 
 | DISPLAY | **SUN POSITION** | FIXED / REAL | REAL | SVT terrain lighting: FIXED uses a SE mid-morning sun; REAL pulls UTC + GPS lat/lon through the NOAA solar formulas. |
 | DISPLAY | **FLIGHT PATH** | OFF / ON | ON | Flight-path vector (velocity-vector) marker on the AI. See §4. |
 | DISPLAY | **HITS BOXES** | OFF / ON | ON | Highway-in-the-sky approach corridor — the cyan 3D boxes drawn on the AI during an active synthetic approach (§16). Turn off to declutter the AI on approach; the VDI / CDI still work. |
+| DISPLAY | **TERRAIN INHIBIT** | INHIBIT button | (off) | Mute all TAWS callouts (terrain look-ahead, obstacle, pull-up) for 120 s. Sink-rate stays armed — the descent-rate alert still applies even while inhibited. Status row shows the countdown while active; an amber `TER INH Xs` badge also appears in the badge strip. Second tap clears the inhibit early. Auto-clears on timeout. |
 | MAP | **MAP INSET** | OFF / ON + TRK↑ / N↑ | OFF · TRK↑ | Lower-left 2D moving-map inset and its rotation mode. See §17. |
 | MAP | **MAP RANGE** | 1/2/5/10/20/40/80/160 NM · AUTO | 5 NM | Default inset radius; AUTO fits to the active direct-to. |
 | MAP | **WINDS ALT** | 3k / 6k / 9k / 12k / 18k ft | 9k | Winds-aloft level shown on the WND overlay. See §16. |
@@ -478,7 +479,7 @@ The Pi 4 setup script installs `ddcutil` and pre-loads the `i2c-dev` module. If 
 
 ![AHRS setup screen](../pi4/previews/preview_setup_ahrs.png)
 
-Seven rows on this screen, each independent:
+Each row on this screen is independent:
 
 | Row | Control | Default | Notes |
 |-----|---------|---------|-------|
@@ -489,14 +490,14 @@ Seven rows on this screen, each independent:
 
 This is a true **sensor** zero, not a display trim: it folds the captured attitude into the AHRS **input-side axis alignment** (`PITCH ALIGN` / `ROLL ALIGN`), which rotates the raw gyro/accelerometer/magnetometer *before* the attitude filter runs. The new alignment is pushed to the AHRS (over USB `$ALIGN`, or HTTP `/align` on a WiFi link), **persisted in the AHRS flash**, and seen identically by every display. Because it corrects the mounting tilt at the sensor input, it also removes the yaw-into-pitch/roll coupling that makes a small static error *compound in turns* — the failure mode that makes an un-levelled AHRS unusable. Use it whenever you couldn't do a full ground level.
 
-Notes: the correction is clamped to the AHRS's ±10° alignment range (a residual larger than that is a wrong ORIENTATION/MOUNTING, not a trim job — fix those first). Tapping it also clears any leftover display-side PITCH/ROLL TRIM so the zero isn't double-counted. It's reversible from the PITCH ALIGN / ROLL ALIGN steppers, and you can re-tap any time. On a display connected to the AHRS over WiFi only, the push uses the HTTP `/align` endpoint.
+Notes: the correction is clamped to the AHRS's ±15° alignment range (a residual larger than that is a wrong ORIENTATION/MOUNTING, not a trim job — fix those first). Tapping it also clears any leftover display-side PITCH/ROLL TRIM so the zero isn't double-counted. It's reversible from the PITCH ALIGN / ROLL ALIGN steppers, and you can re-tap any time. On a display connected to the AHRS over WiFi only, the push uses the HTTP `/align` endpoint.
 | **MAGNETOMETER** | CALIBRATE button | (idle) | Opens the 8-point compass-cal wizard (N / NE / E / SE / S / SW / W / NW). Cal is stored *on the AHRS* in flash, so both Pi 4 and Pi Zero displays read the same calibrated heading off the SSE / USB broadcast. Status row shows `max \|Δ\| X.X°` once a cal is committed. |
 | **ORIENTATION** | FWD / LEFT / RIGHT / AFT | RIGHT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. |
 | **MOUNTING** | NORMAL / INVERTED | NORMAL | Whether the AHRS is right-side-up or upside-down. Independent of orientation. |
 | **HEADING SOURCE** | MAG / TRK / AUTO | AUTO | Magnetometer, GPS ground track (via complementary filter), or auto-select (TRK in motion, MAG when stationary). |
 | **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | IAS SENSOR | IAS from the SDP33-1500Pa differential-pressure sensor (default when `airdata_ok`). Forced fallback to GPS groundspeed when the sensor is unhealthy or the pilot pins it manually. |
 | **SDP ZERO** | CAPTURE button | (idle) | Capture the current differential-pressure reading as the in-flight zero offset. Aircraft must be stationary with no airflow over the pitot. Status row shows `LAST ZERO h:mm ago`. |
-| **TERRAIN INHIBIT** | INHIBIT button | (off) | Mute all TAWS callouts (terrain look-ahead, obstacle, pull-up) for 120 s. Sink-rate stays armed — the descent-rate alert still applies even while inhibited. Status row shows the countdown while active; an amber `TER INH Xs` badge also appears in the badge strip. Second tap clears the inhibit early. Auto-clears on timeout. |
+| **PITCH ALIGN** / **ROLL ALIGN** | ± steppers | 0.0° | Input-side axis alignment — rotates the raw gyro/accel/mag *before* the filter to cancel a mounting tilt (kills yaw-into-pitch/roll coupling). This is where the **LEVEL** button writes. Pushed to the AHRS and persisted in its flash; ±15° range. |
 
 ### Mounting and orientation
 
@@ -1604,7 +1605,7 @@ Same as the original breakout build — the AHRS PCB draws ≈ 130 mA at 5 V (Pi
 | **Mute / unmute audio** | Setup → DISPLAY → ALERT AUDIO OFF / ON |
 | **Set callout volume** | Setup → DISPLAY → ALERT VOLUME − / + |
 | **Recapture SDP zero** | Setup → AHRS / SENSORS → SDP ZERO → CAPTURE (aircraft stationary, pitot capped) |
-| **Mute TAWS callouts for 2 minutes** | Setup → AHRS / SENSORS → TERRAIN INHIBIT → INHIBIT (auto-clears after 120 s) |
+| **Mute TAWS callouts for 2 minutes** | Setup → DISPLAY → TERRAIN INHIBIT → INHIBIT (auto-clears after 120 s) |
 | Start sim | Setup → System → FLIGHT SIMULATOR → START |
 | SIM controls | Tap red SIM ✕ button at AI top-centre |
 | Pause / resume sim | SIM controls → PAUSE / RESUME |

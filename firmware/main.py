@@ -197,12 +197,13 @@ def load_orient():
         ra = float(d.get('roll_align',  AHRS_ROLL_ALIGN))
         if c not in _valid_c: c = AHRS_CONNECTOR
         if m not in _valid_m: m = AHRS_MOUNTING
-        # Clamp to ±10° — anything beyond is almost certainly a typo;
-        # the connector quanta should handle larger rotations.
-        if pa < -10.0: pa = -10.0
-        elif pa > 10.0: pa = 10.0
-        if ra < -10.0: ra = -10.0
-        elif ra > 10.0: ra = 10.0
+        # Clamp to ±15° — the flight-zero (LEVEL) cage folds the mounting
+        # residual into the alignment, so give it headroom beyond a hand-dialed
+        # trim; the connector quanta still handle larger (90°) rotations.
+        if pa < -15.0: pa = -15.0
+        elif pa > 15.0: pa = 15.0
+        if ra < -15.0: ra = -15.0
+        elif ra > 15.0: ra = 15.0
         return c, m, pa, ra
     except Exception:
         return AHRS_CONNECTOR, AHRS_MOUNTING, AHRS_PITCH_ALIGN, AHRS_ROLL_ALIGN
@@ -1174,17 +1175,18 @@ def _process_stdin_line(line):
             print('$ORIENT_ACK,ERR bad format')
     elif line.startswith('$ALIGN,'):
         # $ALIGN,<pitch_deg>,<roll_deg> — input-side axis alignment.
-        # Clamped to ±10° before applying so a typo doesn't send the
-        # filter into an unrecoverable state on the next packet.
+        # Clamped to ±15° before applying so a typo doesn't send the
+        # filter into an unrecoverable state on the next packet (the
+        # flight-zero LEVEL cage uses the full ±15° range).
         parts = line[7:].split(',')
         if len(parts) == 2:
             try:
                 pa = float(parts[0].strip())
                 ra = float(parts[1].strip())
-                if pa < -10.0: pa = -10.0
-                elif pa > 10.0: pa = 10.0
-                if ra < -10.0: ra = -10.0
-                elif ra > 10.0: ra = 10.0
+                if pa < -15.0: pa = -15.0
+                elif pa > 15.0: pa = 15.0
+                if ra < -15.0: ra = -15.0
+                elif ra > 15.0: ra = 15.0
                 state['pitch_align'] = pa
                 state['roll_align']  = ra
                 state['_save_orient'] = True

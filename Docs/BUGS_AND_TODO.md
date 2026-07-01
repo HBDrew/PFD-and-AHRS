@@ -8,6 +8,19 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### UI-TERRAIN-INHIBIT-MOVE  Move TERRAIN INHIBIT to the DISPLAY page
+Status: **DONE (pi4) — code + manual landed**
+Pilot note: terrain inhibit is a display/TAWS preference, not an AHRS-sensor
+setting, so it doesn't belong on the AHRS / SENSORS page. Removed it from the
+AHRS page (row 7; PITCH/ROLL ALIGN renumber 8/9→7/8, drag rows 10→9) and added
+it as a hand-drawn action-button row on the DISPLAY setup tab
+(`_dsp_inhibit_btn_rect`, tab index 1). pi4 only (pi_zero never had it). Also
+bumped the AHRS alignment clamp 10°→15° everywhere (firmware `$ALIGN` + load +
+`/align`, both displays' `_flight_zero` / align-stepper / mag-cal auto-align)
+so the LEVEL cage has headroom; test range extended in
+`firmware/test_flight_zero_sign.py`. Files: `pi4/pfd.py`,
+`firmware/main.py`, `firmware/web_server.py`. Docs: USER_MANUAL_PI4 §10/§11.
+
 ### AHRS-LEVEL  One-tap AHRS flight-zero (LEVEL) button on the AHRS page
 Status: **DONE (pi4 + pi_zero + firmware) — code + tests + manuals landed; verify in flight**
 Branch `claude/ahrs-level-traffic-dedup`. Green **LEVEL** button on the PITCH
@@ -23,7 +36,7 @@ Persisted in AHRS flash (`_save_orient`), seen by all displays, and it also
 kills the mounting-tilt yaw→pitch/roll coupling that makes a small error
 compound in turns — the actual cause of "AHRS 100% unusable".
   - Sign rule (safety-critical, wrong sign DOUBLES the error):
-    `align_new = clamp(align_old + sign·body, ±10°)`, `sign = -1 normal / +1
+    `align_new = clamp(align_old + sign·body, ±15°)`, `sign = -1 normal / +1
     inverted`. The inverted flip is because align acts on RAW sensor data while
     `_apply_remap` sign-flips the Euler output for inverted mounting. Verified
     to converge for all 4 connectors × both mountings in
@@ -35,7 +48,7 @@ Files: `pi4/pfd.py`, `pi_zero/pfd.py` (`_level_btn_rect`, `_flight_zero`,
 USER_MANUAL_ZERO. Supersedes the encrypted-Sentry LEVEL experiment reverted
 earlier (see FOREFLIGHT-0X65 notes) — now on the WT901 AHRS where it works.
 Open: bench/first-flight confirm a level-cruise tap zeros both axes and that
-±10° is roomy enough for the real mounting offset (raise the firmware ALIGN
+±15° is roomy enough for the real mounting offset (raise the firmware ALIGN
 clamp if not).
 
 ### TRAFFIC-OWNSHIP-ECHO  Suppress ownship echo on the internet traffic feed

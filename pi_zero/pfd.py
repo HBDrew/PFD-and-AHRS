@@ -5626,7 +5626,7 @@ def _flight_zero():
     Verified to converge for all four connector orientations × both mountings.
     disp['pitch']/['roll'] are that body attitude (pre Pi-local-trim);
     subtracting them also absorbs any firmware output trim.  Clamped to the
-    firmware's ±10° alignment range."""
+    firmware's ±15° alignment range."""
     cur_pa = float(disp.get("pitch_align", disp["ss"].get("pitch_align", 0.0)))
     cur_ra = float(disp.get("roll_align",  disp["ss"].get("roll_align",  0.0)))
     body_p = float(disp.get("pitch", 0.0))
@@ -5634,8 +5634,8 @@ def _flight_zero():
     mounting = str(disp.get("mounting")
                    or disp.get("ss", {}).get("mounting") or "normal")
     sign = -1.0 if mounting == "normal" else 1.0
-    new_pa = max(-10.0, min(10.0, round(cur_pa + sign * body_p, 1)))
-    new_ra = max(-10.0, min(10.0, round(cur_ra + sign * body_r, 1)))
+    new_pa = max(-15.0, min(15.0, round(cur_pa + sign * body_p, 1)))
+    new_ra = max(-15.0, min(15.0, round(cur_ra + sign * body_r, 1)))
     # Reflect immediately so any align read-back shows the pending value; the
     # Pico echoes the confirmed value back in its next $AHRS broadcast.
     disp["ss"]["pitch_align"] = new_pa
@@ -5955,8 +5955,8 @@ def _mag_cal_capture():
             else:
                 cur_p = float(disp["ss"].get("pitch_align", 0.0))
                 cur_r = float(disp["ss"].get("roll_align",  0.0))
-                new_p = max(-10.0, min(10.0, round(cur_p + mean_p, 1)))
-                new_r = max(-10.0, min(10.0, round(cur_r + mean_r, 1)))
+                new_p = max(-15.0, min(15.0, round(cur_p + mean_p, 1)))
+                new_r = max(-15.0, min(15.0, round(cur_r + mean_r, 1)))
                 disp["ss"]["pitch_align"] = new_p
                 disp["ss"]["roll_align"]  = new_r
                 _push_align_to_pico(new_p, new_r)

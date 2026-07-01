@@ -110,14 +110,15 @@ def _mounting_raw(mrx_deg, mry_deg):
 
 
 def _flight_zero_formula(cur, body, mounting):
-    """The exact rule used by _flight_zero() in the display code."""
+    """The exact rule used by _flight_zero() in the display code (±15° cap)."""
     sign = -1.0 if mounting == 'normal' else 1.0
-    return max(-10.0, min(10.0, round(cur + sign * body, 1)))
+    return max(-15.0, min(15.0, round(cur + sign * body, 1)))
 
 
 def test_level_converges_all_orientations():
+    # Includes tilts near the ±15° cap to confirm the extra headroom is usable.
     tilts = [(2, 3), (-4, 1.5), (5, -2), (-1, -3), (0, 4), (3, 0),
-             (6, -6), (-5, 5), (1.2, -0.7)]
+             (6, -6), (-5, 5), (1.2, -0.7), (12, -11), (-13, 8)]
     for conn in ('right', 'forward', 'left', 'aft'):
         for mounting in ('normal', 'inverted'):
             for mrx, mry in tilts:

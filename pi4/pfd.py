@@ -5843,8 +5843,8 @@ def _mag_cal_capture():
             else:
                 cur_p = float(disp["ss"].get("pitch_align", 0.0))
                 cur_r = float(disp["ss"].get("roll_align",  0.0))
-                new_p = max(-10.0, min(10.0, round(cur_p + mean_p, 1)))
-                new_r = max(-10.0, min(10.0, round(cur_r + mean_r, 1)))
+                new_p = max(-15.0, min(15.0, round(cur_p + mean_p, 1)))
+                new_r = max(-15.0, min(15.0, round(cur_r + mean_r, 1)))
                 disp["ss"]["pitch_align"] = new_p
                 disp["ss"]["roll_align"]  = new_r
                 _push_align_to_pico(new_p, new_r)
@@ -6555,6 +6555,8 @@ def handle_event(event, demo_mode):
             action = display_setup_hit(x, y, disp["ds"])
             if action == "back":
                 disp["mode"] = "setup"
+            elif action == "terrain_inhibit_toggle":
+                toggle_terrain_inhibit()
             elif action and action.startswith("tab:"):
                 disp["dsp_tab"] = int(action.split(":")[1])
             elif action and action.startswith("set:"):
@@ -6684,12 +6686,12 @@ def handle_event(event, demo_mode):
                 disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
                 _settings.mark_dirty()
             elif action and action.startswith("align:"):
-                # Input-side axis alignment — clamp to ±10° to match the
+                # Input-side axis alignment — clamp to ±15° to match the
                 # firmware-side cap, push to the Pico via $ALIGN.
                 _, key, delta_str = action.split(":")
                 new = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
-                if   new > 10.0: new = 10.0
-                elif new < -10.0: new = -10.0
+                if   new > 15.0: new = 15.0
+                elif new < -15.0: new = -15.0
                 disp["ss"][key] = new
                 _settings.mark_dirty()
                 _push_align_to_pico(
@@ -6697,8 +6699,6 @@ def handle_event(event, demo_mode):
                     float(disp["ss"].get("roll_align",  0.0)))
             elif action == "mag_cal_open":
                 _mag_cal_open("ahrs_setup")
-            elif action == "terrain_inhibit_toggle":
-                toggle_terrain_inhibit()
             elif action and action.startswith("set:"):
                 _, key, val = action.split(":", 2)
                 disp["ss"][key] = val
@@ -8260,7 +8260,7 @@ _SS_TITLE_BAR_H = 44
 _ss_drag = None
 _SS_DRAG_THRESHOLD = 8
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
-    "ahrs_setup":         10,
+    "ahrs_setup":         9,
     "system_setup":       9,
     "connectivity_setup": 9,
     "flight_profile":     8,
@@ -8428,6 +8428,13 @@ _DSP_ROWS_MAP = [
 _DSP_TAB_LABELS = ["UNITS", "DISPLAY", "MAP"]
 _DSP_TAB_ROWS   = [_DSP_ROWS_UNITS, _DSP_ROWS_DISPLAY, _DSP_ROWS_MAP]
 _DSP_MAP_TAB_INDEX = 2          # MAP LAYERS appears only on this tab
+# TERRAIN INHIBIT is a momentary action button (with a live countdown), not an
+# enum toggle, so it doesn't fit the segmented-control row schema.  It's drawn
+# by hand as an extra row appended to the DISPLAY tab — it's a display/TAWS
+# preference, which is why it lives here and not on the AHRS / SENSORS page.
+_DSP_INHIBIT_TAB_INDEX   = 1
+_DSP_INHIBIT_LOCAL_INDEX = len(_DSP_ROWS_DISPLAY)   # row after the DISPLAY rows
+_DSP_INHIBIT_BTN_W       = 138
 # Trailing controls for the MAP INSET row (orientation), drawn to the
 # left of the standard segmented control by hand.
 _DSP_MAP_ORIENT_OPTS  = ["trk", "nrth"]
@@ -8513,6 +8520,16 @@ def _dsp_row_y(local_i):
     """Top-of-row y for a row at LOCAL index within the active tab, offset
     below the tab bar.  No scroll -- every tab fits on screen."""
     return _DSP_CONTENT_Y0 + local_i * (_SS_RH + _SS_GAP)
+
+
+def _dsp_inhibit_btn_rect():
+    """Rect of the TERRAIN INHIBIT action button (DISPLAY tab).  Shared by the
+    draw + hit paths so they agree."""
+    bw = DISPLAY_W - 2 * _SS_MX
+    by = _dsp_row_y(_DSP_INHIBIT_LOCAL_INDEX)
+    ix = _SS_MX + bw - _DSP_INHIBIT_BTN_W - 14
+    iy = by + (_SS_RH - _DSP_BTN_H) // 2
+    return ix, iy, _DSP_INHIBIT_BTN_W, _DSP_BTN_H
 
 
 def _dsp_tab_geom(i):
@@ -8607,6 +8624,26 @@ def draw_display_setup(surf, ds):
                 _seg_btn(surf,
                          rx + slot * (_DSP_LAYERS_BTN_W + _DSP_LAYERS_BTN_G),
                          ry, _DSP_LAYERS_BTN_W, _DSP_LAYERS_BTN_H, lbl, active)
+
+    # TERRAIN INHIBIT — pilot-controlled mute on the TAWS pipeline (terrain
+    # look-ahead + obstacle + pull-up callouts).  Auto-clears after 120 s so a
+    # forgotten toggle can't permanently disable the safety net; sink-rate
+    # stays armed even while inhibited.  Hand-drawn action-button row on the
+    # DISPLAY tab (a display/TAWS preference, not an AHRS-sensor setting).
+    if tab == _DSP_INHIBIT_TAB_INDEX:
+        inh_rem = inhibit_remaining_s()
+        if inh_rem > 0:
+            inh_sub = (f"TAWS callouts muted — {int(inh_rem)} s remaining "
+                       f"(tap to clear)")
+        else:
+            inh_sub = "Mute TAWS callouts for 120 s (sink-rate stays armed)"
+        _setting_row(surf, _DSP_INHIBIT_LOCAL_INDEX, "TERRAIN INHIBIT", inh_sub,
+                     _y_override=_dsp_row_y(_DSP_INHIBIT_LOCAL_INDEX))
+        ix, iy, iw, ih = _dsp_inhibit_btn_rect()
+        if inh_rem > 0:
+            _action_btn(surf, ix, iy, iw, ih, f"INHIBIT  {int(inh_rem)}s", "warn")
+        else:
+            _action_btn(surf, ix, iy, iw, ih, "INHIBIT", "normal")
     surf.set_clip(_prev_clip)
 
 
@@ -8667,6 +8704,11 @@ def display_setup_hit(x, y, ds):
                     if bx_b <= x <= bx_b + _DSP_LAYERS_BTN_W:
                         new_val = not bool(ds.get(key, True))
                         return f"set:{key}:{new_val}"
+
+    if tab == _DSP_INHIBIT_TAB_INDEX:
+        ix, iy, iw, ih = _dsp_inhibit_btn_rect()
+        if ix <= x <= ix + iw and iy <= y <= iy + ih:
+            return "terrain_inhibit_toggle"
     return None
 
 
@@ -8712,7 +8754,7 @@ def _flight_zero():
     Verified to converge for all four connector orientations × both mountings.
     disp['pitch']/['roll'] are that body attitude (pre Pi-local-trim);
     subtracting them also absorbs any firmware output trim.  Clamped to the
-    firmware's ±10° alignment range."""
+    firmware's ±15° alignment range."""
     cur_pa = float(disp.get("pitch_align", disp["ss"].get("pitch_align", 0.0)))
     cur_ra = float(disp.get("roll_align",  disp["ss"].get("roll_align",  0.0)))
     body_p = float(disp.get("pitch", 0.0))
@@ -8720,8 +8762,8 @@ def _flight_zero():
     mounting = str(disp.get("mounting")
                    or disp.get("ss", {}).get("mounting") or "normal")
     sign = -1.0 if mounting == "normal" else 1.0
-    new_pa = max(-10.0, min(10.0, round(cur_pa + sign * body_p, 1)))
-    new_ra = max(-10.0, min(10.0, round(cur_ra + sign * body_r, 1)))
+    new_pa = max(-15.0, min(15.0, round(cur_pa + sign * body_p, 1)))
+    new_ra = max(-15.0, min(15.0, round(cur_ra + sign * body_r, 1)))
     # Reflect immediately so the ALIGN steppers show the pending value; the
     # Pico echoes the confirmed value back in its next $AHRS broadcast.
     disp["ss"]["pitch_align"] = new_pa
@@ -9833,39 +9875,21 @@ def draw_ahrs_setup(surf, ss):
     for i, (v, lbl) in enumerate(opts_as):
         _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v == cur_as)
 
-    # Row 7: Terrain alert inhibit — pilot-controlled mute on the
-    # TAWS pipeline (terrain look-ahead + obstacle + pull-up callouts).
-    # Auto-clears after 120 s so a forgotten toggle doesn't permanently
-    # disable the safety net.  Sink-rate stays armed even while
-    # inhibited — that's the alert that still matters on a descent.
-    inh_rem = inhibit_remaining_s()
-    if inh_rem > 0:
-        inh_sub = f"TAWS callouts muted — {int(inh_rem)} s remaining (tap to clear)"
-    else:
-        inh_sub = "Mute TAWS callouts for 120 s (sink-rate stays armed)"
-    bx, by, bw, bh = _setting_row(surf, 7, "TERRAIN INHIBIT", inh_sub)
-    inh_w = 138
-    inh_bx = bx + bw - inh_w - 14
-    inh_by = by + (bh - _DSP_BTN_H) // 2
-    if inh_rem > 0:
-        _action_btn(surf, inh_bx, inh_by, inh_w, _DSP_BTN_H,
-                    f"INHIBIT  {int(inh_rem)}s", "warn")
-    else:
-        _action_btn(surf, inh_bx, inh_by, inh_w, _DSP_BTN_H,
-                    "INHIBIT", "normal")
-
-    # Rows 8 & 9: PITCH / ROLL ALIGN — input-side axis alignment.  Unlike
+    # Rows 7 & 8: PITCH / ROLL ALIGN — input-side axis alignment.  Unlike
     # the TRIM rows above (output-side static offsets), these rotate the
     # raw gyro/accel/mag before the Mahony filter, killing yaw-rate
-    # coupling into pitch/roll from imperfect sensor mounting.  Pushed
-    # to the Pico via $ALIGN; "sending…" hint shows until the Pico
-    # echoes the new value back in its $AHRS broadcast.
+    # coupling into pitch/roll from imperfect sensor mounting.  This is
+    # also where the LEVEL / flight-zero button writes.  Pushed to the
+    # Pico via $ALIGN; "sending…" hint shows until the Pico echoes the
+    # new value back in its $AHRS broadcast.
+    # (TERRAIN INHIBIT lives on the DISPLAY page — it's a display/TAWS
+    # preference, not an AHRS-sensor setting.)
     pico_pa = float(disp.get("pitch_align", 0.0))
     sel_pa  = float(ss.get("pitch_align", pico_pa))
     pa_sub  = "Yaw-coupling fix; tune until turns don't pitch the display"
     if abs(sel_pa - pico_pa) > 0.05:
         pa_sub = f"{pa_sub}  (AHRS: {pico_pa:+.1f}° — sending…)"
-    bx, by, bw, bh = _setting_row(surf, 8, "PITCH ALIGN", pa_sub)
+    bx, by, bw, bh = _setting_row(surf, 7, "PITCH ALIGN", pa_sub)
     _trim_stepper(surf, bx, by, bw, bh, sel_pa, "pitch_align")
 
     pico_ra = float(disp.get("roll_align", 0.0))
@@ -9873,7 +9897,7 @@ def draw_ahrs_setup(surf, ss):
     ra_sub  = "Yaw-coupling fix; tune until turns don't roll the display"
     if abs(sel_ra - pico_ra) > 0.05:
         ra_sub = f"{ra_sub}  (AHRS: {pico_ra:+.1f}° — sending…)"
-    bx, by, bw, bh = _setting_row(surf, 9, "ROLL ALIGN", ra_sub)
+    bx, by, bw, bh = _setting_row(surf, 8, "ROLL ALIGN", ra_sub)
     _trim_stepper(surf, bx, by, bw, bh, sel_ra, "roll_align")
 
     surf.set_clip(_prev_clip)
@@ -9885,17 +9909,17 @@ def ahrs_setup_hit(x, y, ss):
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(10):
+    for ri in range(9):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
         bx = _SS_MX
-        if ri in (0, 1, 8, 9):
+        if ri in (0, 1, 7, 8):
             # Stepper rows: pitch/roll TRIM (output offset) on 0/1,
-            # pitch/roll ALIGN (input rotation) on 8/9.  All use the
+            # pitch/roll ALIGN (input rotation) on 7/8.  All use the
             # same ±0.1° step widget.
             key = {0: "pitch_trim", 1: "roll_trim",
-                   8: "pitch_align", 9: "roll_align"}[ri]
+                   7: "pitch_align", 8: "roll_align"}[ri]
             ry = by + (_SS_RH - _SS_TRIM_H) // 2
             if not (ry <= y <= ry+_SS_TRIM_H):
                 continue
@@ -9903,7 +9927,7 @@ def ahrs_setup_hit(x, y, ss):
                 lx, _ly, lw, _lh = _level_btn_rect(0)
                 if lx <= x <= lx + lw:     # y already gated by the row check
                     return "level_now"
-            action_prefix = "align" if ri in (8, 9) else "trim"
+            action_prefix = "align" if ri in (7, 8) else "trim"
             if rx_trim <= x <= rx_trim+_SS_TRIM_SW:
                 return f"{action_prefix}:{key}:-0.1"
             plus_x = rx_trim + _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G
@@ -9948,13 +9972,6 @@ def ahrs_setup_hit(x, y, ss):
                 xi = rx + i * (120 + _DSP_BTN_G)
                 if xi <= x <= xi + 120 and ry <= y <= ry + _DSP_BTN_H:
                     return f"set:airspeed_src:{v}"
-        elif ri == 7:
-            inh_w = 138
-            inh_bx = _SS_MX + bw - inh_w - 14
-            inh_by = by + (_SS_RH - _DSP_BTN_H) // 2
-            if (inh_bx <= x <= inh_bx + inh_w
-                    and inh_by <= y <= inh_by + _DSP_BTN_H):
-                return "terrain_inhibit_toggle"
     return None
 
 
