@@ -251,12 +251,29 @@ This is the part that ports over most directly (D3). Per axis:
    inject `16·sign(dir)·lostMotion` for ~400 ms (`rDZ_*`). This compensates gear
    backlash in the stepper/clutch drive — **must be reproduced.**
 7. Result → `rollVel`/`pitchVel`; **position = ½∫velocity** (`rollPos`/`pitchPos`).
-8. Emit to drive: legacy analog `DAC_67Out` (now commented out) → **CAN motor
-   message** `MotorCANMsgBuffer`. The installed-base drive scheme determines what
-   the new box must speak — **confirm before committing to CAN vs. step/dir.**
+8. Emit to drive — **this build drives BOTH paths every servo tick, in parallel**
+   (confirmed):
+   - **Stepper (legacy, the one we need for 2‑1/4"/flat-pack):** `DoMotors`
+     (`DFC_IRQ.asm:2193`, called from the ISR at `:3059`) integrates velocity →
+     `rollPos`/`pitchPos`, indexes the 8-entry **gray-code phase table**
+     `grayTable` (half-step aware), merges roll (high nibble) + pitch (low
+     nibble) into one byte, and shifts it out over SPI0 to an **MC33291 octal
+     low-side driver** that energizes the stepper phases. Includes a v2.20c
+     inrush-limiting sequence on 0→1 phase transitions (`SERVO_PORT` holds the
+     previous pattern for ~1 µs).
+   - **CAN smart-servo (later designs):** `MotorCANMsgBuffer` populated in
+     `SetRollVel` + `DoMotors`; transmitted via `CAN_TxMessage`
+     (`CAN.asm:598`, called from `DFCMain.asm:1096/8789/8888`).
+   - **Oldest analog drive retired:** `DAC_67Out` servo-voltage path is commented
+     out; the DAC survives only for the yaw-damper output.
 
-> Open item: whether the target installed base uses stepper servos over the
-> legacy harness or CAN smart-servos decides the entire output driver. See §10.
+> **Backward-compat scheme (confirmed):** not a stepper-vs-CAN config switch —
+> both drivers run unconditionally from the same velocity/position math each
+> tick, and the airframe harness consumes whichever it is wired for. The `config`
+> bits gate yaw damper / alt selector / ext-DG only, not servo type. **This is
+> the correct both-worlds source version.** For the revival, replicate the
+> stepper chain: **velocity → ½∫ position → gray-code phase table → phase
+> driver** (MC33291 or modern equivalent).
 
 ---
 
@@ -317,8 +334,10 @@ becomes the command reference.
 
 ## 10. Open questions / next revisions
 
-- [ ] **Servo drive of the installed base:** stepper-over-legacy-harness vs. CAN
-      smart-servo? Decides the output driver (§6). **Blocking for hardware.**
+- [x] **Servo drive:** RESOLVED — this build drives both the legacy gray-code
+      stepper (MC33291/SPI) and CAN smart-servo in parallel every tick; harness
+      picks. Confirmed correct both-worlds source. Revival targets the stepper
+      chain (§6).
 - [ ] Vendor the `TT AP Sources/` tree into the repo (or a ref/ subfolder) so
       citations resolve and diffs are traceable — confirm IP/licensing first.
 - [ ] Full **parameter/EEPROM map** (`EEDEFINES.h`, `EEPROM.asm`): every gain,
