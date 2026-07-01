@@ -10,6 +10,12 @@ Sorcerer / Vizion‑380 lineage, version era ≈ A.43, 2003–2011).
 > Line numbers are from the version reviewed and should be re-verified when the
 > sources are vendored into this repo.
 
+**Companion deep-dives:**
+- [`VERTICAL_CONTROL_LAWS.md`](VERTICAL_CONTROL_LAWS.md) — vertical axis in full
+- [`STEPPER_OUTPUT_STAGE.md`](STEPPER_OUTPUT_STAGE.md) — command→phases servo chain
+- [`SERVO_TORQUE_CONTROL.md`](SERVO_TORQUE_CONTROL.md) — torque/current control
+- [`EEPROM_PARAMETER_MAP.md`](EEPROM_PARAMETER_MAP.md) — persisted parameter set
+
 ---
 
 ## 0. Design intent for the revival (decisions locked)
@@ -223,7 +229,12 @@ GPSS uses a separate `gpssMaxBank` (~25°).
 
 ---
 
-## 5. Vertical control law (summary — expand in v0.2)
+## 5. Vertical control law (summary)
+
+> **Full treatment:** [`VERTICAL_CONTROL_LAWS.md`](VERTICAL_CONTROL_LAWS.md) —
+> the VS-rate pipeline, iVSI estimator, `pitchAdj` trim integrator, all modes
+> (ALT/VS/AS-hold/VNAV/GS/VGPSS), envelope protection, and two comment-vs-code
+> discrepancies to reproduce.
 
 - **ALT HOLD:** `altErr = selAlt − currAlt`, scaled by user `altGain` (0..8),
   combined with **iVSI** (integrated/inferred vertical speed, computed
