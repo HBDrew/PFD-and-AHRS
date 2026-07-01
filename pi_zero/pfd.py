@@ -447,11 +447,11 @@ _sim_state   = None   # SimFlyState instance when sim is running, else None
 # Decoded NEXRAD image cache (pygame surface).  Re-decoded only when the
 # poller delivers a new image (seq change), so per-frame cost is a blit.
 _nexrad_decoded = {"seq": -1, "surf": None, "bbox": None}
-# Radar loop (MFD playback): 12 frames × 5 min = last 60 min of NEXRAD +
-# FIS-B, snapshotted together so both scrub in lock-step.  RAM-only.
+# Radar loop (MFD playback), last 60 min at 5-min steps.  Hybrid: FIS-B frames
+# buffer in RAM (push-only datalink); internet NEXRAD is pulled on demand via
+# WMS-T when the loop opens.
 import wxloop as _wxloop_mod   # noqa: E402
-_wxloop = _wxloop_mod.RadarLoop(interval_s=300.0, max_frames=12)
-_wxloop.register("wms", "fisb")
+_wxloop = _wxloop_mod.RadarLoop(interval_s=300.0, span_min=60)
 _wxloop_wms_cache = {"key": None, "surf": None}
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
@@ -4497,9 +4497,9 @@ def handle_event(event, demo_mode):
             def _pin(rc):
                 return (rc[0] <= x <= rc[0] + rc[2]
                         and rc[1] <= y <= rc[1] + rc[3])
-            if (disp["ds"].get("map_show_nexrad") and _wxloop.count() > 0
-                    and not _wxloop.on and _pin(_wxloop_loop_btn_rect())):
-                _wxloop.enter()
+            if (disp["ds"].get("map_show_nexrad") and not _wxloop.on
+                    and _wxloop_available() and _pin(_wxloop_loop_btn_rect())):
+                _wxloop_start()
                 return True
             if _wxloop.on:
                 if _pin(_wxloop_playpause_rect()):
@@ -6909,10 +6909,8 @@ def _update_nexrad():
     if _nexrad_client is None:
         return
     show = bool(disp["ds"].get("map_show_nexrad"))
-    # Keep the poller running even when the overlay is off so the radar LOOP
-    # records internet-NEXRAD history in the background (trivial data).  Paused
-    # only when the pilot chose FIS-B / RADIO-only weather.
-    _nexrad_client.paused = (disp["cs"].get("wx_source", "auto") == "radio")
+    _nexrad_client.paused = not show     # live poll only while shown; loop
+                                         # history comes on demand via WMS-T
     if not show:
         return
     png, bbox, seq = _nexrad_client.snapshot()
@@ -6937,39 +6935,58 @@ def _nexrad_render_arg():
 
 
 # ── Radar loop (MFD playback) ───────────────────────────────────────────────────
-_wxloop_last_wms_seq = -1     # WMS image seq last committed to the loop buffer
-
-
 def _wxloop_update(now_mono):
-    """Snapshot current radar frames into the loop buffer (5-min cadence) and
-    advance auto-play.  Buffers whenever data is present; RAM-only."""
-    global _wxloop_last_wms_seq
-    wms = None
-    seq = _wxloop_last_wms_seq
-    if _nexrad_client is not None:
-        png, bbox, seq = _nexrad_client.snapshot()
-        # Only a genuinely NEW image becomes a frame (the poller returns the
-        # same stale PNG while the overlay is off — no duplicate "history").
-        if png is not None and bbox is not None and seq != _wxloop_last_wms_seq:
-            wms = (png, bbox)
-    cells = _fisb_nexrad_cells()
-    took = _wxloop.maybe_snapshot(now_mono, time.time(),
-                                  {"wms": wms, "fisb": (cells or None)})
-    if took and wms is not None:
-        _wxloop_last_wms_seq = seq
+    """Buffer the current FIS-B mosaic (5-min cadence) + advance auto-play.
+    Internet-NEXRAD frames are pulled on demand at loop open, not buffered."""
+    _wxloop.buffer_fisb(now_mono, time.time(), _fisb_nexrad_cells() or None)
     if _wxloop.on and not disp["ds"].get("map_show_nexrad"):
         _wxloop.exit()
     _wxloop.tick(now_mono)
+
+
+def _wxloop_available():
+    """True when a loop can be built now — internet radar live (WMS-T pullable)
+    or FIS-B history buffered."""
+    internet = (disp["cs"].get("wx_source", "auto") != "radio"
+                and _nexrad_render_arg() is not None)
+    return internet or _wxloop.has_fisb()
+
+
+def _wxloop_start():
+    """Open playback: build the timeline; if internet radar is usable, pull the
+    last 60 min from the WMS-T archive in the background for the current view."""
+    lat, lon, radius = _wx_view()
+    wms_ok = (disp["cs"].get("wx_source", "auto") != "radio"
+              and _nexrad_render_arg() is not None)
+    ts = _wxloop.build(time.time(), wms_ok)
+    if wms_ok and ts:
+        threading.Thread(target=_wxloop_fetch, args=(lat, lon, radius, list(ts)),
+                         daemon=True, name="WxLoopFetch").start()
+
+
+def _wxloop_fetch(lat, lon, radius, ts):
+    """Background: fetch each timeline step's archived WMS frame (newest first)
+    and drop it into the loop."""
+    for i in range(len(ts) - 1, -1, -1):
+        if not _wxloop.on:
+            return
+        iso = time.strftime("%Y-%m-%dT%H:%M:00Z", time.gmtime(ts[i]))
+        try:
+            png, bbox = _nexrad.fetch_png(lat, lon, radius, max_px=480,
+                                          time_iso=iso)
+            _wxloop.set_wms(i, (png, bbox))
+        except Exception as e:                                 # noqa: BLE001
+            print(f"[WXLOOP] frame {iso} fetch failed: {e}")
 
 
 def _wxloop_wms_render_arg():
     """(surf, bbox, key) for the played-back WMS frame, or None."""
     if disp["cs"].get("wx_source", "auto") == "radio":
         return None
-    fr = _wxloop.frame("wms", _wxloop.idx)
-    if not fr or fr[1] is None:
+    fr = _wxloop.frame_wms(_wxloop.idx)
+    if not fr:
         return None
-    png, bbox = fr[1]
+    png, bbox = fr
     key = (_wxloop.idx, len(png))
     if _wxloop_wms_cache["key"] != key:
         try:
@@ -6981,8 +6998,7 @@ def _wxloop_wms_render_arg():
 
 
 def _wxloop_fisb_render_cells():
-    fr = _wxloop.frame("fisb", _wxloop.idx)
-    return fr[1] if (fr and fr[1]) else None
+    return _wxloop.frame_fisb(_wxloop.idx)
 
 
 def _wxloop_row():
@@ -7033,11 +7049,11 @@ def _wxloop_scrub_idx_at(x):
 def _wxloop_draw_controls(surf):
     """Bottom-centre radar-loop controls (MFD only): a '▶ LOOP' pill when live,
     or play/pause + timeline + '● LIVE' with a frame-age label while playing."""
-    n = _wxloop.count()
-    if n == 0:
-        return
     if not _wxloop.on:
         _action_btn(surf, *_wxloop_loop_btn_rect(), "▶ LOOP", "ok", r=5)
+        return
+    n = _wxloop.count()
+    if n == 0:
         return
     _action_btn(surf, *_wxloop_playpause_rect(),
                 "❚❚" if _wxloop.playing else "▶", "normal", r=5)
@@ -7048,13 +7064,18 @@ def _wxloop_draw_controls(surf):
     span = max(1, n - 1)
     for i in range(n):
         tx = bx + 4 + int((bw - 8) * (i / span))
-        pygame.draw.line(surf, (70, 100, 140), (tx, by + 3), (tx, by + bh - 3), 1)
+        c = (110, 150, 200) if _wxloop.frame_wms(i) else (70, 100, 140)
+        pygame.draw.line(surf, c, (tx, by + 3), (tx, by + bh - 3), 1)
     idx = max(0, min(_wxloop.idx, n - 1))
     thx = bx + 4 + int((bw - 8) * (idx / span))
     pygame.draw.circle(surf, CYAN, (thx, by + bh // 2), 8)
     wall = _wxloop.wall_at(idx) or time.time()
     mins = max(0, int(round((time.time() - wall) / 60.0)))
     lbl = "RADAR  NOW" if mins == 0 else f"RADAR  −{mins} min"
+    if (disp["cs"].get("wx_source", "auto") != "radio"
+            and _wxloop.frame_wms(idx) is None
+            and _wxloop.frame_fisb(idx) is None):
+        lbl += "  · loading…"
     _text(surf, lbl, 15, CYAN, bold=True, cx=bx + bw // 2, cy=by - 15)
 
 
@@ -12555,8 +12576,8 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _action_btn(surf, zi_x, zi_y, zi_w, zi_h, "+", "normal", r=8)
 
     # Radar loop (MFD only): bottom-centre LOOP pill / scrubber when NEXRAD is
-    # on and frames exist.
-    if disp["ds"].get("map_show_nexrad") and _wxloop.count() > 0:
+    # on and a loop is available (internet live, or FIS-B buffered).
+    if disp["ds"].get("map_show_nexrad") and (_wxloop.on or _wxloop_available()):
         _wxloop_draw_controls(surf)
     _draw_mfd_layers_icon(surf)
 

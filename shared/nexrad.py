@@ -33,9 +33,12 @@ def bbox_for(lat, lon, radius_nm):
     return (lon - dlon, lat - dlat, lon + dlon, lat + dlat)
 
 
-def wms_url(bbox, width, height):
+def wms_url(bbox, width, height, time_iso=None):
     """Build an IEM WMS GetMap URL.  bbox = (west, south, east, north).
-    WMS 1.1.1 + EPSG:4326 takes bbox as minx,miny,maxx,maxy = W,S,E,N."""
+    WMS 1.1.1 + EPSG:4326 takes bbox as minx,miny,maxx,maxy = W,S,E,N.
+    ``time_iso`` (ISO-8601 UTC, e.g. '2024-06-30T18:35:00Z') requests an
+    ARCHIVED frame via the WMS-T time dimension — used for on-demand loop
+    playback; omit for the current mosaic."""
     w, s, e, n = bbox
     q = {
         "service": "WMS", "version": "1.1.1", "request": "GetMap",
@@ -45,6 +48,8 @@ def wms_url(bbox, width, height):
         "width": str(int(width)), "height": str(int(height)),
         "format": "image/png", "transparent": "true",
     }
+    if time_iso:
+        q["time"] = time_iso
     return _WMS + "?" + urllib.parse.urlencode(q)
 
 
@@ -63,12 +68,13 @@ def image_size(bbox, max_px=480):
     return width, height
 
 
-def fetch_png(lat, lon, radius_nm, max_px=480, timeout=12):
+def fetch_png(lat, lon, radius_nm, max_px=480, timeout=12, time_iso=None):
     """Fetch the NEXRAD PNG for the view.  Returns (png_bytes, bbox).
-    Raises on network error so the caller can retry."""
+    ``time_iso`` requests an archived frame (WMS-T) for loop playback; omit for
+    the current mosaic.  Raises on network error so the caller can retry."""
     bbox = bbox_for(lat, lon, radius_nm)
     width, height = image_size(bbox, max_px)
-    url = wms_url(bbox, width, height)
+    url = wms_url(bbox, width, height, time_iso=time_iso)
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = r.read()
