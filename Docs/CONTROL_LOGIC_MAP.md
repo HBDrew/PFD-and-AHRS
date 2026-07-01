@@ -267,6 +267,12 @@ This is the part that ports over most directly (D3). Per axis:
    - **Oldest analog drive retired:** `DAC_67Out` servo-voltage path is commented
      out; the DAC survives only for the yaw-damper output.
 
+> **Full bit-level treatment of this stage:** see
+> [`STEPPER_OUTPUT_STAGE.md`](STEPPER_OUTPUT_STAGE.md) — inner rate loop,
+> velocity conditioning (activity table, LPF, limiter, hysteresis, backlash),
+> position integration, gray-code phase output, MC33291 mapping, and the
+> modern-hardware reproduction plan.
+>
 > **Backward-compat scheme (confirmed):** not a stepper-vs-CAN config switch —
 > both drivers run unconditionally from the same velocity/position math each
 > tick, and the airframe harness consumes whichever it is wired for. The `config`
