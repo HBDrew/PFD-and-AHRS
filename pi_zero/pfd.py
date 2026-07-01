@@ -6933,17 +6933,26 @@ def _nexrad_render_arg():
 
 
 # ── Radar loop (MFD playback) ───────────────────────────────────────────────────
+_wxloop_last_wms_seq = -1     # WMS image seq last committed to the loop buffer
+
+
 def _wxloop_update(now_mono):
     """Snapshot current radar frames into the loop buffer (5-min cadence) and
     advance auto-play.  Buffers whenever data is present; RAM-only."""
+    global _wxloop_last_wms_seq
     wms = None
+    seq = _wxloop_last_wms_seq
     if _nexrad_client is not None:
-        png, bbox, _seq = _nexrad_client.snapshot()
-        if png is not None and bbox is not None:
+        png, bbox, seq = _nexrad_client.snapshot()
+        # Only a genuinely NEW image becomes a frame (the poller returns the
+        # same stale PNG while the overlay is off — no duplicate "history").
+        if png is not None and bbox is not None and seq != _wxloop_last_wms_seq:
             wms = (png, bbox)
     cells = _fisb_nexrad_cells()
-    _wxloop.maybe_snapshot(now_mono, time.time(),
-                           {"wms": wms, "fisb": (cells or None)})
+    took = _wxloop.maybe_snapshot(now_mono, time.time(),
+                                  {"wms": wms, "fisb": (cells or None)})
+    if took and wms is not None:
+        _wxloop_last_wms_seq = seq
     if _wxloop.on and not disp["ds"].get("map_show_nexrad"):
         _wxloop.exit()
     _wxloop.tick(now_mono)
