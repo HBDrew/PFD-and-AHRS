@@ -425,7 +425,7 @@ The period and colon keys are useful for entering URLs (e.g. `http://192.168.4.1
 
 ## 10. Display Settings
 
-The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and **MAP** — selected from the tab bar under the header. Tapping a tab swaps the visible rows; each page fits without scrolling. The screen opens on **UNITS**. The current tab is not persisted — the screen always reopens on UNITS.
+The screen is split into four tabbed sub-pages — **UNITS**, **DISPLAY**, **MAP**, and **HORIZON** — selected from the tab bar under the header. Tapping a tab swaps the visible rows; each page fits without scrolling. The screen opens on **UNITS**. The current tab is not persisted — the screen always reopens on UNITS.
 
 **UNITS** — speed / altitude / pressure:
 
@@ -458,6 +458,8 @@ The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and 
 | MAP | **TFC ALT** | ALL / ±2k / ±5k / ±10k ft | ALL | Hide traffic outside this relative-altitude band. See §16G. |
 | MAP | **TFC RANGE** | ALL / 5 / 10 / 20 / 40 NM | ALL | Hide traffic beyond this range. |
 | MAP | **MAP LAYERS** | TER · WTR · APT · RWY · OBS · TFC · MET · NEX · STA · CTRY · ASP (independent pills) | all ON | Per-layer visibility for the moving-map inset. **TER** terrain tint; **WTR** ocean/lake water mask; **APT** airport / heliport / seaplane symbols; **RWY** runway outlines; **OBS** FAA DOF obstacles; **TFC** traffic; **MET** METAR station dots (idents labelled when zoomed in below 160 NM range); **NEX** NEXRAD; **STA** state / province boundary lines (Natural Earth admin_1, slate-blue, fades in at ≥ 20 NM); **CTRY** country boundary lines (Natural Earth admin_0, tan, also ≥ 20 NM); **ASP** airspace. Toggles are independent and persist in `data/settings.json`. |
+| HORIZON | **PITCH TRIM** | ± steppers | 0.0° | 0.1° per tap. Display-side cosmetic offset for a horizon that sits a touch above/below level. Separate from the AHRS **ZERO** (§11) — this only nudges the drawn horizon on this display; the AHRS's own solution is untouched. |
+| HORIZON | **ROLL TRIM** | ± steppers | 0.0° | 0.1° per tap. Display-side cosmetic offset for a wing that reads slightly low. |
 
 ### Backlight transports
 
@@ -481,23 +483,23 @@ The Pi 4 setup script installs `ddcutil` and pre-loads the `i2c-dev` module. If 
 
 Each row on this screen is independent:
 
+This page now holds **only AHRS-sensor settings** — the sensor **ZERO** and the align/mounting/compass/airspeed setup. The display-side **PITCH / ROLL TRIM** (a cosmetic horizon nudge) moved to **DISPLAY → HORIZON** (§10) so the AHRS zero and the display zero aren't mixed in the same space.
+
 | Row | Control | Default | Notes |
 |-----|---------|---------|-------|
-| **PITCH TRIM** | ± steppers + **LEVEL** button | 0.0° | 0.1° per tap. Display-side fine-trim for a horizon that sits above/below level on the ground. **LEVEL** (green, this row) is a one-tap *AHRS flight zero* — see below. |
-| **ROLL TRIM** | ± steppers | 0.0° | 0.1° per tap. Display-side fine-trim for a wing that reads low on the ground. |
-
-**LEVEL (AHRS flight zero).** The green **LEVEL** button on the PITCH TRIM row re-zeros the **AHRS itself** to the current attitude — the "Level" cage a Sentry gives ForeFlight. Fly straight-and-level, tap it once, and the AHRS treats your present orientation as its new level.
-
-This is a true **sensor** zero, not a display trim: it folds the captured attitude into the AHRS **input-side axis alignment** (`PITCH ALIGN` / `ROLL ALIGN`), which rotates the raw gyro/accelerometer/magnetometer *before* the attitude filter runs. The new alignment is pushed to the AHRS (over USB `$ALIGN`, or HTTP `/align` on a WiFi link), **persisted in the AHRS flash**, and seen identically by every display. Because it corrects the mounting tilt at the sensor input, it also removes the yaw-into-pitch/roll coupling that makes a small static error *compound in turns* — the failure mode that makes an un-levelled AHRS unusable. Use it whenever you couldn't do a full ground level.
-
-Notes: the correction is clamped to the AHRS's ±15° alignment range (a residual larger than that is a wrong ORIENTATION/MOUNTING, not a trim job — fix those first). Tapping it also clears any leftover display-side PITCH/ROLL TRIM so the zero isn't double-counted. It's reversible from the PITCH ALIGN / ROLL ALIGN steppers, and you can re-tap any time. On a display connected to the AHRS over WiFi only, the push uses the HTTP `/align` endpoint.
+| **PITCH ALIGN** | ± steppers + **ZERO** button | 0.0° | Input-side axis alignment — rotates the raw gyro/accel/mag *before* the filter to cancel a mounting tilt. **ZERO** (green, this row) is the one-tap AHRS flight-zero — see below. |
+| **ROLL ALIGN** | ± steppers | 0.0° | Roll-axis half of the same input-side alignment. |
 | **MAGNETOMETER** | CALIBRATE button | (idle) | Opens the 8-point compass-cal wizard (N / NE / E / SE / S / SW / W / NW). Cal is stored *on the AHRS* in flash, so both Pi 4 and Pi Zero displays read the same calibrated heading off the SSE / USB broadcast. Status row shows `max \|Δ\| X.X°` once a cal is committed. |
 | **ORIENTATION** | FWD / LEFT / RIGHT / AFT | RIGHT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. |
 | **MOUNTING** | NORMAL / INVERTED | NORMAL | Whether the AHRS is right-side-up or upside-down. Independent of orientation. |
 | **HEADING SOURCE** | MAG / TRK / AUTO | AUTO | Magnetometer, GPS ground track (via complementary filter), or auto-select (TRK in motion, MAG when stationary). |
 | **AIRSPEED SOURCE** | GPS GS / IAS SENSOR | IAS SENSOR | IAS from the SDP33-1500Pa differential-pressure sensor (default when `airdata_ok`). Forced fallback to GPS groundspeed when the sensor is unhealthy or the pilot pins it manually. |
-| **SDP ZERO** | CAPTURE button | (idle) | Capture the current differential-pressure reading as the in-flight zero offset. Aircraft must be stationary with no airflow over the pitot. Status row shows `LAST ZERO h:mm ago`. |
-| **PITCH ALIGN** / **ROLL ALIGN** | ± steppers | 0.0° | Input-side axis alignment — rotates the raw gyro/accel/mag *before* the filter to cancel a mounting tilt (kills yaw-into-pitch/roll coupling). This is where the **LEVEL** button writes. Pushed to the AHRS and persisted in its flash; ±15° range. |
+
+**ZERO (AHRS flight zero).** The green **ZERO** button on the PITCH ALIGN row re-zeros the **AHRS itself** to the current attitude — the "Level" cage a Sentry gives ForeFlight. Fly straight-and-level, tap it once, and the AHRS treats your present orientation as its new level.
+
+This is a true **sensor** zero, not a display trim: it folds the captured attitude into the AHRS **input-side axis alignment** (the `PITCH ALIGN` / `ROLL ALIGN` steppers it sits on), which rotates the raw gyro/accelerometer/magnetometer *before* the attitude filter runs. The new alignment is pushed to the AHRS (over USB `$ALIGN`, or HTTP `/align` on a WiFi link), **persisted in the AHRS flash**, and seen identically by every display. Because it corrects the mounting tilt at the sensor input, it also removes the yaw-into-pitch/roll coupling that makes a small static error *compound in turns* — the failure mode that makes an un-levelled AHRS unusable. Use it whenever you couldn't do a full ground level.
+
+Notes: the correction is clamped to the AHRS's ±15° alignment range (a residual larger than that is a wrong ORIENTATION/MOUNTING, not a trim job — fix those first). Tapping it also clears any leftover display-side PITCH/ROLL TRIM so the zero isn't double-counted. It's reversible from the PITCH ALIGN / ROLL ALIGN steppers, and you can re-tap any time. On a display connected to the AHRS over WiFi only, the push uses the HTTP `/align` endpoint.
 
 ### Mounting and orientation
 

@@ -338,7 +338,7 @@ Action row: **CANCEL**, hyphen (`-`), **SPACE**, **DONE**. The period (`.`) and 
 
 ## 10. Display Settings
 
-The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and **MAP** — selected from the tab bar under the header. Tapping a tab swaps the visible rows; each page fits on screen with no scrolling. The screen always opens on the **UNITS** tab.
+The screen is split into four tabbed sub-pages — **UNITS**, **DISPLAY**, **MAP**, and **HORIZON** — selected from the tab bar under the header. Tapping a tab swaps the visible rows; each page fits on screen with no scrolling. The screen always opens on the **UNITS** tab.
 
 **UNITS** — speed / altitude / pressure units:
 
@@ -351,6 +351,8 @@ The screen is split into three tabbed sub-pages — **UNITS**, **DISPLAY**, and 
 **MAP** — winds-aloft level, traffic filters, and the MAP LAYERS pills:
 
 ![Display settings — MAP tab](../pi_zero/previews/preview_setup_display_map.png)
+
+**HORIZON** — **PITCH TRIM** and **ROLL TRIM** (± 0.1° steppers): a display-side cosmetic offset that nudges the drawn horizon on this display only. Separate from the AHRS **ZERO** on the AHRS / Sensors page (§11), which re-references the sensor itself.
 
 ### Speed units
 **KT**, **MPH**, or **KPH**. All V-speed arcs and GS bug scale together.
@@ -418,14 +420,13 @@ Wind barbs + temperatures aloft can be overlaid on the MFD. Cycle the **OVLY** l
 
 ![AHRS setup screen](../pi_zero/previews/preview_setup_ahrs.png)
 
-### Pitch trim
-Corrects horizon pitch on level ground. ±0.1° steps. The green **LEVEL** button on this row is a one-tap *flight zero* (see below).
+This page holds **only AHRS-sensor settings**. The display-side **PITCH / ROLL TRIM** (a cosmetic horizon nudge) moved to **DISPLAY → HORIZON** (§10) so the AHRS zero and the display zero aren't in the same place.
 
-### Roll trim
-Corrects horizon tilt. ±0.1° steps.
+### Pitch align / Roll align
+Input-side axis alignment — rotates the raw gyro/accel/mag *before* the attitude filter to cancel a small mounting tilt. ±0.1° steps, ±15° range, pushed to the AHRS and persisted in its flash. The green **ZERO** button on the PITCH ALIGN row is the one-tap flight-zero (below).
 
-### LEVEL (AHRS flight zero)
-Tap **LEVEL** (on the PITCH TRIM row) while straight-and-level to re-zero the **AHRS itself** to the current attitude — the Sentry/ForeFlight "Level" cage. Unlike the ± trim steppers (which are display-side), LEVEL folds the captured attitude into the AHRS **input-side axis alignment** (the raw gyro/accelerometer rotation applied *before* the attitude filter). It's pushed to the AHRS (USB `$ALIGN`, or HTTP `/align` on a WiFi-only link), **persisted in the AHRS flash**, and seen by every display — and because it fixes the mounting tilt at the sensor input, it also kills the yaw-into-pitch/roll coupling that makes a small error compound in turns. Clamped to the AHRS's ±15° alignment range; a bigger residual means the ORIENTATION/MOUNTING is wrong (fix those first). Tapping also clears any leftover display-side trim.
+### ZERO (AHRS flight zero)
+Tap **ZERO** (on the PITCH ALIGN row) while straight-and-level to re-zero the **AHRS itself** to the current attitude — the Sentry/ForeFlight "Level" cage. It folds the captured attitude into the AHRS **input-side axis alignment** (the raw gyro/accelerometer rotation applied *before* the attitude filter). It's pushed to the AHRS (USB `$ALIGN`, or HTTP `/align` on a WiFi-only link), **persisted in the AHRS flash**, and seen by every display — and because it fixes the mounting tilt at the sensor input, it also kills the yaw-into-pitch/roll coupling that makes a small error compound in turns. Clamped to ±15°; a bigger residual means the ORIENTATION/MOUNTING is wrong (fix those first). Tapping also clears any leftover display-side trim.
 
 ### Mounting orientation
 **NORMAL** (label up) or **INVERTED** (label down).

@@ -6557,6 +6557,13 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "setup"
             elif action == "terrain_inhibit_toggle":
                 toggle_terrain_inhibit()
+            elif action and action.startswith("trim:"):
+                # PITCH/ROLL TRIM on the HORIZON tab — display-side horizon
+                # offset, stored in disp["ss"] (what the AI renderer adds).
+                _, key, delta_str = action.split(":")
+                disp["ss"][key] = round(
+                    disp["ss"].get(key, 0.0) + float(delta_str), 1)
+                _settings.mark_dirty()
             elif action and action.startswith("tab:"):
                 disp["dsp_tab"] = int(action.split(":")[1])
             elif action and action.startswith("set:"):
@@ -6681,10 +6688,6 @@ def handle_event(event, demo_mode):
                 disp["mode"] = "setup"
             elif action == "level_now":
                 _flight_zero()
-            elif action and action.startswith("trim:"):
-                _, key, delta_str = action.split(":")
-                disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
-                _settings.mark_dirty()
             elif action and action.startswith("align:"):
                 # Input-side axis alignment — clamp to ±15° to match the
                 # firmware-side cap, push to the Pico via $ALIGN.
@@ -8260,7 +8263,7 @@ _SS_TITLE_BAR_H = 44
 _ss_drag = None
 _SS_DRAG_THRESHOLD = 8
 _SS_DRAG_MODES = {         # mode → n_rows (used to clamp max scroll)
-    "ahrs_setup":         9,
+    "ahrs_setup":         7,
     "system_setup":       9,
     "connectivity_setup": 9,
     "flight_profile":     8,
@@ -8425,9 +8428,19 @@ _DSP_ROWS_MAP = [
     ("traffic_range_nm", "TFC RANGE", "Hide traffic beyond range (nm)",
      [0, 5, 10, 20, 40], ["ALL", "5", "10", "20", "40"], 56),
 ]
-_DSP_TAB_LABELS = ["UNITS", "DISPLAY", "MAP"]
-_DSP_TAB_ROWS   = [_DSP_ROWS_UNITS, _DSP_ROWS_DISPLAY, _DSP_ROWS_MAP]
+# HORIZON tab — PITCH / ROLL TRIM, the DISPLAY-side horizon offset.  Kept off
+# the AHRS / SENSORS page (which now holds only the AHRS-sensor zero: PITCH/ROLL
+# ALIGN + the ZERO cage) so the AHRS zero and the display zero aren't mixed in
+# the same space.  Both are ±0.1° trim steppers, drawn by hand like the
+# TERRAIN INHIBIT row rather than via the segmented-control schema.
+_DSP_ROWS_HORIZON = []          # no schema rows; the two trims are custom-drawn
+_DSP_TAB_LABELS = ["UNITS", "DISPLAY", "MAP", "HORIZON"]
+_DSP_TAB_ROWS   = [_DSP_ROWS_UNITS, _DSP_ROWS_DISPLAY, _DSP_ROWS_MAP,
+                   _DSP_ROWS_HORIZON]
 _DSP_MAP_TAB_INDEX = 2          # MAP LAYERS appears only on this tab
+_DSP_TRIM_TAB_INDEX = 3         # PITCH / ROLL TRIM live on this tab
+_DSP_TRIM_KEYS = (("pitch_trim", "PITCH TRIM", "Horizon pitch offset (display)"),
+                  ("roll_trim",  "ROLL TRIM",  "Wing-level offset (display)"))
 # TERRAIN INHIBIT is a momentary action button (with a live countdown), not an
 # enum toggle, so it doesn't fit the segmented-control row schema.  It's drawn
 # by hand as an extra row appended to the DISPLAY tab — it's a display/TAWS
@@ -8644,6 +8657,17 @@ def draw_display_setup(surf, ds):
             _action_btn(surf, ix, iy, iw, ih, f"INHIBIT  {int(inh_rem)}s", "warn")
         else:
             _action_btn(surf, ix, iy, iw, ih, "INHIBIT", "normal")
+
+    # HORIZON tab — PITCH / ROLL TRIM (display-side horizon offset).  These are
+    # the display's own attitude nudge, kept separate from the AHRS-sensor ZERO
+    # on the AHRS page.  Stored in disp["ss"] (the same value the AI renderer
+    # adds), one ±0.1° trim stepper per row.
+    if tab == _DSP_TRIM_TAB_INDEX:
+        _ss = disp["ss"]
+        for li, (key, label, sub) in enumerate(_DSP_TRIM_KEYS):
+            bx, by, bw, bh = _setting_row(surf, li, label, sub,
+                                          _y_override=_dsp_row_y(li))
+            _trim_stepper(surf, bx, by, bw, bh, _ss.get(key, 0.0), key)
     surf.set_clip(_prev_clip)
 
 
@@ -8709,6 +8733,21 @@ def display_setup_hit(x, y, ds):
         ix, iy, iw, ih = _dsp_inhibit_btn_rect()
         if ix <= x <= ix + iw and iy <= y <= iy + ih:
             return "terrain_inhibit_toggle"
+
+    if tab == _DSP_TRIM_TAB_INDEX:
+        bw = DISPLAY_W - 2 * _SS_MX
+        total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
+        rx_trim = _SS_MX + bw - total - 14
+        for li, (key, _label, _sub) in enumerate(_DSP_TRIM_KEYS):
+            by = _dsp_row_y(li)
+            ry = by + (_SS_RH - _SS_TRIM_H) // 2
+            if not (ry <= y <= ry + _SS_TRIM_H):
+                continue
+            if rx_trim <= x <= rx_trim + _SS_TRIM_SW:
+                return f"trim:{key}:-0.1"
+            plus_x = rx_trim + _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G
+            if plus_x <= x <= plus_x + _SS_TRIM_SW:
+                return f"trim:{key}:+0.1"
     return None
 
 
@@ -9784,16 +9823,32 @@ def draw_ahrs_setup(surf, ss):
     _screen_header(surf, "AHRS / SENSORS")
     _prev_clip = _ss_clip_to_content(surf)
 
-    # Row 0: Pitch trim + LEVEL (flight-zero) button.  LEVEL captures the
-    # current attitude as the new zero for BOTH axes (Sentry/ForeFlight cage).
-    bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM",
-                                  "Horizon offset  ·  LEVEL = AHRS flight zero")
-    _trim_stepper(surf, bx, by, bw, bh, ss.get("pitch_trim", 0.0), "pitch_trim")
-    _action_btn(surf, *_level_btn_rect(0), "LEVEL", "ok")
+    # Row 0: PITCH ALIGN + ZERO (flight-zero) button.  ALIGN is the input-side
+    # axis alignment — it rotates the raw gyro/accel/mag BEFORE the Mahony
+    # filter to cancel a mounting tilt.  ZERO auto-captures the current
+    # attitude into BOTH align axes (the Sentry/ForeFlight cage) — a true AHRS
+    # SENSOR zero, pushed to the Pico via $ALIGN and persisted in its flash;
+    # "sending…" shows until the Pico echoes the new value back.
+    # (PITCH/ROLL TRIM — the display-side horizon offset — now live on the
+    #  DISPLAY setup page so the AHRS zero and the display zero aren't mixed
+    #  in the same space.)
+    pico_pa = float(disp.get("pitch_align", 0.0))
+    sel_pa  = float(ss.get("pitch_align", pico_pa))
+    pa_sub  = "Sensor mounting alignment  ·  ZERO = cage to current attitude"
+    if abs(sel_pa - pico_pa) > 0.05:
+        pa_sub = f"Sensor mounting alignment  (AHRS: {pico_pa:+.1f}° — sending…)"
+    bx, by, bw, bh = _setting_row(surf, 0, "PITCH ALIGN", pa_sub)
+    _trim_stepper(surf, bx, by, bw, bh, sel_pa, "pitch_align")
+    _action_btn(surf, *_level_btn_rect(0), "ZERO", "ok")
 
-    # Row 1: Roll trim
-    bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction")
-    _trim_stepper(surf, bx, by, bw, bh, ss.get("roll_trim", 0.0), "roll_trim")
+    # Row 1: ROLL ALIGN
+    pico_ra = float(disp.get("roll_align", 0.0))
+    sel_ra  = float(ss.get("roll_align", pico_ra))
+    ra_sub  = "Sensor mounting alignment (roll axis)"
+    if abs(sel_ra - pico_ra) > 0.05:
+        ra_sub = f"Sensor mounting alignment (roll axis)  (AHRS: {pico_ra:+.1f}° — sending…)"
+    bx, by, bw, bh = _setting_row(surf, 1, "ROLL ALIGN", ra_sub)
+    _trim_stepper(surf, bx, by, bw, bh, sel_ra, "roll_align")
 
     # Row 2: Magnetometer calibration — cardinal walk-through wizard
     bx, by, bw, bh = _setting_row(surf, 2, "MAGNETOMETER", "Compass calibration")
@@ -9875,31 +9930,6 @@ def draw_ahrs_setup(surf, ss):
     for i, (v, lbl) in enumerate(opts_as):
         _seg_btn(surf, rx+i*(120+_DSP_BTN_G), ry, 120, _DSP_BTN_H, lbl, v == cur_as)
 
-    # Rows 7 & 8: PITCH / ROLL ALIGN — input-side axis alignment.  Unlike
-    # the TRIM rows above (output-side static offsets), these rotate the
-    # raw gyro/accel/mag before the Mahony filter, killing yaw-rate
-    # coupling into pitch/roll from imperfect sensor mounting.  This is
-    # also where the LEVEL / flight-zero button writes.  Pushed to the
-    # Pico via $ALIGN; "sending…" hint shows until the Pico echoes the
-    # new value back in its $AHRS broadcast.
-    # (TERRAIN INHIBIT lives on the DISPLAY page — it's a display/TAWS
-    # preference, not an AHRS-sensor setting.)
-    pico_pa = float(disp.get("pitch_align", 0.0))
-    sel_pa  = float(ss.get("pitch_align", pico_pa))
-    pa_sub  = "Yaw-coupling fix; tune until turns don't pitch the display"
-    if abs(sel_pa - pico_pa) > 0.05:
-        pa_sub = f"{pa_sub}  (AHRS: {pico_pa:+.1f}° — sending…)"
-    bx, by, bw, bh = _setting_row(surf, 7, "PITCH ALIGN", pa_sub)
-    _trim_stepper(surf, bx, by, bw, bh, sel_pa, "pitch_align")
-
-    pico_ra = float(disp.get("roll_align", 0.0))
-    sel_ra  = float(ss.get("roll_align", pico_ra))
-    ra_sub  = "Yaw-coupling fix; tune until turns don't roll the display"
-    if abs(sel_ra - pico_ra) > 0.05:
-        ra_sub = f"{ra_sub}  (AHRS: {pico_ra:+.1f}° — sending…)"
-    bx, by, bw, bh = _setting_row(surf, 8, "ROLL ALIGN", ra_sub)
-    _trim_stepper(surf, bx, by, bw, bh, sel_ra, "roll_align")
-
     surf.set_clip(_prev_clip)
 
 
@@ -9909,17 +9939,16 @@ def ahrs_setup_hit(x, y, ss):
     bw = DISPLAY_W - 2*_SS_MX
     total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
     rx_trim = _SS_MX + bw - total - 14
-    for ri in range(9):
+    for ri in range(7):
         by = _ss_row_y(ri)
         if not (by <= y <= by+_SS_RH):
             continue
         bx = _SS_MX
-        if ri in (0, 1, 7, 8):
-            # Stepper rows: pitch/roll TRIM (output offset) on 0/1,
-            # pitch/roll ALIGN (input rotation) on 7/8.  All use the
-            # same ±0.1° step widget.
-            key = {0: "pitch_trim", 1: "roll_trim",
-                   7: "pitch_align", 8: "roll_align"}[ri]
+        if ri in (0, 1):
+            # Stepper rows: pitch/roll ALIGN (input rotation) on 0/1, using
+            # the ±0.1° step widget.  Row 0 also carries the ZERO button.
+            # (PITCH/ROLL TRIM moved to the DISPLAY setup page.)
+            key = {0: "pitch_align", 1: "roll_align"}[ri]
             ry = by + (_SS_RH - _SS_TRIM_H) // 2
             if not (ry <= y <= ry+_SS_TRIM_H):
                 continue
@@ -9927,12 +9956,11 @@ def ahrs_setup_hit(x, y, ss):
                 lx, _ly, lw, _lh = _level_btn_rect(0)
                 if lx <= x <= lx + lw:     # y already gated by the row check
                     return "level_now"
-            action_prefix = "align" if ri in (7, 8) else "trim"
             if rx_trim <= x <= rx_trim+_SS_TRIM_SW:
-                return f"{action_prefix}:{key}:-0.1"
+                return f"align:{key}:-0.1"
             plus_x = rx_trim + _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G
             if plus_x <= x <= plus_x+_SS_TRIM_SW:
-                return f"{action_prefix}:{key}:+0.1"
+                return f"align:{key}:+0.1"
         elif ri == 2:
             cbx = _SS_MX + bw - 138 - 14
             cby = by + (_SS_RH - _DSP_BTN_H) // 2

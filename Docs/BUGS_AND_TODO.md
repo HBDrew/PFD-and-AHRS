@@ -8,6 +8,22 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### UI-AHRS-ZERO-VS-TRIM-SPLIT  Separate the AHRS zero from the display zero
+Status: **DONE (pi4 + pi_zero) — code + manuals landed**
+Pilot note: "confusing to have an AHRS Zero and a display zero in the same
+space." Reworked the AHRS / SENSORS page to hold ONLY AHRS-sensor settings —
+PITCH ALIGN + ROLL ALIGN with the **ZERO** (flight-zero) button on the PITCH
+ALIGN row at the top, then mag/orient/mount/hdg/airspeed. The display-side
+PITCH/ROLL TRIM moved to a new **HORIZON** tab on the DISPLAY setup page (tab
+index 3, `_DSP_TRIM_TAB_INDEX`, custom trim-stepper rows like TERRAIN INHIBIT;
+stored in disp["ss"] as before so the AI renderer is unchanged). The LEVEL
+button was relabelled **ZERO** to match the "AHRS zero" framing. pi_zero gained
+the PITCH/ROLL ALIGN steppers it never had (parity), and now copies the
+broadcast pitch_align/roll_align/mounting/orientation into disp so `_flight_zero`
+reads the AHRS-confirmed align (not a stale settings value). AHRS drag rows
+9→7. No firmware change. Files: `pi4/pfd.py`, `pi_zero/pfd.py`. Docs:
+USER_MANUAL_PI4 §10/§11, USER_MANUAL_ZERO §10/§11.
+
 ### UI-TERRAIN-INHIBIT-MOVE  Move TERRAIN INHIBIT to the DISPLAY page
 Status: **DONE (pi4) — code + manual landed**
 Pilot note: terrain inhibit is a display/TAWS preference, not an AHRS-sensor
