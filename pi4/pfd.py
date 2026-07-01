@@ -2838,7 +2838,10 @@ def _update_nexrad():
     if _nexrad_client is None:
         return
     show = bool(disp["ds"].get("map_show_nexrad"))
-    _nexrad_client.paused = not show
+    # Keep the poller running even when the overlay is off so the radar LOOP
+    # records internet-NEXRAD history in the background (trivial data — Starlink
+    # in flight).  Paused only when the pilot chose FIS-B / RADIO-only weather.
+    _nexrad_client.paused = (disp["cs"].get("wx_source", "auto") == "radio")
     if not show:
         return
     png, bbox, seq = _nexrad_client.snapshot()
@@ -2915,24 +2918,45 @@ def _wxloop_fisb_render_cells():
     return fr[1] if (fr and fr[1]) else None
 
 
-def _wxloop_scrubber_rects():
-    """(playpause_rect, bar_rect) for the MFD radar scrubber — a play/pause
-    button + timeline sitting between the zoom buttons, just above the strip."""
+def _wxloop_row():
+    """(x0, x1, cy) usable span for the bottom-centre radar-loop controls —
+    between the zoom buttons, vertically centred on the zoom row."""
     z = _P4_MFD_ZOOM
     p = _P4_MFD_PAD
     _, sy, _, _ = _mfd_strip_rect()
     cy = (sy - 6 - z) + z // 2
-    pp_w, pp_h = 48, 40
-    x0 = p + z + 12
-    pp = (x0, cy - pp_h // 2, pp_w, pp_h)
-    bar_x = x0 + pp_w + 12
-    bar_r = (bar_x, cy - 9, (DISPLAY_W - z - p - 12) - bar_x, 18)
-    return pp, bar_r
+    return (p + z + 14, DISPLAY_W - z - p - 14, cy)
+
+
+def _wxloop_loop_btn_rect():
+    """Centred '▶ LOOP' pill (playback off)."""
+    x0, x1, cy = _wxloop_row()
+    w, h = 156, 42
+    return ((x0 + x1) // 2 - w // 2, cy - h // 2, w, h)
+
+
+def _wxloop_playpause_rect():
+    x0, _x1, cy = _wxloop_row()
+    w, h = 52, 42
+    return (x0, cy - h // 2, w, h)
+
+
+def _wxloop_live_rect():
+    _x0, x1, cy = _wxloop_row()
+    w, h = 96, 42
+    return (x1 - w, cy - h // 2, w, h)
+
+
+def _wxloop_bar_rect():
+    _x0, _x1, cy = _wxloop_row()
+    bx = _wxloop_playpause_rect()[0] + _wxloop_playpause_rect()[2] + 12
+    bx1 = _wxloop_live_rect()[0] - 12
+    return (bx, cy - 9, max(20, bx1 - bx), 18)
 
 
 def _wxloop_scrub_idx_at(x):
     """Frame index for a tap at screen-x on the scrubber bar."""
-    _pp, (bx, _by, bw, _bh) = _wxloop_scrubber_rects()
+    bx, _by, bw, _bh = _wxloop_bar_rect()
     n = _wxloop.count()
     if n <= 1 or bw <= 0:
         return 0
@@ -2940,14 +2964,19 @@ def _wxloop_scrub_idx_at(x):
     return int(round(frac * (n - 1)))
 
 
-def _wxloop_draw_scrubber(surf):
-    """Play/pause + timeline + frame-age label for the radar loop (MFD only)."""
+def _wxloop_draw_controls(surf):
+    """Bottom-centre radar-loop controls (MFD only): a '▶ LOOP' pill when live,
+    or play/pause + timeline + '● LIVE' with a frame-age label while playing."""
     n = _wxloop.count()
     if n == 0:
         return
-    pp, (bx, by, bw, bh) = _wxloop_scrubber_rects()
-    _action_btn(surf, *pp, "❚❚" if _wxloop.playing else "▶",
-                "normal", r=6)
+    if not _wxloop.on:
+        _action_btn(surf, *_wxloop_loop_btn_rect(), "▶ LOOP", "ok", r=6)
+        return
+    _action_btn(surf, *_wxloop_playpause_rect(),
+                "❚❚" if _wxloop.playing else "▶", "normal", r=6)
+    _action_btn(surf, *_wxloop_live_rect(), "● LIVE", "warn", r=6)
+    bx, by, bw, bh = _wxloop_bar_rect()
     pygame.draw.rect(surf, (0, 10, 24), (bx, by, bw, bh), border_radius=4)
     pygame.draw.rect(surf, (60, 90, 120), (bx, by, bw, bh), width=1, border_radius=4)
     span = max(1, n - 1)
@@ -6341,11 +6370,13 @@ def handle_event(event, demo_mode):
             elif _in(r["layers"]):
                 disp["mfd_layers"] = True        # open the quick layers panel
             elif (disp["ds"].get("map_show_nexrad") and _wxloop.count() > 0
-                  and _in(r["loop"])):
-                _wxloop.toggle()                 # LOOP ↔ LIVE (radar playback)
-            elif _wxloop.on and _in(_wxloop_scrubber_rects()[0]):
+                  and not _wxloop.on and _in(_wxloop_loop_btn_rect())):
+                _wxloop.enter()                  # ▶ LOOP → playback
+            elif _wxloop.on and _in(_wxloop_playpause_rect()):
                 _wxloop.toggle_play()            # ▶ / ❚❚
-            elif _wxloop.on and _in(_wxloop_scrubber_rects()[1]):
+            elif _wxloop.on and _in(_wxloop_live_rect()):
+                _wxloop.exit()                   # ● LIVE → back to live
+            elif _wxloop.on and _in(_wxloop_bar_rect()):
                 _wxloop.scrub_to(_wxloop_scrub_idx_at(x))
             elif _in(r["d2"]):
                 # Direct-to entry — reuse the PFD's nav keyboard (NEAREST /
@@ -15776,7 +15807,6 @@ def _p4_mfd_rects():
         "wtime":    (p + 2 * (bw + p), p, bw, bh),        # WND only, right of alt
         "fpl":      (W - bw - p, p, bw, bh),              # top-right
         "ovly":     (p, p + bh + p, bw, bh),              # under D2
-        "loop":     (p, p + 2 * (bh + p), bw, bh),        # under OVLY (radar loop)
         "orient":   (W - bw - p, p + bh + p, bw, bh),     # under FPL
         "center":   (W - bw - p, p + 2 * (bh + p), bw, bh),  # CTR (when panned)
         "zoom_out": (p, zy, z, z),                        # above strip, left
@@ -16069,14 +16099,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
     ox, oy, ow, oh = r["orient"]
     _text(surf, "TRK↑" if ds.get("map_orient", "trk") == "trk" else "N↑",
           20, CYAN, bold=True, cx=ox + ow // 2, cy=oy + oh // 2)
-    # Radar loop (MFD only): LOOP toggle when NEXRAD is on and frames exist;
-    # the scrubber shows while playing back.
+    # Radar loop (MFD only): bottom-centre LOOP pill / scrubber when NEXRAD is
+    # on and frames exist.
     if ds.get("map_show_nexrad") and _wxloop.count() > 0:
-        if _wxloop.on:
-            _action_btn(surf, *r["loop"], "● LIVE", "warn", r=6)
-            _wxloop_draw_scrubber(surf)
-        else:
-            _action_btn(surf, *r["loop"], "▶ LOOP", "ok", r=6)
+        _wxloop_draw_controls(surf)
     if _mfd_is_panned():
         _action_btn(surf, *r["center"], "CTR", "ok", r=6)
     _action_btn(surf, *r["zoom_out"], "−", "normal", r=8)

@@ -4493,21 +4493,22 @@ def handle_event(event, demo_mode):
                 print(f"[MFD] overlay → {nxt}")
                 _settings.mark_dirty()
                 return True
-            # Radar loop (MFD only): LOOP ↔ LIVE, play/pause, scrub.
-            if disp["ds"].get("map_show_nexrad") and _wxloop.count() > 0:
-                _lr = _mfd_loop_btn_rect()
-                if (_lr[0] <= x <= _lr[0] + _lr[2]
-                        and _lr[1] <= y <= _lr[1] + _lr[3]):
-                    _wxloop.toggle()
-                    return True
+            # Radar loop (MFD only): bottom-centre LOOP / play-pause / scrub / LIVE.
+            def _pin(rc):
+                return (rc[0] <= x <= rc[0] + rc[2]
+                        and rc[1] <= y <= rc[1] + rc[3])
+            if (disp["ds"].get("map_show_nexrad") and _wxloop.count() > 0
+                    and not _wxloop.on and _pin(_wxloop_loop_btn_rect())):
+                _wxloop.enter()
+                return True
             if _wxloop.on:
-                _pp, _br = _wxloop_scrubber_rects()
-                if (_pp[0] <= x <= _pp[0] + _pp[2]
-                        and _pp[1] <= y <= _pp[1] + _pp[3]):
+                if _pin(_wxloop_playpause_rect()):
                     _wxloop.toggle_play()
                     return True
-                if (_br[0] <= x <= _br[0] + _br[2]
-                        and _br[1] <= y <= _br[1] + _br[3]):
+                if _pin(_wxloop_live_rect()):
+                    _wxloop.exit()
+                    return True
+                if _pin(_wxloop_bar_rect()):
                     _wxloop.scrub_to(_wxloop_scrub_idx_at(x))
                     return True
             if _mfd_source_status_hit(x, y):
@@ -6908,7 +6909,10 @@ def _update_nexrad():
     if _nexrad_client is None:
         return
     show = bool(disp["ds"].get("map_show_nexrad"))
-    _nexrad_client.paused = not show
+    # Keep the poller running even when the overlay is off so the radar LOOP
+    # records internet-NEXRAD history in the background (trivial data).  Paused
+    # only when the pilot chose FIS-B / RADIO-only weather.
+    _nexrad_client.paused = (disp["cs"].get("wx_source", "auto") == "radio")
     if not show:
         return
     png, bbox, seq = _nexrad_client.snapshot()
@@ -6981,29 +6985,44 @@ def _wxloop_fisb_render_cells():
     return fr[1] if (fr and fr[1]) else None
 
 
-def _mfd_loop_btn_rect():
-    """Radar-loop LOOP/LIVE toggle — under the OVLY button (left column)."""
-    ovx, ovy, ovw, ovh = _mfd_overlay_btn_rect()
-    return (ovx, ovy + ovh + 6, ovw, ovh)
-
-
-def _wxloop_scrubber_rects():
-    """(playpause_rect, bar_rect) — play/pause + timeline between the zoom
-    buttons, just above the data strip."""
+def _wxloop_row():
+    """(x0, x1, cy) usable span for the bottom-centre radar-loop controls —
+    between the zoom buttons, vertically centred on the zoom row."""
     pad = 6
     _, sy, _, _ = _mfd_strip_rect()
     z = _MFD_ZOOM_BTN
     cy = (sy - _MFD_STRIP_PAD - z) + z // 2
-    pp_w, pp_h = 46, 38
-    x0 = pad + z + 10
-    pp = (x0, cy - pp_h // 2, pp_w, pp_h)
-    bar_x = x0 + pp_w + 10
-    bar_r = (bar_x, cy - 9, (DISPLAY_W - z - pad - 10) - bar_x, 18)
-    return pp, bar_r
+    return (pad + z + 12, DISPLAY_W - z - pad - 12, cy)
+
+
+def _wxloop_loop_btn_rect():
+    """Centred '▶ LOOP' pill (playback off)."""
+    x0, x1, cy = _wxloop_row()
+    w, h = 150, 40
+    return ((x0 + x1) // 2 - w // 2, cy - h // 2, w, h)
+
+
+def _wxloop_playpause_rect():
+    x0, _x1, cy = _wxloop_row()
+    w, h = 48, 40
+    return (x0, cy - h // 2, w, h)
+
+
+def _wxloop_live_rect():
+    _x0, x1, cy = _wxloop_row()
+    w, h = 92, 40
+    return (x1 - w, cy - h // 2, w, h)
+
+
+def _wxloop_bar_rect():
+    _x0, _x1, cy = _wxloop_row()
+    bx = _wxloop_playpause_rect()[0] + _wxloop_playpause_rect()[2] + 10
+    bx1 = _wxloop_live_rect()[0] - 10
+    return (bx, cy - 9, max(20, bx1 - bx), 18)
 
 
 def _wxloop_scrub_idx_at(x):
-    _pp, (bx, _by, bw, _bh) = _wxloop_scrubber_rects()
+    bx, _by, bw, _bh = _wxloop_bar_rect()
     n = _wxloop.count()
     if n <= 1 or bw <= 0:
         return 0
@@ -7011,12 +7030,19 @@ def _wxloop_scrub_idx_at(x):
     return int(round(frac * (n - 1)))
 
 
-def _wxloop_draw_scrubber(surf):
+def _wxloop_draw_controls(surf):
+    """Bottom-centre radar-loop controls (MFD only): a '▶ LOOP' pill when live,
+    or play/pause + timeline + '● LIVE' with a frame-age label while playing."""
     n = _wxloop.count()
     if n == 0:
         return
-    pp, (bx, by, bw, bh) = _wxloop_scrubber_rects()
-    _action_btn(surf, *pp, "❚❚" if _wxloop.playing else "▶", "normal", r=6)
+    if not _wxloop.on:
+        _action_btn(surf, *_wxloop_loop_btn_rect(), "▶ LOOP", "ok", r=5)
+        return
+    _action_btn(surf, *_wxloop_playpause_rect(),
+                "❚❚" if _wxloop.playing else "▶", "normal", r=5)
+    _action_btn(surf, *_wxloop_live_rect(), "● LIVE", "warn", r=5)
+    bx, by, bw, bh = _wxloop_bar_rect()
     pygame.draw.rect(surf, (0, 10, 24), (bx, by, bw, bh), border_radius=4)
     pygame.draw.rect(surf, (60, 90, 120), (bx, by, bw, bh), width=1, border_radius=4)
     span = max(1, n - 1)
@@ -12528,15 +12554,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
     _action_btn(surf, zo_x, zo_y, zo_w, zo_h, "−", "normal", r=8)
     _action_btn(surf, zi_x, zi_y, zi_w, zi_h, "+", "normal", r=8)
 
-    # Radar loop (MFD only): LOOP toggle when NEXRAD is on and frames exist;
-    # the scrubber shows while playing back.
+    # Radar loop (MFD only): bottom-centre LOOP pill / scrubber when NEXRAD is
+    # on and frames exist.
     if disp["ds"].get("map_show_nexrad") and _wxloop.count() > 0:
-        lx, ly, lw, lh = _mfd_loop_btn_rect()
-        if _wxloop.on:
-            _action_btn(surf, lx, ly, lw, lh, "● LIVE", "warn", r=5)
-            _wxloop_draw_scrubber(surf)
-        else:
-            _action_btn(surf, lx, ly, lw, lh, "▶ LOOP", "ok", r=5)
+        _wxloop_draw_controls(surf)
     _draw_mfd_layers_icon(surf)
 
     # No-link / stale-data badges
