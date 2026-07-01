@@ -8,6 +8,33 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### MANUALS-UPDATE  Update user manuals for the nav-data-pi-settings session
+Status: **OPEN — features shipped + merged to main; docs pending**
+Update `Docs/USER_MANUAL_PI4.md`, `Docs/USER_MANUAL_ZERO.md`,
+`Docs/USER_MANUAL_IPHONE.md` (where applicable) and `README.md` to cover
+everything landed this session (branch `claude/nav-data-pi-settings`):
+  - **Nav data**: DATA & MAPS → NAV DATA download; the 28-day refresh flow
+    (`Docs/NAVDATA_UPDATE.md`) + the browser/iPad **Publish nav data** Actions
+    workflow (`.github/workflows/publish-navdata.yml`).
+  - **Nav-data currency badge**: it's a ~56-day validity window (issue date +
+    effective period), NOT the 28-day publish cadence — document so it isn't
+    mistaken for a bug.
+  - **Approaches on the Pi Zero**: LOAD / ACTIVATE / CANCEL + **CHANGE APPR**
+    3-button row on the FPL page; SELECT APPROACH → TRANSITION → PREVIEW
+    (terrain + racetrack holds); loaded-approach leg list on the FPL; runway DB
+    now loaded on the Zero (data-only, still no runway drawing).
+  - **Screen-sync additions**: approach load/activate/cancel now syncs both ways
+    (last-write-wins); **V-speeds / flight profile sync** across all displays;
+    the reboot/power-up re-alignment keepalive.
+  - **SIM**: FOLLOW FLIGHT-PLAN now holds the leg centerline enroute (not just
+    on approaches).
+  - **PFD**: approach fix sign-posts gated to within 30 nm.
+  - **MFD radar LOOP**: NEXRAD/FIS-B playback — bottom-centre ▶ LOOP → play/
+    pause · scrubber · ● LIVE, "RADAR −NN min"; FIS-B from a RAM buffer,
+    internet NEXRAD pulled on demand from the IEM time-machine archive (WMS-T,
+    `n0q-t.cgi` / `nexrad-n0q-wmst`), 60 min at 5-min steps, session-cached.
+Also refresh any previews the above changed (ties into HITS-PREVIEW below).
+
 ### HITS-PREVIEW  Recapture approach previews (HITS fix + orange fix boxes)
 Status: **OPEN — queued for tomorrow; code fix already in, captures pending**
 Context: the recurring "no HITS boxes in previews" bug was the scenes setting
