@@ -344,6 +344,108 @@ def filter_targets(targets, alt_band_ft=0, range_nm=0, keep_alert=True):
     return out
 
 
+# ── Ownship-echo rejection (internet/aggregator feeds) ────────────────────────
+# A public ADS-B aggregator (airplanes.live / adsb.lol / adsb.fi …) has no idea
+# which hex code is *us*, so it hands our own transponder back like any other
+# aircraft.  On the map that shows up as a traffic diamond glued to the ownship
+# symbol — the "own-ship echo".  A local SDR avoids this because it decodes the
+# GDL90 Ownship Report (0x0A) and never files it as traffic; the internet feed
+# has no such report, so we reject the echo geometrically instead.
+_OWN_ECHO_RADIUS_NM = 0.6     # co-located horizontal window (~3600 ft)
+_OWN_ECHO_ALT_FT    = 350.0   # co-altitude window (both alts known)
+_OWN_ECHO_GS_TOL_KT = 45.0    # velocity-corroboration tolerances (when moving)
+_OWN_ECHO_TRK_TOL_D = 45.0
+_OWN_ECHO_MOVE_KT   = 30.0    # below this groundspeed, skip the velocity check
+
+
+def is_ownship_echo(t, own_lat, own_lon, own_alt_ft,
+                    own_gs_kt=None, own_track_deg=None,
+                    radius_nm=_OWN_ECHO_RADIUS_NM, alt_ft=_OWN_ECHO_ALT_FT,
+                    gs_tol_kt=_OWN_ECHO_GS_TOL_KT,
+                    track_tol_deg=_OWN_ECHO_TRK_TOL_D,
+                    move_kt=_OWN_ECHO_MOVE_KT):
+    """True if target ``t`` looks like the ownship's own transponder echoed
+    back by an internet feed.
+
+    Geometry gate — must be co-located within ``radius_nm`` horizontally and,
+    when both altitudes are known, within ``alt_ft`` vertically.
+
+    Velocity corroboration — when the ownship is actually moving
+    (``own_gs_kt`` > ``move_kt``) and BOTH sides report a groundspeed, the
+    match must also agree in speed (and, when both are moving, in track).  A
+    real intruder that happens to be co-located and co-altitude usually is
+    *not* also flying our exact velocity vector, so this veto keeps a genuine
+    close pass visible while still nuking the echo (which by definition carries
+    our own velocity).  When velocity isn't available, geometry alone decides.
+    """
+    tlat = t.get("lat")
+    tlon = t.get("lon")
+    if tlat is None or tlon is None or own_lat is None or own_lon is None:
+        return False
+    dlat = tlat - own_lat
+    dlon = (tlon - own_lon) * math.cos(math.radians((tlat + own_lat) / 2))
+    rng = math.hypot(dlat, dlon) * _NM_PER_DEG_LAT
+    if rng > radius_nm:
+        return False
+    talt = t.get("alt_ft")
+    if (talt is not None and own_alt_ft is not None
+            and abs(talt - own_alt_ft) > alt_ft):
+        return False
+    if own_gs_kt is not None and own_gs_kt > move_kt:
+        tgs = t.get("gs_kt")
+        if tgs is None:
+            tgs = t.get("gs")
+        if tgs is not None and abs(tgs - own_gs_kt) > gs_tol_kt:
+            return False       # co-located but clearly a different speed
+        if (own_track_deg is not None and tgs is not None and tgs > move_kt):
+            ttrk = t.get("track_deg")
+            if ttrk is None:
+                ttrk = t.get("track")
+            if ttrk is not None:
+                dtrk = abs((ttrk - own_track_deg + 180.0) % 360.0 - 180.0)
+                if dtrk > track_tol_deg:
+                    return False   # heading somewhere else — not us
+    return True
+
+
+class OwnshipEchoFilter:
+    """Stateful ownship-echo suppressor for internet traffic.
+
+    Stage 1 (geometry) catches the echo the instant the feed starts; stage 2
+    latches the offending ICAO and keeps dropping it by hex for ``hold_s`` even
+    if feed lag briefly slides the reported position outside the geometry
+    window (the aggregator's fix lags the aircraft's real GPS by a few
+    seconds, so the echo can drift ~0.2–0.4 NM before catching up).  The latch
+    self-expires so a stale hex is never suppressed forever."""
+
+    def __init__(self, hold_s=45.0, **echo_kwargs):
+        self.hold_s      = hold_s
+        self._echo_kwargs = echo_kwargs
+        self._icao       = None
+        self._until      = 0.0
+
+    @property
+    def own_icao(self):
+        return self._icao
+
+    def filter(self, targets, own_lat, own_lon, own_alt_ft, now,
+               own_gs_kt=None, own_track_deg=None):
+        """Return ``targets`` with the ownship echo removed."""
+        out = []
+        for t in targets:
+            if is_ownship_echo(t, own_lat, own_lon, own_alt_ft,
+                               own_gs_kt=own_gs_kt, own_track_deg=own_track_deg,
+                               **self._echo_kwargs):
+                self._icao  = t.get("icao")
+                self._until = now + self.hold_s
+                continue
+            icao = t.get("icao")
+            if icao is not None and icao == self._icao and now < self._until:
+                continue     # latched echo hex, still within the hold window
+            out.append(t)
+        return out
+
+
 # ── Demo traffic generator ────────────────────────────────────────────────────
 # Lets the ADS-B render path be exercised in --demo without a receiver.  A
 # handful of targets orbit / track past the demo aircraft position.

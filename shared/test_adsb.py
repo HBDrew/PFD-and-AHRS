@@ -274,6 +274,61 @@ def test_udp_loopback():
     check(not c.is_alive(), "client thread stops cleanly")
 
 
+def test_ownship_echo_geometry():
+    own = (34.0, -111.0, 8000)
+    # Echo: essentially on top of us, co-altitude.
+    echo = {"icao": "AAA111", "lat": 34.0005, "lon": -111.0005, "alt_ft": 8000,
+            "gs_kt": 120, "track_deg": 90}
+    check(adsb.is_ownship_echo(echo, *own, own_gs_kt=120, own_track_deg=90),
+          "co-located, co-alt, co-velocity → echo")
+    # Far target due north, 2 NM — never an echo.
+    far = {"icao": "BBB222", "lat": 34.0 + 2.0/60.0, "lon": -111.0,
+           "alt_ft": 8000, "gs_kt": 120, "track_deg": 90}
+    check(not adsb.is_ownship_echo(far, *own, own_gs_kt=120, own_track_deg=90),
+          "2 NM away → not an echo")
+    # Co-located but 1500 ft above → different aircraft, keep it.
+    above = {"icao": "CCC333", "lat": 34.0003, "lon": -111.0003, "alt_ft": 9500,
+             "gs_kt": 120, "track_deg": 90}
+    check(not adsb.is_ownship_echo(above, *own, own_gs_kt=120, own_track_deg=90),
+          "co-located but 1500 ft above → not an echo")
+    # Co-located, co-alt, but crossing traffic on a very different heading →
+    # velocity veto keeps a genuine close pass visible.
+    crossing = {"icao": "DDD444", "lat": 34.0004, "lon": -111.0002,
+                "alt_ft": 8050, "gs_kt": 130, "track_deg": 270}
+    check(not adsb.is_ownship_echo(crossing, *own,
+                                   own_gs_kt=120, own_track_deg=90),
+          "opposite-heading close traffic → not vetoed as echo")
+    # Stationary on the ramp: velocity check is skipped, geometry alone.
+    ramp_echo = {"icao": "EEE555", "lat": 34.0001, "lon": -111.0001,
+                 "alt_ft": None, "gs_kt": 0, "track_deg": 0}
+    check(adsb.is_ownship_echo(ramp_echo, 34.0, -111.0, None,
+                               own_gs_kt=0, own_track_deg=0),
+          "stationary co-located target → echo (no velocity gate)")
+
+
+def test_ownship_echo_latch():
+    f = adsb.OwnshipEchoFilter(hold_s=30.0)
+    own = (34.0, -111.0, 8000)
+    echo = {"icao": "F00D01", "lat": 34.0004, "lon": -111.0004, "alt_ft": 8000,
+            "gs_kt": 100, "track_deg": 180}
+    other = {"icao": "0C0FFE", "lat": 34.05, "lon": -111.05, "alt_ft": 8000,
+             "gs_kt": 300, "track_deg": 45}
+    # First pass: echo removed geometrically, other kept, hex latched.
+    out = f.filter([echo, other], *own, 100.0, own_gs_kt=100, own_track_deg=180)
+    check([t["icao"] for t in out] == ["0C0FFE"], "echo dropped, other kept")
+    check(f.own_icao == "F00D01", "echo hex latched")
+    # Second pass: feed lag has slid the echo 0.9 NM away (outside the 0.6 NM
+    # geometry window), but the latched hex still suppresses it within hold.
+    lagged = dict(echo, lat=34.0 + 0.9/60.0, lon=-111.0)
+    out = f.filter([lagged, other], *own, 105.0, own_gs_kt=100, own_track_deg=180)
+    check([t["icao"] for t in out] == ["0C0FFE"], "lagged echo still latched out")
+    # After the hold window expires with no geometric match, the hex is
+    # released and that aircraft would show again.
+    out = f.filter([lagged, other], *own, 200.0, own_gs_kt=100, own_track_deg=180)
+    check(sorted(t["icao"] for t in out) == ["0C0FFE", "F00D01"],
+          "latch expires after hold_s")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -2528,6 +2528,12 @@ def smooth_state():
 # tau-based RA.  Pruned of stale targets each frame inside _update_traffic.
 _traffic_range_hist: dict = {}
 
+# Suppresses the ownship's own transponder when an internet feed hands it back
+# as traffic (a local SDR filters this via the GDL90 Ownship Report; the
+# aggregator has no such report).  State persists across frames so the echo's
+# hex stays latched through feed lag.
+_own_echo_filter = _adsb.OwnshipEchoFilter()
+
 
 def _update_traffic(demo_mode):
     """Refresh disp["traffic"] once per frame from the live GDL90 listener
@@ -2567,6 +2573,15 @@ def _update_traffic(demo_mode):
     inet = []
     if _traffic_feed is not None and not _traffic_feed.paused:
         inet = _traffic_feed.snapshot()      # already tagged src="internet"
+        # Reject the ownship's own transponder echoed back by the aggregator —
+        # the internet feed has no Ownship Report to tell it which hex is us,
+        # so our own aircraft otherwise shows as a target glued to the ownship
+        # symbol.  own_alt matches the aggregator's baro alt reference used
+        # everywhere else in this function.
+        inet = _own_echo_filter.filter(
+            inet, own_lat, own_lon, own_alt, time.monotonic(),
+            own_gs_kt=float(disp.get("speed", 0.0)),
+            own_track_deg=float(disp.get("track", 0.0)))
 
     if radio or inet:
         by_icao = {}
@@ -6644,6 +6659,8 @@ def handle_event(event, demo_mode):
             action = ahrs_setup_hit(x, y, disp["ss"])
             if action == "back":
                 disp["mode"] = "setup"
+            elif action == "level_now":
+                _flight_zero()
             elif action and action.startswith("trim:"):
                 _, key, delta_str = action.split(":")
                 disp["ss"][key] = round(disp["ss"].get(key, 0.0) + float(delta_str), 1)
@@ -8641,6 +8658,43 @@ _SS_TRIM_SW = 40   # stepper button width
 _SS_TRIM_VW = 90   # trim value box width
 _SS_TRIM_H  = 40   # stepper/control height
 _SS_TRIM_G  = 6    # gap
+_SS_LVL_W   = 128  # "LEVEL" flight-zero button width
+
+
+def _level_btn_rect(row_i=0):
+    """Rect for the LEVEL (flight-zero) button, in the free area just left of
+    the pitch-trim stepper.  Shared by the draw + hit paths so they agree."""
+    bw = DISPLAY_W - 2 * _SS_MX
+    total = _SS_TRIM_SW + _SS_TRIM_G + _SS_TRIM_VW + _SS_TRIM_G + _SS_TRIM_SW
+    rx_trim = _SS_MX + bw - total - 14
+    by = _ss_row_y(row_i)
+    lx = rx_trim - 12 - _SS_LVL_W
+    ly = by + (_SS_RH - _DSP_BTN_H) // 2
+    return lx, ly, _SS_LVL_W, _DSP_BTN_H
+
+
+def _flight_zero():
+    """Flight-zero / 'cage' the AHRS: capture the current attitude as the new
+    level reference so the displayed pitch & roll read 0 from here on — the
+    Sentry/ForeFlight 'Level' button.  This re-zeros the whole attitude
+    solution (the AI horizon AND the synthetic-vision terrain both shift with
+    the trim), not just the drawn horizon bar.
+
+    Realised as the Pi-local pitch/roll trim: instant, no AHRS-link round-trip,
+    and reversible from the trim steppers.  disp['pitch']/['roll'] are the
+    filter output the display renders BEFORE this local trim is added, so
+    setting trim = -attitude drives the shown value to zero.  Clamped to a sane
+    cage range so a capture snatched mid-maneuver can't slew the horizon
+    off-scale.  The firmware trim (a permanent ground calibration) is left
+    untouched."""
+    p = float(disp.get("pitch", 0.0))
+    r = float(disp.get("roll", 0.0))
+    disp["ss"]["pitch_trim"] = max(-15.0, min(15.0, round(-p, 1)))
+    disp["ss"]["roll_trim"]  = max(-15.0, min(15.0, round(-r, 1)))
+    _settings.mark_dirty()
+    print(f"[AHRS] flight-zero: captured pitch={p:+.1f}° roll={r:+.1f}° "
+          f"→ trim=({disp['ss']['pitch_trim']:+.1f},"
+          f"{disp['ss']['roll_trim']:+.1f})")
 
 _SS_MAG_LABELS = {
     "idle":    ("IDLE",       (100,110,130)),
@@ -9649,9 +9703,12 @@ def draw_ahrs_setup(surf, ss):
     _screen_header(surf, "AHRS / SENSORS")
     _prev_clip = _ss_clip_to_content(surf)
 
-    # Row 0: Pitch trim
-    bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM", "Horizon offset correction")
+    # Row 0: Pitch trim + LEVEL (flight-zero) button.  LEVEL captures the
+    # current attitude as the new zero for BOTH axes (Sentry/ForeFlight cage).
+    bx, by, bw, bh = _setting_row(surf, 0, "PITCH TRIM",
+                                  "Horizon offset  ·  LEVEL = flight zero")
     _trim_stepper(surf, bx, by, bw, bh, ss.get("pitch_trim", 0.0), "pitch_trim")
+    _action_btn(surf, *_level_btn_rect(0), "LEVEL", "ok")
 
     # Row 1: Roll trim
     bx, by, bw, bh = _setting_row(surf, 1, "ROLL TRIM", "Wing-level correction")
@@ -9803,6 +9860,10 @@ def ahrs_setup_hit(x, y, ss):
             ry = by + (_SS_RH - _SS_TRIM_H) // 2
             if not (ry <= y <= ry+_SS_TRIM_H):
                 continue
+            if ri == 0:
+                lx, _ly, lw, _lh = _level_btn_rect(0)
+                if lx <= x <= lx + lw:     # y already gated by the row check
+                    return "level_now"
             action_prefix = "align" if ri in (8, 9) else "trim"
             if rx_trim <= x <= rx_trim+_SS_TRIM_SW:
                 return f"{action_prefix}:{key}:-0.1"

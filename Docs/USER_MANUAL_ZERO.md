@@ -419,10 +419,13 @@ Wind barbs + temperatures aloft can be overlaid on the MFD. Cycle the **OVLY** l
 ![AHRS setup screen](../pi_zero/previews/preview_setup_ahrs.png)
 
 ### Pitch trim
-Corrects horizon pitch on level ground. ±0.5° steps.
+Corrects horizon pitch on level ground. ±0.1° steps. The green **LEVEL** button on this row is a one-tap *flight zero* (see below).
 
 ### Roll trim
-Corrects horizon tilt. ±0.5° steps.
+Corrects horizon tilt. ±0.1° steps.
+
+### LEVEL (flight zero)
+Tap **LEVEL** (on the PITCH TRIM row) while straight-and-level to capture the current attitude as the new zero for **both** pitch and roll — the Sentry/ForeFlight "Level" cage. The horizon and synthetic-vision terrain snap level. Use it when a full ground level wasn't possible and a small mounting offset has walked the horizon off. It's the display's own pitch/roll trim (instant, no AHRS round-trip, reversible with the ± steppers), clamped to ±15°, and set per-display; the AHRS firmware trim is left alone.
 
 ### Mounting orientation
 **NORMAL** (label up) or **INVERTED** (label down).
@@ -727,6 +730,7 @@ Nearby aircraft from ADS-B IN (radio GDL90/UDP or the built-in internet feed; ta
 - **Diamonds** with a heading leader and a relative-altitude tag; colour by threat — **red alert** (≤ 3 NM and ≤ 600 ft), **amber proximate** (≤ 6 NM and ≤ 1200 ft), **cyan** advisory.
 - On non-traffic pages traffic is clamped to nearby; the **TFC** page shows everything. **Alert-class is never hidden.** Tap a target for the detail card; declutter with **TFC ALT** / **TFC RANGE** (§10).
 - **Collision alert:** a flashing red **TRAFFIC** banner when a new target enters the alert envelope. **The Pi Zero is visual-only — there is no "Traffic, Traffic" voice callout** (no audio stack); the banner is the alert.
+- **Own-ship echo suppression (INET):** the internet feed can't tell which hex is you, so it hands your own transponder back as a target glued to the ownship. The display rejects it — any internet target within ~0.6 NM / ~350 ft is treated as the echo and dropped (with a velocity check so a genuine close pass on a different heading still shows), and its hex is latched through feed lag. Radio traffic is untouched.
 
 ## 16D. Airspace Data
 

@@ -8,6 +8,35 @@ notes with enough context to pick it up cold.
 
 ## Open
 
+### AHRS-LEVEL  One-tap flight-zero (LEVEL) button on the AHRS page
+Status: **DONE (pi4 + pi_zero) — code + manuals landed; verify in flight**
+Branch `claude/ahrs-level-traffic-dedup`. Adds a green **LEVEL** button on the
+PITCH TRIM row of the AHRS / SENSORS screen — a Sentry/ForeFlight-style cage.
+`_flight_zero()` captures the current filter attitude (`disp['pitch']` /
+`['roll']`, the value rendered *before* the Pi-local trim is added) and writes
+`ss['pitch_trim'] = -pitch`, `ss['roll_trim'] = -roll`, clamped to ±15°, so the
+shown horizon **and** the SVT terrain (both consume the trimmed pitch/roll)
+snap to level. Instant, per-display, reversible from the ± steppers; the AHRS
+firmware trim is untouched. This is the supported replacement for the
+encrypted-Sentry LEVEL experiment reverted earlier (see FOREFLIGHT-0X65 notes).
+Files: `pi4/pfd.py`, `pi_zero/pfd.py` (`_level_btn_rect` / `_flight_zero` +
+draw/hit/action on `ahrs_setup`). Docs: USER_MANUAL_PI4 §AHRS, USER_MANUAL_ZERO.
+Open: confirm on the bench/first flight that a level-cruise tap zeros both axes
+and that the ±15° clamp is roomy enough for the real mounting offset.
+
+### TRAFFIC-OWNSHIP-ECHO  Suppress ownship echo on the internet traffic feed
+Status: **DONE (pi4 + pi_zero) — code + tests + manuals landed**
+The aggregator (airplanes.live / adsb.lol / adsb.fi) has no Ownship Report, so
+it returns the ownship's own transponder as a traffic diamond glued to the
+ownship symbol. `shared/adsb.py` gains `is_ownship_echo()` (geometry gate —
+co-located within 0.6 NM and, when both alts known, 350 ft — plus a velocity
+veto when moving so a genuine close pass on a different heading survives) and
+`OwnshipEchoFilter` (latches the echo's hex for 45 s so feed lag can't slide it
+back into view). Applied to the INET snapshot only, in `_update_traffic()` on
+both displays; radio traffic keeps its GDL90-Ownship-Report filtering. Tests:
+`shared/test_adsb.py` (`test_ownship_echo_geometry`, `test_ownship_echo_latch`).
+Docs: USER_MANUAL_PI4 §Traffic, USER_MANUAL_ZERO §16C.
+
 ### MANUALS-UPDATE  Update user manuals for the nav-data-pi-settings session
 Status: **OPEN — features shipped + merged to main; docs pending**
 Update `Docs/USER_MANUAL_PI4.md`, `Docs/USER_MANUAL_ZERO.md`,

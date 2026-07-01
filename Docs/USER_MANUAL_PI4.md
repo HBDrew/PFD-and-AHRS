@@ -482,8 +482,10 @@ Seven rows on this screen, each independent:
 
 | Row | Control | Default | Notes |
 |-----|---------|---------|-------|
-| **PITCH TRIM** | ± steppers | 0.0° | 0.1° per tap. Use to fine-trim a horizon that sits above/below level on the ground. |
+| **PITCH TRIM** | ± steppers + **LEVEL** button | 0.0° | 0.1° per tap. Use to fine-trim a horizon that sits above/below level on the ground. **LEVEL** (green, this row) is a one-tap *flight zero* — see below. |
 | **ROLL TRIM** | ± steppers | 0.0° | 0.1° per tap. Use to fine-trim a wing that reads low on the ground. |
+
+**LEVEL (flight zero).** The green **LEVEL** button on the PITCH TRIM row captures the *current* attitude as the new zero for **both** pitch and roll — the same "Level" cage a Sentry gives ForeFlight. Fly straight-and-level, tap it once, and the horizon (and the synthetic-vision terrain, which shifts with it) snaps to level. Use it when you couldn't do a full ground level and a small mounting offset has walked the horizon off. It's realised as the display's own pitch/roll trim, so it's instant, needs no round-trip to the AHRS, and is reversible — nudge the ± steppers, or LEVEL again, any time. The capture is clamped to ±15° so a tap grabbed mid-maneuver can't slew the horizon off-scale. It leaves the AHRS's own (firmware) trim untouched, and — because it's a per-display trim — is set on each display independently.
 | **MAGNETOMETER** | CALIBRATE button | (idle) | Opens the 8-point compass-cal wizard (N / NE / E / SE / S / SW / W / NW). Cal is stored *on the AHRS* in flash, so both Pi 4 and Pi Zero displays read the same calibrated heading off the SSE / USB broadcast. Status row shows `max \|Δ\| X.X°` once a cal is committed. |
 | **ORIENTATION** | FWD / LEFT / RIGHT / AFT | RIGHT | Which side of the AHRS the connector points toward, viewed from the pilot's seat. |
 | **MOUNTING** | NORMAL / INVERTED | NORMAL | Whether the AHRS is right-side-up or upside-down. Independent of orientation. |
@@ -1252,6 +1254,8 @@ On **NEX**, radar reflectivity is painted as coloured intensity cells. Two ages 
 ### Traffic — ADS-B / FIS-B IN
 
 Nearby aircraft are shown on the map (and feed the collision alert) from ADS-B IN — either a radio receiver (1090ES + 978 UAT over GDL90/UDP, port 4000) or the built-in internet feed, blended like weather. Tap the **ADS-B** status line to cycle the traffic source **AUTO / RADIO / INET** (`R`/`I` counts split the two).
+
+**Own-ship echo suppression (INET).** A public ADS-B aggregator has no way to know which hex code is *your* aircraft, so it hands your own transponder back like any other target — an annoying diamond glued to the ownship symbol. A radio receiver avoids this (it decodes the GDL90 Ownship Report and never files it as traffic); the internet feed has no such report, so the display rejects the echo itself: any internet target sitting on top of you (within ~0.6 NM and, when both altitudes are known, ~350 ft) is treated as the echo and dropped. When you're moving, a velocity check keeps a *genuine* close pass visible — a real intruder that near usually isn't also flying your exact speed and heading, whereas the echo carries your own velocity by definition. Once identified, the echo's hex is latched and stays suppressed through the feed's few-seconds position lag. Radio traffic is untouched.
 
 ### Reading a target
 
