@@ -18,6 +18,41 @@ Sorcerer / Vizion‑380 lineage, version era ≈ A.43, 2003–2011).
 
 ---
 
+## Source provenance & build target (important)
+
+This is a **single unified TruTrak codebase, target-selected at build time** — the
+same source historically built DigiFlight II, **Sorcerer**, Model 100, RV-10AP and
+Vizion (changelog: "v2.09 Merge the vertical mode code DFII/Sorcerer"). The shared
+engine (`DFCMain.asm`, `DFC_IRQ.asm`, `p20Hz.asm`, `AD7714.asm`, `EEPROM.asm`, …)
+contains **all** the control logic for every product, including Sorcerer.
+
+**What selects a product is the per-target `Switches.asm`** (INCLUDEd at build):
+it sets `PRODUCT_ID`, form-factor flags, `NAVMODE`, the switch/display layout and
+pin maps, and *macro-generates* the `LM_*`/`VM_*` mode constants. This package
+ships **only two target files, both Vizion 380**:
+
+| Target file | PRODUCT_ID | Name |
+|---|---|---|
+| `Vizion 380 Flat/Switches.asm` | 1 | `[VZ380F]` |
+| `Vizion 380 Round/Switches.asm` | 49 | `[VZ380R]` |
+
+There is **no `Sorcerer/Switches.asm`** in this package. Sorcerer build knobs are
+still visible (`EEDEFINES.h` `SORCERERNUMBER` calibration sets; an `IFDEF SKYPILOT`
+path), but the Sorcerer *target configuration* (its product ID, panel switch
+matrix, display driver, pin assignments) is not included.
+
+**Consequence for this spec:**
+- The **mode encodings and all control laws are target-independent** (same
+  macro-generated constants, same math) — they apply to Sorcerer unchanged.
+- **Target-specific citations here reflect the Vizion 380 Flat build** — notably
+  pin/port maps (e.g. `MC33291` on `PTH.3`) and the switch/display layout. A
+  Sorcerer (or other) target could differ in those.
+- Building/analyzing the Sorcerer *target* would require its own `Switches.asm`.
+  Open item: obtain it, then diff against the two VZ380 targets to enumerate the
+  pin/switch/display/feature deltas.
+
+---
+
 ## 0. Design intent for the revival (decisions locked)
 
 These constraints frame every entry in this document. The map exists to make a
