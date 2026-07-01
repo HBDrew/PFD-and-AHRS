@@ -55,8 +55,12 @@ def wms_url(bbox, width, height, time_iso=None):
     }
     base = _WMS
     if time_iso:
-        q["TIME"] = time_iso     # uppercase — IEM's CGI keys on TIME exactly
-        base = _WMS_T            # time-machine endpoint honours the archive
+        # Time-machine endpoint + its time-enabled layer (the realtime
+        # 'nexrad-n0q' layer isn't defined there).  Archive is 5-min steps back
+        # to 2011; TIME must land on a 5-min boundary (we floor it).
+        base = _WMS_T
+        q["layers"] = "nexrad-n0q-wmst"
+        q["TIME"] = time_iso
     return base + "?" + urllib.parse.urlencode(q)
 
 
