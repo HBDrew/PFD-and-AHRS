@@ -447,6 +447,12 @@ _sim_state   = None   # SimFlyState instance when sim is running, else None
 # Decoded NEXRAD image cache (pygame surface).  Re-decoded only when the
 # poller delivers a new image (seq change), so per-frame cost is a blit.
 _nexrad_decoded = {"seq": -1, "surf": None, "bbox": None}
+# Radar loop (MFD playback): 12 frames × 5 min = last 60 min of NEXRAD +
+# FIS-B, snapshotted together so both scrub in lock-step.  RAM-only.
+import wxloop as _wxloop_mod   # noqa: E402
+_wxloop = _wxloop_mod.RadarLoop(interval_s=300.0, max_frames=12)
+_wxloop.register("wms", "fisb")
+_wxloop_wms_cache = {"key": None, "surf": None}
 _link_lost_t = None   # monotonic timestamp when link first dropped (None if connected)
 
 # ── Screen-to-screen sync ────────────────────────────────────────────────────
@@ -4487,6 +4493,23 @@ def handle_event(event, demo_mode):
                 print(f"[MFD] overlay → {nxt}")
                 _settings.mark_dirty()
                 return True
+            # Radar loop (MFD only): LOOP ↔ LIVE, play/pause, scrub.
+            if disp["ds"].get("map_show_nexrad") and _wxloop.count() > 0:
+                _lr = _mfd_loop_btn_rect()
+                if (_lr[0] <= x <= _lr[0] + _lr[2]
+                        and _lr[1] <= y <= _lr[1] + _lr[3]):
+                    _wxloop.toggle()
+                    return True
+            if _wxloop.on:
+                _pp, _br = _wxloop_scrubber_rects()
+                if (_pp[0] <= x <= _pp[0] + _pp[2]
+                        and _pp[1] <= y <= _pp[1] + _pp[3]):
+                    _wxloop.toggle_play()
+                    return True
+                if (_br[0] <= x <= _br[0] + _br[2]
+                        and _br[1] <= y <= _br[1] + _br[3]):
+                    _wxloop.scrub_to(_wxloop_scrub_idx_at(x))
+                    return True
             if _mfd_source_status_hit(x, y):
                 print(f"[MFD] traffic source → {_mfd_cycle_traffic_source()}")
                 return True
@@ -6907,6 +6930,97 @@ def _nexrad_render_arg():
         return None
     return (_nexrad_decoded["surf"], _nexrad_decoded["bbox"],
             _nexrad_decoded["seq"])
+
+
+# ── Radar loop (MFD playback) ───────────────────────────────────────────────────
+def _wxloop_update(now_mono):
+    """Snapshot current radar frames into the loop buffer (5-min cadence) and
+    advance auto-play.  Buffers whenever data is present; RAM-only."""
+    wms = None
+    if _nexrad_client is not None:
+        png, bbox, _seq = _nexrad_client.snapshot()
+        if png is not None and bbox is not None:
+            wms = (png, bbox)
+    cells = _fisb_nexrad_cells()
+    _wxloop.maybe_snapshot(now_mono, time.time(),
+                           {"wms": wms, "fisb": (cells or None)})
+    if _wxloop.on and not disp["ds"].get("map_show_nexrad"):
+        _wxloop.exit()
+    _wxloop.tick(now_mono)
+
+
+def _wxloop_wms_render_arg():
+    """(surf, bbox, key) for the played-back WMS frame, or None."""
+    if disp["cs"].get("wx_source", "auto") == "radio":
+        return None
+    fr = _wxloop.frame("wms", _wxloop.idx)
+    if not fr or fr[1] is None:
+        return None
+    png, bbox = fr[1]
+    key = (_wxloop.idx, len(png))
+    if _wxloop_wms_cache["key"] != key:
+        try:
+            surf = pygame.image.load(io.BytesIO(png)).convert_alpha()
+        except Exception:
+            return None
+        _wxloop_wms_cache.update(key=key, surf=surf)
+    return (_wxloop_wms_cache["surf"], bbox, _wxloop.idx)
+
+
+def _wxloop_fisb_render_cells():
+    fr = _wxloop.frame("fisb", _wxloop.idx)
+    return fr[1] if (fr and fr[1]) else None
+
+
+def _mfd_loop_btn_rect():
+    """Radar-loop LOOP/LIVE toggle — under the OVLY button (left column)."""
+    ovx, ovy, ovw, ovh = _mfd_overlay_btn_rect()
+    return (ovx, ovy + ovh + 6, ovw, ovh)
+
+
+def _wxloop_scrubber_rects():
+    """(playpause_rect, bar_rect) — play/pause + timeline between the zoom
+    buttons, just above the data strip."""
+    pad = 6
+    _, sy, _, _ = _mfd_strip_rect()
+    z = _MFD_ZOOM_BTN
+    cy = (sy - _MFD_STRIP_PAD - z) + z // 2
+    pp_w, pp_h = 46, 38
+    x0 = pad + z + 10
+    pp = (x0, cy - pp_h // 2, pp_w, pp_h)
+    bar_x = x0 + pp_w + 10
+    bar_r = (bar_x, cy - 9, (DISPLAY_W - z - pad - 10) - bar_x, 18)
+    return pp, bar_r
+
+
+def _wxloop_scrub_idx_at(x):
+    _pp, (bx, _by, bw, _bh) = _wxloop_scrubber_rects()
+    n = _wxloop.count()
+    if n <= 1 or bw <= 0:
+        return 0
+    frac = max(0.0, min(1.0, (x - bx) / float(bw)))
+    return int(round(frac * (n - 1)))
+
+
+def _wxloop_draw_scrubber(surf):
+    n = _wxloop.count()
+    if n == 0:
+        return
+    pp, (bx, by, bw, bh) = _wxloop_scrubber_rects()
+    _action_btn(surf, *pp, "❚❚" if _wxloop.playing else "▶", "normal", r=6)
+    pygame.draw.rect(surf, (0, 10, 24), (bx, by, bw, bh), border_radius=4)
+    pygame.draw.rect(surf, (60, 90, 120), (bx, by, bw, bh), width=1, border_radius=4)
+    span = max(1, n - 1)
+    for i in range(n):
+        tx = bx + 4 + int((bw - 8) * (i / span))
+        pygame.draw.line(surf, (70, 100, 140), (tx, by + 3), (tx, by + bh - 3), 1)
+    idx = max(0, min(_wxloop.idx, n - 1))
+    thx = bx + 4 + int((bw - 8) * (idx / span))
+    pygame.draw.circle(surf, CYAN, (thx, by + bh // 2), 8)
+    wall = _wxloop.wall_at(idx) or time.time()
+    mins = max(0, int(round((time.time() - wall) / 60.0)))
+    lbl = "RADAR  NOW" if mins == 0 else f"RADAR  −{mins} min"
+    _text(surf, lbl, 15, CYAN, bold=True, cx=bx + bw // 2, cy=by - 15)
 
 
 def _fpl_render_remaining():
@@ -12311,8 +12425,10 @@ def draw_mfd(surf, connected=True, data_stale=False):
                      if (disp["ds"].get("map_show_winds")
                          and range_nm >= WINDS_MIN_RENDER_NM) else None),
         # NEXRAD reflectivity raster — gated by ds["map_show_nexrad"] (NEX).
-        nexrad=_nexrad_render_arg(),
-        nexrad_cells=(_fisb_nexrad_cells()
+        nexrad=(_wxloop_wms_render_arg() if _wxloop.on
+                else _nexrad_render_arg()),
+        nexrad_cells=((_wxloop_fisb_render_cells() if _wxloop.on
+                       else _fisb_nexrad_cells())
                       if disp["ds"].get("map_show_nexrad") else None),
         # Published approach received over screen-sync (KIND_APPR): the legs as
         # a cyan polyline, the runway stub, the dashed-amber missed approach,
@@ -12402,6 +12518,16 @@ def draw_mfd(surf, connected=True, data_stale=False):
     zi_x, zi_y, zi_w, zi_h = _mfd_zoom_in_rect()
     _action_btn(surf, zo_x, zo_y, zo_w, zo_h, "−", "normal", r=8)
     _action_btn(surf, zi_x, zi_y, zi_w, zi_h, "+", "normal", r=8)
+
+    # Radar loop (MFD only): LOOP toggle when NEXRAD is on and frames exist;
+    # the scrubber shows while playing back.
+    if disp["ds"].get("map_show_nexrad") and _wxloop.count() > 0:
+        lx, ly, lw, lh = _mfd_loop_btn_rect()
+        if _wxloop.on:
+            _action_btn(surf, lx, ly, lw, lh, "● LIVE", "warn", r=5)
+            _wxloop_draw_scrubber(surf)
+        else:
+            _action_btn(surf, lx, ly, lw, lh, "▶ LOOP", "ok", r=5)
     _draw_mfd_layers_icon(surf)
 
     # No-link / stale-data badges
@@ -15971,6 +16097,7 @@ def main():
         _update_traffic(demo_mode)
         _update_weather()
         _update_nexrad()
+        _wxloop_update(time.monotonic())
 
         # Push AHRS / GPS to peer screens (rate-limited inside the helpers).
         _ssync_publish_ahrs()
