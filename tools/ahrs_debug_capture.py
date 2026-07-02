@@ -84,6 +84,8 @@ def main():
 
     amag, accw, gmag, magw, acg = [], [], [], [], []
     bpitch, broll = [], []
+    ax_l, ay_l, az_l = [], [], []
+    sfp, sfr = [], []
     n = 0
     t0 = time.time()
     while time.time() - t0 < dur:
@@ -94,8 +96,12 @@ def main():
         acc = d.get("acc", [])
         gyr = d.get("gyr", [])
         bdy = d.get("bdy_rpy", [])
+        sf  = d.get("sf_rpy", [])
         if len(acc) == 3:
             amag.append(math.sqrt(sum(v * v for v in acc)))
+            ax_l.append(acc[0]); ay_l.append(acc[1]); az_l.append(acc[2])
+        if len(sf) == 3:
+            sfr.append(sf[0]); sfp.append(sf[1])
         if len(gyr) == 3:
             gmag.append(math.sqrt(sum(v * v for v in gyr)))
         if d.get("acc_w"):
@@ -114,6 +120,13 @@ def main():
                  f"is the display stopped? (sudo systemctl stop pfd)")
 
     print(f"\n$AHRSDBG lines: {n} over {time.time() - t0:.0f}s\n")
+    if ax_l:
+        mx, my, mz = statistics.fmean(ax_l), statistics.fmean(ay_l), statistics.fmean(az_l)
+        print(f"raw accel mean (g):  ax={mx:+.3f}  ay={my:+.3f}  az={mz:+.3f}")
+        print(f"   -> gravity is {math.degrees(math.acos(max(-1,min(1,abs(mz)/max(1e-6,math.sqrt(mx*mx+my*my+mz*mz)))))):.1f}° "
+              f"off the sensor's Z axis (0° = unit truly flat/level)")
+    if sfp: print(summarize("sensor pitch", sfp, "°"))
+    if sfr: print(summarize("sensor roll",  sfr, "°"))
     if amag: print(summarize("|accel|",  amag, " g"))
     if accw:
         gated = sum(1 for w in accw if w < 0.05) / len(accw) * 100.0
