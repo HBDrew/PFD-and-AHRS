@@ -281,6 +281,30 @@ async def _handle_align(writer, params, state):
     await writer.wait_closed()
 
 
+async def _handle_ayzero(writer, params, state):
+    """
+    GET /ayzero            → zero the slip ball at the current lateral accel
+    GET /ayzero?clear=1    → clear the offset
+    HTTP twin of the $AYZERO serial command; the display's LEVEL/ZERO cage uses
+    it so one press squares the horizon and centres the ball. Persists via the
+    _save_ayzero flag (ayzero.json).
+    """
+    if 'clear' in params:
+        state['_ay_offset'] = 0.0
+    else:
+        # state['ay'] already has the old offset removed; folding it back in
+        # makes the present (coordinated) reading the new zero.
+        state['_ay_offset'] = state.get('_ay_offset', 0.0) + state.get('ay', 0.0)
+    state['_save_ayzero'] = True
+    body = b'OK'
+    await _send_headers(writer, '200 OK', 'text/plain',
+                        f'Content-Length: {len(body)}\r\nConnection: close\r\n')
+    writer.write(body)
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def _handle_magcal(writer, params, state):
     """
     GET /magcal?action=get          → JSON {corrections:[...], active:bool}
@@ -493,6 +517,8 @@ async def _client_handler(reader, writer, state):
         await _handle_trim(writer, params, state)
     elif path == '/align':
         await _handle_align(writer, params, state)
+    elif path == '/ayzero':
+        await _handle_ayzero(writer, params, state)
     elif path == '/magcal':
         await _handle_magcal(writer, params, state)
     elif path == '/magoff':

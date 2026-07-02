@@ -66,6 +66,7 @@ MAGDEV_FILE = 'magdev.json'
 MAGCAL_FILE = 'magcal.json'   # hard-iron offsets (mx_off, my_off, mz_off)
 ORIENT_FILE = 'orient.json'
 BARO_FILE   = 'baro.json'     # pilot QNH so the altimeter setting survives reboot
+AYZERO_FILE = 'ayzero.json'   # lateral-accel (slip-ball) zero, captured at cage time
 BOOT_LOG_FILE = 'boot_log.json'  # boot count + last reset cause + last alive ms
 
 # Human-readable map for machine.reset_cause(). Values vary by port; the names
@@ -164,6 +165,27 @@ def save_baro(state):
             f.write(ujson.dumps({'baro_hpa': state['baro_hpa']}))
     except Exception as e:
         print(f'save_baro failed: {e}')
+
+
+def load_ayzero():
+    """Return the persisted slip-ball (lateral-accel) zero offset in g, or 0.0.
+    Bounded so a corrupt file can't peg the ball hard over."""
+    try:
+        with open(AYZERO_FILE, 'r') as f:
+            off = float(ujson.loads(f.read()).get('ay_offset', 0.0))
+        if -0.5 <= off <= 0.5:
+            return off
+    except Exception:
+        pass
+    return 0.0
+
+
+def save_ayzero(state):
+    try:
+        with open(AYZERO_FILE, 'w') as f:
+            f.write(ujson.dumps({'ay_offset': state['_ay_offset']}))
+    except Exception as e:
+        print(f'save_ayzero failed: {e}')
 
 
 def load_magdev():
@@ -272,6 +294,8 @@ state = {
     'pitch'    : 0.0,   # degrees  (+nose up)
     'yaw'      : 0.0,   # degrees  magnetic heading [0, 360)
     'ay'       : 0.0,   # lateral acceleration g (+right); drives slip ball
+    '_ay_offset': 0.0,  # slip-ball zero captured at cage time (removes the mount
+                        # tilt's lateral-gravity leak); persisted in ayzero.json
     # GPS position (always from GPS)
     'lat'      : 0.0,   # decimal degrees
     'lon'      : 0.0,   # decimal degrees
@@ -914,7 +938,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                 _raw             = (_y - state['yaw_trim'] + _hdg_off) % 360
                 state['yaw_raw'] = _raw
                 state['yaw']     = apply_magdev(_raw, state['_magdev'])
-                state['ay']      = ahrs.ay * WT901_AY_SIGN
+                state['ay']      = ahrs.ay * WT901_AY_SIGN - state['_ay_offset']
                 state['att_src'] = 'mahony'
                 last_ahrs_ms     = utime.ticks_ms()
 
@@ -988,7 +1012,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                 _raw             = (_y - state['yaw_trim'] + _hdg_off) % 360
                 state['yaw_raw'] = _raw
                 state['yaw']     = apply_magdev(_raw, state['_magdev'])
-                state['ay']      = ahrs.ay * WT901_AY_SIGN
+                state['ay']      = ahrs.ay * WT901_AY_SIGN - state['_ay_offset']
                 state['att_src'] = 'wt901'
                 state['att_aid'] = 'basic'
                 ahrs.new_angle   = False
@@ -1014,6 +1038,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
         if state.get('_save_baro'):
             save_baro(state)
             state['_save_baro'] = False
+        if state.get('_save_ayzero'):
+            save_ayzero(state)
+            state['_save_ayzero'] = False
 
         await asyncio.sleep_ms(0)   # yield so web server can handle requests
 
@@ -1290,6 +1317,22 @@ def _process_stdin_line(line):
                     print(f'$BARO_ACK,ERR range {qnh:.2f}')
             except ValueError as e:
                 print(f'$BARO_ACK,ERR {e}')
+    elif line.startswith('$AYZERO'):
+        # $AYZERO        — zero the slip ball at the current (coordinated) lateral
+        #                  accel: fold the present reading into the stored offset.
+        # $AYZERO,CLEAR  — remove the offset (raw lateral accel).
+        # Captured by the display's LEVEL/ZERO cage so one press squares the
+        # horizon AND centres the ball.
+        if line.strip().endswith('CLEAR'):
+            state['_ay_offset'] = 0.0
+            state['_save_ayzero'] = True
+            print('$AYZERO_ACK,CLEARED')
+        else:
+            # state['ay'] already has the old offset subtracted, so adding it back
+            # in makes the present reading the new zero.
+            state['_ay_offset'] += state['ay']
+            state['_save_ayzero'] = True
+            print(f'$AYZERO_ACK,{state["_ay_offset"]:+.3f},OK')
 
 
 async def wdt_loop(wdt):
@@ -1438,6 +1481,12 @@ async def main():
     # here is enough; we also seed the BME280 directly for the first samples.
     state['baro_hpa'] = load_baro()
     print(f'QNH loaded: {state["baro_hpa"]} hPa')
+
+    # Persisted slip-ball zero — removes the mount tilt's lateral-gravity leak so
+    # the ball centres in coordinated flight, matching the attitude cage.
+    state['_ay_offset'] = load_ayzero()
+    if abs(state['_ay_offset']) > 1e-6:
+        print(f'Slip-ball zero loaded: {state["_ay_offset"]:+.3f} g')
 
     baro = None
     if BME280_ENABLE:

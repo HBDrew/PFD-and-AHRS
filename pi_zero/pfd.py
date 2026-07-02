@@ -5737,8 +5737,11 @@ def _flight_zero():
     disp["ss"]["roll_trim"]  = 0.0
     _settings.mark_dirty()
     _push_align_to_pico(new_pa, new_ra)
+    # Also zero the slip ball at the current (coordinated) lateral accel, so the
+    # one cage squares the horizon AND centres the ball to match the panel.
+    _push_ayzero_to_pico()
     print(f"[AHRS] flight-zero → align=({new_pa:+.1f},{new_ra:+.1f}) "
-          f"from body=({body_p:+.1f},{body_r:+.1f})")
+          f"from body=({body_p:+.1f},{body_r:+.1f})  + slip-ball zero")
 
 _SS_MAG_LABELS = {
     "idle":    ("IDLE",       (100,110,130)),
@@ -6322,6 +6325,32 @@ def _push_align_to_pico(pitch_align, roll_align):
             print(f"[PFD] align HTTP push failed: {e}")
 
     threading.Thread(target=_worker, daemon=True, name="AlignPush").start()
+
+
+def _push_ayzero_to_pico():
+    """Tell the AHRS to zero the slip ball at the current (coordinated) lateral
+    accel — the companion to $ALIGN for the LEVEL/ZERO cage, so one press
+    squares the horizon AND centres the ball.  Serial $AYZERO with an HTTP
+    /ayzero fallback.  The AHRS persists the offset, so it survives reboots."""
+    def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(b"$AYZERO\n")
+                print("[PFD] slip-ball zero sent via serial")
+                return
+            except Exception as e:
+                print(f"[PFD] ayzero serial write failed: {e}")
+        try:
+            base = disp.get("cs", {}).get(
+                "ahrs_url", "http://192.168.4.1").rstrip("/")
+            with urllib.request.urlopen(f"{base}/ayzero", timeout=3) as resp:
+                resp.read()
+            print("[PFD] slip-ball zero sent via HTTP")
+        except Exception as e:
+            print(f"[PFD] ayzero HTTP push failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="AyZeroPush").start()
 
 
 def _push_magoff_clear_to_pico():
