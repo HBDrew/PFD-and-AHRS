@@ -276,7 +276,13 @@ AHRS_MAG_GYRO_GATE_HI_DPS = 30.0
 # Use the WT901 magnetometer (PKT_MAG 0x54) in the Mahony correction. If the
 # WT901 isn't outputting mag packets the filter falls back to gyro-only yaw,
 # corrected slowly by GPS track (see AHRS_GPS_TRACK_*).
-AHRS_USE_MAG            = True
+AHRS_USE_MAG            = False   # TEMP TEST: the raw accel shows the unit is
+                                  # level (gravity 6° off Z) but the filter sits
+                                  # 56° off — an uncalibrated cockpit magnetometer
+                                  # is fighting the accel and dragging pitch/roll.
+                                  # With mag off, yaw is held by GPS-track slaving
+                                  # (REQ-AHRS-SF-002). If pitch/roll now level,
+                                  # mag is confirmed and needs a tumble cal.
 
 # GPS-track yaw slaving. Once per AHRS_GPS_TRACK_INTERVAL_S, when the GPS
 # fix is valid and groundspeed exceeds AHRS_GPS_TRACK_MIN_KT, nudge the
