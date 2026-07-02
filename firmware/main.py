@@ -50,6 +50,7 @@ from config import (
     AHRS_PITCH_ALIGN, AHRS_ROLL_ALIGN,
     AHRS_DYN_GYRO_LO_DPS, AHRS_DYN_GYRO_HI_DPS,
     AHRS_DYN_AC_LO_G, AHRS_DYN_AC_HI_G, AHRS_DYN_KP_SCALE_MIN,
+    AHRS_CENTRI_GYRO_TAU_S,
     AHRS_DEBUG_PRINT, AHRS_DEBUG_PRINT_DECIM,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
@@ -359,6 +360,12 @@ _lin_v_t_ms   = 0
 _lin_a_filt   = 0.0     # filtered linear accel (m/s²), forward = positive
 _lin_v_valid  = False   # only differentiate once we've seen two consecutive valid samples
 
+# Low-passed gyro (rad/s) for the centripetal + gain-scheduling math only.
+# Tracks the true (slow) turn rate while rejecting the fast, zero-mean gyro
+# vibration that would otherwise fabricate ~1 g of bogus centripetal accel.
+_gyro_lpf       = [0.0, 0.0, 0.0]
+_gyro_lpf_valid = False
+
 
 def _update_linear_accel():
     """Compute forward linear acceleration from rate of change of the active
@@ -591,6 +598,22 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     gy = math.radians(ahrs.wy)
     gz = math.radians(ahrs.wz)
 
+    # Low-pass the gyro for the inertial-accel corrections and gain scheduling.
+    # The full-rate (gx,gy,gz) still drives the Mahony integration below; only
+    # the centripetal term and the dyn-gain detectors use this smoothed rate,
+    # so residual vibration can't manufacture a fake centripetal vector or
+    # falsely trip the maneuver detector.
+    global _gyro_lpf, _gyro_lpf_valid
+    if not _gyro_lpf_valid:
+        _gyro_lpf = [gx, gy, gz]
+        _gyro_lpf_valid = True
+    else:
+        _ga = dt / (AHRS_CENTRI_GYRO_TAU_S + dt)
+        _gyro_lpf[0] += _ga * (gx - _gyro_lpf[0])
+        _gyro_lpf[1] += _ga * (gy - _gyro_lpf[1])
+        _gyro_lpf[2] += _ga * (gz - _gyro_lpf[2])
+    gx_s, gy_s, gz_s = _gyro_lpf
+
     # ZUPT: when we're sure the airframe is stationary, two things happen.
     #
     # 1. The filter's bias estimate is actively TRACKED from the raw gyro
@@ -656,9 +679,9 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     vx = fwd[0] * v_ms
     vy = fwd[1] * v_ms
     vz = fwd[2] * v_ms
-    acx = (gy*vz - gz*vy) * _G_PER_M_S2
-    acy = (gz*vx - gx*vz) * _G_PER_M_S2
-    acz = (gx*vy - gy*vx) * _G_PER_M_S2
+    acx = (gy_s*vz - gz_s*vy) * _G_PER_M_S2
+    acy = (gz_s*vx - gx_s*vz) * _G_PER_M_S2
+    acz = (gx_s*vy - gy_s*vx) * _G_PER_M_S2
 
     # Linear-acceleration aid: forward-axis a = dV/dt projected onto sensor
     # forward direction. Without this, braking and accelerating in
@@ -728,7 +751,10 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     # During quiescent flight both factors = 1.0 and the filter has full
     # accel authority; in a turn they drop to AHRS_DYN_KP_SCALE_MIN
     # (default 0.1) and the gyro carries the load.
-    gyro_mag_dps = math.degrees(math.sqrt(gx*gx + gy*gy + gz*gz))
+    # Smoothed rate (rotation preserves magnitude through the small align) so
+    # gyro vibration doesn't false-trigger the maneuver detector and throttle
+    # the accel authority during otherwise-quiescent flight.
+    gyro_mag_dps = math.degrees(math.sqrt(gx_s*gx_s + gy_s*gy_s + gz_s*gz_s))
     a_c_mag = math.sqrt(acx*acx + acy*acy + acz*acz)
     g_lo, g_hi = AHRS_DYN_GYRO_LO_DPS, AHRS_DYN_GYRO_HI_DPS
     c_lo, c_hi = AHRS_DYN_AC_LO_G, AHRS_DYN_AC_HI_G

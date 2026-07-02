@@ -246,6 +246,15 @@ AHRS_DYN_GYRO_LO_DPS    = 3.0     # below this, dyn factor = 1.0
 AHRS_DYN_AC_HI_G        = 0.20    # above this centripetal mag, dyn factor = MIN
 AHRS_DYN_AC_LO_G        = 0.03    # below this, dyn factor = 1.0
 AHRS_DYN_KP_SCALE_MIN   = 0.10    # floor on the scaling factor
+# Time constant (s) for the low-pass on the gyro that feeds the centripetal
+# correction (a_c = w x V) and the gain scheduler.  A real coordinated turn
+# rate is slow and sustained (~3 dps over seconds); residual gyro vibration is
+# fast and zero-mean.  Feeding raw gyro into a_c manufactured ~1 g of fake
+# centripetal (field capture), which failed the accel gate 90% of the time and
+# pinned the gain schedule to its floor.  The full-rate gyro still drives the
+# Mahony attitude integration; only the inertial-accel + scheduling math use
+# this smoothed rate.  ~1 s rejects vibration while tracking turn entry/exit.
+AHRS_CENTRI_GYRO_TAU_S  = 1.0
 AHRS_KP_MAG             = 0.10    # mag proportional gain (yaw correction).
                                   # Lowered from 0.5 after AHRS-ROLL-YAW-COUPLING
                                   # showed the higher gain was over-trusting mag
