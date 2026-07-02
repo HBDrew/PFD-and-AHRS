@@ -50,7 +50,7 @@ from config import (
     AHRS_PITCH_ALIGN, AHRS_ROLL_ALIGN,
     AHRS_DYN_GYRO_LO_DPS, AHRS_DYN_GYRO_HI_DPS,
     AHRS_DYN_AC_LO_G, AHRS_DYN_AC_HI_G, AHRS_DYN_KP_SCALE_MIN,
-    AHRS_CENTRI_GYRO_TAU_S,
+    AHRS_CENTRI_GYRO_TAU_S, AHRS_LINEAR_ACCEL_AID,
     AHRS_DEBUG_PRINT, AHRS_DEBUG_PRINT_DECIM,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
@@ -687,11 +687,14 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     # forward direction. Without this, braking and accelerating in
     # straight-line flight produce false pitch changes. Same sign convention
     # as centripetal — added to ahrs.ax/y/z to recover gravity.
-    a_lin_ms2 = _update_linear_accel()
-    state['_a_lin_ms2'] = a_lin_ms2   # diagnostic
-    acx += fwd[0] * a_lin_ms2 * _G_PER_M_S2
-    acy += fwd[1] * a_lin_ms2 * _G_PER_M_S2
-    acz += fwd[2] * a_lin_ms2 * _G_PER_M_S2
+    if AHRS_LINEAR_ACCEL_AID:
+        a_lin_ms2 = _update_linear_accel()
+        state['_a_lin_ms2'] = a_lin_ms2   # diagnostic
+        acx += fwd[0] * a_lin_ms2 * _G_PER_M_S2
+        acy += fwd[1] * a_lin_ms2 * _G_PER_M_S2
+        acz += fwd[2] * a_lin_ms2 * _G_PER_M_S2
+    else:
+        state['_a_lin_ms2'] = 0.0
 
     # WT901 reads specific force (stationary level = +1g on Z): adding the
     # inertial centripetal+linear vector recovers the gravity direction.

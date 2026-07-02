@@ -255,6 +255,14 @@ AHRS_DYN_KP_SCALE_MIN   = 0.10    # floor on the scaling factor
 # Mahony attitude integration; only the inertial-accel + scheduling math use
 # this smoothed rate.  ~1 s rejects vibration while tracking turn entry/exit.
 AHRS_CENTRI_GYRO_TAU_S  = 1.0
+# Linear-acceleration aid: subtract forward dV/dt so acceleration/braking isn't
+# read as a pitch change.  It needs a smooth, high-rate speed source.  On GPS
+# groundspeed (1 Hz, quantized) the per-call differentiator turns each 1 kt step
+# into a ~1 g phantom spike that wanders pitch +/-10-15 deg in cruise (field
+# capture).  Disabled here for GPS-only installs; re-enable if/when a pitot
+# (SDP33 -> TAS) feeds a smooth airspeed.  The dyn-gain schedule still throttles
+# accel during real sustained acceleration, so leaving this off is safe.
+AHRS_LINEAR_ACCEL_AID   = False
 AHRS_KP_MAG             = 0.10    # mag proportional gain (yaw correction).
                                   # Lowered from 0.5 after AHRS-ROLL-YAW-COUPLING
                                   # showed the higher gain was over-trusting mag
