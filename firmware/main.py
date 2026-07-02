@@ -50,7 +50,7 @@ from config import (
     AHRS_PITCH_ALIGN, AHRS_ROLL_ALIGN,
     AHRS_DYN_GYRO_LO_DPS, AHRS_DYN_GYRO_HI_DPS,
     AHRS_DYN_AC_LO_G, AHRS_DYN_AC_HI_G, AHRS_DYN_KP_SCALE_MIN,
-    AHRS_CENTRI_GYRO_TAU_S, AHRS_LINEAR_ACCEL_AID,
+    AHRS_CENTRI_GYRO_TAU_S, AHRS_LINEAR_ACCEL_AID, AHRS_CENTRIPETAL_AID,
     AHRS_DEBUG_PRINT, AHRS_DEBUG_PRINT_DECIM,
     AP_SSID, AP_PASSWORD, HTTP_PORT, BROADCAST_HZ,
 )
@@ -674,14 +674,22 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
     # by 8-10° during straight-line braking.
     fwd = _fwd_in_sensor_for(state['orientation'])
 
-    # Centripetal accel in sensor frame: a_c = ω × V_fwd_sensor (m/s²)
-    v_ms = v_kt * _KT_TO_M_S
-    vx = fwd[0] * v_ms
-    vy = fwd[1] * v_ms
-    vz = fwd[2] * v_ms
-    acx = (gy_s*vz - gz_s*vy) * _G_PER_M_S2
-    acy = (gz_s*vx - gx_s*vz) * _G_PER_M_S2
-    acz = (gx_s*vy - gy_s*vx) * _G_PER_M_S2
+    # Centripetal accel in sensor frame: a_c = ω × V_fwd_sensor (m/s²).
+    # Gated behind AHRS_CENTRIPETAL_AID: in a vibrating cockpit on GPS-only
+    # speed this term (driven by a noisy/biased gyro × a large V) injects a
+    # steady 0.09-0.14 g into the accel that biases pitch and drops it out of
+    # the 1 g gate — net-negative like the mag and linear aids. With it off the
+    # filter is plain accel+gyro; the magnitude gate + gyro-rate gain schedule
+    # still de-weight the accel through real turns.
+    acx = acy = acz = 0.0
+    if AHRS_CENTRIPETAL_AID:
+        v_ms = v_kt * _KT_TO_M_S
+        vx = fwd[0] * v_ms
+        vy = fwd[1] * v_ms
+        vz = fwd[2] * v_ms
+        acx = (gy_s*vz - gz_s*vy) * _G_PER_M_S2
+        acy = (gz_s*vx - gx_s*vz) * _G_PER_M_S2
+        acz = (gx_s*vy - gy_s*vx) * _G_PER_M_S2
 
     # Linear-acceleration aid: forward-axis a = dV/dt projected onto sensor
     # forward direction. Without this, braking and accelerating in

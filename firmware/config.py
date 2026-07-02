@@ -271,6 +271,14 @@ AHRS_CENTRI_GYRO_TAU_S  = 1.0
 # (SDP33 -> TAS) feeds a smooth airspeed.  The dyn-gain schedule still throttles
 # accel during real sustained acceleration, so leaving this off is safe.
 AHRS_LINEAR_ACCEL_AID   = False
+# Centripetal correction (a_c = w x V, subtracted so a coordinated turn's
+# lateral accel isn't read as bank).  Needs a trustworthy gyro and speed.  In a
+# vibrating cockpit on GPS-only speed it injects a steady 0.09-0.14 g that
+# biases/roughens pitch and drops the accel out of the 1 g gate — so it's off
+# by default, leaving a robust accel+gyro filter.  The magnitude gate and the
+# gyro-rate gain schedule still de-weight the accel through real turns.  Re-
+# enable once the gyro bias is well controlled and a smooth TAS is available.
+AHRS_CENTRIPETAL_AID    = False
 AHRS_KP_MAG             = 0.10    # mag proportional gain (yaw correction).
                                   # Lowered from 0.5 after AHRS-ROLL-YAW-COUPLING
                                   # showed the higher gain was over-trusting mag
