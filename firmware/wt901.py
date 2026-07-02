@@ -341,13 +341,17 @@ class WT901:
 
         if working == target_baud:
             # Already at the target baud (config persisted on an earlier boot) —
-            # just (re)assert rate + bandwidth and persist.
+            # just (re)assert the stream config + rate + bandwidth and persist.
+            # RSW is re-asserted here (not only in configure_default_output,
+            # which runs at 9600 and can't be heard once the chip is at 115200).
+            self._write_reg(self._REG_RSW, 0x1E)
             self.set_bandwidth(bw_code, save=False)
             self.set_output_rate(rate_code, save=False)
             self._save_config()
             return target_baud
 
-        # 2. We're talking at 9600.  Apply bandwidth + rate here first.
+        # 2. We're talking at 9600.  Apply stream config + bandwidth + rate here.
+        self._write_reg(self._REG_RSW, 0x1E)
         self.set_bandwidth(bw_code, save=False)
         self.set_output_rate(rate_code, save=False)
 

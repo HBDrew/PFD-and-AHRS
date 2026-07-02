@@ -57,7 +57,7 @@ WT901_FORCE_DEFAULT_OUTPUT = True
 #                      alias cutoff must be low; 5 Hz (0x06) trades attitude
 #                      crispness for killing the vibration aliasing.  A safe
 #                      in-flight-flashable partial fix on its own.
-WT901_HIGH_RATE              = False
+WT901_HIGH_RATE              = True
 WT901_LOWRATE_BANDWIDTH_CODE = 0x06   # WT901.BW_5HZ
 WT901_HIGHRATE_RATE_CODE     = 0x09   # WT901.RRATE_100HZ
 WT901_HIGHRATE_BANDWIDTH_CODE = 0x04  # WT901.BW_20HZ
