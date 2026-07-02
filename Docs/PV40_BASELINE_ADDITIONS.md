@@ -127,24 +127,103 @@ D6:** don't depend on the murky gate — *remove* it and expose setup via a menu
 
 ---
 
-## 5. EFIS interface handlers & ARINC-429 label table
+## 5. EFIS interface handlers & ARINC-429
 
-*Pending — being extracted (Dynon serial sentence set, Aspen/G5 ARINC labels,
-the validity/timeout mechanism, and how ARINC is received "without XIRQ"). This
-section will be filled and the parameter map cross-checked before this doc is
-marked complete.*
+Two physical transports feed the (unchanged) control laws:
+
+- **ARINC-429 receiver** — a HI-828x-class chip read over Port T; **data-ready is a
+  Port H key-wakeup edge on PH7** (`ARINC_RDY=%10000000`), CS on PH5, decoded in
+  `DFC_IRQ.asm` `arinc_int` (vector `0xFFCC`, `prm/banked_flash.prm:47`). The
+  commit *"arinc interrupt working without xirq"* (`7f16550`) merged `arinc_int`,
+  `xirq_isr`, `irq_isr` onto one handler (`DFC_IRQ.asm:2553-2556`) so reception
+  works regardless of which line the module is strapped to.
+- **RS-232 serial** — SCI0 (`GPSMonitor.asm`: NMEA `$GPRMC/$GPRMB` + ARNAV; also
+  owns the ARINC RAM block) and SCI1 (`GPSMonitor2.asm`: Dynon SkyView). Both
+  **9600 baud** (`RS232.asm:72,84`). `GPSMonitor125/225.asm` are unbuilt legacy
+  variants (GRT/Garmin VNAV).
+
+### 5.1 ARINC-429 label table (`DFC_IRQ.asm:2589-2657`)
+
+Compares are against the **bit-reversed** label byte (ARINC is LSB-first); each
+record is `[DATA:2][STATE:1]`.
+
+| Oct label | Meaning | RAM var | Consumed by |
+|-----------|---------|---------|-------------|
+| 121 | Roll steering (GPSS bank cmd) | `gpssRoll` | LM_GPSS |
+| 325 | Roll angle (measured bank) | `ARINC_RollAngle` | GPSS bank-error turn |
+| 122 | Pitch steering | `gpssPitch` | VM_GPSS |
+| 324 | Pitch attitude (measured) | `gpssAtt` | VM_GPSS attitude error |
+| 104 | Commanded VS | `gpssVScmd` | VM_GPSS VS |
+| 117 | Vertical deviation / GS | `gpssVDI` | VM_GPSS virtual-GS |
+| 235 | Baro set | `ARINC_BARO` | baro correction |
+| 102 | Selected altitude | `ARINC_SEL_Alt` | **VM_EXT_ALT (G5)** |
+| 204 | Current altitude @ baroset | `ARINC_Baro_Alt` | altitude source |
+| 320 | Magnetic heading | `ARINC_magHeading` | **LM_DG (G5)** |
+| 101 | Selected heading (bug) | `ARINC_magSelected` | **LM_DG (G5)** |
+| 100 | Selected track ⚠ | `ARINC_VORBeringSelected` | course select |
+| 105 | **Aspen heading error** | `ARINC_HeadingError` | **LM_ASPEN** |
+| 377 | Equipment ID (`$25`→auto GPSS) | `ARINC_EquipmentID` | auto-mode |
+| 310/311 | Lat/Long (presence beacon) | *(sets `gpssState`)* | "GPSS available" |
+
+⚠ Label 100 has a `;-- changed for testing` note (`DFC_IRQ.asm:2632`) — verify the
+selected-track decode isn't sharing a test value if that label matters.
+
+### 5.2 Validity / timeout (source-loss → graceful revert)
+
+Each received message stamps `$F1` into the STATE byte (`aSave`,
+`DFC_IRQ.asm:2658`): top 6 bits = countdown, bit 0 = valid. The 20 Hz
+`chkArincTimeout` (`p20Hz.asm:1311-1328`) decrements by 4/tick → **~3 s timeout**,
+then clears the valid bit. Consumers test `BRSET <var>+1,1,…` and **revert to
+TRK/HOLD** on loss. Dynon has per-field flags + a stream-level `DynonTimeout` that
+clears `DynonFlag` (revoking LM_DYNON/VM_DYNON).
+
+### 5.3 Per-interface summary
+
+| EFIS | Select | Transport / data | Modes driven |
+|------|--------|------------------|--------------|
+| **Dynon SkyView** | `DynonFlag` (auto, priority) | SCI1 serial `!1`/`!2` records (`DHdgBug`, `DCDIDeflection`, `DCrs`, `DGS`, `DAltBug`, `DVSBug`) | LM_DYNON + VM_DYNON |
+| **Aspen** | `EfisType=1` | ARINC 105 heading-error | LM_ASPEN |
+| **Garmin G5** | `EfisType=2` | ARINC 320/101 (ext DG + bug), 102 (sel alt) | LM_DG + VM_EXT_ALT |
+| **Generic / G3X** | `EfisType=0` | ARINC 121 roll-steer (+325 feedback), EqID `$25` auto-arms | LM_GPSS + VM_GPSS |
+
+Dynon takes priority over any ARINC EFIS (`DFCMain.asm:4189`); otherwise
+`ENT_GPSS` arbitrates `EfisType` then GPSS validity (`:4183-4259`).
+
+---
+
+## 5A. Audio / alerting — external Mallory alerter (PV.40)
+
+**A cert-driven simplification, confirmed in code and by the owner.** The PMA
+build drives audio as a **single discrete on/off line to an external Mallory
+alerter** — `SayMsg` just toggles `AO_PORT,AO_MASK` (`Talker.asm:159-174`), no
+voice chip, no SPI. The experimental VZ.15 instead drives an **ISD / ML22Q54 voice
+chip over SPI** (26 SPI refs, `Talker.asm` 445 lines vs PV.40's 191).
+
+Rationale (owner): using a self-contained Mallory alerter avoided **interfacing to
+the aircraft audio panel**, which reduced certification scrutiny for the PMA unit.
+
+**Revival implication:** for a low-cost box, the Mallory-style discrete alerter is
+the simplest, cert-friendliest path; richer voice annunciation (lift from VZ.15's
+Talker) is an optional feature, not a baseline requirement. Keep audio behind a
+thin abstraction so either back-end drops in.
 
 ---
 
 ## 6. Re-baseline actions (tracking)
 
 - [x] Baseline = PV.40 `pv.40` (see `BASELINE_COMPARISON_PV40_vs_VZ15.md`).
-- [ ] Correct `VERTICAL_MASK` to `$F0` in `CONTROL_LOGIC_MAP.md` + `VERTICAL_CONTROL_LAWS.md`.
-- [ ] Fold parameter deltas into `EEPROM_PARAMETER_MAP.md` (done in this pass).
-- [ ] Document AEP as the D2 attitude-protection reference; resolve `bankDegrees` source.
-- [ ] Complete §5 (interfaces/ARINC) and re-point remaining citations to `pv.40`.
+- [x] `VERTICAL_MASK $F0` noted in `CONTROL_LOGIC_MAP.md` (§2 callout).
+- [x] Parameter deltas noted in `EEPROM_PARAMETER_MAP.md` (§3–4 here authoritative).
+- [x] AEP documented as the D2 attitude-protection reference (§2.1).
+- [x] §5 complete — EFIS handlers, ARINC-429 label table, timeout/validity.
+- [x] §5A audio/Mallory alerter documented (cert-driven).
+- [ ] Resolve `bankDegrees` source for AEP (ARINC 325 roll-angle vs internal).
+- [ ] Verify ARINC label-100 "changed for testing" note (`DFC_IRQ.asm:2632`).
+- [ ] Audio back-end abstraction: modern voice (PCM in flash → I²S/DAC) OR discrete
+      Mallory-style alerter behind one interface.
 
 ---
 
-*v0.1 — extracted from the `pv.40` branch. §5 pending. Numeric constants verified
-against source; discrepancies (servo-rev polarity, `$0C` dual-naming) flagged.*
+*v0.1 — extracted from the `pv.40` branch. All sections complete. Numeric
+constants verified against source; discrepancies (servo-rev polarity, `$0C`
+dual-naming, ARINC label-100 test note) flagged.*
