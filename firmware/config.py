@@ -237,7 +237,13 @@ AHRS_BIAS_CLAMP_DPS     = 12.0    # ± bound on the gyro-bias estimate (deg/s).
                                   # leaving a persistent attitude offset. Raised
                                   # so the estimator can actually null it. Safe
                                   # now that no aid feedback loop can wind it up.
-AHRS_KI_ACC             = 0.06    # accel integral gain — estimates gyro bias.
+AHRS_KI_ACC             = 0.02    # accel integral gain — estimates gyro bias.
+                                  # 0.06 converged fast but chased vibration into
+                                  # the bias estimate (swinging 1-17 dps) and
+                                  # wandered the attitude. The bias is slow-
+                                  # varying (RPM/temp), so keep the estimator
+                                  # slow+stable; the raised clamp (above) is what
+                                  # actually lets it cancel the ~10 dps bias.
                                   # Was 0.001 (~4 min to learn a bias). ZUPT never
                                   # engages with the engine running (vibration
                                   # keeps gyro > 1 dps), so the in-flight bias
