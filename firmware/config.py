@@ -230,13 +230,17 @@ AHRS_KP_ACC             = 0.80    # accel proportional gain — quiescent.
                                   # pinning pitch/roll to gravity, and 0.30 was
                                   # too weak to hold it against the gyro bias
                                   # (offset scales ~1/kp_acc). Restored toward 1.0.
-AHRS_BIAS_CLAMP_DPS     = 12.0    # ± bound on the gyro-bias estimate (deg/s).
-                                  # Was hard-clamped at 5 dps, but cockpit
-                                  # vibration rectifies into a ~7-9 dps apparent
-                                  # bias the estimator couldn't fully cancel,
-                                  # leaving a persistent attitude offset. Raised
-                                  # so the estimator can actually null it. Safe
-                                  # now that no aid feedback loop can wind it up.
+AHRS_BIAS_CLAMP_DPS     = 3.0     # ± bound on the gyro-bias estimate (deg/s).
+                                  # With a FIRM/isolated mount the gyro is quiet
+                                  # (~0.7 dps) so the real bias is small; a tight
+                                  # clamp keeps the integrator from winding up
+                                  # against a persistent attitude error and
+                                  # pinning at a bogus 17 dps (which it did at 12
+                                  # dps, holding pitch/roll a few degrees off).
+                                  # NOTE: this assumes a low-vibration mount. On
+                                  # a high-vibration mount (e.g. loose on a leg)
+                                  # the "bias" is really vibration and no clamp
+                                  # value cleanly fixes it — isolate the mount.
 AHRS_KI_ACC             = 0.02    # accel integral gain — estimates gyro bias.
                                   # 0.06 converged fast but chased vibration into
                                   # the bias estimate (swinging 1-17 dps) and
