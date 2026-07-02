@@ -352,10 +352,9 @@ AHRS_ALIGN_DURATION_S     = 20.0
 #     python3 -m mpremote connect /dev/ttyACM0 | tee ahrs_debug.log
 # then roll the AHRS unit ±30° about the bench-bank axis. Set False and
 # re-flash once the bug is identified.
-AHRS_DEBUG_PRINT          = True   # TEMP: diagnosing why the filter won't hold
-                                   # gravity (grossly wrong, wandering pitch).
-                                   # Capture $AHRSDBG with tools/ahrs_debug_capture.py,
-                                   # then set back to False and re-flash.
+AHRS_DEBUG_PRINT          = False  # Production. Set True + reflash to stream
+                                   # $AHRSDBG (raw accel/gyro/mag, accel & mag
+                                   # weights, bias, dyn_kp) for tools/ahrs_debug_capture.py.
 AHRS_DEBUG_PRINT_DECIM    = 5      # at ~50 Hz tick rate → ~10 Hz print rate
 
 # Firmware version date code — broadcast to the display so the pilot can
