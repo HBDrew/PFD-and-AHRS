@@ -9,6 +9,16 @@ store.
 `EEPROM.asm` (storage engine + `consts` layout), load/store sites in
 `DFCMain.asm` / `DFC_IRQ.asm`. Citations are `File:line`.
 
+> **⚠ Baseline moved to PV.40.** The `$00..$3F` table below is the 2011 baseline.
+> The storage model (§1) is unchanged, but PV.40 renamed/moved several slots.
+> **PV.40 deltas** (authoritative for the revival): `EfisType` at `$06-$07`
+> (replaced `ydActivity`/`ydCentering`); `EnableSettings` at `$0C` (dual-named
+> with `beepVol` — see note); `defVS` at `$2C` (replaced `mxCenter`); `RollRev`
+> at `$3A`; `AEPMaxBank` at `$3B`; `dgRateGain` moved to `$3D`. Full PV.40 `consts`
+> block + per-airframe defaults (RV10 / Cessna-172) are in
+> [`PV40_BASELINE_ADDITIONS.md`](PV40_BASELINE_ADDITIONS.md) §3–4. Per-unit
+> calibration values also changed (new sensor hardware) and do not port.
+
 ---
 
 ## 1. Storage model

@@ -148,6 +148,12 @@ one superloop.
 
 ## 2. Mode model (the `mode` byte)
 
+> **PV.40 baseline update:** on the chosen PV.40 baseline, `VERTICAL_MASK` is
+> **`$F0`** (vertical field = bits 4–7) and there are extra modes — lateral
+> `LM_DYNON/LM_AEP/LM_ASPEN`, vertical `VM_DYNON/VM_EXT_ALT`. See
+> [`PV40_BASELINE_ADDITIONS.md`](PV40_BASELINE_ADDITIONS.md) §1–2. The encoding
+> below reflects the 2011 baseline and still holds for the common modes.
+
 A single byte `mode` is bit-packed (`Vizion 380 Flat/Switches.asm:38-63`):
 
 ```
