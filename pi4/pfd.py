@@ -2016,7 +2016,13 @@ def _push_baro_to_pico(qnh_hpa: float):
         client = _sse_client
         if client is not None and hasattr(client, "write"):
             try:
-                client.write(f"$BARO,{qnh_hpa:.2f}\n".encode())
+                cmd = f"$BARO,{qnh_hpa:.2f}\n".encode()
+                # Send twice ~250 ms apart. A single dropped USB write left the
+                # Pico on the old QNH, so the setting "sometimes needed entering
+                # twice". $BARO is idempotent, so re-sending is harmless.
+                client.write(cmd)
+                time.sleep(0.25)
+                client.write(cmd)
                 print(f"[PFD] baro QNH sent via serial ({qnh_hpa:.2f})")
                 return
             except Exception as e:

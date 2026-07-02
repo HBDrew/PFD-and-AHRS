@@ -1226,7 +1226,13 @@ def _push_baro_to_pico(qnh_hpa: float):
         client = _sse_client
         if client is not None and hasattr(client, "write"):
             try:
-                client.write(f"$BARO,{qnh_hpa:.2f}\n".encode())
+                cmd = f"$BARO,{qnh_hpa:.2f}\n".encode()
+                # Send twice ~250 ms apart. A single dropped USB write left the
+                # Pico on the old QNH, so the setting "sometimes needed entering
+                # twice". $BARO is idempotent, so re-sending is harmless.
+                client.write(cmd)
+                time.sleep(0.25)
+                client.write(cmd)
                 print(f"[PFD] baro QNH sent via serial ({qnh_hpa:.2f})")
                 return
             except Exception as e:
@@ -4629,12 +4635,15 @@ def handle_event(event, demo_mode):
         if SPD_X <= x <= SPD_X + SPD_W and 2 <= y <= 24:
             _open_numpad("spd_bug")
             return True
-        # Tap on hdg bug button → open numpad
-        if SPD_X <= x <= SPD_X + SPD_W and HDG_Y + 2 <= y <= HDG_Y + 24:
+        # Tap on hdg bug button → open numpad (full drawn button height)
+        if SPD_X <= x <= SPD_X + SPD_W and HDG_Y <= y <= HDG_Y + HDG_H:
             _open_numpad("hdg_bug")
             return True
-        # Tap on baro button → open numpad
-        if ALT_X <= x <= DISPLAY_W and HDG_Y + 2 <= y <= HDG_Y + 24:
+        # Tap on baro button → open numpad. Cover the FULL drawn button
+        # (x: ALT_X..right edge, y: the whole HDG_H-tall heading strip);
+        # the old 22px-tall box left the button's lower half tapping through
+        # to the heading-bug handler below.
+        if ALT_X <= x <= DISPLAY_W and HDG_Y <= y <= HDG_Y + HDG_H:
             _open_numpad("baro_hpa")
             return True
         # Tap on alt tape → adjust alt bug by position
