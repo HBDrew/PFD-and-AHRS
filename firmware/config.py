@@ -59,7 +59,12 @@ WT901_FORCE_DEFAULT_OUTPUT = True
 #                      in-flight-flashable partial fix on its own.
 WT901_HIGH_RATE              = True
 WT901_LOWRATE_BANDWIDTH_CODE = 0x06   # WT901.BW_5HZ
-WT901_HIGHRATE_RATE_CODE     = 0x09   # WT901.RRATE_100HZ
+# 50 Hz output matches the firmware's 50 Hz sensor loop (asyncio.sleep_ms(20)):
+# every packet is consumed by exactly one filter step, so there's no wasted
+# MicroPython parse load (100 Hz half-fills the buffer and drops the loop rate,
+# which starves the $AHRS output down to ~6 Hz).  20 Hz bandwidth sits just
+# under the 25 Hz Nyquist for clean anti-aliasing.
+WT901_HIGHRATE_RATE_CODE     = 0x08   # WT901.RRATE_50HZ
 WT901_HIGHRATE_BANDWIDTH_CODE = 0x04  # WT901.BW_20HZ
 WT901_TARGET_BAUD            = 115200
 WT901_TARGET_BAUD_CODE       = 0x06   # WT901.BAUD_115200
