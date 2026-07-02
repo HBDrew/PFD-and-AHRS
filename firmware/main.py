@@ -613,6 +613,16 @@ def _run_filter_step(ahrs, ahrs_filter, dt):
         _gyro_lpf[1] += _ga * (gy - _gyro_lpf[1])
         _gyro_lpf[2] += _ga * (gz - _gyro_lpf[2])
     gx_s, gy_s, gz_s = _gyro_lpf
+    # Remove the filter's estimated gyro bias from the smoothed rate. A DC bias
+    # survives the low-pass, so without this a ~4 dps bias manufactures a steady
+    # ~0.1 g fake centripetal (bias × V) that tilts the accel reference and holds
+    # the solution a few degrees off level. The Mahony integration already
+    # subtracts this bias internally; here we keep the centripetal + maneuver
+    # detector consistent with it. (align is applied downstream; with the default
+    # zero align the filter's bias frame matches this pre-align frame.)
+    gx_s -= ahrs_filter.bx
+    gy_s -= ahrs_filter.by
+    gz_s -= ahrs_filter.bz
 
     # ZUPT: when we're sure the airframe is stationary, two things happen.
     #
