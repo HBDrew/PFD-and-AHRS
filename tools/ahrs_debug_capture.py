@@ -82,7 +82,7 @@ def main():
     print(f"Capturing $AHRSDBG for {dur:.0f}s from {port} … keep the airframe steady.")
     ser = serial.Serial(port, 115200, timeout=1)
 
-    amag, accw, gmag, magw = [], [], [], []
+    amag, accw, gmag, magw, acg = [], [], [], [], []
     bpitch, broll = [], []
     n = 0
     t0 = time.time()
@@ -102,6 +102,8 @@ def main():
             accw.append(d["acc_w"][0])
         if d.get("mag_w"):
             magw.append(d["mag_w"][0])
+        if d.get("a_c_g"):
+            acg.append(d["a_c_g"][0])
         if len(bdy) == 3:
             broll.append(bdy[0])
             bpitch.append(bdy[1])
@@ -118,6 +120,7 @@ def main():
         print(summarize("acc_w",    accw))
         print(f"          -> accel gated out (w<0.05) {gated:.0f}% of the time")
     if gmag: print(summarize("|gyro|",   gmag, " dps"))
+    if acg:  print(summarize("a_c (centri)", acg, " g"))
     if magw: print(summarize("mag_w",    magw))
     if broll:  print(summarize("bdy roll",  broll,  "°"))
     if bpitch: print(summarize("bdy pitch", bpitch, "°"))

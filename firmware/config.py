@@ -65,7 +65,12 @@ WT901_LOWRATE_BANDWIDTH_CODE = 0x06   # WT901.BW_5HZ
 # which starves the $AHRS output down to ~6 Hz).  20 Hz bandwidth sits just
 # under the 25 Hz Nyquist for clean anti-aliasing.
 WT901_HIGHRATE_RATE_CODE     = 0x08   # WT901.RRATE_50HZ
-WT901_HIGHRATE_BANDWIDTH_CODE = 0x04  # WT901.BW_20HZ
+# 5 Hz DLPF: field capture showed the gyro reading ~18 dps of vibration with a
+# 20 Hz cutoff (true rate ~2 dps), which poisons the centripetal term and gates
+# the accel out 86% of the time so the filter can't hold gravity.  Aircraft
+# attitude dynamics are < 2 Hz, so a 5 Hz cutoff (well under the 25 Hz Nyquist
+# at 50 Hz output) crushes the engine/prop vibration with negligible lag.
+WT901_HIGHRATE_BANDWIDTH_CODE = 0x06  # WT901.BW_5HZ
 WT901_TARGET_BAUD            = 115200
 WT901_TARGET_BAUD_CODE       = 0x06   # WT901.BAUD_115200
 
