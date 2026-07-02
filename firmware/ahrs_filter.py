@@ -32,10 +32,11 @@ import math
 
 
 class Mahony:
-    # Hard bound on the gyro-bias integrator (rad/s ≈ 5°/s). Well above any
-    # real MEMS bias; if the integrator ever winds up to this value, the
-    # filter is misbehaving and we'd rather clamp it than let it diverge
-    # over hours of operation.
+    # Default hard bound on the gyro-bias integrator (rad/s ≈ 5°/s). This was
+    # fine for a clean MEMS bias, but a vibrating cockpit rectifies into a much
+    # larger apparent gyro bias (measured ~7-9°/s), which the 5°/s clamp can't
+    # fully cancel — leaving a persistent attitude offset. Override via the
+    # bias_clamp_rad_s constructor arg (AHRS_BIAS_CLAMP_DPS in config).
     _BIAS_CLAMP_RAD_S = 0.0873
 
     def __init__(self,
@@ -44,11 +45,14 @@ class Mahony:
                  kp_mag=0.5,
                  accel_gate_g=0.20,
                  mag_gyro_gate_lo_dps=10.0,
-                 mag_gyro_gate_hi_dps=30.0):
+                 mag_gyro_gate_hi_dps=30.0,
+                 bias_clamp_rad_s=None):
         self.kp_acc = kp_acc
         self.ki_acc = ki_acc
         self.kp_mag = kp_mag
         self.accel_gate_g = accel_gate_g
+        self._bias_clamp = (bias_clamp_rad_s if bias_clamp_rad_s is not None
+                            else self._BIAS_CLAMP_RAD_S)
         # Gyro-rate mag gate: linear ramp from full weight at |gyro| <
         # gate_lo to zero weight at |gyro| > gate_hi.  Suppresses mag
         # corrections during fast rotation, where the chip is sweeping
@@ -211,7 +215,7 @@ class Mahony:
             # if we ever hit the clamp something else has gone wrong (bad
             # mounting, accel transients during a long maneuver) and we'd
             # rather have a stable wrong attitude than a diverging filter.
-            c = self._BIAS_CLAMP_RAD_S
+            c = self._bias_clamp
             if self.bx >  c: self.bx =  c
             elif self.bx < -c: self.bx = -c
             if self.by >  c: self.by =  c

@@ -230,7 +230,14 @@ AHRS_KP_ACC             = 0.80    # accel proportional gain — quiescent.
                                   # pinning pitch/roll to gravity, and 0.30 was
                                   # too weak to hold it against the gyro bias
                                   # (offset scales ~1/kp_acc). Restored toward 1.0.
-AHRS_KI_ACC             = 0.02    # accel integral gain — estimates gyro bias.
+AHRS_BIAS_CLAMP_DPS     = 12.0    # ± bound on the gyro-bias estimate (deg/s).
+                                  # Was hard-clamped at 5 dps, but cockpit
+                                  # vibration rectifies into a ~7-9 dps apparent
+                                  # bias the estimator couldn't fully cancel,
+                                  # leaving a persistent attitude offset. Raised
+                                  # so the estimator can actually null it. Safe
+                                  # now that no aid feedback loop can wind it up.
+AHRS_KI_ACC             = 0.06    # accel integral gain — estimates gyro bias.
                                   # Was 0.001 (~4 min to learn a bias). ZUPT never
                                   # engages with the engine running (vibration
                                   # keeps gyro > 1 dps), so the in-flight bias

@@ -42,7 +42,7 @@ from config import (
     AHRS_PITCH_TRIM, AHRS_ROLL_TRIM, AHRS_YAW_TRIM,
     AHRS_CONNECTOR, AHRS_MOUNTING,
     AHRS_FILTER_ENABLE, AHRS_KP_ACC, AHRS_KI_ACC, AHRS_KP_MAG,
-    AHRS_ACCEL_GATE_G, AHRS_USE_MAG,
+    AHRS_ACCEL_GATE_G, AHRS_USE_MAG, AHRS_BIAS_CLAMP_DPS,
     AHRS_MAG_GYRO_GATE_LO_DPS, AHRS_MAG_GYRO_GATE_HI_DPS,
     AHRS_GPS_TRACK_ENABLE, AHRS_GPS_TRACK_MIN_KT,
     AHRS_GPS_TRACK_INTERVAL_S, AHRS_GPS_TRACK_ALPHA,
@@ -914,7 +914,8 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                               'gyr={:.2f},{:.2f},{:.2f},'
                               'mag={:.0f},{:.0f},{:.0f},'
                               'mag_err={:.4f},{:.4f},{:.4f},'
-                              'acc_w={:.2f},mag_w={:.2f},a_c_g={:.3f}'
+                              'acc_w={:.2f},mag_w={:.2f},a_c_g={:.3f},'
+                              'bias={:.2f},{:.2f},{:.2f}'
                               .format(fq.q0, fq.q1, fq.q2, fq.q3,
                                       f_roll, f_pitch, f_yaw,
                                       state['roll'], state['pitch'],
@@ -927,7 +928,10 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                                       fq.last_mag_err_z,
                                       fq.last_accel_weight,
                                       fq.last_mag_weight,
-                                      state.get('_a_centri_g', 0.0)))
+                                      state.get('_a_centri_g', 0.0),
+                                      math.degrees(fq.bx),
+                                      math.degrees(fq.by),
+                                      math.degrees(fq.bz)))
                     except Exception:
                         pass
 
@@ -1474,6 +1478,7 @@ async def main():
             accel_gate_g         = AHRS_ACCEL_GATE_G,
             mag_gyro_gate_lo_dps = AHRS_MAG_GYRO_GATE_LO_DPS,
             mag_gyro_gate_hi_dps = AHRS_MAG_GYRO_GATE_HI_DPS,
+            bias_clamp_rad_s     = math.radians(AHRS_BIAS_CLAMP_DPS),
         )
         print(f'Mahony AHRS filter enabled  Kp_acc={AHRS_KP_ACC} '
               f'Ki_acc={AHRS_KI_ACC} Kp_mag={AHRS_KP_MAG}'
