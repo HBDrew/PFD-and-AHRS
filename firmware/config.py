@@ -37,6 +37,33 @@ WT901_BAUD    = 9600  # WT901 factory default; increase to 115200 after config
 # you don't want overwritten.
 WT901_FORCE_DEFAULT_OUTPUT = True
 
+# ── WT901 sensor front-end: anti-alias bandwidth + sample rate ──────────────
+# The on-Pico Mahony filter fuses the WT901's RAW accel/gyro (unlike the chip's
+# internal Kalman, which shipped a pre-fused angle that was fine at a slow
+# output rate).  A homebrew filter needs the raw IMU *oversampled* and *anti-
+# alias filtered*, or cabin/engine vibration folds into the attitude solution.
+#
+# Two knobs:
+#   WT901_HIGH_RATE  — when True, the driver raises the WT901 to 115200 baud +
+#                      100 Hz output + 20 Hz bandwidth at boot (the proper fix,
+#                      REQ-AHRS-SF-003).  The baud switch is self-healing, but
+#                      FLASH AND VERIFY THIS ON THE BENCH FIRST — the AHRS is
+#                      the only attitude source and you don't want to be
+#                      chasing a mis-baud on the sole horizon in flight.
+#                      Leave WT901_BAUD at 9600 (the chip's power-on baud); the
+#                      driver probes and switches up from there.
+#   WT901_LOWRATE_BANDWIDTH_CODE — applied when WT901_HIGH_RATE is False.  With
+#                      the link still at 9600 (~10–20 raw samples/s) the anti-
+#                      alias cutoff must be low; 5 Hz (0x06) trades attitude
+#                      crispness for killing the vibration aliasing.  A safe
+#                      in-flight-flashable partial fix on its own.
+WT901_HIGH_RATE              = False
+WT901_LOWRATE_BANDWIDTH_CODE = 0x06   # WT901.BW_5HZ
+WT901_HIGHRATE_RATE_CODE     = 0x09   # WT901.RRATE_100HZ
+WT901_HIGHRATE_BANDWIDTH_CODE = 0x04  # WT901.BW_20HZ
+WT901_TARGET_BAUD            = 115200
+WT901_TARGET_BAUD_CODE       = 0x06   # WT901.BAUD_115200
+
 # ── GPS (GY-NEO6MV2 / u-blox NEO-6M) ───────────────────────────────────────
 GPS_UART_ID = 1
 GPS_TX_PIN  = 4   # GP4  – Pico TX → GPS RX  (for UBX config, optional)

@@ -1997,7 +1997,8 @@ def _ALT_DISP_FACTOR():
 
 
 def _push_baro_to_pico(qnh_hpa: float):
-    """Fire-and-forget HTTP GET to the Pico W's /baro?qnh=X endpoint.
+    """Push the pilot-entered QNH to the AHRS via $BARO (USB serial) with an
+    HTTP /baro fallback.
 
     The firmware uses this to update its internal BME280 QNH so future
     altitude samples are computed against the pilot's altimeter setting.
@@ -2005,19 +2006,28 @@ def _push_baro_to_pico(qnh_hpa: float):
     locally but the AHRS-derived altitude would still reflect the
     firmware's default QNH — a silent miscalibration.
 
-    Runs in a background thread because the Pico's HTTP handler can
-    take 100–300 ms to respond and must not block the PFD frame loop.
-    Failures are logged but don't alter disp — the local baro value
-    sticks regardless of whether the Pico is reachable.
+    The serial path matters because a display on the USB link can't reach the
+    Pico's HTTP server: an HTTP-only push (the original behaviour) silently
+    failed over USB, so the Kollsman knob never moved the displayed altitude.
+    Mirrors $ALIGN/$MAGDEV.  Runs in a background thread so the PFD frame loop
+    is never blocked.
     """
-    base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
-    url  = f"{base}/baro?qnh={qnh_hpa:.2f}"
-
     def _worker():
+        client = _sse_client
+        if client is not None and hasattr(client, "write"):
+            try:
+                client.write(f"$BARO,{qnh_hpa:.2f}\n".encode())
+                print(f"[PFD] baro QNH sent via serial ({qnh_hpa:.2f})")
+                return
+            except Exception as e:
+                print(f"[PFD] baro serial write failed: {e}")
+        base = disp.get("cs", {}).get("ahrs_url", "http://192.168.4.1").rstrip("/")
+        url  = f"{base}/baro?qnh={qnh_hpa:.2f}"
         try:
             import urllib.request
             with urllib.request.urlopen(url, timeout=3) as resp:
                 resp.read()
+            print(f"[PFD] baro QNH sent via HTTP ({qnh_hpa:.2f})")
         except Exception as e:
             print(f"[PFD] /baro push failed ({url}): {e}")
 
@@ -6165,9 +6175,11 @@ def handle_event(event, demo_mode):
                 _ssync_publish_bugs()
             if event.key in (pygame.K_PLUS, pygame.K_EQUALS):
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 + 1) / 100
+                _push_baro_to_pico(disp["baro_hpa"])
                 _ssync_publish_baro()
             if event.key == pygame.K_MINUS:
                 disp["baro_hpa"] = round(disp["baro_hpa"] * 100 - 1) / 100
+                _push_baro_to_pico(disp["baro_hpa"])
                 _ssync_publish_baro()
 
     # ── Multi-finger tracking (FINGERDOWN / FINGERUP only) ───────────────────

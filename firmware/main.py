@@ -28,6 +28,9 @@ from machine import Pin, WDT
 from config import (
     WT901_UART_ID, WT901_TX_PIN, WT901_RX_PIN, WT901_BAUD,
     WT901_FORCE_DEFAULT_OUTPUT,
+    WT901_HIGH_RATE, WT901_LOWRATE_BANDWIDTH_CODE,
+    WT901_HIGHRATE_RATE_CODE, WT901_HIGHRATE_BANDWIDTH_CODE,
+    WT901_TARGET_BAUD, WT901_TARGET_BAUD_CODE,
     GPS_UART_ID,  GPS_TX_PIN,  GPS_RX_PIN,  GPS_BAUD,
     BME280_ENABLE, BME280_I2C_ID, BME280_SDA_PIN, BME280_SCL_PIN,
     BME280_I2C_ADDR, BME280_QNH_DEFAULT,
@@ -1195,6 +1198,29 @@ def _process_stdin_line(line):
                 print(f'$ALIGN_ACK,ERR parse: {e}')
         else:
             print('$ALIGN_ACK,ERR bad format')
+    elif line.startswith('$BARO,'):
+        # $BARO,<qnh_hpa>     — set the Kollsman QNH (mirrors HTTP /baro?qnh)
+        # $BARO,CAL,<alt_ft>  — back-calc QNH from a known field elevation
+        # This is the USB-serial twin of the WiFi-only /baro endpoint: without
+        # it, a display on the USB link (the Pi Zero's primary path) can't move
+        # the AHRS-computed altitude at all.
+        payload = line[6:].strip()
+        if payload.startswith('CAL,'):
+            try:
+                state['_cal_ft'] = float(payload[4:])
+                print('$BARO_ACK,CAL_OK')
+            except ValueError as e:
+                print(f'$BARO_ACK,CAL_ERR {e}')
+        else:
+            try:
+                qnh = float(payload)
+                if 800.0 <= qnh <= 1100.0:
+                    state['baro_hpa'] = round(qnh, 2)
+                    print(f'$BARO_ACK,{qnh:.2f},OK')
+                else:
+                    print(f'$BARO_ACK,ERR range {qnh:.2f}')
+            except ValueError as e:
+                print(f'$BARO_ACK,ERR {e}')
 
 
 async def wdt_loop(wdt):
@@ -1294,6 +1320,26 @@ async def main():
             print('WT901  RSW reconfigured (ACC + GYRO + ANGLE + MAG)')
         except Exception as e:
             print(f'WT901  RSW reconfigure failed: {e}')
+
+    # Sensor front-end: anti-alias bandwidth (+ optional high-rate link).
+    # Without this the raw IMU is sampled slowly with a wide-open bandwidth,
+    # so cabin/engine vibration aliases into the Mahony solution.
+    try:
+        if WT901_HIGH_RATE:
+            got = ahrs.configure_high_rate(
+                target_baud=WT901_TARGET_BAUD,
+                target_baud_code=WT901_TARGET_BAUD_CODE,
+                rate_code=WT901_HIGHRATE_RATE_CODE,
+                bw_code=WT901_HIGHRATE_BANDWIDTH_CODE)
+            print(f'WT901  high-rate link @ {got} baud '
+                  f'(rate=0x{WT901_HIGHRATE_RATE_CODE:02x}, '
+                  f'bw=0x{WT901_HIGHRATE_BANDWIDTH_CODE:02x})')
+        else:
+            ahrs.set_bandwidth(WT901_LOWRATE_BANDWIDTH_CODE)
+            print(f'WT901  anti-alias bandwidth set '
+                  f'(0x{WT901_LOWRATE_BANDWIDTH_CODE:02x})')
+    except Exception as e:
+        print(f'WT901  bandwidth/rate config failed: {e}')
 
     state.update(load_trims())
     print(f'Trims loaded: pitch={state["pitch_trim"]}° roll={state["roll_trim"]}° yaw={state["yaw_trim"]}°')
