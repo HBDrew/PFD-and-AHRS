@@ -127,6 +127,16 @@ def main():
               f"off the sensor's Z axis (0° = unit truly flat/level)")
     if sfp: print(summarize("sensor pitch", sfp, "°"))
     if sfr: print(summarize("sensor roll",  sfr, "°"))
+    # Convergence trend: first third vs last third mean.  A shrinking magnitude
+    # means the filter is still pulling toward level (raise gain / wait); a flat
+    # non-zero value means it's stuck at a bias-held offset.
+    if len(sfp) >= 9:
+        k = len(sfp) // 3
+        def _trend(name, xs):
+            a = statistics.fmean(xs[:k]); b = statistics.fmean(xs[-k:])
+            print(f"   {name} trend: first3rd={a:+.1f}°  ->  last3rd={b:+.1f}°  "
+                  f"({'converging' if abs(b) < abs(a) - 1 else 'stuck' if abs(abs(b)-abs(a)) <= 1 else 'diverging'})")
+        _trend("pitch", sfp); _trend("roll", sfr)
     if amag: print(summarize("|accel|",  amag, " g"))
     if accw:
         gated = sum(1 for w in accw if w < 0.05) / len(accw) * 100.0

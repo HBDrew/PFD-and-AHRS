@@ -221,16 +221,24 @@ AHRS_FILTER_ENABLE      = True
 # bias washes out in ~30 s of level flight) for substantially better
 # behaviour during the dynamic events where a high-trust accel pulls
 # attitude away from gyro-truth.
-AHRS_KP_ACC             = 0.30    # accel proportional gain — quiescent.
-                                  # Was 1.0; dropped after small sensor
-                                  # alignment errors were producing
-                                  # large pitch deviations in turns
-                                  # (a_c * sin(β) projecting onto
-                                  # pitch axis × kp_acc integrates).
-AHRS_KI_ACC             = 0.001   # accel integral gain — estimates gyro bias.
-                                  # Keep small: any steady residual cross-product
-                                  # error (centripetal mismatch, sensor noise)
-                                  # winds the integrator up. Bench tested: 0.001
+AHRS_KP_ACC             = 0.80    # accel proportional gain — quiescent.
+                                  # Was 1.0, dropped to 0.30 because noisy
+                                  # centripetal was projecting onto pitch in
+                                  # turns — but that noise is now removed at
+                                  # the source (gyro LPF, AHRS_CENTRI_GYRO_TAU_S).
+                                  # With mag off the accel is the ONLY thing
+                                  # pinning pitch/roll to gravity, and 0.30 was
+                                  # too weak to hold it against the gyro bias
+                                  # (offset scales ~1/kp_acc). Restored toward 1.0.
+AHRS_KI_ACC             = 0.02    # accel integral gain — estimates gyro bias.
+                                  # Was 0.001 (~4 min to learn a bias). ZUPT never
+                                  # engages with the engine running (vibration
+                                  # keeps gyro > 1 dps), so the in-flight bias
+                                  # estimator is the ONLY thing that removes the
+                                  # ~4 dps gyro bias — it has to be fast enough to
+                                  # converge in seconds, not minutes. dyn_scale
+                                  # still gates the integrator down in maneuvers,
+                                  # and the ±5 dps bias clamp bounds windup.
                                   # gives <0.05° drift over 5 min at 5° bank.
 
 # Dynamic gain scheduling.  The Mahony's effective kp_acc is multiplied
