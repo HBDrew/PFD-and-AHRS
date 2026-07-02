@@ -937,7 +937,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                               'mag={:.0f},{:.0f},{:.0f},'
                               'mag_err={:.4f},{:.4f},{:.4f},'
                               'acc_w={:.2f},mag_w={:.2f},a_c_g={:.3f},'
-                              'bias={:.2f},{:.2f},{:.2f}'
+                              'bias={:.2f},{:.2f},{:.2f},dyn={:.3f}'
                               .format(fq.q0, fq.q1, fq.q2, fq.q3,
                                       f_roll, f_pitch, f_yaw,
                                       state['roll'], state['pitch'],
@@ -953,7 +953,8 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                                       state.get('_a_centri_g', 0.0),
                                       math.degrees(fq.bx),
                                       math.degrees(fq.by),
-                                      math.degrees(fq.bz)))
+                                      math.degrees(fq.bz),
+                                      state.get('_dyn_kp_scale', 1.0)))
                     except Exception:
                         pass
 

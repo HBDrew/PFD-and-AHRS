@@ -82,7 +82,7 @@ def main():
     print(f"Capturing $AHRSDBG for {dur:.0f}s from {port} … keep the airframe steady.")
     ser = serial.Serial(port, 115200, timeout=1)
 
-    amag, accw, gmag, magw, acg, bmag = [], [], [], [], [], []
+    amag, accw, gmag, magw, acg, bmag, dynl = [], [], [], [], [], [], []
     bpitch, broll = [], []
     ax_l, ay_l, az_l = [], [], []
     sfp, sfr = [], []
@@ -112,6 +112,8 @@ def main():
             acg.append(d["a_c_g"][0])
         if len(d.get("bias", [])) == 3:
             bmag.append(math.sqrt(sum(v * v for v in d["bias"])))
+        if d.get("dyn"):
+            dynl.append(d["dyn"][0])
         if len(bdy) == 3:
             broll.append(bdy[0])
             bpitch.append(bdy[1])
@@ -149,6 +151,10 @@ def main():
         print(summarize("|bias est|", bmag, " dps"))
         print(f"          -> bias clamp is 12 dps; if this pins near it, raise the clamp")
     if acg:  print(summarize("a_c (centri)", acg, " g"))
+    if dynl:
+        print(summarize("dyn_kp",   dynl))
+        print(f"          -> accel-correction throttle (1.0 = full). If this is "
+              f"low while steady, the filter is starving its own leveling.")
     if magw: print(summarize("mag_w",    magw))
     if broll:  print(summarize("bdy roll",  broll,  "°"))
     if bpitch: print(summarize("bdy pitch", bpitch, "°"))
