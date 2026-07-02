@@ -65,6 +65,7 @@ TRIMS_FILE  = 'trims.json'
 MAGDEV_FILE = 'magdev.json'
 MAGCAL_FILE = 'magcal.json'   # hard-iron offsets (mx_off, my_off, mz_off)
 ORIENT_FILE = 'orient.json'
+BARO_FILE   = 'baro.json'     # pilot QNH so the altimeter setting survives reboot
 BOOT_LOG_FILE = 'boot_log.json'  # boot count + last reset cause + last alive ms
 
 # Human-readable map for machine.reset_cause(). Values vary by port; the names
@@ -142,6 +143,27 @@ def save_trims(state):
                                   'yaw_trim':   state['yaw_trim']}))
     except Exception as e:
         print(f'save_trims failed: {e}')
+
+
+def load_baro():
+    """Return the persisted QNH (hPa), or the ISA default if none/invalid.
+    Range-checked so a corrupt file can't seed an absurd altimeter setting."""
+    try:
+        with open(BARO_FILE, 'r') as f:
+            qnh = float(ujson.loads(f.read()).get('baro_hpa', BME280_QNH_DEFAULT))
+        if 800.0 <= qnh <= 1100.0:
+            return qnh
+    except Exception:
+        pass
+    return BME280_QNH_DEFAULT
+
+
+def save_baro(state):
+    try:
+        with open(BARO_FILE, 'w') as f:
+            f.write(ujson.dumps({'baro_hpa': state['baro_hpa']}))
+    except Exception as e:
+        print(f'save_baro failed: {e}')
 
 
 def load_magdev():
@@ -988,6 +1010,9 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
         if state.get('_save_orient'):
             save_orient(state)
             state['_save_orient'] = False
+        if state.get('_save_baro'):
+            save_baro(state)
+            state['_save_baro'] = False
 
         await asyncio.sleep_ms(0)   # yield so web server can handle requests
 
@@ -1023,6 +1048,7 @@ async def sensor_loop(ahrs: WT901, gps: GPS, baro, sdp, ahrs_filter,
                 baro.calibrate_to_alt_ft(cal_ft)
                 state['baro_hpa'] = baro.qnh_hpa   # broadcast updated QNH back
                 state['_cal_ft']  = None
+                state['_save_baro'] = True         # persist the calibrated QNH
 
             try:
                 baro.update()
@@ -1257,6 +1283,7 @@ def _process_stdin_line(line):
                 qnh = float(payload)
                 if 800.0 <= qnh <= 1100.0:
                     state['baro_hpa'] = round(qnh, 2)
+                    state['_save_baro'] = True   # persist across reboots
                     print(f'$BARO_ACK,{qnh:.2f},OK')
                 else:
                     print(f'$BARO_ACK,ERR range {qnh:.2f}')
@@ -1405,6 +1432,12 @@ async def main():
     else:
         print('Hard-iron offsets: none stored — raw mag fed to filter')
 
+    # Persisted altimeter setting (QNH) — survives power cycles. The sensor
+    # loop syncs baro.qnh_hpa from state['baro_hpa'] every tick, so setting it
+    # here is enough; we also seed the BME280 directly for the first samples.
+    state['baro_hpa'] = load_baro()
+    print(f'QNH loaded: {state["baro_hpa"]} hPa')
+
     baro = None
     if BME280_ENABLE:
         try:
@@ -1414,13 +1447,13 @@ async def main():
                 sda     = BME280_SDA_PIN,
                 scl     = BME280_SCL_PIN,
                 addr    = BME280_I2C_ADDR,
-                qnh_hpa = BME280_QNH_DEFAULT,
+                qnh_hpa = state['baro_hpa'],
             )
             state['baro_src'] = 'bme280'
             print(f'BME280  I2C{BME280_I2C_ID}'
                   f' @ 0x{BME280_I2C_ADDR:02x}'
                   f' (GP{BME280_SDA_PIN} SDA, GP{BME280_SCL_PIN} SCL)'
-                  f'  QNH={BME280_QNH_DEFAULT} hPa')
+                  f'  QNH={state["baro_hpa"]} hPa')
         except Exception as e:
             print(f'BME280 not found ({e})  –  using GPS altitude')
             baro = None

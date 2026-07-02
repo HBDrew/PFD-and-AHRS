@@ -112,6 +112,7 @@ async def _handle_baro(writer, params, state):
             qnh = float(params['qnh'])
             if 800.0 <= qnh <= 1100.0:
                 state['baro_hpa'] = round(qnh, 2)
+                state['_save_baro'] = True   # persist across reboots (baro.json)
         except ValueError:
             pass
 

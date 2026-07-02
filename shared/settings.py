@@ -56,6 +56,9 @@ _PERSIST_SCALARS = [
     "trk_bug",
     "alt_bug",
     "display_mode",
+    "baro_hpa",     # altimeter setting (QNH) — must survive power cycles so the
+                    # displayed Kollsman window matches the AHRS after a reboot
+                    # (the Pico also persists it in baro.json).
 ]
 
 # Keys within subtrees that we deliberately do NOT persist (volatile or secret)
