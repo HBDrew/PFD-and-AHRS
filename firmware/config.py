@@ -221,7 +221,7 @@ AHRS_FILTER_ENABLE      = True
 # bias washes out in ~30 s of level flight) for substantially better
 # behaviour during the dynamic events where a high-trust accel pulls
 # attitude away from gyro-truth.
-AHRS_KP_ACC             = 1.00    # accel proportional gain — quiescent.
+AHRS_KP_ACC             = 0.80    # accel proportional gain — quiescent.
                                   # Was 1.0, dropped to 0.30 because noisy
                                   # centripetal was projecting onto pitch in
                                   # turns — but that noise is now removed at
@@ -230,7 +230,7 @@ AHRS_KP_ACC             = 1.00    # accel proportional gain — quiescent.
                                   # pinning pitch/roll to gravity, and 0.30 was
                                   # too weak to hold it against the gyro bias
                                   # (offset scales ~1/kp_acc). Restored toward 1.0.
-AHRS_KI_ACC             = 0.03    # accel integral gain — estimates gyro bias.
+AHRS_KI_ACC             = 0.02    # accel integral gain — estimates gyro bias.
                                   # Was 0.001 (~4 min to learn a bias). ZUPT never
                                   # engages with the engine running (vibration
                                   # keeps gyro > 1 dps), so the in-flight bias
