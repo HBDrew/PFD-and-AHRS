@@ -1178,6 +1178,25 @@ def _update_gps_heading(yaw_now: float, track: float, gps_ok: bool) -> float:
     return _gps_hdg
 
 
+# ── DG display hysteresis ─────────────────────────────────────────────────────
+_dg_shown = None
+
+def _dg_hysteresis(hdg, dead=1.0):
+    """A touch of hysteresis on the displayed heading (DG) so sub-degree jitter
+    doesn't make the compass rose / heading tape bounce.  The shown value trails
+    the true heading by up to `dead` degrees and only steps once the change
+    exceeds it — the sticky feel of a real gyro DG."""
+    global _dg_shown
+    h = hdg % 360.0
+    if _dg_shown is None:
+        _dg_shown = h
+        return h
+    dh = ((h - _dg_shown + 180.0) % 360.0) - 180.0
+    if abs(dh) > dead:
+        _dg_shown = (_dg_shown + dh - math.copysign(dead, dh)) % 360.0
+    return _dg_shown
+
+
 # ── Connectivity helpers ──────────────────────────────────────────────────────
 
 def _wifi_ssid_current():
@@ -2705,8 +2724,10 @@ def draw_status_badges(surf, ahrs_ok, gps_ok, baro_ok, baro_src, sats, connected
     f10 = _get_font(10)
 
     # ── Left badges: problems only ──────────────────────────────────────────
-    # Badges sit just BELOW the top readout ribbon so they never overlap it.
-    _by = TAPE_TOP + 2
+    # Persistent badges sit just BELOW the (now taller) top readout ribbon so
+    # they never sit on top of the data.  (Transient red/amber terrain/traffic
+    # alert banners are drawn separately and may pop up into the band.)
+    _by = _PFD_TOP_BAND_H + 2
     bx = AI_X + 4
     def badge_l(text, bg, fg=(255, 255, 255)):
         nonlocal bx
@@ -12125,8 +12146,8 @@ def _mfd_strip_hit(x, y):
 
 
 # ── PFD top readout ribbon (band above the AI) ────────────────────────────────
-_PFD_TOP_SLOT_COUNT = 5
-_PFD_TOP_DEFAULT    = ["agl", "tas", "oat", "wind", "etad"]
+_PFD_TOP_SLOT_COUNT = 4   # 4 fits legibly at the enlarged font; 5 crowded
+_PFD_TOP_DEFAULT    = ["agl", "tas", "oat", "wind"]
 
 
 def _strip_kinds_for(key, default, count):
@@ -15452,6 +15473,9 @@ def render(surf, demo_mode, connected, data_stale=False):
         global _gps_hdg, _prev_yaw_disp  # reset filter when not using TRK
         _gps_hdg = _prev_yaw_disp = None
         hdg = disp["yaw"]
+    # A touch of hysteresis so the DG (tape + compass rose) stops bouncing on
+    # sub-degree yaw jitter — applies to whichever source is active.
+    hdg = _dg_hysteresis(hdg)
 
     # ── Airspeed source selection ─────────────────────────────────────────────
     # "gps" : GPS groundspeed         → bug triangle / tape source label is magenta
