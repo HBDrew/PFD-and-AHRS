@@ -1991,9 +1991,11 @@ def draw_pitch_ladder(surf, ai_rect, pitch, roll):
         return (int(cx + x * cos_r + y * sin_r),
                 int(cy - x * sin_r + y * cos_r))
 
-    # Clip to AI rect so lines don't bleed into tapes / heading tape
+    # Clip to the AI rect, but keep the TOP below the roll arc so ladder rungs
+    # never draw up into the bank scale, its ticks, or the sky-pointer doghouse.
     old_clip = surf.get_clip()
-    surf.set_clip(pygame.Rect(ax, ay, aw, ah))
+    _lad_top = max(ay, ROLL_CY - ROLL_R + 30)
+    surf.set_clip(pygame.Rect(ax, _lad_top, aw, (ay + ah) - _lad_top))
 
     for deg in range(-30, 35, 5):
         rel_y = pitch_px - int(deg * px_per_deg)  # y offset from AI center
@@ -8208,14 +8210,14 @@ def draw_cdi(surf):
     ident = nv.get("ident", "")
     have_wpt = bool(ident)
 
-    bar_w = max(140, int(DISPLAY_W * 0.32))
-    bar_h = 6
+    bar_w = max(140, int(DISPLAY_W * 0.60))   # wider CDI (was 0.32)
+    bar_h = 8
     bar_y = HDG_Y - 56
     bar_x = CX - bar_w // 2
 
-    plate = pygame.Surface((bar_w + 36, 48), pygame.SRCALPHA)
+    plate = pygame.Surface((bar_w + 36, 56), pygame.SRCALPHA)
     plate.fill((0, 8, 22, 190))
-    surf.blit(plate, (bar_x - 18, bar_y - 34))
+    surf.blit(plate, (bar_x - 18, bar_y - 42))
 
     pygame.draw.rect(surf, (60, 80, 110), (bar_x, bar_y, bar_w, bar_h),
                      border_radius=2)
@@ -8240,22 +8242,22 @@ def draw_cdi(surf):
         dx = -int(xtk_clamped * (bar_w / 2))
         dcx = CX + dx
         dcy = bar_y + bar_h // 2
-        dpts = [(dcx, dcy - 10), (dcx + 9, dcy), (dcx, dcy + 10), (dcx - 9, dcy)]
+        dpts = [(dcx, dcy - 12), (dcx + 11, dcy), (dcx, dcy + 12), (dcx - 11, dcy)]
         pygame.draw.polygon(surf, MAGENTA, dpts)
         readout = (f"{ident}  {int(round(_to_disp_brg(brg, lat, lon))) % 360:03d}°"
                    f"  {dist_nm:.1f}NM")
-        _text(surf, readout, 18, MAGENTA, bold=True, cx=CX, cy=bar_y - 22)
+        _text(surf, readout, 24, MAGENTA, bold=True, cx=CX, cy=bar_y - 26)
     else:
-        _text(surf, "DIRECT  →", 18, MAGENTA, bold=True, cx=CX, cy=bar_y - 22)
+        _text(surf, "DIRECT  →", 24, MAGENTA, bold=True, cx=CX, cy=bar_y - 26)
 
 
 def _cdi_hit(x, y):
     """Tap on the CDI strip opens the keyboard for waypoint entry."""
-    bar_w = max(140, int(DISPLAY_W * 0.32))
+    bar_w = max(140, int(DISPLAY_W * 0.60))
     bar_y = HDG_Y - 56
     bar_x = CX - bar_w // 2
     return (bar_x - 18 <= x <= bar_x + bar_w + 18 and
-            bar_y - 34 <= y <= bar_y + 14)
+            bar_y - 42 <= y <= bar_y + 14)
 
 
 # ── Direct-to navigation + confirm modal ─────────────────────────────────────
