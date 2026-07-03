@@ -4651,10 +4651,17 @@ def handle_event(event, demo_mode):
             ft = round(disp["alt"] + (TAPE_MID - y) / PX_PER_FT)
             disp["alt_bug"] = round(ft / 100) * 100
             _ssync_publish_bugs()
-        # Tap on heading tape → adjust hdg bug by position
+        # Tap on heading tape → adjust hdg bug by position. Store in the DISPLAY
+        # frame (magnetic unless hdg_ref=true) so it matches keypad entry and the
+        # bug marker no longer needs variation correction downstream.
         if HDG_Y <= y <= DISPLAY_H:
             off = (x - CX) / PX_PER_DEG
-            disp["hdg_bug"] = round(disp["yaw"] + off) % 360
+            if _hdg_ref() == "true":
+                disp["hdg_bug"] = round(disp["yaw"] + off) % 360
+            else:
+                _v = _magvar.declination(float(disp.get("lat", 0.0)),
+                                         float(disp.get("lon", 0.0)))
+                disp["hdg_bug"] = round(disp["yaw"] - _v + off) % 360
             _ssync_publish_bugs()
 
     return True
@@ -12139,9 +12146,13 @@ def _pfd_top_kinds():
                             _PFD_TOP_SLOT_COUNT)
 
 
+_PFD_TOP_BAND_H = 44   # 2x the old TAPE_TOP inset so the readouts are legible;
+                       # the opaque backing overlays the AI's top sky (drawn
+                       # earlier), so this costs no AI layout, just top sky.
+
 def _pfd_top_band():
     """(x0, x1, y0, y1) of the tappable ribbon band between the bug boxes."""
-    return (SPD_W, ALT_X, 0, TAPE_TOP)
+    return (SPD_W, ALT_X, 0, _PFD_TOP_BAND_H)
 
 
 def draw_pfd_top_strip(surf):
@@ -12162,21 +12173,26 @@ def draw_pfd_top_strip(surf):
     # and so the top reads as one bar continuous with the GS/ALT bug boxes.
     pygame.draw.rect(surf, (6, 14, 24), (bx0, 0, bx1 - bx0, y1))
     pygame.draw.line(surf, (55, 75, 105), (bx0, y1 - 1), (bx1, y1 - 1), 1)
-    x0 = bx0 + 5
-    x1 = bx1 - 5
+    x0 = bx0 + 4
+    x1 = bx1 - 4
     n = max(1, len(kinds))
     slot_w = (x1 - x0) / n
     cy = y1 // 2
-    cap_f = _get_font(9, bold=True)
-    val_f = _get_font(13, bold=True)
+    # Enlarged for legibility: value ≥ the heading-tape digits (17), caption
+    # right at it.  At 5 fields across the fixed band width this is deliberately
+    # tight; a wide field (e.g. WIND) may crowd its neighbours — drop a field or
+    # ask for a two-row layout if so.
+    _CAP_SZ, _VAL_SZ = 17, 24
+    cap_f = _get_font(_CAP_SZ, bold=True)
+    val_f = _get_font(_VAL_SZ, bold=True)
     for i, kind in enumerate(kinds):
         cap, val, col = _mfd_strip_format(kind, ctx)
         val = str(val)
         cw = cap_f.size(cap)[0]
         vw = val_f.size(val)[0]
         sx = int(x0 + slot_w * (i + 0.5) - (cw + 3 + vw) / 2)
-        _text(surf, cap, 9, (150, 165, 190), bold=True, x=sx, cy=cy)
-        _text(surf, val, 13, col, bold=True, x=sx + cw + 3, cy=cy)
+        _text(surf, cap, _CAP_SZ, (150, 165, 190), bold=True, x=sx, cy=cy)
+        _text(surf, val, _VAL_SZ, col, bold=True, x=sx + cw + 3, cy=cy)
 
 
 def _mfd_strip_kinds():
@@ -15550,12 +15566,15 @@ def render(surf, demo_mode, connected, data_stale=False):
     # default, true per the pilot's hdg_ref setting).
     _hr = _hdg_ref()
     if _hr == "true":
-        _hdg_d, _bug_d, _trk_d = hdg, hdg_bug, track
+        _hdg_d, _trk_d = hdg, track
     else:
         _var = _magvar.declination(lat, lon)
         _hdg_d = (hdg - _var) % 360.0
-        _bug_d = None if hdg_bug is None else (hdg_bug - _var) % 360.0
         _trk_d = None if track is None else (track - _var) % 360.0
+    # The heading bug is a pilot input already in the DISPLAY frame — set against
+    # the (magnetic) tape — so unlike the true-frame hdg/track SENSOR values it
+    # must NOT be variation-corrected, or a keypad-entered bug lands ~var° off.
+    _bug_d = hdg_bug
     draw_heading_tape(surf, _hdg_d, _bug_d, _trk_d, gps_ok, hdg_src=hdg_src,
                       ref_label=("TRU" if _hr == "true" else "MAG"))
 
