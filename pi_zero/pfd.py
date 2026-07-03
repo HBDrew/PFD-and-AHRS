@@ -252,6 +252,11 @@ disp["ds"] = {                      # display settings
     # eta_local flips all arrival clocks between local time and Zulu.
     "mfd_strip_kinds":  ["gs", "trk", "alt", "wpt", "btw", "dist", "ete", "etad"],
     "eta_local":        True,
+    # Manual daylight-saving shift for local-time readouts.  Only used on the
+    # fallback longitude-estimate path (when timezonefinder/zoneinfo aren't
+    # installed, e.g. the Pi Zero) — the exact-timezone path already knows DST,
+    # so this flag is ignored there.  Adds +1 h to every local ETA/valid-time.
+    "dst":              False,
     # Heading / course reference.  Everything is TRUE internally; this flips the
     # pilot-facing display to MAGNETIC (charts/plates/ATC) via WMM2025 variation.
     "hdg_ref":          "mag",   # "mag" | "true"
@@ -3972,6 +3977,9 @@ def handle_event(event, demo_mode):
                 _settings.mark_dirty()
             elif act == "eta_tz":
                 disp["ds"]["eta_local"] = bool(payload)
+                _settings.mark_dirty()
+            elif act == "eta_dst":
+                disp["ds"]["dst"] = not bool(disp["ds"].get("dst"))
                 _settings.mark_dirty()
             return True
 
@@ -12256,6 +12264,23 @@ def _mfd_strip_ete_str(gs_kt, dist_nm):
     return "--:--"
 
 
+def _local_offset_hours(lat, lon, when_utc=None):
+    """UTC offset (hours) for a point, honouring the manual DST toggle.
+
+    Wraps shared/localtime.offset_hours.  When the exact timezone path is
+    unavailable (no timezonefinder/zoneinfo — the Pi Zero case) offset_hours
+    returns a plain round(lon/15) estimate with NO daylight-saving shift, so
+    ETAs read an hour off in summer.  The pilot-set ``ds["dst"]`` flag adds
+    that hour back.  On the exact path DST is already baked in, so the manual
+    flag is ignored to avoid double-counting."""
+    off = _localtime.offset_hours(lat, lon, when_utc)
+    if off is None:
+        return None
+    if disp["ds"].get("dst") and not _localtime.available():
+        off += 1.0
+    return off
+
+
 def _mfd_strip_eta_str(gs_kt, dist_nm, local=False, tz_lat=None, tz_lon=None):
     """Arrival clock time.  Zulu (``18:34Z``) by default; local (``11:34``, no
     Z) when `local` and the arrival-point position is known — using that
@@ -12268,7 +12293,7 @@ def _mfd_strip_eta_str(gs_kt, dist_nm, local=False, tz_lat=None, tz_lon=None):
     eta_t = time.time() + int(round(hours * 3600))
     if local:
         from datetime import datetime, timezone
-        off = _localtime.offset_hours(
+        off = _local_offset_hours(
             tz_lat, tz_lon, datetime.fromtimestamp(eta_t, timezone.utc))
         if off is not None:
             return time.strftime("%H:%M", time.gmtime(eta_t + int(off * 3600)))
@@ -13563,7 +13588,7 @@ def _draw_wx_taf(surf):
     store = _fisb_store()
     raw = store.taf_for(icao) if store else None
     src = store.taf_source(icao) if store else None
-    off = (_localtime.offset_hours(disp.get("lat"), disp.get("lon"))
+    off = (_local_offset_hours(disp.get("lat"), disp.get("lon"))
            if disp.get("gps_ok") else None)
     p = _fisb.parse_taf(raw, local_offset_h=off) if raw else None
     pw = min(620, DISPLAY_W - 20)
@@ -13729,8 +13754,16 @@ _MSS_TZ_Y       = _MSS_DESC_Y + 16
 def _mss_tz_rects():
     """LOCAL / ZULU pills for the arrival-time mode (applies to all ETA/ETAD)."""
     bw_, bh_, g = 92, 26, 6
-    x0 = (DISPLAY_W - (2 * bw_ + g)) // 2 + 55   # nudged right of the label
+    x0 = (DISPLAY_W - (2 * bw_ + g)) // 2 + 25   # nudged right of the label
     return ((x0, _MSS_TZ_Y, bw_, bh_), (x0 + bw_ + g, _MSS_TZ_Y, bw_, bh_))
+
+
+def _mss_dst_rect():
+    """+1h DST pill, right of the ZULU pill.  Manual daylight-saving shift for
+    the longitude-estimate fallback (Pi Zero) — see ds["dst"]."""
+    _, zul_r = _mss_tz_rects()
+    bw_, bh_, g = 78, 26, 10
+    return (zul_r[0] + zul_r[2] + g, zul_r[1], bw_, bh_)
 
 
 def _mss_cfg():
@@ -13829,6 +13862,8 @@ def draw_mfd_strip_setup(surf):
     desc = _MFD_STRIP_DESC.get(sel_kind, "")
     if sel_kind in ("eta", "etad"):
         desc += f"  ·  {'LOCAL' if local else 'ZULU'} time"
+        if local and disp["ds"].get("dst") and not _localtime.available():
+            desc += " +DST"
     _text(surf, f"{_MFD_STRIP_CAPTIONS.get(sel_kind, '?')} — {desc}", 11,
           (190, 205, 225), bold=True, cx=DISPLAY_W // 2, y=_MSS_DESC_Y)
 
@@ -13838,6 +13873,18 @@ def draw_mfd_strip_setup(surf):
           x=loc_r[0] - 72, y=loc_r[1] + 7)
     _seg_btn(surf, *loc_r, "LOCAL", local)
     _seg_btn(surf, *zul_r, "ZULU", not local)
+    # Manual DST shift — only meaningful on the longitude-estimate fallback
+    # (Pi Zero) and only when showing LOCAL time.  Dim it out otherwise.
+    dst_on   = bool(disp["ds"].get("dst"))
+    dst_live = local and not _localtime.available()
+    dst_r    = _mss_dst_rect()
+    if dst_live:
+        _seg_btn(surf, *dst_r, "DST +1h", dst_on)
+    else:
+        pygame.draw.rect(surf, (0, 18, 38), dst_r, border_radius=5)
+        pygame.draw.rect(surf, (45, 60, 85), dst_r, width=1, border_radius=5)
+        _text(surf, "DST +1h", 13, (80, 95, 120), bold=True,
+              cx=dst_r[0] + dst_r[2] // 2, cy=dst_r[1] + dst_r[3] // 2 + 1)
 
 
 def mfd_strip_setup_hit(x, y):
@@ -13851,6 +13898,8 @@ def mfd_strip_setup_hit(x, y):
         return ("eta_tz", True)
     if _in(zul_r):
         return ("eta_tz", False)
+    if _in(_mss_dst_rect()):
+        return ("eta_dst", None)
     # Slot pills
     for i, rect in enumerate(_mss_slot_rects()):
         bx, by, bw, bh = rect
