@@ -85,7 +85,7 @@ YELLOW_ARC = (240, 200,   0)
 TAPE_BG    = (  0,   8,  22, 195)
 DIMGREY    = ( 80,  80,  90)
 LTGREY     = (180, 180, 190)
-MAGENTA    = (220,   0, 220)
+MAGENTA    = (255,  90, 255)   # brightened for sunlit-cockpit legibility (was 220,0,220)
 AMBER      = (255, 190,  30)   # warmer than YELLOW; used for degraded sources
 
 # ── Shared state ─────────────────────────────────────────────────────────────
@@ -2482,7 +2482,7 @@ def draw_heading_tape(surf, hdg, hdg_bug=None, track=None, gps_ok=False,
         if abs(off) > 1.0:  # only show when there's visible wind/crab angle
             tx = int(CX + off * PX_PER_DEG)
             if 0 < tx < DISPLAY_W:
-                pygame.draw.polygon(surf, (220, 60, 220),
+                pygame.draw.polygon(surf, (255, 110, 255),
                     [(tx, HDG_Y + 4), (tx - 5, HDG_Y + 14), (tx + 5, HDG_Y + 14)])
 
     # Heading box — 99×42 (scaled 1.5x from 66×28). Triangle pointer
