@@ -8210,7 +8210,7 @@ def draw_cdi(surf):
     ident = nv.get("ident", "")
     have_wpt = bool(ident)
 
-    bar_w = max(140, int(DISPLAY_W * 0.60))   # wider CDI (was 0.32)
+    bar_w = max(140, int(DISPLAY_W * 0.42))   # 0.32 too narrow, 0.60 too wide
     bar_h = 8
     bar_y = HDG_Y - 56
     bar_x = CX - bar_w // 2
@@ -8253,7 +8253,7 @@ def draw_cdi(surf):
 
 def _cdi_hit(x, y):
     """Tap on the CDI strip opens the keyboard for waypoint entry."""
-    bar_w = max(140, int(DISPLAY_W * 0.60))
+    bar_w = max(140, int(DISPLAY_W * 0.42))
     bar_y = HDG_Y - 56
     bar_x = CX - bar_w // 2
     return (bar_x - 18 <= x <= bar_x + bar_w + 18 and
