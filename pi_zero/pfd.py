@@ -12146,9 +12146,11 @@ def _pfd_top_kinds():
                             _PFD_TOP_SLOT_COUNT)
 
 
-_PFD_TOP_BAND_H = 44   # 2x the old TAPE_TOP inset so the readouts are legible;
-                       # the opaque backing overlays the AI's top sky (drawn
-                       # earlier), so this costs no AI layout, just top sky.
+_PFD_TOP_BAND_H = 44   # 2x the old TAPE_TOP inset so the readouts are legible.
+                       # The AI background starts below this band (see render),
+                       # so the strip has dedicated space and the AI is shrunk
+                       # to fit rather than overlaid.  Matches the HDG_H-tall
+                       # corner bug boxes, so the whole top reads as one bar.
 
 def _pfd_top_band():
     """(x0, x1, y0, y1) of the tappable ribbon band between the bug boxes."""
@@ -15511,8 +15513,12 @@ def render(surf, demo_mode, connected, data_stale=False):
     # when we actually HAVE state — a blank screen never clobbers a peer.
     _ssync_state_keepalive()
 
-    # 1. AI background — draw full-width so tapes are transparent over sky/ground
-    _full_ai = (0, 0, DISPLAY_W, HDG_Y)
+    # 1. AI background — draw full-width so tapes are transparent over sky/ground.
+    # Starts below the top data-strip band so the AI is shrunk to fit it rather
+    # than drawn behind it (no wasted overlay). Horizon stays anchored at
+    # TAPE_MID inside draw_simple_ai_background, so the attitude geometry is
+    # unaffected — only the top sky is trimmed.
+    _full_ai = (0, _PFD_TOP_BAND_H, DISPLAY_W, HDG_Y - _PFD_TOP_BAND_H)
     draw_simple_ai_background(surf, _full_ai, pitch, roll)
 
     # 1a. Above-horizon terrain silhouette (mountain peaks rising above
