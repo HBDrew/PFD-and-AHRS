@@ -2079,9 +2079,26 @@ def _doghouse_pts(cx, cy, ang_rad, r, size=11, inward=True):
     ]
 
 
-def draw_roll_arc(surf, roll):
+_SRT_GREEN = (40, 225, 70)   # standard-rate turn markers
+
+
+def _std_rate_bank_deg(speed_kt):
+    """Bank angle (deg) for a 3°/s standard-rate turn at `speed_kt`.
+
+    φ = atan(ω·V/g), ω = 3°/s, V in m/s.  Uses whatever speed the tape is
+    showing (IAS when the air-data source is active, else GPS GS) — same as a
+    G3X/GI-275, so the marks slide out as you speed up and in as you slow."""
+    if speed_kt is None or speed_kt < 30.0:
+        return None
+    v_ms = speed_kt * 0.514444
+    phi = math.degrees(math.atan(0.0523599 * v_ms / 9.80665))
+    return max(-58.0, min(58.0, phi))   # clamp to the arc's ±60° span
+
+
+def draw_roll_arc(surf, roll, speed_kt=None):
     """Draw GI-275 style roll scale: arc, tick marks, doghouse zero marker,
-    and doghouse roll pointer.
+    doghouse roll pointer, and green standard-rate turn markers (which slide
+    in/out with airspeed).
     Uses pygame.draw.arc (single C call) instead of 121-iteration Python loop.
     """
     cx, cy = CX, ROLL_CY
@@ -2125,6 +2142,28 @@ def draw_roll_arc(surf, roll):
             inner_y = int(cy + (ROLL_R - 16) * sin_a)
             tri = [(mx - tx2, my - ty2), (mx + tx2, my + ty2), (inner_x, inner_y)]
             pygame.gfxdraw.aapolygon(surf, tri, LTGREY)
+
+    # ── Standard-rate turn markers — green triangles that ride ON the arc at
+    # the ±bank required for a 3°/s turn at the current speed, so they slide
+    # outward as you speed up and inward as you slow.  They rotate with the sky
+    # like the ticks, so when your bank pointer lines up with one you're at
+    # standard rate.
+    _srt = _std_rate_bank_deg(speed_kt)
+    if _srt is not None:
+        for _sgn in (1.0, -1.0):
+            ang = (-90 - roll + _sgn * _srt) * DEG   # rotate with the sky
+            cos_a, sin_a = math.cos(ang), math.sin(ang)
+            perp = ang + math.pi / 2
+            # Little filled triangle sitting just outside the arc, apex on it.
+            tipx = cx + (ROLL_R + 1) * cos_a
+            tipy = cy + (ROLL_R + 1) * sin_a
+            bx1  = cx + (ROLL_R + 9) * cos_a + 5 * math.cos(perp)
+            by1  = cy + (ROLL_R + 9) * sin_a + 5 * math.sin(perp)
+            bx2  = cx + (ROLL_R + 9) * cos_a - 5 * math.cos(perp)
+            by2  = cy + (ROLL_R + 9) * sin_a - 5 * math.sin(perp)
+            tri = [(int(tipx), int(tipy)), (int(bx1), int(by1)), (int(bx2), int(by2))]
+            pygame.gfxdraw.filled_polygon(surf, tri, _SRT_GREEN)
+            pygame.gfxdraw.aapolygon(surf, tri, _SRT_GREEN)
 
     # Moving upper doghouse — OUTSIDE arc, tip at arc, moves with roll arc
     upper_ang = (-90 - roll) * DEG   # rotates with the arc (sky pointer)
@@ -15659,8 +15698,8 @@ def render(surf, demo_mode, connected, data_stale=False):
     draw_heading_tape(surf, _hdg_d, _bug_d, _trk_d, gps_ok, hdg_src=hdg_src,
                       ref_label=("TRU" if _hr == "true" else "MAG"))
 
-    # 6. Roll arc
-    draw_roll_arc(surf, roll)
+    # 6. Roll arc (speed drives the green standard-rate turn markers)
+    draw_roll_arc(surf, roll, speed_kt=speed)
 
     # 7. Aircraft symbol
     draw_aircraft_symbol(surf)
