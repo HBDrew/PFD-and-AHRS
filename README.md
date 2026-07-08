@@ -329,6 +329,12 @@ See `Docs/USER_MANUAL_ZERO.md` or `Docs/USER_MANUAL_PI4.md` for full operational
 | `Docs/REQUIREMENTS_AHRS.md` | AHRS unit high-level requirements (shared) |
 | `Docs/REQUIREMENTS_DISPLAY_ZERO.md` | Pi Zero 2W display HLRs (no SVT) |
 | `Docs/REQUIREMENTS_DISPLAY_PI4.md` | Pi 4 display HLRs (full SVT + OpenGL) |
+| `Docs/SLR_AHRS.md` | AHRS unit software level (low-level) requirements — SLR-AHRS-001 |
+| `Docs/SAD_AHRS.md` | AHRS unit software architecture document — SAD-AHRS-001 |
+| `Docs/SLR_DISPLAY_ZERO.md` | Pi Zero 2W display SLRs — SLR-DISP-ZERO-001 |
+| `Docs/SAD_DISPLAY_ZERO.md` | Pi Zero 2W display architecture — SAD-DISP-ZERO-001 |
+| `Docs/SLR_DISPLAY_PI4.md` | Pi 4 display SLRs — SLR-DISP-PI4-001 |
+| `Docs/SAD_DISPLAY_PI4.md` | Pi 4 display architecture — SAD-DISP-PI4-001 |
 | `Docs/USER_MANUAL_IPHONE.md` | iPhone / browser PFD pilot's user manual |
 | `Docs/USER_MANUAL_ZERO.md` | Pi Zero 2W pilot's user manual |
 | `Docs/USER_MANUAL_PI4.md` | Pi 4 pilot's user manual |
